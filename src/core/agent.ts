@@ -1,6 +1,7 @@
 import { loadConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
-import { AnthropicAdapter } from "../llm/anthropic";
+import { createLlmAdapter } from "../llm/factory";
+import type { LlmAdapter } from "../llm/types";
 import { createRegisteredProviders } from "../providers/registry";
 import { ConsumerHub } from "./consumer";
 import { ConversationHistory } from "./history";
@@ -16,7 +17,7 @@ export class Agent {
   private config: SloppyConfig;
   private hub: ConsumerHub | null = null;
   private history: ConversationHistory;
-  private llm: AnthropicAdapter;
+  private llm: LlmAdapter;
   private callbacks: AgentCallbacks;
 
   constructor(options?: { config?: SloppyConfig } & AgentCallbacks) {
@@ -30,16 +31,7 @@ export class Agent {
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
     });
-
-    const apiKey = process.env[this.config.llm.apiKeyEnv];
-    if (!apiKey) {
-      throw new Error(`Missing ${this.config.llm.apiKeyEnv}. Set it before starting Sloppy.`);
-    }
-
-    this.llm = new AnthropicAdapter({
-      apiKey,
-      model: this.config.llm.model,
-    });
+    this.llm = createLlmAdapter(this.config);
   }
 
   async start(): Promise<void> {

@@ -11,7 +11,7 @@ Named after the SLOP protocol's owl mascot.
 - **Language:** TypeScript
 - **Runtime:** Bun
 - **Package manager:** Bun
-- **LLM:** Claude (primary), OpenAI-compatible (fallback)
+- **LLM:** Anthropic, OpenAI-compatible, and Gemini adapters
 - **Protocol:** SLOP — spec lives in `~/dev/slop-slop-slop/spec/`
 
 ## Project structure

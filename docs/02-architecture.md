@@ -4,7 +4,7 @@
 
 1. **State is primary.** The runtime observes state trees first and invokes affordances second.
 2. **Everything is a provider.** Built-in capabilities and external applications both enter the system through SLOP providers.
-3. **Tool use is only an adapter.** Claude `tool_use` is the LLM-facing execution format, not the architectural model.
+3. **Tool use is only an adapter.** Provider-native tool calling is the LLM-facing execution format, not the architectural model.
 4. **Subscriptions beat polling.** The harness should stay on live state through `snapshot` + `patch`, then deepen only where needed.
 5. **Thin core, fat providers.** The runtime coordinates history, subscriptions, and model calls; capability-specific logic lives in providers.
 
@@ -13,7 +13,7 @@
 ## Runtime overview
 
 ```text
-LLM (Anthropic tool_use)
+LLM adapter (Anthropic/OpenAI-compatible/Gemini)
         |
         v
 RuntimeToolSet
@@ -59,7 +59,7 @@ Responsibilities:
 - call the model
 - execute tool calls
 - append tool results to history
-- continue until Claude ends the turn naturally
+- continue until the model ends the turn naturally
 
 This loop is intentionally small. It should feel closer to Hermes's clean orchestration layer than OpenClaw's deeply integrated runtime stack.
 
@@ -82,7 +82,7 @@ This is the architectural center of Sloppy. It replaces the plugin/tool registry
 
 `src/core/tools.ts`
 
-The runtime exposes two kinds of tools to Claude:
+The runtime exposes two kinds of tools to the selected model:
 
 1. **Fixed observation tools**
    - `slop_query_state`
@@ -92,7 +92,7 @@ The runtime exposes two kinds of tools to Claude:
 
 This is important.
 
-The LLM still uses native `tool_use`, but the runtime preserves the SLOP distinction between:
+The LLM still uses native tool calling, but the runtime preserves the SLOP distinction between:
 
 - observation by the consumer
 - action by the provider
@@ -224,15 +224,15 @@ This keeps directory listings and search results visible as state, rather than f
 
 ---
 
-## Why native Claude tool use
+## Why native provider tool use
 
 Sloppy does not use a custom XML or JSON action parser.
 
 Instead:
 
-- visible affordances are converted to Claude tool definitions
+- visible affordances are converted to provider-native tool definitions
 - fixed observation tools are added alongside them
-- Claude emits `tool_use`
+- Anthropic emits `tool_use`, OpenAI-compatible providers emit tool calls, and Gemini emits `functionCall`
 - the runtime maps tool names back to `{ provider, path, action }`
 
 This resolves two early design questions:
@@ -271,7 +271,7 @@ The central replacement is simple:
 
 ## Current tradeoffs
 
-- Claude is the only implemented LLM adapter.
+- The adapter layer supports native Anthropic and Gemini integrations plus an OpenAI-compatible path for OpenAI, OpenRouter, and Ollama.
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is implemented as a startup scan, not a live watched registry yet.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.

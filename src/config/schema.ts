@@ -1,17 +1,18 @@
 import { z } from "zod";
 
+export const llmProviderSchema = z.enum(["anthropic", "openai", "openrouter", "ollama", "gemini"]);
+
 export const sloppyConfigSchema = z.object({
   llm: z
     .object({
-      provider: z.literal("anthropic").default("anthropic"),
-      model: z.string().default("claude-sonnet-4-20250514"),
-      apiKeyEnv: z.string().default("ANTHROPIC_API_KEY"),
+      provider: llmProviderSchema.default("anthropic"),
+      model: z.string().optional(),
+      apiKeyEnv: z.string().optional(),
+      baseUrl: z.string().optional(),
       maxTokens: z.number().int().min(256).default(4096),
     })
     .default({
       provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
       maxTokens: 4096,
     }),
   agent: z
@@ -106,4 +107,20 @@ export const sloppyConfigSchema = z.object({
     }),
 });
 
-export type SloppyConfig = z.infer<typeof sloppyConfigSchema>;
+type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
+
+export type LlmProvider = z.infer<typeof llmProviderSchema>;
+
+export interface LlmConfig {
+  provider: LlmProvider;
+  model: string;
+  apiKeyEnv?: string;
+  baseUrl?: string;
+  maxTokens: number;
+}
+
+export interface SloppyConfig extends Omit<SloppyConfigBase, "llm"> {
+  llm: LlmConfig;
+}
+
+export type RawSloppyConfig = SloppyConfigBase;

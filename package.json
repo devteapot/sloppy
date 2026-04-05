@@ -17,9 +17,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.82.0",
+    "@google/genai": "1.48.0",
     "@slop-ai/consumer": "0.1.0",
     "@slop-ai/core": "0.1.0",
     "@slop-ai/server": "0.1.0",
+    "openai": "6.33.0",
     "yaml": "2.8.3",
     "zod": "4.3.6"
   },

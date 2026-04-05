@@ -28,7 +28,10 @@ Pre-alpha, but no longer docs-only.
 Current Phase 1 implementation includes:
 
 - Bun + TypeScript project scaffold
-- Anthropic/Claude adapter using native `tool_use`
+- provider-native LLM adapter layer with:
+  - native Anthropic/Claude support
+  - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
+  - native Gemini support
 - consumer hub for built-in and discovered SLOP providers
 - two built-in in-process providers:
   - `terminal`
@@ -43,7 +46,7 @@ Current Phase 1 implementation includes:
 ## Architecture at a glance
 
 ```text
-LLM (Claude tool_use)
+LLM adapter (Anthropic/OpenAI-compatible/Gemini)
         |
         v
 RuntimeToolSet
@@ -66,7 +69,7 @@ ConsumerHub
 SLOP providers
 ```
 
-The important detail is that `tool_use` is only the LLM adapter layer.
+The important detail is that provider-native tool calling is only the LLM adapter layer.
 
 The actual runtime model is still SLOP:
 
@@ -127,14 +130,14 @@ bun run build
 bun run test
 ```
 
-Run the CLI:
+Run the CLI with the default Anthropic config:
 
 ```sh
 export ANTHROPIC_API_KEY=...
 bun run src/cli.ts "list the files in the current workspace"
 ```
 
-Interactive mode:
+Interactive mode with the default Anthropic config:
 
 ```sh
 export ANTHROPIC_API_KEY=...
@@ -150,7 +153,25 @@ Sloppy reads configuration from:
 
 The local workspace config overrides the home config.
 
-Anthropic credentials are read from the environment variable named by `llm.apiKeyEnv`.
+LLM settings are configured under `llm`.
+
+Example:
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-5.4
+```
+
+Provider defaults:
+
+- `anthropic` -> `ANTHROPIC_API_KEY`
+- `openai` -> `OPENAI_API_KEY`
+- `openrouter` -> `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`
+- `gemini` -> `GEMINI_API_KEY`
+- `ollama` -> `http://localhost:11434/v1` and no API key by default
+
+You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, and `SLOPPY_LLM_BASE_URL`.
 
 ## Design references
 

@@ -8,7 +8,7 @@ The MVP should be able to:
 
 1. accept a user task from the CLI
 2. observe built-in provider state through SLOP
-3. use native Claude `tool_use` to invoke affordances and consumer observation tools
+3. use provider-native tool calling to invoke affordances and consumer observation tools
 4. stream responses while state stays live through subscriptions and patches
 5. connect to external SLOP providers discovered from local descriptors
 
@@ -35,13 +35,14 @@ Implemented now:
   - `slop_query_state`
   - `slop_focus_state`
 - dynamic affordance tool generation from visible state
-- Anthropic adapter using native `tool_use`
+- native Anthropic adapter
+- OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama
+- native Gemini adapter
 - CLI single-shot mode and REPL
 - initial tests covering transport, runtime tool generation, and both built-in providers
 
 Still intentionally minimal:
 
-- no OpenAI-compatible adapter yet
 - no live-watched provider discovery yet
 - no SQLite history store yet
 - no skills loader yet
@@ -69,6 +70,9 @@ src/
 ├── llm/
 │   ├── anthropic.ts
 │   └── types.ts
+│   ├── factory.ts
+│   ├── gemini.ts
+│   ├── openai-compatible.ts
 └── providers/
     ├── discovery.ts
     ├── node-socket.ts
@@ -85,7 +89,7 @@ src/
 
 ### 1. Native tool use, not custom action parsing
 
-Claude `tool_use` is the action surface.
+Provider-native tool calling is the action surface.
 
 Dynamic affordances are converted to tool definitions, but the architecture remains SLOP-first.
 
@@ -158,7 +162,7 @@ Deliverables:
 - `Agent` orchestration class
 - history manager
 - context builder
-- native Claude adapter
+- provider-native LLM adapter layer
 - CLI entrypoint
 
 Success criteria:
@@ -207,7 +211,7 @@ Deliverables:
 
 Success criteria:
 
-- `bun run test` passes locally without hitting Anthropic or any external provider
+- `bun run test` passes locally without hitting any external LLM provider
 
 ---
 
@@ -239,6 +243,8 @@ bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 - `@slop-ai/core`
 - `@slop-ai/consumer`
 - `@slop-ai/server`
+- `@google/genai`
+- `openai`
 - `@anthropic-ai/sdk`
 - `yaml`
 - `zod`
@@ -258,7 +264,7 @@ The SDK dependencies are installed from npm, not linked from the local SLOP work
 
 After the current Phase 1 implementation, the most important follow-ups are:
 
-1. add a second LLM adapter behind the same runtime interface
+1. harden adapter compatibility coverage across Anthropic, OpenAI-compatible providers, and Gemini
 2. improve approval and policy enforcement for dangerous affordances
 3. watch discovery directories instead of scanning only at startup
 4. add SQLite-backed history and search

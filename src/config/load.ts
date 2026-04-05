@@ -3,9 +3,46 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import YAML from "yaml";
 
-import { type SloppyConfig, sloppyConfigSchema } from "./schema";
+import {
+  type LlmConfig,
+  type LlmProvider,
+  type RawSloppyConfig,
+  type SloppyConfig,
+  sloppyConfigSchema,
+} from "./schema";
 
 type JsonObject = Record<string, unknown>;
+
+const DEFAULT_LLM_CONFIG: Record<
+  LlmProvider,
+  {
+    model: string;
+    apiKeyEnv?: string;
+    baseUrl?: string;
+  }
+> = {
+  anthropic: {
+    model: "claude-sonnet-4-20250514",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+  },
+  openai: {
+    model: "gpt-5.4",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+  openrouter: {
+    model: "openai/gpt-5.4",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
+  ollama: {
+    model: "llama3.2",
+    baseUrl: "http://localhost:11434/v1",
+  },
+  gemini: {
+    model: "gemini-2.5-pro",
+    apiKeyEnv: "GEMINI_API_KEY",
+  },
+};
 
 function expandHomePath(path: string): string {
   if (path === "~") {
@@ -59,8 +96,25 @@ function readConfigFile(filePath: string): JsonObject {
 function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   const overrides: JsonObject = {};
 
+  if (process.env.SLOPPY_LLM_PROVIDER) {
+    overrides.llm = {
+      ...(overrides.llm as JsonObject | undefined),
+      provider: process.env.SLOPPY_LLM_PROVIDER,
+    };
+  }
+
   if (process.env.SLOPPY_MODEL) {
-    overrides.llm = { model: process.env.SLOPPY_MODEL };
+    overrides.llm = {
+      ...(overrides.llm as JsonObject | undefined),
+      model: process.env.SLOPPY_MODEL,
+    };
+  }
+
+  if (process.env.SLOPPY_LLM_BASE_URL) {
+    overrides.llm = {
+      ...(overrides.llm as JsonObject | undefined),
+      baseUrl: process.env.SLOPPY_LLM_BASE_URL,
+    };
   }
 
   if (process.env.SLOPPY_CONTEXT_BUDGET_TOKENS) {
@@ -73,7 +127,19 @@ function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   return deepMerge(config, overrides);
 }
 
-function normalizeConfig(config: SloppyConfig): SloppyConfig {
+function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
+  const defaults = DEFAULT_LLM_CONFIG[config.provider];
+
+  return {
+    provider: config.provider,
+    model: config.model ?? defaults.model,
+    apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
+    baseUrl: config.baseUrl ?? defaults.baseUrl,
+    maxTokens: config.maxTokens,
+  };
+}
+
+function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
   const terminalCwd = resolve(expandHomePath(config.providers.terminal.cwd));
   const filesystemRoot = resolve(expandHomePath(config.providers.filesystem.root));
   const filesystemFocus = config.providers.filesystem.focus
@@ -82,6 +148,7 @@ function normalizeConfig(config: SloppyConfig): SloppyConfig {
 
   return {
     ...config,
+    llm: normalizeLlmConfig(config.llm),
     providers: {
       ...config.providers,
       discovery: {

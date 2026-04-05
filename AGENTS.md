@@ -20,9 +20,9 @@
 ## Working Reality
 - This project is a SLOP-native agent harness, not an MCP-first tool wrapper.
 - State observation is primary; affordance invocation is secondary.
-- Claude `tool_use` is only the LLM adapter layer, not the architecture.
+- Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, and fixed observation tools.
+- The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, and an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -45,6 +45,8 @@ bun test
 bun test tests/filesystem-provider.test.ts
 bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 bun test tests/terminal-provider.test.ts
+bun test tests/openai-compatible-adapter.test.ts
+bun test tests/gemini-adapter.test.ts
 ```
 
 - Run the narrowest test slice that proves your change.
@@ -59,6 +61,11 @@ src/
   config/
   core/
   llm/
+    anthropic.ts
+    factory.ts
+    gemini.ts
+    openai-compatible.ts
+    types.ts
   providers/
 tests/
 docs/
