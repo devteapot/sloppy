@@ -16,6 +16,7 @@ We have SLOP SDKs in four languages. Evaluation for the agent harness MVP.
 - Both OpenClaw and Hermes (gateway) validate TypeScript for agent harnesses
 - Largest AI developer audience
 - Can `import` from `@slop-ai/core` directly — shared types, tree utilities, diffing
+- The SLOP SDK is published on npm, so the harness can consume stable packages instead of local workspace links
 
 **Cons:**
 - Not a single binary (needs Bun/Node runtime)
@@ -94,6 +95,6 @@ We have SLOP SDKs in four languages. Evaluation for the agent harness MVP.
 
 ## Roadmap
 
-1. **MVP:** TypeScript + Bun
+1. **MVP:** TypeScript + Bun, with published npm SLOP SDK packages
 2. **v1:** Still TypeScript, compiled with `bun build --compile` for single-binary
 3. **v2 (if needed):** Go port for lightweight/embedded distribution

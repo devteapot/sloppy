@@ -1,0 +1,33 @@
+{
+  "name": "sloppy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sloppy": "./dist/cli.js"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dev": "bun --watch src/cli.ts",
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
+    "lint": "bunx biome check .",
+    "format": "bunx biome format --write .",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.82.0",
+    "@slop-ai/consumer": "0.1.0",
+    "@slop-ai/core": "0.1.0",
+    "@slop-ai/server": "0.1.0",
+    "yaml": "2.8.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "24.10.0",
+    "bun-types": "1.3.11",
+    "typescript": "5.9.3",
+    "vitest": "4.1.2"
+  }
+}

@@ -1,84 +1,164 @@
 # Sloppy
 
-A SLOP-first agent harness that operates applications natively through state observation and contextual affordances.
+Sloppy is a SLOP-native agent harness.
 
-Named after the owl mascot of the [SLOP protocol](https://github.com/agnt-io/slop).
+It is built around the idea that agents should observe application state and invoke contextual affordances, not reason over a flat global tool list.
 
-## What is this?
+## Why this exists
 
-Sloppy is an AI agent runtime built around the SLOP (Semantic Layer for Observable Programs) protocol. Instead of relying on flat tool registries (MCP, function calling), Sloppy agents **observe application state** and **invoke contextual affordances** — the same way a human interacts with software by looking at what's on screen and clicking what's available.
+Most agent harnesses inherit MCP or function-calling assumptions:
 
-### How it differs from existing agent harnesses
+- tools are global
+- the model must infer when each tool applies
+- state is reconstructed indirectly through read tools or screenshots
 
-| Traditional (MCP-based) | Sloppy (SLOP-native) |
-|---|---|
-| Agent gets a flat list of 40+ tools | Agent subscribes to semantic state trees |
-| Tools are always available, globally | Affordances appear/disappear based on context |
-| Agent must reason about which tool fits | Available actions are scoped to current state |
-| No visibility into application state | Full state tree with salience and attention hints |
-| Pull-based: list tools, call tool | Push-based: subscribe, receive patches, invoke |
+Sloppy moves the integration boundary to the SLOP protocol instead:
 
-### Example
+- providers expose semantic state trees
+- affordances appear on the nodes where they are valid
+- the consumer subscribes to state and receives patches over time
+- the LLM sees state and actions together, in context
 
-An MCP agent interacting with a todo app:
-```
-tools: [create_todo, list_todos, get_todo, update_todo, delete_todo, toggle_todo, ...]
-```
+This project is explicitly inspired by OpenClaw and Hermes Agent, but it replaces their tool/plugin center of gravity with a SLOP-first runtime.
 
-A Sloppy agent interacting with the same app:
-```
-state: todos
-  props: { count: 3, incomplete: 1 }
-  affordances: [create]
-  children:
-    - item/1: { title: "Buy milk", done: true }    affordances: [toggle, delete]
-    - item/2: { title: "Write docs", done: false }  affordances: [toggle, delete, edit]
-    - item/3: { title: "Ship it", done: true }      affordances: [toggle, delete]
-```
+## Current status
 
-The agent sees what exists, what matters, and what it can do — right now, in context.
+Pre-alpha, but no longer docs-only.
 
-## Architecture
+Current Phase 1 implementation includes:
 
-```
-┌─────────────────────────────────────────────┐
-│                 Sloppy Agent                 │
-│                                              │
-│  ┌──────────┐    ┌──────────┐               │
-│  │ LLM      │◄──►│ Planner  │               │
-│  │ Provider  │    │          │               │
-│  └──────────┘    └────┬─────┘               │
-│                       │                      │
-│  ┌────────────────────▼──────────────────┐  │
-│  │         SLOP Consumer Core            │  │
-│  │                                        │  │
-│  │  subscribe() → state tree cache        │  │
-│  │  patches    → update cache             │  │
-│  │  invoke()   → execute affordance       │  │
-│  │  query()    → one-shot read            │  │
-│  └────────────────────────────────────────┘  │
-│                       │                      │
-│  ┌────────────────────▼──────────────────┐  │
-│  │        Provider Registry              │  │
-│  │                                        │  │
-│  │  Local apps (Unix socket discovery)    │  │
-│  │  Web apps (WebSocket)                  │  │
-│  │  CLI tools (stdio)                     │  │
-│  │  Built-in providers (native)           │  │
-│  └────────────────────────────────────────┘  │
-│                                              │
-│  ┌──────────────────────────────────────┐   │
-│  │      Built-in SLOP Providers         │   │
-│  │  (terminal, filesystem, web, memory)  │   │
-│  └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
+- Bun + TypeScript project scaffold
+- Anthropic/Claude adapter using native `tool_use`
+- consumer hub for built-in and discovered SLOP providers
+- two built-in in-process providers:
+  - `terminal`
+  - `filesystem`
+- fixed observation tools:
+  - `slop_query_state`
+  - `slop_focus_state`
+- dynamic affordance tools generated from visible SLOP state
+- CLI single-shot mode and interactive REPL
+- initial end-to-end tests for transport and built-in providers
+
+## Architecture at a glance
+
+```text
+LLM (Claude tool_use)
+        |
+        v
+RuntimeToolSet
+  - fixed observation tools
+  - dynamic affordance tools
+        |
+        v
+Agent Loop
+  - history
+  - state context
+  - tool execution
+        |
+        v
+ConsumerHub
+  - built-in providers
+  - discovered SLOP providers
+  - overview/detail subscriptions
+        |
+        v
+SLOP providers
 ```
 
-## Status
+The important detail is that `tool_use` is only the LLM adapter layer.
 
-**Pre-alpha** — architecture and planning phase.
+The actual runtime model is still SLOP:
 
-See [docs/](./docs/) for detailed design documents.
+- `query`
+- `subscribe`
+- `patch`
+- `invoke`
+
+## What is implemented now
+
+### Filesystem provider
+
+The filesystem provider is stateful, not just a bag of file actions.
+
+It exposes:
+
+- a focused workspace directory
+- directory entries as state
+- last search results as state
+- recent filesystem operations as state
+
+It supports affordances such as:
+
+- `set_focus`
+- `read`
+- `write`
+- `mkdir`
+- `search`
+
+### Terminal provider
+
+The terminal provider exposes:
+
+- current shell session state
+- recent command history
+- background tasks as status nodes
+
+It supports affordances such as:
+
+- `execute`
+- `cd`
+- `cancel`
+- `show_output`
+
+## Development
+
+Install dependencies:
+
+```sh
+bun install
+```
+
+Run checks:
+
+```sh
+bun run typecheck
+bun run build
+bun run test
+```
+
+Run the CLI:
+
+```sh
+export ANTHROPIC_API_KEY=...
+bun run src/cli.ts "list the files in the current workspace"
+```
+
+Interactive mode:
+
+```sh
+export ANTHROPIC_API_KEY=...
+bun run src/cli.ts
+```
+
+## Config
+
+Sloppy reads configuration from:
+
+- `~/.sloppy/config.yaml`
+- `.sloppy/config.yaml` in the current workspace
+
+The local workspace config overrides the home config.
+
+Anthropic credentials are read from the environment variable named by `llm.apiKeyEnv`.
+
+## Design references
+
+- `docs/02-architecture.md` for the current runtime design
+- `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap
+- `docs/04-slop-protocol-reference.md` for the local protocol summary
+- `docs/05-language-evaluation.md` for language/runtime choices
+- `~/dev/slop-slop-slop/spec/` for the full SLOP protocol spec
 
 ## License
 

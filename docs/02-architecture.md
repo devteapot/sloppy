@@ -1,302 +1,279 @@
 # Architecture
 
-## Design Principles
+## Design principles
 
-1. **Everything is a SLOP provider** — built-in tools, external apps, and the agent's own state are all SLOP state trees with affordances. No special-casing.
-2. **State-first, not tool-first** — the agent observes state and acts on contextual affordances, never picks from a global tool list.
-3. **Push, not pull** — providers stream patches to the agent. The agent doesn't poll.
-4. **Token-aware by default** — salience filtering, progressive depth, windowed collections, and summaries are used everywhere to respect context window limits.
-5. **Thin core, fat providers** — the agent runtime is small. Capabilities come from providers.
-
----
-
-## System Overview
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                          Sloppy Agent                            │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                     Agent Loop                             │  │
-│  │                                                            │  │
-│  │  1. Build context from subscribed state trees              │  │
-│  │  2. Call LLM with state context + conversation history     │  │
-│  │  3. Parse agent response for actions                       │  │
-│  │  4. Execute actions (subscribe, invoke, query, respond)    │  │
-│  │  5. Receive patches, update state cache                    │  │
-│  │  6. Loop until task complete or max iterations             │  │
-│  └──────────┬─────────────────────────────────┬───────────────┘  │
-│             │                                 │                  │
-│  ┌──────────▼──────────┐   ┌──────────────────▼───────────────┐  │
-│  │   LLM Provider      │   │   SLOP Consumer                 │  │
-│  │                      │   │                                 │  │
-│  │  - Anthropic (Claude)│   │  - Multi-provider connections   │  │
-│  │  - OpenAI-compat     │   │  - State tree cache             │  │
-│  │  - Streaming         │   │  - Patch application            │  │
-│  │  - History mgmt      │   │  - Subscription management      │  │
-│  └──────────────────────┘   │  - Affordance discovery         │  │
-│                             └──────────┬──────────────────────┘  │
-│                                        │                         │
-│  ┌─────────────────────────────────────▼──────────────────────┐  │
-│  │                  Provider Registry                         │  │
-│  │                                                            │  │
-│  │  Discovered providers (apps, services)                     │  │
-│  │  ├── gmail       (WebSocket, auto-discovered)              │  │
-│  │  ├── github      (WebSocket, configured)                   │  │
-│  │  └── my-app      (Unix socket, auto-discovered)            │  │
-│  │                                                            │  │
-│  │  Built-in providers (always available)                     │  │
-│  │  ├── terminal    (shell execution, process management)     │  │
-│  │  ├── filesystem  (file read/write/search/watch)            │  │
-│  │  ├── web         (search, fetch, extract)                  │  │
-│  │  └── memory      (persistent agent memory)                 │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
+1. **State is primary.** The runtime observes state trees first and invokes affordances second.
+2. **Everything is a provider.** Built-in capabilities and external applications both enter the system through SLOP providers.
+3. **Tool use is only an adapter.** Claude `tool_use` is the LLM-facing execution format, not the architectural model.
+4. **Subscriptions beat polling.** The harness should stay on live state through `snapshot` + `patch`, then deepen only where needed.
+5. **Thin core, fat providers.** The runtime coordinates history, subscriptions, and model calls; capability-specific logic lives in providers.
 
 ---
 
-## Core Components
+## Runtime overview
 
-### 1. Agent Loop (`src/core/loop.ts`)
-
-The central execution cycle. Responsibilities:
-
-- Maintain conversation history (system prompt, user messages, agent responses, action results)
-- Build a **state context** from all active subscriptions (token-budget-aware)
-- Call the LLM and parse the response for actions
-- Dispatch actions to the SLOP consumer
-- Detect task completion or iteration limits
-- Handle conversation compaction when approaching context limits
-
-The loop does NOT:
-- Know about specific providers or tools
-- Manage transport connections
-- Parse SLOP protocol messages
-
-### 2. SLOP Consumer (`src/core/consumer.ts`)
-
-Manages connections to SLOP providers and maintains a local state cache. Responsibilities:
-
-- Connect to providers via discovered transports (WebSocket, Unix socket, stdio)
-- Send subscribe/unsubscribe/query/invoke messages
-- Receive and apply snapshots and patches to local cache
-- Track subscription versions and handle gap recovery (re-subscribe)
-- Expose a unified view of all connected providers' state trees
-- Handle provider connect/disconnect lifecycle
-
-The consumer implements the SLOP consumer protocol as defined in the spec:
-- `subscribe(path, depth, filters)` → receive `snapshot` then `patch` stream
-- `query(path, depth)` → one-shot `snapshot`
-- `invoke(path, action, params)` → `result`
-
-### 3. State Context Builder (`src/core/context.ts`)
-
-Translates the consumer's state cache into LLM-consumable context. Responsibilities:
-
-- Serialize state trees to a compact, readable format for the system prompt
-- Apply salience filtering (skip nodes below threshold)
-- Respect token budgets (progressive depth reduction, stub summaries)
-- Highlight changed nodes and urgent items
-- List available affordances per node with parameter schemas
-- Build a "what can I do" summary across all providers
-
-This is where SLOP's attention/salience system pays off — the context builder uses salience scores to prioritize what the LLM sees.
-
-### 4. LLM Provider (`src/llm/`)
-
-Abstraction over LLM APIs. Responsibilities:
-
-- Stream chat completions from Claude, OpenAI, or compatible APIs
-- Handle response parsing (extract text, action blocks)
-- Manage token counting for context budget
-- Support reasoning/thinking blocks (Claude extended thinking)
-
-Provider-agnostic — any OpenAI-compatible endpoint works.
-
-### 5. Provider Registry (`src/providers/registry.ts`)
-
-Discovers and manages SLOP provider connections. Responsibilities:
-
-- Auto-discover local providers via `~/.slop/providers/` and `/tmp/slop/providers/`
-- Accept manually configured provider endpoints
-- Register built-in providers
-- Track provider health (connected, disconnected, errored)
-- Expose unified provider list to the consumer
-
-### 6. Built-in Providers (`src/providers/builtin/`)
-
-Native capabilities exposed as SLOP providers. Each is a full SLOP provider with state tree and affordances:
-
-#### Terminal Provider
-```
-state tree:
-  terminal/
-    props: { cwd: "/home/user/project", shell: "zsh" }
-    affordances: [execute, cd]
-    children:
-      processes/
-        props: { running: 2 }
-        children:
-          - pid/1234: { command: "npm run dev", status: "running" }
-            affordances: [kill, signal]
+```text
+LLM (Anthropic tool_use)
+        |
+        v
+RuntimeToolSet
+  - slop_query_state
+  - slop_focus_state
+  - dynamic affordance tools from visible state
+        |
+        v
+Agent Loop
+  - history
+  - context building
+  - tool execution
+        |
+        v
+ConsumerHub
+  - provider connections
+  - overview subscriptions
+  - detail subscriptions
+  - invoke/query routing
+        |
+        v
+Providers
+  - built-in in-process providers
+  - external unix/websocket providers
 ```
 
-#### Filesystem Provider
-```
-state tree:
-  filesystem/
-    props: { root: "/home/user/project" }
-    affordances: [read, write, search, mkdir]
-    children:
-      watching/
-        - src/index.ts: { size: 1240, modified: "2025-01-15T..." }
-          affordances: [read, edit, delete]
-```
+The key difference from a traditional tool harness is that the runtime does not start from a registry of global tools.
 
-#### Web Provider
-```
-state tree:
-  web/
-    affordances: [search, fetch]
-    children:
-      recent/
-        - search/1: { query: "SLOP protocol", results: 10 }
-          affordances: [refine]
-          children: [result items with open/extract affordances]
-```
-
-#### Memory Provider
-```
-state tree:
-  memory/
-    props: { entries: 42 }
-    affordances: [save, search]
-    children:
-      - entry/1: { key: "user-preference", value: "..." }
-        affordances: [update, delete]
-```
+It starts from a set of subscribed state trees.
 
 ---
 
-## Action Format
+## Core components
 
-The agent communicates actions via structured blocks in its response. The exact format is designed for reliable LLM output parsing:
+### 1. Agent loop
 
-```xml
-<slop-action provider="terminal" path="terminal" action="execute">
-{"command": "ls -la"}
-</slop-action>
+`src/core/loop.ts`
 
-<slop-action provider="filesystem" path="filesystem" action="read">
-{"path": "src/index.ts"}
-</slop-action>
+Responsibilities:
 
-<slop-subscribe provider="github" path="repos/my-repo/pulls/123" depth="2" />
+- build the current visible state context
+- expose fixed observation tools plus dynamic affordance tools
+- call the model
+- execute tool calls
+- append tool results to history
+- continue until Claude ends the turn naturally
 
-<slop-query provider="gmail" path="inbox" depth="1" min-salience="0.5" />
-```
+This loop is intentionally small. It should feel closer to Hermes's clean orchestration layer than OpenClaw's deeply integrated runtime stack.
 
-Alternatively, for models that handle JSON better than XML:
+### 2. Consumer hub
 
-```json
-{"actions": [
-  {"type": "invoke", "provider": "terminal", "path": "terminal", "action": "execute", "params": {"command": "ls -la"}},
-  {"type": "subscribe", "provider": "github", "path": "repos/my-repo/pulls/123", "depth": 2}
-]}
-```
+`src/core/consumer.ts`
 
-The parser supports both formats. The system prompt instructs the LLM on which to use.
+Responsibilities:
+
+- connect to all registered providers
+- maintain one `SlopConsumer` per provider
+- keep a shallow overview subscription per provider
+- optionally keep one deeper focused subscription per provider
+- route `query` and `invoke` calls
+- expose the merged visible state to the rest of the runtime
+
+This is the architectural center of Sloppy. It replaces the plugin/tool registry layer that dominates MCP-first runtimes.
+
+### 3. Runtime tool set
+
+`src/core/tools.ts`
+
+The runtime exposes two kinds of tools to Claude:
+
+1. **Fixed observation tools**
+   - `slop_query_state`
+   - `slop_focus_state`
+2. **Dynamic affordance tools**
+   - generated from the currently visible provider state using `affordancesToTools()`
+
+This is important.
+
+The LLM still uses native `tool_use`, but the runtime preserves the SLOP distinction between:
+
+- observation by the consumer
+- action by the provider
+
+### 4. Context builder
+
+`src/core/context.ts`
+
+Responsibilities:
+
+- render visible provider trees with `formatTree()`
+- shrink state using depth, node-budget, and salience heuristics
+- keep the system prompt stable and place live state in an ephemeral runtime snapshot message
+
+The state snapshot is not persisted as user-authored conversation. It is rebuilt for each model turn.
+
+### 5. History manager
+
+`src/core/history.ts`
+
+Responsibilities:
+
+- keep the recent real user turns
+- preserve assistant/tool-result bundles inside those turns
+- truncate oversized tool results before they poison the context window
+
+OpenClaw's tool-result compaction discipline is the right influence here, but the initial implementation is intentionally smaller.
+
+### 6. Provider registry and discovery
+
+`src/providers/registry.ts`
+`src/providers/discovery.ts`
+
+Responsibilities:
+
+- create built-in providers
+- discover external SLOP providers from descriptor files
+- attach the right transport per provider
+
+The current implementation supports:
+
+- built-in in-process providers
+- external Unix socket providers
+- external WebSocket providers
 
 ---
 
-## Data Flow
+## Subscription strategy
 
-### Happy Path: Agent completes a task
+The harness uses a two-level default subscription model.
 
-```
-User: "Check if there are any open PRs on my-repo and merge the ones with passing checks"
+### Overview subscription
 
-1. Agent loop starts
-2. Context builder: no state yet, just the user message
-3. LLM response: "I'll subscribe to the GitHub repo's pull requests"
-   → <slop-subscribe provider="github" path="repos/my-repo/pulls" depth="2" />
+Each connected provider gets a shallow root subscription.
 
-4. Consumer subscribes → receives snapshot:
-   pulls/
-     children:
-       - pr/101: { title: "Fix typo", checks: "passing", mergeable: true }
-         affordances: [merge, close, comment]
-       - pr/102: { title: "Add feature", checks: "failing", mergeable: false }
-         affordances: [close, comment]
-       - pr/103: { title: "Update deps", checks: "passing", mergeable: true }
-         affordances: [merge, close, comment]
+Purpose:
 
-5. Context builder: includes state snapshot in next LLM call
-6. LLM response: "PRs 101 and 103 have passing checks. I'll merge them."
-   → <slop-action provider="github" path="repos/my-repo/pulls/pr/101" action="merge" />
-   → <slop-action provider="github" path="repos/my-repo/pulls/pr/103" action="merge" />
+- provider presence
+- top-level context
+- visible affordances on important roots
+- patch-driven updates without loading the full app
 
-7. Consumer invokes → receives results: { status: "ok" } x2
-8. Consumer receives patches: pr/101 and pr/103 state updated to merged
-9. LLM response: "Done. Merged PR #101 (Fix typo) and PR #103 (Update deps). PR #102 was skipped — checks are failing."
-10. Task complete.
-```
+### Detail subscription
 
-### Key Observations
+The model can move a provider into deeper focus via `slop_focus_state`.
 
-- The agent never needed to know about a `merge_pull_request(owner, repo, number)` tool
-- The `merge` affordance only appeared on PRs where it was valid
-- PR #102 didn't expose `merge` because checks were failing — the agent didn't need to reason about this
-- State patches confirmed the merges succeeded without a separate "get PR status" call
+Purpose:
+
+- drill into one subtree that matters right now
+- carry that deeper state into future turns
+- avoid global `depth=-1` subscriptions
+
+### One-off query
+
+`slop_query_state` performs a deeper read without changing the maintained focus.
+
+This follows the scaling guidance in the SLOP spec rather than the usual “subscribe to everything and hope it fits” approach.
 
 ---
 
-## Transport Strategy
+## Built-in provider shapes
 
-The consumer connects to providers using the transport specified in their discovery descriptor:
+### Terminal provider
 
-| Transport | Use case | Discovery |
-|---|---|---|
-| Unix socket | Local apps, desktop tools | `~/.slop/providers/*.json` |
-| WebSocket | Web apps, remote services | Configured endpoints |
-| stdio | CLI tools, subprocess providers | Built-in providers, configured commands |
-| postMessage | Browser extensions | N/A (browser context only) |
+The terminal provider is stateful.
 
-Built-in providers use **in-process** transport — no serialization overhead. They implement the SLOP provider interface directly and the consumer calls them as local objects.
+It exposes:
+
+- `session` context node
+- `history` collection
+- `tasks` collection
+
+Example shape:
+
+```text
+[root] terminal: Terminal
+  [context] session (cwd="/repo", shell="/bin/zsh")  actions: {execute(...), cd(path: string)}
+  [collection] history
+    [item] cmd-1 (command="printf hello", status="ok")  actions: {show_output}
+  [collection] tasks
+    [item] task-123 (status="running", message="Running")  actions: {cancel, show_output}
+```
+
+Long-running commands are represented as async task nodes under `tasks`.
+
+### Filesystem provider
+
+The filesystem provider is also stateful.
+
+It exposes:
+
+- `workspace` collection with a focused directory
+- `search` collection for the last search results
+- `recent` collection for recent filesystem operations
+
+Example shape:
+
+```text
+[root] filesystem: Filesystem
+  [collection] workspace (focus="src")  actions: {set_focus(path), read(path), write(path, content), mkdir(path), search(pattern, path)}
+    [collection] entries
+      [item] index.ts  actions: {read, write(content)}
+      [item] components  actions: {focus}
+  [collection] search
+  [collection] recent
+```
+
+This keeps directory listings and search results visible as state, rather than forcing the model to rediscover them through imperative read tools.
 
 ---
 
-## Configuration
+## Why native Claude tool use
 
-```yaml
-# ~/.sloppy/config.yaml
+Sloppy does not use a custom XML or JSON action parser.
 
-llm:
-  provider: anthropic       # or openai, openrouter, custom
-  model: claude-sonnet-4-20250514
-  api_key_env: ANTHROPIC_API_KEY  # read from env var
-  max_tokens: 8192
+Instead:
 
-agent:
-  max_iterations: 50
-  context_budget: 100000    # max tokens for state context
-  min_salience: 0.2         # global salience floor
-  compaction_threshold: 0.8 # compact history at 80% context usage
+- visible affordances are converted to Claude tool definitions
+- fixed observation tools are added alongside them
+- Claude emits `tool_use`
+- the runtime maps tool names back to `{ provider, path, action }`
 
-providers:
-  builtin:
-    terminal: true
-    filesystem: true
-    web: true
-    memory: true
-  discover: true             # auto-discover local SLOP providers
-  endpoints:                 # manually configured providers
-    - name: github
-      url: ws://localhost:3001/slop
-    - name: my-app
-      socket: /tmp/slop/providers/my-app.sock
+This resolves two early design questions:
 
-skills:
-  directory: ~/.sloppy/skills/
-```
+1. We do not need a custom action syntax.
+2. Affordance-to-tool mapping stays dynamic and state-driven.
+
+---
+
+## Influences: reuse vs replace
+
+### Reuse from OpenClaw
+
+- tool-result truncation discipline
+- strong runtime boundaries between config, model adapter, and execution loop
+- cautious handling of long-running operations and partial failure
+
+### Reuse from Hermes
+
+- clean agent loop orchestration
+- skills and memory as future layers, not Phase 1 blockers
+- practical session persistence ideas for later SQLite-backed history/search
+
+### Replace from both
+
+- flat tool catalogs
+- MCP as the primary capability model
+- plugin registries as the central abstraction
+- read tools as the main way the model reconstructs application state
+
+The central replacement is simple:
+
+**tool registry → consumer hub + provider state**
+
+---
+
+## Current tradeoffs
+
+- Claude is the only implemented LLM adapter.
+- The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
+- Provider discovery is implemented as a startup scan, not a live watched registry yet.
+- The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
+
+These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.
