@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/devteapot/sloppy/apps/tui/provider"
 	"github.com/devteapot/sloppy/apps/tui/session"
 )
@@ -21,11 +22,27 @@ type connectMsg struct {
 	err error
 }
 
-type refreshSessionMsg struct{}
+type sessionUpdatedMsg struct{}
+
+type sessionStreamClosedMsg struct{}
 
 type sendMessageMsg struct {
 	err error
 }
+
+type sessionActionMsg struct {
+	err error
+}
+
+type paneFocus int
+
+const (
+	paneTranscript paneFocus = iota
+	paneApprovals
+	paneTasks
+	paneActivity
+	paneComposer
+)
 
 type App struct {
 	width  int
@@ -40,14 +57,27 @@ type App struct {
 	manager *session.Manager
 	state   session.ViewState
 	input   textinput.Model
+
+	rejectInput      textinput.Model
+	rejectApprovalID string
+	sessionErr       string
+	focus            paneFocus
+
+	transcriptCursor int
+	approvalCursor   int
+	taskCursor       int
+	activityCursor   int
 }
 
 func NewApp(address string) App {
-	input := textinput.New()
-	input.Placeholder = "Ask the agent..."
-	input.CharLimit = 4096
+	input := newCodeInput("Ask the agent...")
 	input.Width = 72
 	input.Focus()
+
+	rejectInput := newCodeInput("Optional rejection reason...")
+	rejectInput.CharLimit = 512
+	rejectInput.Width = 48
+	rejectInput.Blur()
 
 	mode := "discovery"
 	if address != "" {
@@ -55,16 +85,18 @@ func NewApp(address string) App {
 	}
 
 	return App{
-		address: address,
-		mode:    mode,
-		manager: session.NewManager(),
-		input:   input,
+		address:     address,
+		mode:        mode,
+		manager:     session.NewManager(),
+		input:       input,
+		rejectInput: rejectInput,
+		focus:       paneComposer,
 	}
 }
 
 func (a App) Init() tea.Cmd {
 	if a.address != "" {
-		return tea.Batch(connectCmd(a.manager, a.address), tickSession())
+		return connectCmd(a.manager, a.address)
 	}
 
 	return discoverCmd()
@@ -81,27 +113,54 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.providers = message.providers
 		a.err = message.err
 		if a.cursor >= len(a.providers) {
-			a.cursor = maxInt(len(a.providers)-1, 0)
+			a.cursor = clampIndex(a.cursor, len(a.providers))
 		}
 		return a, nil
 
 	case connectMsg:
 		a.err = message.err
-		if message.err == nil {
-			a.mode = "session"
-			return a, tickSession()
+		if message.err != nil {
+			return a, nil
 		}
+
+		a.mode = "session"
+		a.sessionErr = ""
+		a.focus = paneComposer
+		a.rejectApprovalID = ""
+		a = a.applyViewStateFromManager()
+		return a, waitForSessionUpdate(a.manager.Updates())
+
+	case sessionUpdatedMsg:
+		if a.mode != "session" {
+			return a, nil
+		}
+
+		a = a.applyViewStateFromManager()
+		return a, waitForSessionUpdate(a.manager.Updates())
+
+	case sessionStreamClosedMsg:
+		if a.mode != "session" {
+			return a, nil
+		}
+
+		a = a.applyViewStateFromManager()
 		return a, nil
 
-	case refreshSessionMsg:
-		tree, err := a.manager.Snapshot()
-		a.state = session.BuildView(tree, err)
-		return a, tickSession()
-
 	case sendMessageMsg:
-		a.err = message.err
-		if message.err == nil {
-			a.input.SetValue("")
+		if message.err != nil {
+			a.sessionErr = message.err.Error()
+			return a, nil
+		}
+
+		a.sessionErr = ""
+		a.input.SetValue("")
+		return a, nil
+
+	case sessionActionMsg:
+		if message.err != nil {
+			a.sessionErr = message.err.Error()
+		} else {
+			a.sessionErr = ""
 		}
 		return a, nil
 
@@ -149,6 +208,10 @@ func (a App) updateDiscovery(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.rejectPromptOpen() {
+		return a.updateRejectPrompt(message)
+	}
+
 	switch message.String() {
 	case "ctrl+c", "q":
 		return a, tea.Quit
@@ -157,23 +220,109 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.state = session.ViewState{}
 		a.address = ""
 		a.mode = "discovery"
+		a.sessionErr = ""
+		a.rejectApprovalID = ""
+		a.focus = paneComposer
+		a.syncInputs()
 		return a, discoverCmd()
-	case "enter":
-		text := strings.TrimSpace(a.input.Value())
-		if text == "" {
+	case "tab", "right":
+		a.focus = nextPane(a.focus)
+		a.syncInputs()
+		return a, nil
+	case "shift+tab", "left":
+		a.focus = previousPane(a.focus)
+		a.syncInputs()
+		return a, nil
+	case "i":
+		a.focus = paneComposer
+		a.syncInputs()
+		return a, nil
+	case "up", "k":
+		if a.focus != paneComposer {
+			a.moveSelection(-1)
 			return a, nil
 		}
-		return a, sendMessageCmd(a.manager, text)
+	case "down", "j":
+		if a.focus != paneComposer {
+			a.moveSelection(1)
+			return a, nil
+		}
+	case "a":
+		if approval := a.selectedApproval(); approval != nil && approval.CanApprove && a.focus == paneApprovals {
+			return a, approveApprovalCmd(a.manager, approval.ID)
+		}
+	case "r":
+		if approval := a.selectedApproval(); approval != nil && approval.CanReject && a.focus == paneApprovals {
+			a.rejectApprovalID = approval.ID
+			a.rejectInput.SetValue("")
+			a.syncInputs()
+			return a, nil
+		}
+	case "c":
+		if task := a.selectedTask(); task != nil && task.CanCancel && a.focus == paneTasks {
+			return a, cancelTaskCmd(a.manager, task.ID)
+		}
+	case "t":
+		if a.state.CanCancelTurn && a.focus != paneComposer {
+			return a, cancelTurnCmd(a.manager)
+		}
+	case "enter":
+		switch a.focus {
+		case paneComposer:
+			text := strings.TrimSpace(a.input.Value())
+			if text == "" {
+				return a, nil
+			}
+			return a, sendMessageCmd(a.manager, text)
+		case paneApprovals:
+			if approval := a.selectedApproval(); approval != nil && approval.CanApprove {
+				return a, approveApprovalCmd(a.manager, approval.ID)
+			}
+		case paneTasks:
+			if task := a.selectedTask(); task != nil && task.CanCancel {
+				return a, cancelTaskCmd(a.manager, task.ID)
+			}
+		}
+	}
+
+	if a.focus == paneComposer {
+		var cmd tea.Cmd
+		a.input, cmd = a.input.Update(message)
+		return a, cmd
+	}
+
+	return a, nil
+}
+
+func (a App) updateRejectPrompt(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch message.String() {
+	case "ctrl+c", "q":
+		return a, tea.Quit
+	case "esc":
+		a.rejectApprovalID = ""
+		a.rejectInput.SetValue("")
+		a.syncInputs()
+		return a, nil
+	case "enter":
+		approvalID := a.rejectApprovalID
+		reason := strings.TrimSpace(a.rejectInput.Value())
+		a.rejectApprovalID = ""
+		a.rejectInput.SetValue("")
+		a.syncInputs()
+		if approvalID == "" {
+			return a, nil
+		}
+		return a, rejectApprovalCmd(a.manager, approvalID, reason)
 	}
 
 	var cmd tea.Cmd
-	a.input, cmd = a.input.Update(message)
+	a.rejectInput, cmd = a.rejectInput.Update(message)
 	return a, cmd
 }
 
 func (a App) discoveryView() string {
 	var lines []string
-	lines = append(lines, titleStyle.Render("Sloppy TUI"))
+	lines = append(lines, accentTitleStyle.Render("Sloppy TUI"))
 	lines = append(lines, mutedStyle.Render("Attach to a running agent-session provider"))
 	lines = append(lines, "")
 
@@ -181,101 +330,360 @@ func (a App) discoveryView() string {
 		lines = append(lines, mutedStyle.Render("No session providers found. Start `bun run session:serve` first."))
 	} else {
 		for i, descriptor := range a.providers {
-			cursor := "  "
+			cursor := ghostTextStyle.Render("  ")
 			if i == a.cursor {
-				cursor = "> "
+				cursor = selectedAccentStyle.Render("->")
 			}
 			name := descriptor.Name
 			if name == "" {
 				name = descriptor.ID
 			}
-			lines = append(lines, fmt.Sprintf("%s%s  %s", cursor, name, mutedStyle.Render(descriptor.Address())))
+			lines = append(lines, fmt.Sprintf("%s %s  %s", cursor, titleStyle.Render(name), mutedStyle.Render(descriptor.Address())))
 		}
 	}
 
 	if a.err != nil {
 		lines = append(lines, "")
-		lines = append(lines, mutedStyle.Render(a.err.Error()))
+		lines = append(lines, dangerStyle.Render(a.err.Error()))
 	}
 
 	lines = append(lines, "")
 	lines = append(lines, helpStyle.Render("enter connect  r refresh  q quit"))
-	return pad(strings.Join(lines, "\n"))
+	return appStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (a App) sessionView() string {
-	leftWidth := maxInt(a.width/2-2, 40)
-	rightWidth := maxInt(a.width-leftWidth-6, 32)
-	left := borderStyle.Width(leftWidth).Padding(1).Render(a.transcriptView())
-	right := borderStyle.Width(rightWidth).Padding(1).Render(a.activityView())
-	composer := borderStyle.Width(maxInt(a.width-4, 72)).Padding(1).Render(a.composerView())
-	return pad(strings.Join([]string{left + right, "", composer}, "\n"))
+	width := a.width
+	if width == 0 {
+		width = 120
+	}
+	height := a.height
+	if height == 0 {
+		height = 36
+	}
+
+	bodyWidth := width - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	bodyHeight := height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	header := a.sessionHeaderView(bodyWidth)
+	headerHeight := blockHeight(header)
+	composerHeight := 8
+	mainHeight := maxInt(bodyHeight-headerHeight-composerHeight-4, 14)
+
+	main := a.sessionMainView(bodyWidth, mainHeight)
+	composer := composerStyle(a.focus == paneComposer).Width(bodyWidth).Render(a.composerView(bodyWidth - 4))
+
+	content := lipgloss.JoinVertical(lipgloss.Left, header, "", main, "", composer)
+	if a.rejectPromptOpen() {
+		content = lipgloss.JoinVertical(
+			lipgloss.Left,
+			content,
+			"",
+			lipgloss.PlaceHorizontal(bodyWidth, lipgloss.Center, a.rejectPromptView(bodyWidth)),
+		)
+	}
+
+	return appStyle.Render(content)
 }
 
-func (a App) transcriptView() string {
-	var lines []string
+func (a App) sessionHeaderView(width int) string {
 	title := a.state.SessionTitle
 	if title == "" {
 		title = "Session"
 	}
-	lines = append(lines, titleStyle.Render(title))
-	statusLine := strings.TrimSpace(fmt.Sprintf("%s  %s", a.state.SessionStatus, a.state.Model))
-	if statusLine != "" {
-		lines = append(lines, mutedStyle.Render(statusLine))
+
+	titleRenderer := titleStyle
+	if a.state.TurnState == "waiting_approval" || a.state.TurnState == "running" {
+		titleRenderer = accentTitleStyle
 	}
-	if a.state.TurnState != "" || a.state.TurnMessage != "" {
-		lines = append(lines, mutedStyle.Render(fmt.Sprintf("turn: %s  %s", a.state.TurnState, a.state.TurnMessage)))
+
+	var lines []string
+	lines = append(lines, titleRenderer.Render(title))
+
+	meta := make([]string, 0, 4)
+	if a.state.SessionStatus != "" {
+		meta = append(meta, renderMetaPair("session", strings.ToUpper(a.state.SessionStatus), a.state.SessionStatus))
 	}
+	if a.state.Model != "" {
+		meta = append(meta, renderMetaPair("model", a.state.Model, ""))
+	}
+	if a.state.TurnState != "" {
+		meta = append(meta, renderMetaPair("turn", strings.ToUpper(strings.ReplaceAll(a.state.TurnState, "_", " ")), a.state.TurnState))
+	}
+	if a.state.CanCancelTurn {
+		meta = append(meta, fmt.Sprintf("%s %s", metaLabelStyle.Render("TURN ACTION"), keyStyle.Render("T cancel")))
+	}
+	if len(meta) > 0 {
+		lines = append(lines, strings.Join(meta, "   "))
+	}
+
+	if a.state.TurnMessage != "" {
+		lines = append(lines, mutedStyle.Render(a.state.TurnMessage))
+	}
+	if a.sessionErr != "" {
+		lines = append(lines, dangerStyle.Render(a.sessionErr))
+	}
+	if a.state.Error != "" {
+		lines = append(lines, warningStyle.Render(a.state.Error))
+	}
+
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (a App) sessionMainView(width int, height int) string {
+	if width < 112 {
+		transcriptHeight := maxInt(height/2, 8)
+		railHeight := maxInt(height-transcriptHeight-3, 12)
+		approvalHeight := maxInt(railHeight/4, 6)
+		taskHeight := maxInt(railHeight/4, 6)
+		activityHeight := maxInt(railHeight-approvalHeight-taskHeight-2, 8)
+
+		transcript := paneStyle(a.focus == paneTranscript, false).Width(width).Height(transcriptHeight).Render(a.transcriptView(width-4, transcriptHeight-2))
+		approvals := paneStyle(a.focus == paneApprovals, true).Width(width).Height(approvalHeight).Render(a.approvalsView(width-4, approvalHeight-2))
+		tasks := paneStyle(a.focus == paneTasks, true).Width(width).Height(taskHeight).Render(a.tasksView(width-4, taskHeight-2))
+		activity := paneStyle(a.focus == paneActivity, true).Width(width).Height(activityHeight).Render(a.activityView(width-4, activityHeight-2))
+
+		return lipgloss.JoinVertical(lipgloss.Left, transcript, "", approvals, "", tasks, "", activity)
+	}
+
+	leftWidth := maxInt((width*5)/8, 48)
+	if leftWidth > width-32 {
+		leftWidth = width - 32
+	}
+	rightWidth := maxInt(width-leftWidth-2, 30)
+	approvalsHeight := maxInt(height/4, 7)
+	tasksHeight := maxInt(height/4, 7)
+	activityHeight := maxInt(height-approvalsHeight-tasksHeight-2, 8)
+
+	transcript := paneStyle(a.focus == paneTranscript, false).Width(leftWidth).Height(height).Render(a.transcriptView(leftWidth-4, height-2))
+	approvals := paneStyle(a.focus == paneApprovals, true).Width(rightWidth).Height(approvalsHeight).Render(a.approvalsView(rightWidth-4, approvalsHeight-2))
+	tasks := paneStyle(a.focus == paneTasks, true).Width(rightWidth).Height(tasksHeight).Render(a.tasksView(rightWidth-4, tasksHeight-2))
+	activity := paneStyle(a.focus == paneActivity, true).Width(rightWidth).Height(activityHeight).Render(a.activityView(rightWidth-4, activityHeight-2))
+	right := lipgloss.JoinVertical(lipgloss.Left, approvals, "", tasks, "", activity)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, transcript, "  ", right)
+}
+
+func (a App) transcriptView(width int, height int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Transcript", a.focus == paneTranscript, fmt.Sprintf("%d messages", len(a.state.Transcript))))
 	lines = append(lines, "")
 
 	if len(a.state.Transcript) == 0 {
-		lines = append(lines, mutedStyle.Render("No messages yet."))
-	} else {
-		start := maxInt(len(a.state.Transcript)-10, 0)
-		for _, entry := range a.state.Transcript[start:] {
-			role := strings.ToUpper(entry.Role)
-			lines = append(lines, fmt.Sprintf("%s: %s", role, entry.Text))
-		}
+		lines = append(lines, ghostTextStyle.Render("No messages yet."))
+		return strings.Join(lines, "\n")
 	}
 
-	if a.state.Error != "" {
-		lines = append(lines, "")
-		lines = append(lines, mutedStyle.Render(a.state.Error))
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Transcript), a.transcriptCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Transcript[index]
+		selected := index == a.transcriptCursor
+		lines = append(lines, renderTranscriptEntry(entry, selected, width))
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-func (a App) activityView() string {
+func (a App) approvalsView(width int, height int) string {
+	pendingCount := 0
+	for _, approval := range a.state.Approvals {
+		if approval.Status == "pending" {
+			pendingCount++
+		}
+	}
+
 	var lines []string
-	lines = append(lines, titleStyle.Render("Activity"))
+	lines = append(lines, paneHeader("Approvals", a.focus == paneApprovals, fmt.Sprintf("%d pending", pendingCount)))
+	lines = append(lines, "")
+
+	if len(a.state.Approvals) == 0 {
+		lines = append(lines, ghostTextStyle.Render("No approval gates right now."))
+		return strings.Join(lines, "\n")
+	}
+
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Approvals), a.approvalCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Approvals[index]
+		selected := index == a.approvalCursor
+		lines = append(lines, renderApprovalEntry(entry, selected, width))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (a App) tasksView(width int, height int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Tasks", a.focus == paneTasks, fmt.Sprintf("%d tracked", len(a.state.Tasks))))
+	lines = append(lines, "")
+
+	if len(a.state.Tasks) == 0 {
+		lines = append(lines, ghostTextStyle.Render("No async tasks tracked yet."))
+		return strings.Join(lines, "\n")
+	}
+
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Tasks), a.taskCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Tasks[index]
+		selected := index == a.taskCursor
+		lines = append(lines, renderTaskEntry(entry, selected, width))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (a App) activityView(width int, height int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Activity", a.focus == paneActivity, fmt.Sprintf("%d events", len(a.state.Activity))))
 	lines = append(lines, "")
 
 	if len(a.state.Activity) == 0 {
-		lines = append(lines, mutedStyle.Render("No activity yet."))
-	} else {
-		start := maxInt(len(a.state.Activity)-12, 0)
-		for _, entry := range a.state.Activity[start:] {
-			lines = append(lines, fmt.Sprintf("[%s] %s", entry.Kind, entry.Summary))
-			if entry.Status != "" {
-				lines = append(lines, mutedStyle.Render("  status: "+entry.Status))
-			}
-		}
+		lines = append(lines, ghostTextStyle.Render("No activity yet."))
+		return strings.Join(lines, "\n")
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, helpStyle.Render("esc back  q quit"))
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Activity), a.activityCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Activity[index]
+		selected := index == a.activityCursor
+		lines = append(lines, renderActivityEntry(entry, selected, width))
+	}
+
 	return strings.Join(lines, "\n")
 }
 
-func (a App) composerView() string {
-	return strings.Join([]string{
-		titleStyle.Render("Composer"),
+func (a App) composerView(width int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Composer", a.focus == paneComposer, "send into the live session"))
+	lines = append(lines, "")
+	lines = append(lines, a.input.View())
+	lines = append(lines, "")
+	lines = append(lines, mutedStyle.Render(a.sessionHelp()))
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (a App) rejectPromptView(width int) string {
+	approval := a.selectedApprovalByID(a.rejectApprovalID)
+	title := paneHeader("Reject Approval", true, "optional reason")
+	reason := "The selected approval is no longer visible."
+	if approval != nil {
+		reason = approval.Reason
+	}
+	modalWidth := width
+	if modalWidth > 60 {
+		modalWidth = 60
+	}
+	if modalWidth < 36 {
+		modalWidth = 36
+	}
+
+	content := strings.Join([]string{
+		title,
 		"",
-		a.input.View(),
+		mutedStyle.Render(truncate(compact(reason), modalWidth-4)),
 		"",
-		helpStyle.Render("enter send message"),
+		a.rejectInput.View(),
+		"",
+		helpStyle.Render("enter reject  esc cancel"),
 	}, "\n")
+
+	return modalStyle(modalWidth).Render(content)
+}
+
+func (a App) applyViewStateFromManager() App {
+	tree, err := a.manager.Snapshot()
+	return a.applyViewState(session.BuildView(tree, err))
+}
+
+func (a App) applyViewState(next session.ViewState) App {
+	previous := a.state
+	a.state = next
+
+	a.transcriptCursor = preserveCursor(len(previous.Transcript), len(next.Transcript), a.transcriptCursor)
+	a.approvalCursor = preserveCursor(len(previous.Approvals), len(next.Approvals), a.approvalCursor)
+	a.taskCursor = preserveCursor(len(previous.Tasks), len(next.Tasks), a.taskCursor)
+	a.activityCursor = preserveCursor(len(previous.Activity), len(next.Activity), a.activityCursor)
+
+	if !hasPendingApprovals(previous.Approvals) && hasPendingApprovals(next.Approvals) && !a.rejectPromptOpen() {
+		if pendingIndex := firstPendingApprovalIndex(next.Approvals); pendingIndex >= 0 {
+			a.approvalCursor = pendingIndex
+		}
+		if strings.TrimSpace(a.input.Value()) == "" || a.focus != paneComposer {
+			a.focus = paneApprovals
+		}
+	}
+
+	a.syncInputs()
+	return a
+}
+
+func (a *App) syncInputs() {
+	if a.rejectPromptOpen() {
+		a.rejectInput.Focus()
+		a.input.Blur()
+		return
+	}
+
+	a.rejectInput.Blur()
+	if a.focus == paneComposer {
+		a.input.Focus()
+	} else {
+		a.input.Blur()
+	}
+}
+
+func (a *App) moveSelection(delta int) {
+	switch a.focus {
+	case paneTranscript:
+		a.transcriptCursor = clampRange(a.transcriptCursor+delta, len(a.state.Transcript))
+	case paneApprovals:
+		a.approvalCursor = clampRange(a.approvalCursor+delta, len(a.state.Approvals))
+	case paneTasks:
+		a.taskCursor = clampRange(a.taskCursor+delta, len(a.state.Tasks))
+	case paneActivity:
+		a.activityCursor = clampRange(a.activityCursor+delta, len(a.state.Activity))
+	}
+}
+
+func (a App) selectedApproval() *session.ApprovalEntry {
+	if len(a.state.Approvals) == 0 {
+		return nil
+	}
+	index := clampRange(a.approvalCursor, len(a.state.Approvals))
+	return &a.state.Approvals[index]
+}
+
+func (a App) selectedApprovalByID(id string) *session.ApprovalEntry {
+	if id == "" {
+		return nil
+	}
+	for index := range a.state.Approvals {
+		if a.state.Approvals[index].ID == id {
+			return &a.state.Approvals[index]
+		}
+	}
+	return nil
+}
+
+func (a App) selectedTask() *session.TaskEntry {
+	if len(a.state.Tasks) == 0 {
+		return nil
+	}
+	index := clampRange(a.taskCursor, len(a.state.Tasks))
+	return &a.state.Tasks[index]
+}
+
+func (a App) rejectPromptOpen() bool {
+	return a.rejectApprovalID != ""
 }
 
 func discoverCmd() tea.Cmd {
@@ -301,17 +709,325 @@ func sendMessageCmd(manager *session.Manager, text string) tea.Cmd {
 	}
 }
 
-func tickSession() tea.Cmd {
-	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
-		return refreshSessionMsg{}
-	})
+func approveApprovalCmd(manager *session.Manager, approvalID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.ApproveApproval(ctx, approvalID)}
+	}
 }
 
-func pad(content string) string {
-	return "\n" + content + "\n"
+func rejectApprovalCmd(manager *session.Manager, approvalID string, reason string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.RejectApproval(ctx, approvalID, reason)}
+	}
 }
 
-func maxInt(left, right int) int {
+func cancelTaskCmd(manager *session.Manager, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.CancelTask(ctx, taskID)}
+	}
+}
+
+func cancelTurnCmd(manager *session.Manager) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.CancelTurn(ctx)}
+	}
+}
+
+func waitForSessionUpdate(updates <-chan struct{}) tea.Cmd {
+	return func() tea.Msg {
+		if updates == nil {
+			return sessionStreamClosedMsg{}
+		}
+
+		_, ok := <-updates
+		if !ok {
+			return sessionStreamClosedMsg{}
+		}
+
+		return sessionUpdatedMsg{}
+	}
+}
+
+func renderTranscriptEntry(entry session.TranscriptEntry, selected bool, width int) string {
+	title := strings.ToUpper(entry.Role)
+	if entry.Author != "" && !strings.EqualFold(entry.Author, entry.Role) {
+		title = fmt.Sprintf("%s · %s", title, entry.Author)
+	}
+	status := statusStyle(entry.State).Render(strings.ToUpper(entry.State))
+	excerpt := compact(entry.Text)
+	if excerpt == "" {
+		excerpt = "No text content."
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
+		"  " + truncate(excerpt, width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
+func renderApprovalEntry(entry session.ApprovalEntry, selected bool, width int) string {
+	status := statusStyle(entry.Status).Render(strings.ToUpper(strings.ReplaceAll(entry.Status, "_", " ")))
+	title := fmt.Sprintf("%s:%s", entry.Provider, entry.Action)
+	if entry.Dangerous {
+		title = title + " !"
+	}
+	detail := joinNonEmpty(" | ", entry.Reason, entry.Path, entry.ParamsPreview)
+	if detail == "" {
+		detail = entry.Path
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
+		"  " + truncate(compact(detail), width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
+func renderTaskEntry(entry session.TaskEntry, selected bool, width int) string {
+	status := statusStyle(entry.Status).Render(strings.ToUpper(entry.Status))
+	title := entry.Provider
+	if title == "" {
+		title = "task"
+	}
+	detailParts := []string{entry.ProviderTaskID}
+	if entry.HasProgress {
+		detailParts = append(detailParts, formatPercent(entry.Progress))
+	}
+	if entry.Error != "" {
+		detailParts = append(detailParts, entry.Error)
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
+		"  " + truncate(compact(joinNonEmpty(" | ", entry.Message, strings.Join(detailParts, " | "))), width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
+func renderActivityEntry(entry session.ActivityEntry, selected bool, width int) string {
+	status := statusStyle(entry.Status).Render(strings.ToUpper(strings.ReplaceAll(entry.Status, "_", " ")))
+	title := strings.ToUpper(strings.ReplaceAll(entry.Kind, "_", " "))
+	detail := joinNonEmpty(" | ", entry.Summary, joinNonEmpty(" ", entry.Provider, entry.Path, entry.Action))
+	if detail == "" {
+		detail = entry.Summary
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
+		"  " + truncate(compact(detail), width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
+func renderListItem(selected bool, width int, lines []string) string {
+	content := strings.Join(lines, "\n")
+	style := rowStyle.Width(width)
+	if selected {
+		style = selectedRowStyle.Width(width)
+	}
+	return style.Render(content)
+}
+
+func renderMetaPair(label string, value string, tone string) string {
+	styledValue := codeStyle.Render(value)
+	if tone != "" {
+		styledValue = statusStyle(tone).Render(value)
+	}
+	return fmt.Sprintf("%s %s", metaLabelStyle.Render(strings.ToUpper(label)), styledValue)
+}
+
+func paneHeader(title string, focused bool, detail string) string {
+	headerStyle := titleStyle
+	marker := ghostTextStyle.Render(" ")
+	if focused {
+		headerStyle = accentTitleStyle
+		marker = selectedAccentStyle.Render("|")
+	}
+
+	text := fmt.Sprintf("%s %s", marker, strings.ToUpper(title))
+	if detail != "" {
+		text = fmt.Sprintf("%s  %s", text, mutedStyle.Render(detail))
+	}
+	return headerStyle.Render(text)
+}
+
+func listPrefix(selected bool) string {
+	if selected {
+		return selectedAccentStyle.Render("->")
+	}
+	return ghostTextStyle.Render("·")
+}
+
+func statusStyle(status string) lipgloss.Style {
+	switch status {
+	case "active", "complete", "completed", "approved", "ok", "idle":
+		return successStyle
+	case "running", "streaming", "accepted", "pending", "waiting_approval":
+		return keyStyle
+	case "failed", "error", "rejected", "expired", "cancelled":
+		return dangerStyle
+	default:
+		return mutedStyle
+	}
+}
+
+func (a App) sessionHelp() string {
+	if a.rejectPromptOpen() {
+		return "enter reject  esc cancel"
+	}
+
+	switch a.focus {
+	case paneComposer:
+		return "tab cycle  enter send  esc back  q quit"
+	case paneApprovals:
+		return "j/k move  enter or a approve  r reject  t cancel turn  i compose"
+	case paneTasks:
+		return "j/k move  enter or c cancel task  t cancel turn  i compose"
+	default:
+		return "tab cycle  j/k move  t cancel turn  i compose  esc back"
+	}
+}
+
+func newCodeInput(placeholder string) textinput.Model {
+	input := textinput.New()
+	input.Placeholder = placeholder
+	input.CharLimit = 4096
+	input.Prompt = "> "
+	input.PromptStyle = keyStyle
+	input.TextStyle = codeStyle
+	input.PlaceholderStyle = mutedStyle
+	input.Cursor.Style = keyStyle
+	return input
+}
+
+func nextPane(current paneFocus) paneFocus {
+	if current == paneComposer {
+		return paneTranscript
+	}
+	return current + 1
+}
+
+func previousPane(current paneFocus) paneFocus {
+	if current == paneTranscript {
+		return paneComposer
+	}
+	return current - 1
+}
+
+func clampIndex(index int, length int) int {
+	if length == 0 {
+		return 0
+	}
+	if index < 0 {
+		return 0
+	}
+	if index >= length {
+		return length - 1
+	}
+	return index
+}
+
+func clampRange(index int, length int) int {
+	return clampIndex(index, length)
+}
+
+func preserveCursor(oldLength int, newLength int, cursor int) int {
+	if newLength == 0 {
+		return 0
+	}
+	if oldLength == 0 {
+		return newLength - 1
+	}
+	if cursor >= oldLength-1 {
+		return newLength - 1
+	}
+	return clampIndex(cursor, newLength)
+}
+
+func windowBounds(total int, cursor int, visible int) (int, int) {
+	if total <= visible {
+		return 0, total
+	}
+	if visible <= 1 {
+		cursor = clampIndex(cursor, total)
+		return cursor, cursor + 1
+	}
+
+	cursor = clampIndex(cursor, total)
+	half := visible / 2
+	start := cursor - half
+	if start < 0 {
+		start = 0
+	}
+	end := start + visible
+	if end > total {
+		end = total
+		start = end - visible
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start, end
+}
+
+func hasPendingApprovals(approvals []session.ApprovalEntry) bool {
+	return firstPendingApprovalIndex(approvals) >= 0
+}
+
+func firstPendingApprovalIndex(approvals []session.ApprovalEntry) int {
+	for index := range approvals {
+		if approvals[index].Status == "pending" {
+			return index
+		}
+	}
+	return -1
+}
+
+func compact(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func truncate(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
+}
+
+func formatPercent(progress float64) string {
+	return fmt.Sprintf("%d%%", int(progress*100))
+}
+
+func joinNonEmpty(separator string, values ...string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, separator)
+}
+
+func blockHeight(content string) int {
+	if content == "" {
+		return 0
+	}
+	return strings.Count(content, "\n") + 1
+}
+
+func maxInt(left int, right int) int {
 	if left > right {
 		return left
 	}
