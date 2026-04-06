@@ -8,7 +8,6 @@ import type {
   ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 import type { LlmTool } from "@slop-ai/consumer/browser";
-
 import type {
   AssistantContentBlock,
   ConversationMessage,
@@ -17,6 +16,7 @@ import type {
   LlmResponse,
   MessageContentBlock,
 } from "./types";
+import { LlmAbortError, normalizeLlmAbortError } from "./types";
 
 function toAnthropicTools(tools: LlmTool[]): Tool[] {
   return tools.map((tool) => ({
@@ -92,6 +92,10 @@ export class AnthropicAdapter implements LlmAdapter {
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
     const params: Anthropic.MessageStreamParams = {
       model: this.model,
       system: options.system,
@@ -104,29 +108,42 @@ export class AnthropicAdapter implements LlmAdapter {
       params.tool_choice = { type: "auto", disable_parallel_tool_use: false };
     }
 
-    const stream = this.client.messages.stream(params);
+    const stream = this.client.messages.stream(params, {
+      signal: options.signal,
+    });
+    const abortStream = () => {
+      stream.abort();
+    };
 
-    if (options.onText) {
-      stream.on("text", (delta) => {
-        options.onText?.(delta);
-      });
+    try {
+      options.signal?.addEventListener("abort", abortStream, { once: true });
+
+      if (options.onText) {
+        stream.on("text", (delta) => {
+          options.onText?.(delta);
+        });
+      }
+
+      const finalMessage = await stream.finalMessage();
+      const stopReason =
+        finalMessage.stop_reason === "tool_use"
+          ? "tool_use"
+          : finalMessage.stop_reason === "max_tokens"
+            ? "max_tokens"
+            : "end_turn";
+
+      return {
+        content: normalizeAssistantContent(finalMessage.content),
+        stopReason,
+        usage: {
+          inputTokens: finalMessage.usage.input_tokens,
+          outputTokens: finalMessage.usage.output_tokens,
+        },
+      } satisfies LlmResponse;
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options.signal);
+    } finally {
+      options.signal?.removeEventListener("abort", abortStream);
     }
-
-    const finalMessage = await stream.finalMessage();
-    const stopReason =
-      finalMessage.stop_reason === "tool_use"
-        ? "tool_use"
-        : finalMessage.stop_reason === "max_tokens"
-          ? "max_tokens"
-          : "end_turn";
-
-    return {
-      content: normalizeAssistantContent(finalMessage.content),
-      stopReason,
-      usage: {
-        inputTokens: finalMessage.usage.input_tokens,
-        outputTokens: finalMessage.usage.output_tokens,
-      },
-    } satisfies LlmResponse;
   }
 }

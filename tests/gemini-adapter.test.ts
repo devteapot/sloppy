@@ -171,4 +171,55 @@ describe("GeminiAdapter", () => {
       },
     });
   });
+
+  test("passes abort signals into Gemini requests and normalizes cancellation", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const client = {
+      models: {
+        generateContent: async (parameters: Record<string, unknown>) => {
+          const config = parameters.config as { abortSignal?: AbortSignal } | undefined;
+          receivedSignal = config?.abortSignal;
+          return await new Promise<GenerateContentResponse>((_, reject) => {
+            config?.abortSignal?.addEventListener(
+              "abort",
+              () => {
+                const error = new Error("aborted");
+                error.name = "AbortError";
+                reject(error);
+              },
+              { once: true },
+            );
+          });
+        },
+        generateContentStream: async () => createStream(),
+      },
+    };
+
+    async function* createStream(): AsyncGenerator<GenerateContentResponse> {
+      yield createToolChunk();
+    }
+
+    const adapter = new GeminiAdapter({
+      apiKey: "test-key",
+      model: "gemini-2.5-pro",
+      client,
+    });
+
+    const pending = adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({
+      name: "LlmAbortError",
+      code: "aborted",
+    });
+    expect(receivedSignal).toBe(controller.signal);
+  });
 });

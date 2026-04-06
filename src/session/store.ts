@@ -48,6 +48,7 @@ export class SessionStore {
   private listeners = new Set<SessionStoreChangeListener>();
   private activeAssistantMessageId: string | null = null;
   private activeModelActivityId: string | null = null;
+  private activeApprovalActivityId: string | null = null;
   private toolActivityIds = new Map<string, string>();
 
   constructor(options: {
@@ -338,8 +339,9 @@ export class SessionStore {
     },
   ): void {
     const time = now();
+    const activityId = buildId("activity");
     this.snapshot.activity.push({
-      id: buildId("activity"),
+      id: activityId,
       kind: "approval",
       status: "running",
       summary: options.reason,
@@ -351,6 +353,7 @@ export class SessionStore {
       action: options.action,
       toolUseId: options.toolUseId,
     });
+    this.activeApprovalActivityId = activityId;
     this.updateTurn({
       ...this.snapshot.turn,
       turnId,
@@ -395,6 +398,21 @@ export class SessionStore {
         action: approval.action,
         approvalId: approval.id,
       });
+
+      if (this.activeApprovalActivityId) {
+        this.updateActivity(this.activeApprovalActivityId, {
+          status:
+            approval.status === "approved"
+              ? "ok"
+              : approval.status === "rejected"
+                ? "cancelled"
+                : "error",
+          updatedAt: approval.resolvedAt ?? time,
+          completedAt: approval.resolvedAt ?? time,
+          approvalId: approval.id,
+        });
+        this.activeApprovalActivityId = null;
+      }
     }
 
     this.snapshot.approvals = [
@@ -402,6 +420,87 @@ export class SessionStore {
       ...approvals,
     ];
     this.snapshot.session.updatedAt = time;
+    this.emitChange();
+  }
+
+  cancelTurn(
+    _turnId: string,
+    options?: {
+      message?: string;
+      toolUseId?: string;
+      approvalId?: string;
+      approvalStatus?: "approved" | "rejected" | "expired";
+    },
+  ): void {
+    const time = now();
+    const message = options?.message ?? "Turn cancelled by user.";
+
+    if (this.activeModelActivityId) {
+      this.updateActivity(this.activeModelActivityId, {
+        status: "cancelled",
+        summary: message,
+        updatedAt: time,
+        completedAt: time,
+      });
+    }
+
+    if (options?.toolUseId) {
+      const toolActivityId = this.toolActivityIds.get(options.toolUseId);
+      if (toolActivityId) {
+        this.updateActivity(toolActivityId, {
+          status: "cancelled",
+          summary: message,
+          updatedAt: time,
+          completedAt: time,
+        });
+        this.toolActivityIds.delete(options.toolUseId);
+      }
+    }
+
+    if (this.activeApprovalActivityId) {
+      this.updateActivity(this.activeApprovalActivityId, {
+        status: "cancelled",
+        summary: message,
+        updatedAt: time,
+        completedAt: time,
+        approvalId: options?.approvalId,
+      });
+      this.activeApprovalActivityId = null;
+    }
+
+    if (options?.approvalId && options.approvalStatus) {
+      const approval = this.snapshot.approvals.find((item) => item.id === options.approvalId);
+      if (approval && approval.status === "pending") {
+        approval.status = options.approvalStatus;
+        approval.resolvedAt = time;
+        approval.canApprove = false;
+        approval.canReject = false;
+      }
+    }
+
+    const assistantMessage =
+      this.activeAssistantMessageId === null
+        ? undefined
+        : this.snapshot.transcript.find((entry) => entry.id === this.activeAssistantMessageId);
+    if (assistantMessage) {
+      assistantMessage.state = "complete";
+      assistantMessage.error = undefined;
+    }
+
+    this.activeAssistantMessageId = null;
+    this.activeModelActivityId = null;
+    this.snapshot.session.lastError = undefined;
+    this.updateTurn({
+      turnId: null,
+      state: "idle",
+      phase: "none",
+      iteration: this.snapshot.turn.iteration,
+      startedAt: null,
+      updatedAt: time,
+      message,
+      lastError: undefined,
+      waitingOn: null,
+    });
     this.emitChange();
   }
 
@@ -451,6 +550,7 @@ export class SessionStore {
 
     this.activeAssistantMessageId = null;
     this.activeModelActivityId = null;
+    this.activeApprovalActivityId = null;
     this.updateTurn({
       turnId: null,
       state: "idle",
@@ -499,6 +599,7 @@ export class SessionStore {
     this.snapshot.session.lastError = message;
     this.activeAssistantMessageId = null;
     this.activeModelActivityId = null;
+    this.activeApprovalActivityId = null;
     this.updateTurn({
       turnId,
       state: "error",

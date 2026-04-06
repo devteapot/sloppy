@@ -6,7 +6,6 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
-
 import type {
   AssistantContentBlock,
   ConversationMessage,
@@ -16,16 +15,24 @@ import type {
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
+import { LlmAbortError, normalizeLlmAbortError } from "./types";
 
 type OpenAICompatibleProvider = "openai" | "openrouter" | "ollama";
 
 interface OpenAICompatibleClient {
   chat: {
     completions: {
-      create(parameters: Record<string, unknown>): Promise<ChatCompletion>;
-      stream(parameters: Record<string, unknown>): {
+      create(
+        parameters: Record<string, unknown>,
+        options?: { signal?: AbortSignal },
+      ): Promise<ChatCompletion>;
+      stream(
+        parameters: Record<string, unknown>,
+        options?: { signal?: AbortSignal },
+      ): {
         on(event: "content", listener: (delta: string, snapshot: string) => void): void;
         finalChatCompletion(): Promise<ChatCompletion>;
+        abort?(): void;
       };
     };
   };
@@ -236,30 +243,52 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {
-    const parameters = buildChatParameters(this.provider, options, this.model);
-    const completion = options.onText
-      ? await this.streamChat(parameters, options.onText)
-      : await this.client.chat.completions.create(parameters);
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
 
-    return {
-      content: normalizeAssistantContent(completion),
-      stopReason: normalizeStopReason(completion),
-      usage: {
-        inputTokens: completion.usage?.prompt_tokens ?? 0,
-        outputTokens: completion.usage?.completion_tokens ?? 0,
-      },
-    } satisfies LlmResponse;
+    const parameters = buildChatParameters(this.provider, options, this.model);
+    try {
+      const completion = options.onText
+        ? await this.streamChat(parameters, options.onText, options.signal)
+        : await this.client.chat.completions.create(parameters, {
+            signal: options.signal,
+          });
+
+      return {
+        content: normalizeAssistantContent(completion),
+        stopReason: normalizeStopReason(completion),
+        usage: {
+          inputTokens: completion.usage?.prompt_tokens ?? 0,
+          outputTokens: completion.usage?.completion_tokens ?? 0,
+        },
+      } satisfies LlmResponse;
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options.signal);
+    }
   }
 
   private async streamChat(
     parameters: Record<string, unknown>,
     onText: NonNullable<LlmChatOptions["onText"]>,
+    signal?: AbortSignal,
   ): Promise<ChatCompletion> {
-    const stream = this.client.chat.completions.stream(parameters);
-    stream.on("content", (delta) => {
-      onText(delta);
+    const stream = this.client.chat.completions.stream(parameters, {
+      signal,
     });
-    return stream.finalChatCompletion();
+    const abortStream = () => {
+      stream.abort?.();
+    };
+
+    try {
+      signal?.addEventListener("abort", abortStream, { once: true });
+      stream.on("content", (delta) => {
+        onText(delta);
+      });
+      return await stream.finalChatCompletion();
+    } finally {
+      signal?.removeEventListener("abort", abortStream);
+    }
   }
 }
 

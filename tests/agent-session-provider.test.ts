@@ -5,6 +5,7 @@ import type { SloppyConfig } from "../src/config/schema";
 import type { AgentCallbacks } from "../src/core/agent";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import { LlmAbortError } from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
@@ -157,6 +158,8 @@ function createStreamingAgentFactory(): SessionAgentFactory {
     },
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    cancelActiveTurn: () => false,
+    clearPendingApproval: () => undefined,
     shutdown: () => undefined,
   });
 }
@@ -170,8 +173,48 @@ function createBlockingAgentFactory(gate: Deferred<string>): SessionAgentFactory
     }),
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    cancelActiveTurn: () => false,
+    clearPendingApproval: () => undefined,
     shutdown: () => undefined,
   });
+}
+
+function createCancelableStreamingAgentFactory() {
+  const gate = createDeferred<string>();
+  let cancelled = false;
+
+  const factory: SessionAgentFactory = (callbacks): SessionAgent => ({
+    start: async () => undefined,
+    chat: async () => {
+      callbacks.onText?.("Thinking...");
+      return {
+        status: "completed",
+        response: await gate.promise,
+      };
+    },
+    resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+    invokeProvider: async () => ({ type: "result", id: "inv-cancel", status: "ok" }),
+    cancelActiveTurn: () => {
+      if (cancelled) {
+        return false;
+      }
+
+      cancelled = true;
+      gate.reject(new LlmAbortError());
+      return true;
+    },
+    clearPendingApproval: () => undefined,
+    shutdown: () => undefined,
+  });
+
+  return {
+    factory,
+    resolve(response: string) {
+      if (!cancelled) {
+        gate.resolve(response);
+      }
+    },
+  };
 }
 
 function createApprovalHarnessFactory() {
@@ -253,6 +296,8 @@ function createApprovalHarnessFactory() {
         providerInvokes.push({ providerId, path, action, params });
         return { type: "result", id: "inv-approval", status: "ok", data: { ok: true } };
       },
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
       shutdown: () => undefined,
     };
   };
@@ -331,6 +376,8 @@ function createTaskMirrorHarnessFactory() {
       },
       resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
       invokeProvider: async () => ({ type: "result", id: "inv-task", status: "ok" }),
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
       shutdown: () => undefined,
     };
   };
@@ -467,6 +514,57 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("cancel_turn aborts an active model turn and preserves partial text", async () => {
+    const harness = createCancelableStreamingAgentFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-cancel-running",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-cancel-running",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/composer", "send_message", {
+        text: "start then cancel",
+      });
+
+      const cancelResult = await consumer.invoke("/turn", "cancel_turn", {});
+      expect(cancelResult.status).toBe("ok");
+
+      await runtime.waitForIdle();
+
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("idle");
+      expect(turn.properties?.message).toBe("Turn cancelled by user.");
+      expect(
+        turn.affordances?.some((affordance) => affordance.action === "cancel_turn") ?? false,
+      ).toBe(false);
+
+      const transcript = await consumer.query("/transcript", 5);
+      expect(transcript.children?.[1]?.properties?.role).toBe("assistant");
+      expect(transcript.children?.[1]?.properties?.state).toBe("complete");
+      expect(transcript.children?.[1]?.children?.[0]?.children?.[0]?.properties?.text).toBe(
+        "Thinking...",
+      );
+
+      const activity = await consumer.query("/activity", 3);
+      expect(activity.children?.[0]?.properties?.kind).toBe("model_call");
+      expect(activity.children?.[0]?.properties?.status).toBe("cancelled");
+    } finally {
+      harness.resolve("finished");
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("session mirrors provider approvals and forwards approve", async () => {
     const harness = createApprovalHarnessFactory();
     const runtime = new SessionRuntime({
@@ -512,6 +610,55 @@ describe("AgentSessionProvider", () => {
 
       const turn = await consumer.query("/turn", 1);
       expect(turn.properties?.state).toBe("idle");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("cancel_turn rejects a pending approval turn without resuming the model", async () => {
+    const harness = createApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-cancel-approval",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-cancel-approval",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/composer", "send_message", {
+        text: "remove the file later",
+      });
+      harness.emitApprovalSnapshot();
+
+      const cancelResult = await consumer.invoke("/turn", "cancel_turn", {});
+      expect(cancelResult.status).toBe("ok");
+
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("idle");
+      expect(turn.properties?.message).toBe("Turn cancelled by user.");
+
+      const approvals = await consumer.query("/approvals", 3);
+      expect(approvals.children?.[0]?.properties?.status).toBe("rejected");
+
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "terminal",
+          path: "/approvals/approval-1",
+          action: "reject",
+          params: {
+            reason: "Turn cancelled by user.",
+          },
+        },
+      ]);
     } finally {
       provider.stop();
       runtime.shutdown();

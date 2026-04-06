@@ -2,6 +2,7 @@ import { formatTree } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
+import { LlmAbortError } from "../llm/types";
 import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import type { ConversationHistory } from "./history";
@@ -370,6 +371,7 @@ export async function runLoop(options: {
   hub: ConsumerHub;
   history: ConversationHistory;
   llm: LlmAdapter;
+  signal?: AbortSignal;
   onText?: (chunk: string) => void;
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
@@ -383,6 +385,10 @@ export async function runLoop(options: {
   let pendingResume = options.resume;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
     if (pendingResume && iteration < pendingResume.continuation.iteration) {
       continue;
     }
@@ -421,6 +427,7 @@ export async function runLoop(options: {
       tools: toolSet.tools,
       maxTokens: options.config.llm.maxTokens,
       onText: options.onText,
+      signal: options.signal,
     });
 
     options.history.addAssistantContent(response.content);

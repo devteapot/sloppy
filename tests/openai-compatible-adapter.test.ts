@@ -170,4 +170,63 @@ describe("OpenAICompatibleAdapter", () => {
       },
     });
   });
+
+  test("passes abort signals into streaming requests and normalizes cancellation", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    let aborted = false;
+    const client = {
+      chat: {
+        completions: {
+          create: async () => createCompletion(),
+          stream: (_parameters: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
+            receivedSignal = options?.signal;
+            return {
+              on: () => undefined,
+              abort: () => {
+                aborted = true;
+              },
+              finalChatCompletion: () =>
+                new Promise<ChatCompletion>((_, reject) => {
+                  options?.signal?.addEventListener(
+                    "abort",
+                    () => {
+                      const error = new Error("aborted");
+                      error.name = "AbortError";
+                      reject(error);
+                    },
+                    { once: true },
+                  );
+                }),
+            };
+          },
+        },
+      },
+    };
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "gpt-5.4",
+      provider: "openai",
+      client,
+    });
+
+    const pending = adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+      onText: () => undefined,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({
+      name: "LlmAbortError",
+      code: "aborted",
+    });
+    expect(receivedSignal).toBe(controller.signal);
+    expect(aborted).toBe(true);
+  });
 });

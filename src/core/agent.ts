@@ -70,6 +70,7 @@ export class Agent {
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
   private pendingApproval: PendingApprovalContinuation | null = null;
+  private activeRunAbortController: AbortController | null = null;
 
   constructor(
     options?: { config?: SloppyConfig; llmProfileManager?: LlmProfileManager } & AgentCallbacks,
@@ -142,20 +143,28 @@ export class Agent {
       throw new Error("Cannot start a new chat turn while waiting on approval.");
     }
 
+    const hub = this.hub;
+    if (!hub) {
+      throw new Error("Agent has not been started.");
+    }
+
     this.history.addUserText(userMessage);
-    const llm = await this.llmProfileManager.createAdapter();
-    return this.executeLoop(
-      await runLoop({
-        config: this.config,
-        hub: this.hub,
-        history: this.history,
-        llm,
-        onText: this.callbacks.onText,
-        onToolCall: this.callbacks.onToolCall,
-        onToolResult: this.callbacks.onToolResult,
-        onToolEvent: this.callbacks.onToolEvent,
-      }),
-    );
+    return this.runLoopWithAbort(async (signal) => {
+      const llm = await this.llmProfileManager.createAdapter();
+      return this.executeLoop(
+        await runLoop({
+          config: this.config,
+          hub,
+          history: this.history,
+          llm,
+          signal,
+          onText: this.callbacks.onText,
+          onToolCall: this.callbacks.onToolCall,
+          onToolResult: this.callbacks.onToolResult,
+          onToolEvent: this.callbacks.onToolEvent,
+        }),
+      );
+    });
   }
 
   async resumeWithToolResult(result: ResolvedApprovalToolResult): Promise<AgentRunResult> {
@@ -166,6 +175,11 @@ export class Agent {
     const pendingApproval = this.pendingApproval;
     if (!pendingApproval) {
       throw new Error("No pending approval continuation exists for this agent.");
+    }
+
+    const hub = this.hub;
+    if (!hub) {
+      throw new Error("Agent has not been started.");
     }
 
     this.pendingApproval = null;
@@ -179,23 +193,26 @@ export class Agent {
       errorMessage: result.errorMessage,
     });
 
-    const llm = await this.llmProfileManager.createAdapter();
-    return this.executeLoop(
-      await runLoop({
-        config: this.config,
-        hub: this.hub,
-        history: this.history,
-        llm,
-        onText: this.callbacks.onText,
-        onToolCall: this.callbacks.onToolCall,
-        onToolResult: this.callbacks.onToolResult,
-        onToolEvent: this.callbacks.onToolEvent,
-        resume: {
-          continuation: pendingApproval,
-          resolvedToolResult: result.block,
-        },
-      }),
-    );
+    return this.runLoopWithAbort(async (signal) => {
+      const llm = await this.llmProfileManager.createAdapter();
+      return this.executeLoop(
+        await runLoop({
+          config: this.config,
+          hub,
+          history: this.history,
+          llm,
+          signal,
+          onText: this.callbacks.onText,
+          onToolCall: this.callbacks.onToolCall,
+          onToolResult: this.callbacks.onToolResult,
+          onToolEvent: this.callbacks.onToolEvent,
+          resume: {
+            continuation: pendingApproval,
+            resolvedToolResult: result.block,
+          },
+        }),
+      );
+    });
   }
 
   async invokeProvider(
@@ -217,6 +234,15 @@ export class Agent {
 
   clearPendingApproval(): void {
     this.pendingApproval = null;
+  }
+
+  cancelActiveTurn(): boolean {
+    if (!this.activeRunAbortController || this.activeRunAbortController.signal.aborted) {
+      return false;
+    }
+
+    this.activeRunAbortController.abort();
+    return true;
   }
 
   updateConfig(config: SloppyConfig): void {
@@ -258,6 +284,24 @@ export class Agent {
       status: "completed",
       response: result.response,
     };
+  }
+
+  private async runLoopWithAbort(
+    executor: (signal: AbortSignal) => Promise<AgentRunResult>,
+  ): Promise<AgentRunResult> {
+    if (this.activeRunAbortController) {
+      throw new Error("Agent is already executing a model turn.");
+    }
+
+    const abortController = new AbortController();
+    this.activeRunAbortController = abortController;
+    try {
+      return await executor(abortController.signal);
+    } finally {
+      if (this.activeRunAbortController === abortController) {
+        this.activeRunAbortController = null;
+      }
+    }
   }
 
   private async registerProviderMirrors(providerId: string): Promise<void> {

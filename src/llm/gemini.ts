@@ -8,7 +8,6 @@ import {
   GoogleGenAI,
 } from "@google/genai";
 import type { LlmTool } from "@slop-ai/consumer/browser";
-
 import type {
   AssistantContentBlock,
   ConversationMessage,
@@ -18,6 +17,7 @@ import type {
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
+import { LlmAbortError, normalizeLlmAbortError } from "./types";
 
 interface GeminiClient {
   models: {
@@ -264,6 +264,7 @@ function buildGeminiRequest(options: LlmChatOptions, model: string): Record<stri
     model,
     contents: toGeminiContents(options.messages),
     config: {
+      abortSignal: options.signal,
       systemInstruction: options.system,
       maxOutputTokens: options.maxTokens,
       tools,
@@ -305,23 +306,31 @@ export class GeminiAdapter implements LlmAdapter {
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
     const parameters = buildGeminiRequest(options, this.model);
-    if (!options.onText) {
-      const response = await this.client.models.generateContent(parameters);
-      return normalizeGeminiResponse(response);
-    }
-
-    const stream = await this.client.models.generateContentStream(parameters);
-    const state = createGeminiStreamState();
-    for await (const chunk of stream) {
-      const delta = extractGeminiText(chunk);
-      if (delta.length > 0) {
-        options.onText(delta);
+    try {
+      if (!options.onText) {
+        const response = await this.client.models.generateContent(parameters);
+        return normalizeGeminiResponse(response);
       }
-      accumulateGeminiStreamChunk(state, chunk);
-    }
 
-    return streamStateToLlmResponse(state);
+      const stream = await this.client.models.generateContentStream(parameters);
+      const state = createGeminiStreamState();
+      for await (const chunk of stream) {
+        const delta = extractGeminiText(chunk);
+        if (delta.length > 0) {
+          options.onText(delta);
+        }
+        accumulateGeminiStreamChunk(state, chunk);
+      }
+
+      return streamStateToLlmResponse(state);
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options.signal);
+    }
   }
 }
 

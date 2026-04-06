@@ -16,6 +16,7 @@ import {
   type LlmStateSnapshot as RuntimeLlmStateSnapshot,
 } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
+import { isLlmAbortError } from "../llm/types";
 import { buildMirroredItemId, SessionStore } from "./store";
 import type { ApprovalItem, LlmStateSnapshot, SessionTask, SessionTaskStatus } from "./types";
 
@@ -167,6 +168,8 @@ export interface SessionAgent {
     action: string,
     params?: Record<string, unknown>,
   ): Promise<ResultMessage>;
+  cancelActiveTurn(): boolean;
+  clearPendingApproval(): void;
   updateConfig?(config: SloppyConfig): void;
   shutdown(): void;
 }
@@ -469,11 +472,66 @@ export class SessionRuntime {
   }
 
   canCancelTurn(): boolean {
-    return false;
+    const snapshot = this.store.getSnapshot();
+    if (!this.currentTurnId) {
+      return false;
+    }
+
+    if (this.pendingApproval) {
+      return true;
+    }
+
+    return snapshot.turn.state === "running" && snapshot.turn.waitingOn === "model";
   }
 
-  async cancelTurn(): Promise<void> {
-    throw new Error("Turn cancellation is not implemented yet.");
+  async cancelTurn(): Promise<{ status: string; turnId: string }> {
+    const turnId = this.currentTurnId;
+    if (!turnId) {
+      throw new Error("No active turn to cancel.");
+    }
+
+    const message = "Turn cancelled by user.";
+    if (this.pendingApproval) {
+      const pendingApproval = this.pendingApproval;
+      const approvalId = pendingApproval.sessionApprovalId;
+      const approval = approvalId ? this.store.getApproval(approvalId) : undefined;
+      let approvalStatus: "rejected" | undefined;
+
+      if (approval?.canReject && approval.sourcePath) {
+        try {
+          await this.agent.invokeProvider(approval.provider, approval.sourcePath, "reject", {
+            reason: message,
+          });
+          approvalStatus = "rejected";
+        } catch {
+          // Best-effort provider cleanup should not block ending the local turn.
+        }
+      }
+
+      this.agent.clearPendingApproval();
+      this.pendingApproval = null;
+      this.currentTurnId = null;
+      this.activeTurnPromise = null;
+      this.store.cancelTurn(turnId, {
+        message,
+        toolUseId: pendingApproval.invocation.toolUseId,
+        approvalId,
+        approvalStatus,
+      });
+      return {
+        status: "cancelled",
+        turnId,
+      };
+    }
+
+    if (!this.agent.cancelActiveTurn()) {
+      throw new Error("Turn cancellation is not available in the current phase.");
+    }
+
+    return {
+      status: "cancelling",
+      turnId,
+    };
   }
 
   async waitForIdle(): Promise<void> {
@@ -563,7 +621,7 @@ export class SessionRuntime {
         this.handleAgentResult(turnId, result);
       })
       .catch((error) => {
-        this.failTurn(turnId, error);
+        this.handleTurnFailure(turnId, error);
       })
       .finally(() => {
         this.activeTurnPromise = null;
@@ -577,7 +635,7 @@ export class SessionRuntime {
         this.handleAgentResult(turnId, nextResult);
       })
       .catch((error) => {
-        this.failTurn(turnId, error);
+        this.handleTurnFailure(turnId, error);
       })
       .finally(() => {
         this.activeTurnPromise = null;
@@ -602,6 +660,19 @@ export class SessionRuntime {
     this.pendingApproval = null;
     this.currentTurnId = null;
     this.store.failTurn(turnId, error instanceof Error ? error.message : String(error));
+  }
+
+  private handleTurnFailure(turnId: string, error: unknown): void {
+    if (isLlmAbortError(error)) {
+      this.pendingApproval = null;
+      this.currentTurnId = null;
+      this.store.cancelTurn(turnId, {
+        message: "Turn cancelled by user.",
+      });
+      return;
+    }
+
+    this.failTurn(turnId, error);
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {
