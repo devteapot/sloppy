@@ -239,6 +239,7 @@ TUI-specific settings are configured under `tui`.
 
 ## Design references
 
+- `docs/01-prior-art.md` for notes on OpenClaw, Hermes, and nearby auth/runtime approaches
 - `docs/02-architecture.md` for the current runtime design
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap
 - `docs/04-slop-protocol-reference.md` for the local protocol summary

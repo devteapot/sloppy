@@ -64,6 +64,77 @@ Evaluation of existing agent harnesses and how SLOP changes the architecture.
 
 ---
 
+## OpenAI Subscription Auth Approaches
+
+The nearby projects split "OpenAI auth" into two very different things:
+
+- normal OpenAI Platform API-key access against `api.openai.com`
+- ChatGPT subscription auth for Codex-style models and `chatgpt.com/backend-api/*`
+
+For `sloppy`, that distinction matters. The subscription path is not just another secret string. It has a different token shape, refresh lifecycle, model catalog, and transport behavior.
+
+### Approach Summary
+
+| Project | Shape | Auth ownership | Runtime boundary | Tradeoff |
+|---|---|---|---|---|
+| T3 Code | Reuse Codex CLI | Codex CLI owns session | `codex login`, `codex app-server` | Least custom auth code, most external dependency |
+| OpenCode | Direct OAuth implementation | App owns session | Internal fetch wrapper rewrites to ChatGPT/Codex endpoints | Self-contained, but highest upstream fragility |
+| Hermes Agent | Separate `openai-codex` provider | App owns session | Runtime resolves Codex tokens into a Codex-specific base URL | Smallest clean first-party implementation |
+| OpenClaw | Separate `openai-codex` provider and transport family | App-owned OAuth with optional Codex CLI reuse | Provider plugin + distinct `openai-codex-responses` transport | Cleanest long-term boundary, most machinery |
+
+### T3 Code
+
+- Treats Codex authentication as something the official `codex` CLI already handles.
+- Checks `codex login status` and tells the user to run `codex login` when needed.
+- Uses `codex app-server` and `account/read` to probe account state and plan capabilities.
+
+This is the lowest-risk path if the goal is "support whatever Codex CLI supports" rather than "own the login flow ourselves." The downside is that the product now depends on another installed tool, its config layout, its auth lifecycle, and its version compatibility.
+
+### OpenCode
+
+- Implements the OpenAI/Codex auth flow directly.
+- Supports browser PKCE with a localhost callback server.
+- Supports a headless device-auth flow as a fallback.
+- Stores `access`, `refresh`, `expires`, and `accountId` in its own auth store.
+- Rewrites model requests to `https://chatgpt.com/backend-api/codex/responses` and injects the OAuth bearer token plus `ChatGPT-Account-Id` when present.
+
+This is the most self-contained UX. It is also the most coupled to current OpenAI auth and endpoint details, so it carries more maintenance risk if upstream behavior shifts.
+
+### Hermes Agent
+
+- Treats Codex as a separate provider: `openai-codex`.
+- Uses direct device-code login against OpenAI auth endpoints.
+- Stores tokens in Hermes-owned auth state under `~/.hermes/auth.json`.
+- Can import `~/.codex/auth.json`, but treats that as compatibility or migration, not the primary session model.
+- Refreshes expiring access tokens before runtime use and resolves a Codex-specific base URL.
+
+This is a good "own the auth session, keep the implementation small" model. It avoids depending on the Codex CLI while also avoiding the more involved browser-callback flow as the primary UX.
+
+### OpenClaw
+
+- Also treats Codex as a separate provider: `openai-codex`.
+- Gives it a separate transport family, `openai-codex-responses`, rather than hiding it under generic OpenAI-compatible handling.
+- Supports first-class OAuth login.
+- Supports optional Codex CLI credential reuse.
+- Uses provider-owned auth profiles with stable ids derived from email or JWT identity claims.
+- Explicitly marks reused external Codex CLI profiles as a compatibility path rather than the preferred long-term credential model.
+
+This is the cleanest architecture of the group. It makes the boundary between normal OpenAI API-key usage and ChatGPT subscription auth explicit in both auth storage and runtime transport selection.
+
+### Likely Direction For Sloppy
+
+If `sloppy` adds ChatGPT subscription auth later, the cleanest direction is:
+
+- add a separate provider such as `openai-codex` rather than overloading `openai`
+- store structured OAuth credentials separately from API keys
+- resolve a Codex-specific runtime transport rather than forcing it through the plain OpenAI API-key path
+- consider Codex CLI reuse as optional compatibility later, not the core design
+
+The practical rollout path is probably Hermes first, OpenClaw eventually:
+
+- Hermes-style first-party device auth is the smallest coherent implementation
+- OpenClaw-style provider and transport separation is the better long-term architecture
+
 ## What Both Projects Get Right
 
 1. **Optional MCP** — Neither treats MCP as load-bearing. It's a plugin layer for external tool discovery. This validates our approach of replacing it entirely.
