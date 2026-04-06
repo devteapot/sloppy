@@ -155,6 +155,8 @@ Responsibilities:
 
 This boundary is the intended long-term interface surface for Sloppy. The current CLI REPL is a development shell, not the final public integration model.
 
+The concrete session tree and affordance contract are defined in `docs/06-agent-session-provider.md`.
+
 ---
 
 ## Interface model
@@ -344,6 +346,6 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
-- The session-provider interface is still planned. The current CLI talks to `Agent` directly as a temporary development surface.
+- The session-provider contract is now documented, but the implementation is still planned. The current CLI talks to `Agent` directly as a temporary development surface.
 
 These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.

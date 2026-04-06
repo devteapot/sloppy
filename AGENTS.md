@@ -15,6 +15,7 @@
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap.
 - `docs/04-slop-protocol-reference.md` for protocol vocabulary and message semantics.
 - `docs/05-language-evaluation.md` for stack decisions.
+- `docs/06-agent-session-provider.md` for the concrete session-provider state and affordance shape.
 - External SLOP spec: `~/dev/slop-slop-slop/spec/`.
 
 ## Working Reality

@@ -53,13 +53,15 @@ The next interface phase should:
 - support multiple simultaneous UI consumers attached to one session
 - start with `apps/tui/` as the first richer interface
 
-The likely shape is an **agent-session provider**:
+The selected shape is an **agent-session provider**:
 
 - the runtime remains a SLOP consumer of workspace and application providers
 - the runtime also becomes a SLOP provider of transcript, turn state, approvals, and session affordances
 - UIs become consumers of that session provider
 
 This keeps the interface model aligned with the core architecture instead of inventing a separate UI-only protocol.
+
+The concrete provider shape is defined in `docs/06-agent-session-provider.md`.
 
 Still intentionally minimal:
 

@@ -1,0 +1,517 @@
+# Agent Session Provider
+
+## Goal
+
+Define the public SLOP shape for one running Sloppy agent session.
+
+This provider is the boundary that first-party and third-party UIs should consume.
+
+It is intentionally session-scoped:
+
+- one provider instance represents one agent session
+- multiple consumers may attach to that same session
+- the runtime stays headless behind this boundary
+
+The agent runtime remains a consumer of workspace and application providers. The agent-session provider is the separate provider surface exposed upward to UIs and other clients.
+
+---
+
+## Non-goals
+
+This provider does not attempt to expose everything the runtime knows.
+
+Explicit non-goals for v1:
+
+- no proxied `filesystem`, `terminal`, or external app subtrees
+- no local UI state such as drafts, cursor position, pane focus, scroll offsets, or layout
+- no multi-session listing or session creation flow
+- no hidden chain-of-thought or private prompt-internal reasoning state
+- no requirement that UIs understand the runtime's internal implementation details
+
+If richer inspection is needed later, it should be added as an explicit extension rather than by turning the session provider into a mirror of all downstream providers.
+
+---
+
+## Session Model
+
+The recommended model is one provider instance per session.
+
+That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
+
+Recommended properties of a session provider instance:
+
+- a unique provider id for the session lifetime
+- a stable root state tree while the session is active
+- shared state across all connected consumers of that session
+- patch-driven updates for transcript, activity, approvals, and async tasks
+
+The provider may expose session metadata in the `hello` payload, but the state tree described below is the primary contract.
+
+---
+
+## Public Paths
+
+The root tree should expose these top-level children:
+
+- `/session`
+- `/turn`
+- `/composer`
+- `/transcript`
+- `/activity`
+- `/approvals`
+- `/tasks`
+
+These paths are intentionally small and human-meaningful so UIs can subscribe shallowly and deepen only where needed.
+
+---
+
+## Example Shape
+
+```text
+[root] agent-session: Agent Session
+  [context] session (session_id="sess-123", status="active", model_provider="anthropic", model="claude-sonnet", client_count=2)
+  [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
+  [control] composer (accepts_attachments=true, max_attachments=8)  actions: {send_message(text, attachments?)}
+  [collection] transcript
+    [item] msg-1 (role="user", state="complete", turn_id="turn-1")
+      [group] content
+        [document] block-1 (mime="text/plain", text="list the files in the current workspace")
+    [item] msg-2 (role="assistant", state="streaming", turn_id="turn-1")
+      [group] content
+        [document] block-1 (mime="text/plain", text="I can see the workspace and will inspect the root files...")
+  [collection] activity
+    [item] step-1 (kind="tool_call", provider="filesystem", path="/workspace", action="read", status="ok", summary="Read workspace root")
+  [collection] approvals
+    [item] approval-1 (status="pending", provider="terminal", path="/session", action="execute", reason="Command marked dangerous")  actions: {approve, reject}
+  [collection] tasks
+    [item] task-1 (status="running", provider="terminal", provider_task_id="task-123", message="Running tests")  actions: {cancel}
+```
+
+---
+
+## Node Contracts
+
+### `/session`
+
+Node type: `context`
+
+Required props:
+
+- `session_id`: stable session identifier
+- `status`: `active | closing | closed | error`
+- `model_provider`: selected LLM provider name
+- `model`: selected model identifier
+- `started_at`: ISO timestamp
+- `updated_at`: ISO timestamp
+- `client_count`: current number of attached consumers
+
+Optional props:
+
+- `title`: human-readable label for the session
+- `workspace_root`: current workspace root if one exists
+- `last_error`: latest session-level error summary
+
+Affordances:
+
+- none in v1
+
+Rationale:
+
+- this node is shared session metadata, not a control surface
+
+### `/turn`
+
+Node type: `status`
+
+Required props:
+
+- `turn_id`: current turn id, or `null` when idle
+- `state`: `idle | running | waiting_approval | error`
+- `phase`: `none | model | tool_use | awaiting_result | complete`
+- `iteration`: current loop iteration count
+- `started_at`: ISO timestamp or `null`
+- `updated_at`: ISO timestamp
+- `message`: short human-readable status summary
+
+Optional props:
+
+- `last_error`: latest turn-level error string
+- `waiting_on`: `approval | task | model | tool | null`
+
+Affordances:
+
+- `cancel_turn`
+
+Rules:
+
+- `cancel_turn` should only be present when cancellation is actually possible
+- when the session is idle, `turn_id` should be `null` and `phase` should be `none`
+
+### `/composer`
+
+Node type: `control`
+
+Required props:
+
+- `accepts_attachments`: boolean
+- `max_attachments`: number
+
+Affordances:
+
+- `send_message(text, attachments?)`
+
+Recommended `send_message` params:
+
+```json
+{
+  "text": "please summarize the failing tests",
+  "attachments": [
+    {
+      "kind": "document",
+      "name": "failing-test.log",
+      "mime": "text/plain",
+      "text": "...optional inline content..."
+    },
+    {
+      "kind": "image",
+      "name": "screenshot.png",
+      "mime": "image/png",
+      "uri": "file:///tmp/screenshot.png"
+    }
+  ]
+}
+```
+
+Rules:
+
+- callers should provide non-empty `text`, at least one attachment, or both
+- `send_message` should return an error in v1 if a turn is already active instead of implicitly queueing
+- `attachments` are session input content, not persistent local UI drafts
+
+### `/transcript`
+
+Node type: `collection`
+
+Children:
+
+- ordered message items, oldest to newest
+
+Each message item:
+
+- node type: `item`
+- path shape: `/transcript/{messageId}`
+
+Required message props:
+
+- `role`: `user | assistant | system`
+- `state`: `complete | streaming | error`
+- `turn_id`: turn identifier that produced the message, or `null`
+- `created_at`: ISO timestamp
+
+Optional message props:
+
+- `author`: display label for the speaker or source
+- `error`: error summary when `state=error`
+
+Children under each message:
+
+- `/transcript/{messageId}/content`
+
+`content` node:
+
+- node type: `group`
+- children preserve content-block order
+
+Allowed content block nodes in v1:
+
+- `document` for text and file-like content
+- `media` for image, audio, and video content
+
+Recommended content block patterns:
+
+- short text blocks: inline `props.text`
+- large text or binary content: use a SLOP content reference
+- previews and summaries: expose in node props or `summary`
+
+Example text block:
+
+```json
+{
+  "type": "document",
+  "props": {
+    "mime": "text/markdown",
+    "text": "Here is the current status..."
+  }
+}
+```
+
+Example binary block:
+
+```json
+{
+  "type": "media",
+  "props": {
+    "mime": "image/png",
+    "name": "screenshot.png"
+  },
+  "content": {
+    "uri": "slop://agent-session/transcript/msg-7/content/block-2",
+    "type": "binary",
+    "mime": "image/png",
+    "summary": "Screenshot of failing test output",
+    "preview": "Terminal screenshot with 3 failing assertions"
+  }
+}
+```
+
+Rules:
+
+- `transcript` contains human-visible conversation state only
+- tool calls and tool results should not be stored as transcript messages unless they are intentionally user-visible assistant output
+- assistant streaming should patch the newest assistant message in place until it becomes `complete`
+
+### `/activity`
+
+Node type: `collection`
+
+Purpose:
+
+- expose session-visible operational state separate from the user conversation transcript
+
+Each activity item:
+
+- node type: `item`
+- path shape: `/activity/{activityId}`
+
+Required props:
+
+- `kind`: `model_call | tool_call | tool_result | approval | task | error`
+- `status`: `running | ok | error | accepted | cancelled`
+- `summary`: short human-readable description
+- `started_at`: ISO timestamp
+- `updated_at`: ISO timestamp
+
+Optional props:
+
+- `provider`: downstream provider id
+- `path`: downstream SLOP path
+- `action`: affordance name
+- `completed_at`: ISO timestamp
+- `turn_id`: related turn id
+- `approval_id`: related approval id
+- `task_id`: related task id
+
+Rules:
+
+- this is an operational timeline, not a hidden debug trace
+- private prompt internals and chain-of-thought do not belong here
+- the collection should be append-oriented so multiple UIs can follow progress via patches
+
+### `/approvals`
+
+Node type: `collection`
+
+Purpose:
+
+- expose actions blocked on explicit user approval
+
+Each approval item:
+
+- node type: `item`
+- path shape: `/approvals/{approvalId}`
+
+Required props:
+
+- `status`: `pending | approved | rejected | expired`
+- `provider`: downstream provider id
+- `path`: target downstream path
+- `action`: target affordance name
+- `reason`: human-readable explanation of why approval is required
+- `created_at`: ISO timestamp
+
+Optional props:
+
+- `resolved_at`: ISO timestamp
+- `params_preview`: short string summary of the blocked parameters
+- `dangerous`: boolean
+
+Affordances while pending:
+
+- `approve`
+- `reject(reason?)`
+
+Rules:
+
+- when at least one approval is pending, `/turn.state` should become `waiting_approval`
+- approving or rejecting should patch both the approval item and `/turn`
+- resolved approvals may remain visible for session history unless trimmed by retention policy
+
+### `/tasks`
+
+Node type: `collection`
+
+Purpose:
+
+- surface async downstream work that outlives one immediate invoke result
+
+Each task item:
+
+- node type: `item`
+- path shape: `/tasks/{taskId}`
+
+Required props:
+
+- `status`: `running | completed | failed | cancelled`
+- `provider`: downstream provider id
+- `provider_task_id`: original downstream task identifier
+- `started_at`: ISO timestamp
+- `updated_at`: ISO timestamp
+- `message`: short human-readable progress summary
+
+Optional props:
+
+- `progress`: number from `0` to `1`
+- `linked_activity_id`: activity item id related to the task
+- `error`: error summary for failed tasks
+
+Affordances:
+
+- `cancel` when the downstream task is cancelable and still active
+
+Rules:
+
+- session task ids may differ from downstream provider task ids
+- if the downstream invoke returned `accepted`, a task node should appear promptly so UIs can subscribe and render progress
+
+---
+
+## Affordance Contracts
+
+### `send_message`
+
+Target path:
+
+- `/composer`
+
+Behavior:
+
+1. append a new user message to `/transcript`
+2. create or update `/turn` to the running state
+3. begin streaming assistant output and activity updates through patches
+
+### `cancel_turn`
+
+Target path:
+
+- `/turn`
+
+Behavior:
+
+1. request cancellation of the active model turn and any locally managed waiting state
+2. update `/turn` to reflect cancellation or the resulting terminal state
+3. preserve already emitted transcript and activity items
+
+### `approve` and `reject`
+
+Target path:
+
+- `/approvals/{approvalId}`
+
+Behavior:
+
+1. resolve the pending approval item
+2. resume or terminate the blocked action
+3. patch `/turn`, `/activity`, and `/tasks` as needed
+
+### `cancel`
+
+Target path:
+
+- `/tasks/{taskId}`
+
+Behavior:
+
+1. forward cancellation to the downstream provider task when supported
+2. patch the task item as the downstream provider reports progress
+
+---
+
+## Lifecycle Rules
+
+### Turn lifecycle
+
+Expected progression:
+
+1. `/turn.state = idle`
+2. `send_message` moves the turn to `running`
+3. streaming assistant content and activity patches arrive
+4. the turn may temporarily move to `waiting_approval`
+5. the turn eventually returns to `idle` or `error`
+
+### Approval lifecycle
+
+Expected progression:
+
+1. a blocked action creates `/approvals/{approvalId}` with `status=pending`
+2. `/turn.state` becomes `waiting_approval`
+3. a consumer invokes `approve` or `reject`
+4. the approval item resolves and the turn continues or stops accordingly
+
+### Async task lifecycle
+
+Expected progression:
+
+1. a downstream invoke returns `accepted`
+2. the session provider creates `/tasks/{taskId}`
+3. task patches update `status`, `progress`, and `message`
+4. the task ends in `completed`, `failed`, or `cancelled`
+
+---
+
+## Multi-Client Semantics
+
+This provider is intentionally shared across all consumers attached to the same session.
+
+That means:
+
+- all consumers see the same transcript, turn state, approvals, activity, and tasks
+- actions invoked by one consumer are reflected to all others through patches
+- no client gets a private draft or pane state inside the session tree
+
+Concurrency rules for v1:
+
+- only one active turn at a time per session
+- `send_message` during an active turn should return an error instead of queueing
+- if two clients race to approve or reject the same approval, only the first successful resolution should win
+
+Authentication and authorization policy are intentionally left outside this document. The provider shape should work whether all attached clients are trusted or an outer layer enforces access control.
+
+---
+
+## Multimodal Content Rules
+
+The transcript model should support more than plain text from the start.
+
+Rules:
+
+- preserve content-block order within each message
+- use `document` and `media` nodes rather than UI-specific rendering concepts
+- inline short text when practical
+- use content references for large or binary artifacts
+- expose enough metadata for a UI to render or defer loading safely
+
+This keeps the provider useful across TUI, web, IDE, voice, and future agent consumers without forcing one presentation model.
+
+---
+
+## Future Extensions
+
+Likely future extensions include:
+
+- queued messages instead of hard-erroring when a turn is active
+- session persistence and resumption metadata
+- participant attribution when multiple humans or agents act on one session
+- optional richer inspection subtrees, if explicitly justified
+- separate delegation-oriented affordances for agent-to-agent workflows
+
+Those should extend this provider deliberately rather than collapsing it into a generic mirror of the runtime internals.

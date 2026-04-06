@@ -196,6 +196,7 @@ You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `S
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap
 - `docs/04-slop-protocol-reference.md` for the local protocol summary
 - `docs/05-language-evaluation.md` for language/runtime choices
+- `docs/06-agent-session-provider.md` for the concrete public UI/session provider shape
 - `~/dev/slop-slop-slop/spec/` for the full SLOP protocol spec
 
 ## License
