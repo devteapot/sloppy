@@ -53,9 +53,17 @@ const (
 	profileForm
 )
 
+const (
+	sessionScreenMain     = "main"
+	sessionScreenProfiles = "profiles"
+	sessionScreenSettings = "settings"
+)
+
 type App struct {
 	width  int
 	height int
+
+	cwd string
 
 	address   string
 	mode      string
@@ -71,10 +79,14 @@ type App struct {
 	rejectInput      textinput.Model
 	rejectApprovalID string
 	sessionErr       string
+	leaderPending    bool
 	focus            paneFocus
+	lastMainFocus    paneFocus
+	rejectEditing    bool
 
 	profileFocus         profilePaneFocus
 	profileFieldFocus    int
+	profileFieldEditing  bool
 	profileCursor        int
 	editingProfileID     string
 	profileLabelInput    textinput.Model
@@ -82,6 +94,9 @@ type App struct {
 	profileModelInput    textinput.Model
 	profileBaseURLInput  textinput.Model
 	profileAPIKeyInput   textinput.Model
+	settingsReturnScreen string
+	settingsCapturing    bool
+	tuiSettings          TuiSettings
 
 	transcriptCursor int
 	approvalCursor   int
@@ -90,6 +105,13 @@ type App struct {
 }
 
 func NewApp(address string) App {
+	settings := defaultTuiSettings()
+	workingDirectory := ""
+	loadedSettings, err := loadTuiSettings(workingDirectory)
+	if err == nil {
+		settings = loadedSettings
+	}
+
 	input := newCodeInput("Ask the agent...")
 	input.Width = 72
 	input.Focus()
@@ -119,19 +141,23 @@ func NewApp(address string) App {
 	}
 
 	return App{
+		cwd:                  workingDirectory,
 		address:              address,
 		mode:                 mode,
 		manager:              session.NewManager(),
 		input:                input,
 		rejectInput:          rejectInput,
 		focus:                paneComposer,
-		sessionScreen:        "main",
+		lastMainFocus:        paneTranscript,
+		sessionScreen:        sessionScreenMain,
 		profileFocus:         profileList,
 		profileLabelInput:    profileLabelInput,
 		profileProviderInput: profileProviderInput,
 		profileModelInput:    profileModelInput,
 		profileBaseURLInput:  profileBaseURLInput,
 		profileAPIKeyInput:   profileAPIKeyInput,
+		tuiSettings:          settings,
+		sessionErr:           errorString(err),
 	}
 }
 
@@ -220,8 +246,11 @@ func (a App) View() string {
 	if a.mode == "discovery" {
 		return a.discoveryView()
 	}
-	if a.sessionScreen == "profiles" {
+	if a.sessionScreen == sessionScreenProfiles {
 		return a.profileView()
+	}
+	if a.sessionScreen == sessionScreenSettings {
+		return a.settingsView()
 	}
 
 	return a.sessionView()
@@ -253,26 +282,40 @@ func (a App) updateDiscovery(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := message.String()
+	if key == "ctrl+c" {
+		return a, tea.Quit
+	}
+
+	if a.leaderPending {
+		return a.handleLeaderKey(message)
+	}
+
+	if !a.rejectPromptOpen() && a.sessionScreen != sessionScreenSettings && key == a.tuiSettings.Keybinds.Leader {
+		a.leaderPending = true
+		a.sessionErr = ""
+		return a, nil
+	}
+
 	if a.rejectPromptOpen() {
 		return a.updateRejectPrompt(message)
 	}
-	if a.sessionScreen == "profiles" {
+	if a.sessionScreen == sessionScreenProfiles {
 		return a.updateProfiles(message)
 	}
+	if a.sessionScreen == sessionScreenSettings {
+		return a.updateSettings(message)
+	}
+
+	if isPaneNavigationKey(key) && a.moveMainPane(key) {
+		a.syncInputs()
+		return a, nil
+	}
+
 	if a.focus == paneComposer {
-		switch message.String() {
-		case "ctrl+c":
-			return a, tea.Quit
+		switch key {
 		case "esc":
-			a.manager.Disconnect()
-			a.state = session.ViewState{}
-			a.address = ""
-			a.mode = "discovery"
-			a.sessionErr = ""
-			a.rejectApprovalID = ""
-			a.focus = paneComposer
-			a.sessionScreen = "main"
-			a.syncInputs()
+			a.leaveToDiscovery()
 			return a, discoverCmd()
 		case "tab":
 			a.focus = nextPane(a.focus)
@@ -295,25 +338,9 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
-	switch message.String() {
-	case "ctrl+c", "q":
-		return a, tea.Quit
-	case "s":
-		a.sessionScreen = "profiles"
-		a.profileFocus = profileList
-		a.loadSelectedProfileIntoForm()
-		a.syncInputs()
-		return a, nil
+	switch key {
 	case "esc":
-		a.manager.Disconnect()
-		a.state = session.ViewState{}
-		a.address = ""
-		a.mode = "discovery"
-		a.sessionErr = ""
-		a.rejectApprovalID = ""
-		a.focus = paneComposer
-		a.sessionScreen = "main"
-		a.syncInputs()
+		a.leaveToDiscovery()
 		return a, discoverCmd()
 	case "tab", "right":
 		a.focus = nextPane(a.focus)
@@ -323,39 +350,12 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.focus = previousPane(a.focus)
 		a.syncInputs()
 		return a, nil
-	case "i":
-		a.focus = paneComposer
-		a.syncInputs()
-		return a, nil
 	case "up", "k":
-		if a.focus != paneComposer {
-			a.moveSelection(-1)
-			return a, nil
-		}
+		a.moveSelection(-1)
+		return a, nil
 	case "down", "j":
-		if a.focus != paneComposer {
-			a.moveSelection(1)
-			return a, nil
-		}
-	case "a":
-		if approval := a.selectedApproval(); approval != nil && approval.CanApprove && a.focus == paneApprovals {
-			return a, approveApprovalCmd(a.manager, approval.ID)
-		}
-	case "r":
-		if approval := a.selectedApproval(); approval != nil && approval.CanReject && a.focus == paneApprovals {
-			a.rejectApprovalID = approval.ID
-			a.rejectInput.SetValue("")
-			a.syncInputs()
-			return a, nil
-		}
-	case "c":
-		if task := a.selectedTask(); task != nil && task.CanCancel && a.focus == paneTasks {
-			return a, cancelTaskCmd(a.manager, task.ID)
-		}
-	case "t":
-		if a.state.CanCancelTurn && a.focus != paneComposer {
-			return a, cancelTurnCmd(a.manager)
-		}
+		a.moveSelection(1)
+		return a, nil
 	case "enter":
 		switch a.focus {
 		case paneApprovals:
@@ -374,23 +374,34 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a App) updateRejectPrompt(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch message.String() {
-	case "ctrl+c":
-		return a, tea.Quit
 	case "esc":
-		a.rejectApprovalID = ""
-		a.rejectInput.SetValue("")
+		if a.rejectEditing {
+			a.rejectEditing = false
+			a.syncInputs()
+			return a, nil
+		}
+		a.closeRejectPrompt()
 		a.syncInputs()
 		return a, nil
 	case "enter":
+		if !a.rejectEditing {
+			a.rejectEditing = true
+			a.syncInputs()
+			return a, nil
+		}
+
 		approvalID := a.rejectApprovalID
 		reason := strings.TrimSpace(a.rejectInput.Value())
-		a.rejectApprovalID = ""
-		a.rejectInput.SetValue("")
+		a.closeRejectPrompt()
 		a.syncInputs()
 		if approvalID == "" {
 			return a, nil
 		}
 		return a, rejectApprovalCmd(a.manager, approvalID, reason)
+	}
+
+	if !a.rejectEditing {
+		return a, nil
 	}
 
 	var cmd tea.Cmd
@@ -399,52 +410,12 @@ func (a App) updateRejectPrompt(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateProfiles(message tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if a.profileFocus == profileForm {
+	if a.profileFocus == profileForm && a.profileFieldEditing {
 		switch message.String() {
-		case "ctrl+c":
-			return a, tea.Quit
-		case "esc":
-			if a.state.CanSendMessage {
-				a.sessionScreen = "main"
-				a.focus = paneComposer
-			} else {
-				a.profileFocus = profileList
-			}
+		case "esc", "enter":
+			a.profileFieldEditing = false
 			a.syncInputs()
 			return a, nil
-		case "tab":
-			a.profileFieldFocus = (a.profileFieldFocus + 1) % 5
-			a.syncInputs()
-			return a, nil
-		case "shift+tab":
-			a.profileFieldFocus = (a.profileFieldFocus + 4) % 5
-			a.syncInputs()
-			return a, nil
-		case "enter":
-			provider := strings.TrimSpace(a.profileProviderInput.Value())
-			model := strings.TrimSpace(a.profileModelInput.Value())
-			if provider == "" || model == "" {
-				a.sessionErr = "Provider and model are required."
-				return a, nil
-			}
-
-			params := slop.Params{
-				"provider": provider,
-				"model":    model,
-			}
-			if trimmed := strings.TrimSpace(a.profileLabelInput.Value()); trimmed != "" {
-				params["label"] = trimmed
-			}
-			if trimmed := strings.TrimSpace(a.profileBaseURLInput.Value()); trimmed != "" {
-				params["base_url"] = trimmed
-			}
-			if trimmed := strings.TrimSpace(a.profileAPIKeyInput.Value()); trimmed != "" {
-				params["api_key"] = trimmed
-			}
-			if a.editingProfileID != "" {
-				params["profile_id"] = a.editingProfileID
-			}
-			return a, saveProfileCmd(a.manager, params)
 		}
 
 		var cmd tea.Cmd
@@ -465,21 +436,36 @@ func (a App) updateProfiles(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch message.String() {
-	case "ctrl+c", "q":
-		return a, tea.Quit
-	case "s", "esc":
+	case "esc":
 		if a.state.CanSendMessage {
-			a.sessionScreen = "main"
+			a.sessionScreen = sessionScreenMain
 			a.focus = paneComposer
-			a.syncInputs()
+		} else {
+			a.profileFocus = profileList
 		}
-		return a, nil
-	case "left", "h":
-		a.profileFocus = profileList
+		a.profileFieldEditing = false
 		a.syncInputs()
 		return a, nil
-	case "right", "l", "i":
+	case "tab":
+		if a.profileFocus == profileForm {
+			a.moveProfileField(1)
+			a.syncInputs()
+			return a, nil
+		}
+	case "shift+tab":
+		if a.profileFocus == profileForm {
+			a.moveProfileField(-1)
+			a.syncInputs()
+			return a, nil
+		}
+	case "left", "h":
+		a.profileFocus = profileList
+		a.profileFieldEditing = false
+		a.syncInputs()
+		return a, nil
+	case "right", "l":
 		a.profileFocus = profileForm
+		a.profileFieldEditing = false
 		if a.editingProfileID == "" {
 			a.loadSelectedProfileIntoForm()
 		}
@@ -502,31 +488,342 @@ func (a App) updateProfiles(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			a.profileFocus = profileForm
 			a.loadSelectedProfileIntoForm()
+			a.profileFieldEditing = false
 			a.syncInputs()
 			return a, nil
-		case "n":
-			a.startNewProfileForm()
-			a.profileFocus = profileForm
-			a.syncInputs()
-			return a, nil
-		case "f":
-			if profile := a.selectedProfile(); profile != nil {
-				return a, setDefaultProfileCmd(a.manager, profile.ID)
-			}
-		case "d":
-			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteProfile {
-				return a, deleteProfileCmd(a.manager, profile.ID)
-			}
-		case "x":
-			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteAPIKey {
-				return a, deleteAPIKeyCmd(a.manager, profile.ID)
-			}
 		}
 
 		return a, nil
 	}
 
+	switch message.String() {
+	case "up", "k":
+		a.moveProfileField(-1)
+		a.syncInputs()
+		return a, nil
+	case "down", "j":
+		a.moveProfileField(1)
+		a.syncInputs()
+		return a, nil
+	case "enter":
+		a.profileFieldEditing = true
+		a.syncInputs()
+		return a, nil
+	}
+
 	return a, nil
+}
+
+func (a App) updateSettings(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.settingsCapturing {
+		switch message.String() {
+		case "esc":
+			a.settingsCapturing = false
+			a.sessionErr = ""
+			return a, nil
+		default:
+			nextLeader := normalizeLeaderKey(message.String())
+			if err := validateLeaderKey(nextLeader); err != nil {
+				a.sessionErr = err.Error()
+				return a, nil
+			}
+
+			nextSettings := a.tuiSettings
+			nextSettings.Keybinds.Leader = nextLeader
+			if err := writeHomeTuiSettings(nextSettings); err != nil {
+				a.sessionErr = err.Error()
+				return a, nil
+			}
+
+			a.tuiSettings = nextSettings
+			a.settingsCapturing = false
+			a.sessionErr = ""
+			return a, nil
+		}
+	}
+
+	switch message.String() {
+	case "esc":
+		a.sessionScreen = a.settingsReturnScreen
+		if a.sessionScreen == "" {
+			a.sessionScreen = sessionScreenMain
+		}
+		a.syncInputs()
+		return a, nil
+	case "enter":
+		a.settingsCapturing = true
+		a.sessionErr = ""
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func (a App) handleLeaderKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := message.String()
+	a.leaderPending = false
+	if key == "esc" || key == a.tuiSettings.Keybinds.Leader {
+		return a, nil
+	}
+
+	if a.sessionScreen == sessionScreenProfiles {
+		return a.handleProfileLeaderAction(key)
+	}
+	return a.handleMainLeaderAction(key)
+}
+
+func (a App) handleMainLeaderAction(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q":
+		return a, tea.Quit
+	case "p":
+		a.openProfilesScreen()
+		return a, nil
+	case "s":
+		a.openSettingsScreen(sessionScreenMain)
+		return a, nil
+	case "i":
+		a.focus = paneComposer
+		a.syncInputs()
+		return a, nil
+	case "t":
+		if a.state.CanCancelTurn {
+			return a, cancelTurnCmd(a.manager)
+		}
+	case "a":
+		if approval := a.selectedApproval(); approval != nil && approval.CanApprove && a.focus == paneApprovals {
+			return a, approveApprovalCmd(a.manager, approval.ID)
+		}
+	case "r":
+		if approval := a.selectedApproval(); approval != nil && approval.CanReject && a.focus == paneApprovals {
+			a.rejectApprovalID = approval.ID
+			a.rejectInput.SetValue("")
+			a.rejectEditing = false
+			a.syncInputs()
+			return a, nil
+		}
+	case "c":
+		if task := a.selectedTask(); task != nil && task.CanCancel && a.focus == paneTasks {
+			return a, cancelTaskCmd(a.manager, task.ID)
+		}
+	}
+
+	return a, nil
+}
+
+func (a App) handleProfileLeaderAction(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q":
+		return a, tea.Quit
+	case "s":
+		a.openSettingsScreen(sessionScreenProfiles)
+		return a, nil
+	case "w":
+		if a.profileFocus == profileForm {
+			params, err := a.profileSaveParams()
+			if err != nil {
+				a.sessionErr = err.Error()
+				return a, nil
+			}
+			return a, saveProfileCmd(a.manager, params)
+		}
+	case "n":
+		if a.profileFocus == profileList {
+			a.startNewProfileForm()
+			a.profileFocus = profileForm
+			a.profileFieldEditing = false
+			a.syncInputs()
+			return a, nil
+		}
+	case "f":
+		if a.profileFocus == profileList {
+			if profile := a.selectedProfile(); profile != nil {
+				return a, setDefaultProfileCmd(a.manager, profile.ID)
+			}
+		}
+	case "d":
+		if a.profileFocus == profileList {
+			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteProfile {
+				return a, deleteProfileCmd(a.manager, profile.ID)
+			}
+		}
+	case "x":
+		if a.profileFocus == profileList {
+			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteAPIKey {
+				return a, deleteAPIKeyCmd(a.manager, profile.ID)
+			}
+		}
+	}
+
+	return a, nil
+}
+
+func (a *App) openProfilesScreen() {
+	a.sessionScreen = sessionScreenProfiles
+	a.profileFocus = profileList
+	a.profileFieldEditing = false
+	a.settingsCapturing = false
+	a.loadSelectedProfileIntoForm()
+	a.syncInputs()
+}
+
+func (a *App) openSettingsScreen(returnScreen string) {
+	a.settingsReturnScreen = returnScreen
+	a.sessionScreen = sessionScreenSettings
+	a.profileFieldEditing = false
+	a.settingsCapturing = false
+	a.syncInputs()
+}
+
+func (a *App) closeRejectPrompt() {
+	a.rejectApprovalID = ""
+	a.rejectInput.SetValue("")
+	a.rejectEditing = false
+}
+
+func (a *App) leaveToDiscovery() {
+	a.manager.Disconnect()
+	a.state = session.ViewState{}
+	a.address = ""
+	a.mode = "discovery"
+	a.leaderPending = false
+	a.rejectApprovalID = ""
+	a.rejectEditing = false
+	a.profileFieldEditing = false
+	a.settingsCapturing = false
+	a.focus = paneComposer
+	a.lastMainFocus = paneTranscript
+	a.sessionScreen = sessionScreenMain
+	a.settingsReturnScreen = sessionScreenMain
+	a.syncInputs()
+}
+
+func (a *App) moveProfileField(delta int) {
+	a.profileFieldFocus += delta
+	if a.profileFieldFocus < 0 {
+		a.profileFieldFocus = 0
+	}
+	if a.profileFieldFocus > 4 {
+		a.profileFieldFocus = 4
+	}
+	a.profileFieldEditing = false
+}
+
+func (a App) profileSaveParams() (slop.Params, error) {
+	provider := strings.TrimSpace(a.profileProviderInput.Value())
+	model := strings.TrimSpace(a.profileModelInput.Value())
+	if provider == "" || model == "" {
+		return nil, fmt.Errorf("provider and model are required")
+	}
+
+	params := slop.Params{
+		"provider": provider,
+		"model":    model,
+	}
+	if trimmed := strings.TrimSpace(a.profileLabelInput.Value()); trimmed != "" {
+		params["label"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(a.profileBaseURLInput.Value()); trimmed != "" {
+		params["base_url"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(a.profileAPIKeyInput.Value()); trimmed != "" {
+		params["api_key"] = trimmed
+	}
+	if a.editingProfileID != "" {
+		params["profile_id"] = a.editingProfileID
+	}
+	return params, nil
+}
+
+func (a *App) moveMainPane(key string) bool {
+	order := []paneFocus{paneTranscript, paneApprovals, paneTasks, paneActivity, paneComposer}
+	if a.sessionBodyWidth() < 112 {
+		index := 0
+		for i := range order {
+			if order[i] == a.focus {
+				index = i
+				break
+			}
+		}
+		switch key {
+		case "shift+up", "shift+left":
+			if index > 0 {
+				a.focus = order[index-1]
+				return true
+			}
+		case "shift+down", "shift+right":
+			if index < len(order)-1 {
+				a.focus = order[index+1]
+				return true
+			}
+		}
+		return false
+	}
+
+	next := a.focus
+	switch a.focus {
+	case paneTranscript:
+		switch key {
+		case "shift+right":
+			next = paneApprovals
+		case "shift+down":
+			next = paneComposer
+		}
+	case paneApprovals:
+		switch key {
+		case "shift+left":
+			next = paneTranscript
+		case "shift+down":
+			next = paneTasks
+		}
+	case paneTasks:
+		switch key {
+		case "shift+left":
+			next = paneTranscript
+		case "shift+up":
+			next = paneApprovals
+		case "shift+down":
+			next = paneActivity
+		}
+	case paneActivity:
+		switch key {
+		case "shift+left":
+			next = paneTranscript
+		case "shift+up":
+			next = paneTasks
+		case "shift+down":
+			next = paneComposer
+		}
+	case paneComposer:
+		if key == "shift+up" {
+			next = a.lastMainFocus
+			if next == paneComposer {
+				next = paneTranscript
+			}
+		}
+	}
+
+	if next == a.focus {
+		return false
+	}
+	a.focus = next
+	return true
+}
+
+func (a App) sessionBodyWidth() int {
+	width := a.width
+	if width == 0 {
+		width = 120
+	}
+	bodyWidth := width - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	return bodyWidth
+}
+
+func isPaneNavigationKey(key string) bool {
+	return key == "shift+up" || key == "shift+down" || key == "shift+left" || key == "shift+right"
 }
 
 func (a App) profileView() string {
@@ -606,13 +903,50 @@ func (a App) profileView() string {
 	return appStyle.Render(content)
 }
 
+func (a App) settingsView() string {
+	width := a.width
+	if width == 0 {
+		width = 120
+	}
+	height := a.height
+	if height == 0 {
+		height = 36
+	}
+
+	bodyWidth := width - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	bodyHeight := height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	headerLines := []string{
+		accentTitleStyle.Render("TUI Settings"),
+		strings.Join([]string{
+			renderMetaPair("leader", a.tuiSettings.Keybinds.Leader, ""),
+			renderMetaPair("scope", "HOME CONFIG", ""),
+		}, "   "),
+	}
+	if a.sessionErr != "" {
+		headerLines = append(headerLines, warningStyle.Render(a.sessionErr))
+	}
+	header := lipgloss.NewStyle().Width(bodyWidth).Render(strings.Join(headerLines, "\n"))
+	headerHeight := blockHeight(header)
+	panelHeight := maxInt(bodyHeight-headerHeight-3, 10)
+	panel := paneStyle(true, false).Width(bodyWidth).Height(panelHeight).Render(a.settingsPanelView(bodyWidth-4, panelHeight-2))
+	content := lipgloss.JoinVertical(lipgloss.Left, header, "", panel, "", helpStyle.Render(a.settingsHelp()))
+	return appStyle.Render(content)
+}
+
 func (a App) profileListView(width int, height int) string {
 	var lines []string
 	lines = append(lines, paneHeader("Profiles", a.profileFocus == profileList, fmt.Sprintf("%d available", len(a.state.Profiles))))
 	lines = append(lines, "")
 
 	if len(a.state.Profiles) == 0 {
-		lines = append(lines, ghostTextStyle.Render("No profiles yet. Press n to create the first one."))
+		lines = append(lines, ghostTextStyle.Render(fmt.Sprintf("No profiles yet. Press %s to create the first one.", a.leaderBinding("n"))))
 		return strings.Join(lines, "\n")
 	}
 
@@ -649,11 +983,11 @@ func (a App) profileFormView(width int, _ int) string {
 	rows := []string{
 		paneHeader("Profile Form", a.profileFocus == profileForm, mode),
 		"",
-		renderInputRow("Label", a.profileLabelInput),
-		renderInputRow("Provider", a.profileProviderInput),
-		renderInputRow("Model", a.profileModelInput),
-		renderInputRow("Base URL", a.profileBaseURLInput),
-		renderInputRow("API key", a.profileAPIKeyInput),
+		renderInputRow("Label", a.profileLabelInput, a.profileFocus == profileForm && a.profileFieldFocus == 0, a.profileFieldEditing && a.profileFieldFocus == 0, width),
+		renderInputRow("Provider", a.profileProviderInput, a.profileFocus == profileForm && a.profileFieldFocus == 1, a.profileFieldEditing && a.profileFieldFocus == 1, width),
+		renderInputRow("Model", a.profileModelInput, a.profileFocus == profileForm && a.profileFieldFocus == 2, a.profileFieldEditing && a.profileFieldFocus == 2, width),
+		renderInputRow("Base URL", a.profileBaseURLInput, a.profileFocus == profileForm && a.profileFieldFocus == 3, a.profileFieldEditing && a.profileFieldFocus == 3, width),
+		renderInputRow("API key", a.profileAPIKeyInput, a.profileFocus == profileForm && a.profileFieldFocus == 4, a.profileFieldEditing && a.profileFieldFocus == 4, width),
 		"",
 		mutedStyle.Render("Saving with a non-empty API key stores it securely when the machine supports it. Environment-backed profiles are copied into managed profiles when saved here."),
 	}
@@ -661,8 +995,48 @@ func (a App) profileFormView(width int, _ int) string {
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(rows, "\n"))
 }
 
-func renderInputRow(label string, input textinput.Model) string {
-	return fmt.Sprintf("%s %s", lipgloss.NewStyle().Width(10).Render(metaLabelStyle.Render(strings.ToUpper(label))), input.View())
+func (a App) settingsPanelView(width int, _ int) string {
+	status := mutedStyle.Render("press enter to capture a new leader")
+	if a.settingsCapturing {
+		status = keyStyle.Render("capturing next key")
+	}
+
+	rows := []string{
+		paneHeader("Keybinds", true, "home config"),
+		"",
+		renderSettingRow("Leader key", a.tuiSettings.Keybinds.Leader, status, width),
+		"",
+		mutedStyle.Render("Saved to ~/.sloppy/config.yaml. Workspace config can still override this value."),
+	}
+
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(rows, "\n"))
+}
+
+func renderInputRow(label string, input textinput.Model, focused bool, editing bool, width int) string {
+	marker := ghostTextStyle.Render("·")
+	labelRenderer := metaLabelStyle
+	if focused {
+		marker = selectedAccentStyle.Render("->")
+		labelRenderer = selectedAccentStyle
+	}
+	if editing {
+		marker = keyStyle.Render("*>")
+	}
+
+	row := fmt.Sprintf("%s %s %s", marker, lipgloss.NewStyle().Width(10).Render(labelRenderer.Render(strings.ToUpper(label))), input.View())
+	style := rowStyle.Width(width)
+	if focused {
+		style = selectedRowStyle.Width(width)
+	}
+	return style.Render(row)
+}
+
+func renderSettingRow(label string, value string, status string, width int) string {
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", selectedAccentStyle.Render("->"), labelStyle.Render(strings.ToUpper(label)), codeStyle.Render(value)),
+		"  " + compact(status),
+	}
+	return selectedRowStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func renderProfileEntry(entry session.LlmProfileEntry, selected bool, width int) string {
@@ -716,6 +1090,10 @@ func (a App) discoveryView() string {
 	if a.err != nil {
 		lines = append(lines, "")
 		lines = append(lines, dangerStyle.Render(a.err.Error()))
+	}
+	if a.sessionErr != "" {
+		lines = append(lines, "")
+		lines = append(lines, warningStyle.Render(a.sessionErr))
 	}
 
 	lines = append(lines, "")
@@ -788,7 +1166,7 @@ func (a App) sessionHeaderView(width int) string {
 		meta = append(meta, renderMetaPair("turn", strings.ToUpper(strings.ReplaceAll(a.state.TurnState, "_", " ")), a.state.TurnState))
 	}
 	if a.state.CanCancelTurn {
-		meta = append(meta, fmt.Sprintf("%s %s", metaLabelStyle.Render("TURN ACTION"), keyStyle.Render("T cancel")))
+		meta = append(meta, fmt.Sprintf("%s %s", metaLabelStyle.Render("TURN ACTION"), keyStyle.Render(a.leaderBinding("t"))))
 	}
 	if len(meta) > 0 {
 		lines = append(lines, strings.Join(meta, "   "))
@@ -972,7 +1350,7 @@ func (a App) rejectPromptView(width int) string {
 		"",
 		a.rejectInput.View(),
 		"",
-		helpStyle.Render("enter reject  esc cancel"),
+		helpStyle.Render(a.sessionHelp()),
 	}, "\n")
 
 	return modalStyle(modalWidth).Render(content)
@@ -1002,10 +1380,10 @@ func (a App) applyViewState(next session.ViewState) App {
 		}
 	}
 
-	if !next.CanSendMessage || next.LlmStatus != "ready" {
-		a.sessionScreen = "profiles"
+	if (!next.CanSendMessage || next.LlmStatus != "ready") && a.sessionScreen == sessionScreenMain {
+		a.sessionScreen = sessionScreenProfiles
 	}
-	if a.sessionScreen == "profiles" {
+	if a.sessionScreen == sessionScreenProfiles {
 		if a.editingProfileID == "" {
 			a.loadSelectedProfileIntoForm()
 		} else if profile := a.selectedProfileByID(a.editingProfileID); profile != nil {
@@ -1023,17 +1401,25 @@ func (a App) applyViewState(next session.ViewState) App {
 }
 
 func (a *App) syncInputs() {
+	if a.sessionScreen == sessionScreenMain && !a.rejectPromptOpen() && a.focus != paneComposer {
+		a.lastMainFocus = a.focus
+	}
+
 	if a.rejectPromptOpen() {
 		a.blurProfileInputs()
-		a.rejectInput.Focus()
+		if a.rejectEditing {
+			a.rejectInput.Focus()
+		} else {
+			a.rejectInput.Blur()
+		}
 		a.input.Blur()
 		return
 	}
 
 	a.rejectInput.Blur()
-	if a.sessionScreen == "profiles" {
+	if a.sessionScreen == sessionScreenProfiles {
 		a.input.Blur()
-		if a.profileFocus != profileForm {
+		if a.profileFocus != profileForm || !a.profileFieldEditing {
 			a.blurProfileInputs()
 			return
 		}
@@ -1051,6 +1437,11 @@ func (a *App) syncInputs() {
 		default:
 			a.profileAPIKeyInput.Focus()
 		}
+		return
+	}
+	if a.sessionScreen == sessionScreenSettings {
+		a.blurProfileInputs()
+		a.input.Blur()
 		return
 	}
 
@@ -1413,33 +1804,72 @@ func statusStyle(status string) lipgloss.Style {
 
 func (a App) sessionHelp() string {
 	if a.rejectPromptOpen() {
-		return "enter reject  esc cancel"
+		if a.rejectEditing {
+			return "enter reject  esc stop editing  ctrl+c quit"
+		}
+		return "enter edit  esc cancel  ctrl+c quit"
+	}
+
+	if a.leaderPending {
+		switch a.focus {
+		case paneApprovals:
+			return "leader pending  a approve  r reject  p profiles  s settings  t cancel turn  q quit"
+		case paneTasks:
+			return "leader pending  c cancel task  p profiles  s settings  t cancel turn  q quit"
+		default:
+			return "leader pending  p profiles  s settings  i compose  t cancel turn  q quit"
+		}
 	}
 
 	switch a.focus {
 	case paneComposer:
-		return "tab cycle  enter send  esc back  ctrl+c quit"
+		return fmt.Sprintf("shift+arrows panes  tab cycle  enter send  %s actions  esc back  ctrl+c quit", a.tuiSettings.Keybinds.Leader)
 	case paneApprovals:
-		return "j/k move  enter or a approve  r reject  t cancel turn  s settings  i compose"
+		return fmt.Sprintf("arrows move  shift+arrows panes  enter approve  %s actions  esc back", a.tuiSettings.Keybinds.Leader)
 	case paneTasks:
-		return "j/k move  enter or c cancel task  t cancel turn  s settings  i compose"
+		return fmt.Sprintf("arrows move  shift+arrows panes  enter cancel task  %s actions  esc back", a.tuiSettings.Keybinds.Leader)
 	default:
-		return "tab cycle  j/k move  t cancel turn  s settings  i compose  esc back"
+		return fmt.Sprintf("arrows move  shift+arrows panes  left/right cycle  %s actions  esc back", a.tuiSettings.Keybinds.Leader)
 	}
 }
 
 func (a App) profileHelp() string {
+	if a.leaderPending {
+		if a.profileFocus == profileForm {
+			return "leader pending  w save  s settings  q quit"
+		}
+		return "leader pending  n new  f default  d delete  x drop key  s settings  q quit"
+	}
+
 	if a.profileFocus == profileList {
 		if a.state.CanSendMessage {
-			return "j/k move  enter copy/edit  n new  f default  d delete managed  x drop stored key  s back"
+			return fmt.Sprintf("arrows move  enter open form  right form  %s new  %s settings  esc back", a.leaderBinding("n"), a.leaderBinding("s"))
 		}
-		return "j/k move  enter copy/edit  n new  f default  d delete managed  x drop stored key  q quit"
+		return fmt.Sprintf("arrows move  enter open form  right form  %s new  %s settings  ctrl+c quit", a.leaderBinding("n"), a.leaderBinding("s"))
+	}
+
+	if a.profileFieldEditing {
+		return fmt.Sprintf("type value  enter finish  esc stop editing  %s save", a.leaderBinding("w"))
 	}
 
 	if a.state.CanSendMessage {
-		return "tab next field  shift+tab prev  enter save  esc back"
+		return fmt.Sprintf("arrows fields  tab next  enter edit  left list  %s save  %s settings  esc back", a.leaderBinding("w"), a.leaderBinding("s"))
 	}
-	return "tab next field  shift+tab prev  enter save  esc list  ctrl+c quit"
+	return fmt.Sprintf("arrows fields  tab next  enter edit  left list  %s save  %s settings  esc list  ctrl+c quit", a.leaderBinding("w"), a.leaderBinding("s"))
+}
+
+func (a App) settingsHelp() string {
+	if a.settingsCapturing {
+		return "press desired leader  esc cancel  ctrl+c quit"
+	}
+	return "enter capture  esc back  ctrl+c quit"
+}
+
+func (a App) leaderBinding(key string) string {
+	if strings.TrimSpace(key) == "" {
+		return a.tuiSettings.Keybinds.Leader
+	}
+	return fmt.Sprintf("%s %s", a.tuiSettings.Keybinds.Leader, key)
 }
 
 func newCodeInput(placeholder string) textinput.Model {
@@ -1641,6 +2071,13 @@ func joinNonEmpty(separator string, values ...string) string {
 		}
 	}
 	return strings.Join(parts, separator)
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func blockHeight(content string) int {

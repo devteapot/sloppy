@@ -205,6 +205,9 @@ llm:
       label: OpenAI Main
       provider: openai
       model: gpt-5.4
+tui:
+  keybinds:
+    leader: ctrl+x
 ```
 
 Provider defaults:
@@ -227,6 +230,12 @@ API keys are not written to YAML:
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
 
 The current TUI uses the session provider's `/llm` state to onboard and manage those profiles.
+
+TUI-specific settings are configured under `tui`.
+
+- `tui.keybinds.leader` sets the leader sequence for TUI actions. The default is `ctrl+x`.
+- The TUI settings screen currently exposes only the leader key and writes changes back to `~/.sloppy/config.yaml`.
+- The composer stays immediately editable when focused; non-composer form fields enter edit mode with `enter`.
 
 ## Design references
 
