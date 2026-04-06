@@ -41,6 +41,26 @@ Implemented now:
 - CLI single-shot mode and REPL
 - initial tests covering transport, runtime tool generation, and both built-in providers
 
+## Interface direction after Phase 1
+
+The current CLI proves the runtime loop, but it is not the intended long-term public interface boundary.
+
+The next interface phase should:
+
+- keep the core runtime headless
+- expose the running agent session through a public bridge or provider surface
+- ensure first-party UIs use that same public boundary instead of private in-process hooks
+- support multiple simultaneous UI consumers attached to one session
+- start with `apps/tui/` as the first richer interface
+
+The likely shape is an **agent-session provider**:
+
+- the runtime remains a SLOP consumer of workspace and application providers
+- the runtime also becomes a SLOP provider of transcript, turn state, approvals, and session affordances
+- UIs become consumers of that session provider
+
+This keeps the interface model aligned with the core architecture instead of inventing a separate UI-only protocol.
+
 Still intentionally minimal:
 
 - no SQLite history store yet
@@ -80,6 +100,19 @@ src/
         ├── filesystem.ts
         ├── in-process.ts
         └── terminal.ts
+```
+
+### Planned interface layout
+
+```text
+apps/
+  tui/
+src/
+  cli.ts              current development shell
+  core/
+  llm/
+  providers/
+  session/            planned agent-session provider / bridge layer
 ```
 
 ---
@@ -126,6 +159,24 @@ The system prompt stays stable.
 
 The current state snapshot is rebuilt per turn and appended as ephemeral runtime context, not persisted as if it were user-authored conversation.
 
+### 6. Interfaces should use the same public session boundary
+
+The first richer UI should not import the runtime through a privileged path just because it lives in the same repository.
+
+Instead:
+
+- the runtime exposes a session boundary
+- first-party UIs consume that boundary
+- third-party UIs consume that same boundary
+
+This keeps custom interfaces first-class and makes cross-language clients realistic.
+
+### 7. A non-TypeScript UI client is acceptable
+
+The core runtime remains TypeScript for now.
+
+However, once the session boundary exists, the first TUI does not need to be written in TypeScript. A Go + Bubble Tea client is a strong option because it validates the Go SLOP SDK without forcing a full core runtime port.
+
 ---
 
 ## What we reuse from OpenClaw and Hermes
@@ -149,6 +200,23 @@ The current state snapshot is rebuilt per turn and appended as ephemeral runtime
 - no requirement to reconstruct state via read tools
 
 The provider state tree becomes the primary capability surface.
+
+---
+
+## Next interface phase
+
+### Deliverables
+
+- agent-session provider or equivalent public bridge
+- session state model for transcript, tool activity, approvals, and multimodal content references
+- support for multiple concurrent UI consumers
+- first richer UI under `apps/tui/`
+
+### Success criteria
+
+- the runtime can be driven without importing private `Agent` internals
+- two clients can observe the same session and stay in sync through patches
+- a non-TypeScript UI client can talk to the session boundary without special-case glue
 
 ---
 
@@ -263,11 +331,12 @@ The SDK dependencies are installed from npm, not linked from the local SLOP work
 
 After the current Phase 1 implementation, the most important follow-ups are:
 
-1. harden adapter compatibility coverage across Anthropic, OpenAI-compatible providers, and Gemini
-2. improve approval and policy enforcement for dangerous affordances
-3. watch discovery directories instead of scanning only at startup
-4. add SQLite-backed history and search
-5. add a skill loader that injects markdown skills without reintroducing a plugin registry
+1. define the agent-session provider boundary and shared session state model
+2. build the first `apps/tui/` client against that public boundary
+3. harden adapter compatibility coverage across Anthropic, OpenAI-compatible providers, and Gemini
+4. improve approval and policy enforcement for dangerous affordances
+5. add SQLite-backed history and search
+6. add a skill loader that injects markdown skills without reintroducing a plugin registry
 
 ---
 

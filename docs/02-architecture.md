@@ -7,32 +7,29 @@
 3. **Tool use is only an adapter.** Provider-native tool calling is the LLM-facing execution format, not the architectural model.
 4. **Subscriptions beat polling.** The harness should stay on live state through `snapshot` + `patch`, then deepen only where needed.
 5. **Thin core, fat providers.** The runtime coordinates history, subscriptions, and model calls; capability-specific logic lives in providers.
+6. **The core is headless.** Human-facing interfaces should consume a public session boundary instead of importing privileged runtime internals.
 
 ---
 
 ## Runtime overview
 
 ```text
-LLM adapter (Anthropic/OpenAI-compatible/Gemini)
+TUI / Web UI / IDE / Voice UI / other agents
         |
         v
-RuntimeToolSet
-  - slop_query_state
-  - slop_focus_state
-  - dynamic affordance tools from visible state
+Agent Session Provider
+  - transcript
+  - turn status
+  - tool activity
+  - approvals
+  - session affordances
         |
         v
-Agent Loop
-  - history
-  - context building
-  - tool execution
-        |
-        v
-ConsumerHub
-  - provider connections
-  - overview subscriptions
-  - detail subscriptions
-  - invoke/query routing
+Agent Runtime
+  - LLM adapter (Anthropic/OpenAI-compatible/Gemini)
+  - RuntimeToolSet
+  - Agent Loop
+  - ConsumerHub
         |
         v
 Providers
@@ -43,6 +40,11 @@ Providers
 The key difference from a traditional tool harness is that the runtime does not start from a registry of global tools.
 
 It starts from a set of subscribed state trees.
+
+The agent process therefore plays both roles:
+
+- **consumer** of workspace and application providers
+- **provider** of agent-session state to user interfaces and other clients
 
 ---
 
@@ -138,6 +140,72 @@ The current implementation supports:
 - built-in in-process providers
 - external Unix socket providers
 - external WebSocket providers
+
+### 7. Agent session provider
+
+Planned location: a new session or bridge layer above the runtime core.
+
+Responsibilities:
+
+- expose a running agent session as SLOP state
+- accept user-facing session affordances such as `send_message`, `cancel_turn`, `approve`, and `reject`
+- stream transcript updates, tool activity, and pending approvals through `snapshot` + `patch`
+- support multiple concurrent consumers attached to the same session
+- keep the first-party UI on the same public contract that third-party UIs will use
+
+This boundary is the intended long-term interface surface for Sloppy. The current CLI REPL is a development shell, not the final public integration model.
+
+---
+
+## Interface model
+
+### Consumers are not only LLMs
+
+SLOP does not require the consumer to be a language model.
+
+For Sloppy, a terminal UI, web UI, IDE integration, or voice client can consume the same session provider that wraps the running agent.
+
+That keeps the architecture consistent:
+
+- downstream capabilities still arrive as provider state and affordances
+- upstream interfaces also see state and affordances, not ad hoc imperative RPC
+
+### Shared session state vs local UI state
+
+The session provider should expose state that is meaningful across multiple clients:
+
+- transcript and multimodal message content
+- active turn status
+- tool calls, tool results, and async tasks
+- pending approvals and policy gates
+- current visible provider summaries and focus
+
+It should not try to own purely local rendering state such as:
+
+- cursor position
+- scroll offsets
+- pane focus
+- theme or layout choices
+
+Those belong to the individual UI unless collaborative UI behavior is explicitly desired.
+
+### Multi-client and multimodal sessions
+
+Multiple consumers should be able to attach to the same agent session at the same time.
+
+This implies:
+
+- the session state must be patch-friendly and shareable
+- inputs and outputs should not assume text-only rendering
+- large or binary artifacts should be represented through content references rather than inlined blobs
+
+### Future agent-to-agent use
+
+This same shape can support future agent-to-agent communication.
+
+Another agent could consume a session or delegation provider and interact through state plus affordances instead of a custom RPC layer.
+
+That opens the door to supervisor-worker patterns, review loops, and delegated subtasks, while still requiring clear identity, authorization, and cycle-avoidance rules.
 
 ---
 
@@ -276,5 +344,6 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
+- The session-provider interface is still planned. The current CLI talks to `Agent` directly as a temporary development surface.
 
 These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.

@@ -41,7 +41,7 @@ We have SLOP SDKs in four languages. Evaluation for the agent harness MVP.
 - More boilerplate for JSON handling, generics still limited
 - SDK doesn't have reactive descriptor functions (Go isn't reactive)
 
-**Verdict:** Best second target. Once architecture is proven in TypeScript, port core to Go for single-binary distribution. The Go SDK is ready for this.
+**Verdict:** Best second target. Once the runtime exposes a stable public session boundary, Go is also a strong candidate for a standalone TUI client. Longer term, the core runtime could still be ported to Go for single-binary distribution.
 
 ---
 
@@ -95,6 +95,8 @@ We have SLOP SDKs in four languages. Evaluation for the agent harness MVP.
 
 ## Roadmap
 
-1. **MVP:** TypeScript + Bun, with published npm SLOP SDK packages
-2. **v1:** Still TypeScript, compiled with `bun build --compile` for single-binary
-3. **v2 (if needed):** Go port for lightweight/embedded distribution
+1. **MVP core:** TypeScript + Bun, with published npm SLOP SDK packages
+2. **Next interface phase:** keep the core in TypeScript, expose a public session bridge or provider, and allow UI clients in other languages
+3. **First richer UI:** a Go + Bubble Tea `apps/tui/` client is a good candidate to validate the Go SDK without rewriting the core
+4. **v1 core distribution:** still TypeScript, potentially compiled with `bun build --compile`
+5. **v2 (if needed):** Go port for lightweight or embedded core-runtime distribution

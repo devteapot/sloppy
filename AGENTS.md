@@ -23,6 +23,7 @@
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
 - The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, and an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama.
+- The current checked-in interface is a CLI/REPL, but the intended next boundary is a headless agent session surface that can serve multiple UI consumers.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -79,6 +80,8 @@ docs/
 - Use protocol vocabulary consistently: `provider`, `consumer`, `state tree`, `affordance`, `snapshot`, `patch`, `query`, `invoke`, `salience`, `summary`.
 - Do not reintroduce MCP-style flat tool catalogs into the core architecture.
 - Observation tools such as `slop_query_state` and `slop_focus_state` are consumer controls, not provider capabilities.
+- Prefer a public session provider or bridge for UIs over privileged in-process UI integrations.
+- Treat first-party UIs as consumers of the same boundary that third-party UIs will use.
 
 ## Import And SDK Guidance
 - Use ESM `import`/`export` syntax.
@@ -162,3 +165,4 @@ docs/
 - Keep implementation, docs, and naming aligned.
 - If you change commands, file layout, or architecture, update `README.md`, this file, and the matching docs.
 - If you materially change the runtime design, update `docs/02-architecture.md` and `docs/03-mvp-plan.md` in the same change.
+- If interface work introduces `apps/` clients or a session-provider layer, document whether it is checked in now or only planned next.

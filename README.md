@@ -43,6 +43,23 @@ Current Phase 1 implementation includes:
 - CLI single-shot mode and interactive REPL
 - initial end-to-end tests for transport and built-in providers
 
+## Interface direction
+
+The current CLI is the first development surface, not the long-term public interface boundary.
+
+Near-term direction:
+
+- keep the core runtime headless
+- add richer interfaces under `apps/`, starting with `apps/tui/`
+- expose the running agent session through a public bridge or provider surface
+- have first-party and third-party UIs use that same public contract
+- allow multiple UIs to attach to the same session concurrently
+
+This means the agent process is expected to act both as:
+
+- a **consumer** of workspace and application providers
+- a **provider** of agent-session state to UIs and other clients
+
 ## Architecture at a glance
 
 ```text
