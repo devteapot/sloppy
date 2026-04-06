@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	slop "github.com/devteapot/slop/packages/go/slop-ai"
 	"github.com/devteapot/sloppy/apps/tui/provider"
 	"github.com/devteapot/sloppy/apps/tui/session"
@@ -850,8 +851,12 @@ func (a App) transcriptView(width int, height int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	visible := maxInt((height-2)/2, 1)
-	start, end := windowBounds(len(a.state.Transcript), a.transcriptCursor, visible)
+	availableHeight := maxInt(height-2, 1)
+	entryHeights := make([]int, len(a.state.Transcript))
+	for index := range a.state.Transcript {
+		entryHeights[index] = transcriptEntryHeight(a.state.Transcript[index], width)
+	}
+	start, end := windowBoundsByHeights(entryHeights, a.transcriptCursor, availableHeight)
 	for index := start; index < end; index++ {
 		entry := a.state.Transcript[index]
 		selected := index == a.transcriptCursor
@@ -1278,20 +1283,29 @@ func waitForSessionUpdate(updates <-chan struct{}) tea.Cmd {
 }
 
 func renderTranscriptEntry(entry session.TranscriptEntry, selected bool, width int) string {
+	lines := transcriptEntryLines(entry, width, selected)
+	return renderListItem(selected, width, lines)
+}
+
+func transcriptEntryLines(entry session.TranscriptEntry, width int, selected bool) []string {
 	title := strings.ToUpper(entry.Role)
 	if entry.Author != "" && !strings.EqualFold(entry.Author, entry.Role) {
 		title = fmt.Sprintf("%s · %s", title, entry.Author)
 	}
 	status := statusStyle(entry.State).Render(strings.ToUpper(entry.State))
-	excerpt := compact(entry.Text)
-	if excerpt == "" {
-		excerpt = "No text content."
+	message := normalizeWrappedText(entry.Text)
+	if strings.TrimSpace(message) == "" {
+		message = "No text content."
 	}
 	lines := []string{
 		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
-		"  " + truncate(excerpt, width-4),
 	}
-	return renderListItem(selected, width, lines)
+	lines = append(lines, wrapIndentedText(message, "  ", maxInt(width-4, 1))...)
+	return lines
+}
+
+func transcriptEntryHeight(entry session.TranscriptEntry, width int) int {
+	return len(transcriptEntryLines(entry, width, false))
 }
 
 func renderApprovalEntry(entry session.ApprovalEntry, selected bool, width int) string {
@@ -1510,6 +1524,45 @@ func windowBounds(total int, cursor int, visible int) (int, int) {
 	return start, end
 }
 
+func windowBoundsByHeights(heights []int, cursor int, available int) (int, int) {
+	if len(heights) == 0 || available <= 0 {
+		return 0, 0
+	}
+
+	cursor = clampIndex(cursor, len(heights))
+	start := cursor
+	end := cursor + 1
+	used := maxInt(heights[cursor], 1)
+	if used >= available {
+		return start, end
+	}
+
+	for {
+		expanded := false
+		if start > 0 {
+			nextHeight := maxInt(heights[start-1], 1)
+			if used+nextHeight <= available {
+				start--
+				used += nextHeight
+				expanded = true
+			}
+		}
+		if end < len(heights) {
+			nextHeight := maxInt(heights[end], 1)
+			if used+nextHeight <= available {
+				used += nextHeight
+				end++
+				expanded = true
+			}
+		}
+		if !expanded {
+			break
+		}
+	}
+
+	return start, end
+}
+
 func hasPendingApprovals(approvals []session.ApprovalEntry) bool {
 	return firstPendingApprovalIndex(approvals) >= 0
 }
@@ -1527,6 +1580,41 @@ func compact(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+func normalizeWrappedText(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	return strings.Trim(normalized, "\n")
+}
+
+func wrapIndentedText(text string, prefix string, contentWidth int) []string {
+	if contentWidth <= 0 {
+		contentWidth = 1
+	}
+
+	rawLines := strings.Split(normalizeWrappedText(text), "\n")
+	wrappedLines := make([]string, 0, len(rawLines))
+	for _, rawLine := range rawLines {
+		if rawLine == "" {
+			wrappedLines = append(wrappedLines, prefix)
+			continue
+		}
+
+		wrapped := ansi.Wrap(rawLine, contentWidth, "")
+		for _, line := range strings.Split(wrapped, "\n") {
+			wrappedLines = append(wrappedLines, prefix+line)
+		}
+	}
+
+	if len(wrappedLines) == 0 {
+		return []string{prefix}
+	}
+
+	return wrappedLines
+}
+
+// Non-transcript panes still truncate their detail rows. If those panes start
+// surfacing longer content, they will need width-aware wrapping and height-based
+// windowing like the transcript now uses.
 func truncate(text string, width int) string {
 	if width <= 0 {
 		return ""
