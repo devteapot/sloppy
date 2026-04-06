@@ -2,6 +2,15 @@ import { z } from "zod";
 
 export const llmProviderSchema = z.enum(["anthropic", "openai", "openrouter", "ollama", "gemini"]);
 
+export const llmProfileSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().trim().min(1).optional(),
+  provider: llmProviderSchema,
+  model: z.string().optional(),
+  apiKeyEnv: z.string().optional(),
+  baseUrl: z.string().optional(),
+});
+
 export const sloppyConfigSchema = z.object({
   llm: z
     .object({
@@ -9,10 +18,13 @@ export const sloppyConfigSchema = z.object({
       model: z.string().optional(),
       apiKeyEnv: z.string().optional(),
       baseUrl: z.string().optional(),
+      defaultProfileId: z.string().optional(),
+      profiles: z.array(llmProfileSchema).default([]),
       maxTokens: z.number().int().min(256).default(4096),
     })
     .default({
       provider: "anthropic",
+      profiles: [],
       maxTokens: 4096,
     }),
   agent: z
@@ -111,11 +123,22 @@ type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 
+export type LlmProfileConfig = {
+  id: string;
+  label?: string;
+  provider: LlmProvider;
+  model: string;
+  apiKeyEnv?: string;
+  baseUrl?: string;
+};
+
 export interface LlmConfig {
   provider: LlmProvider;
   model: string;
   apiKeyEnv?: string;
   baseUrl?: string;
+  defaultProfileId?: string;
+  profiles: LlmProfileConfig[];
   maxTokens: number;
 }
 

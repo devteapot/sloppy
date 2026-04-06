@@ -1,7 +1,9 @@
 import { readdirSync, statSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+
+const TEXT_DECODER = new TextDecoder();
+const TEXT_ENCODER = new TextEncoder();
 
 type SearchResult = {
   id: string;
@@ -25,7 +27,7 @@ function truncateText(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
-function isProbablyBinary(content: Buffer): boolean {
+function isProbablyBinary(content: Uint8Array): boolean {
   const sample = content.subarray(0, 1024);
   return sample.includes(0);
 }
@@ -82,7 +84,7 @@ export class FilesystemProvider {
 
   private recordRecent(actionName: string, path: string, detail?: string): void {
     this.recent.unshift({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: crypto.randomUUID(),
       action: actionName,
       path,
       detail,
@@ -100,8 +102,10 @@ export class FilesystemProvider {
 
   private async setFocus(inputPath: string): Promise<{ path: string }> {
     const nextPath = this.ensureWithinRoot(inputPath);
-    const info = await stat(nextPath);
-    if (!info.isDirectory()) {
+    const info = await Bun.file(nextPath)
+      .stat()
+      .catch(() => null);
+    if (!info?.isDirectory()) {
       throw new Error(`Focus path is not a directory: ${inputPath}`);
     }
 
@@ -114,8 +118,8 @@ export class FilesystemProvider {
     inputPath: string,
   ): Promise<{ path: string; content: string; truncated: boolean }> {
     const fullPath = this.ensureWithinRoot(inputPath);
-    const buffer = await readFile(fullPath);
-    if (isProbablyBinary(buffer)) {
+    const bytes = await Bun.file(fullPath).bytes();
+    if (isProbablyBinary(bytes)) {
       return {
         path: relativePath(this.root, fullPath),
         content: `[binary file ${displayNameForPath(inputPath)} omitted]`,
@@ -123,8 +127,8 @@ export class FilesystemProvider {
       };
     }
 
-    const truncated = buffer.byteLength > this.readMaxBytes;
-    const text = buffer.subarray(0, this.readMaxBytes).toString("utf8");
+    const truncated = bytes.byteLength > this.readMaxBytes;
+    const text = TEXT_DECODER.decode(bytes.subarray(0, this.readMaxBytes));
     this.recordRecent("read", relativePath(this.root, fullPath));
 
     return {
@@ -139,18 +143,18 @@ export class FilesystemProvider {
     content: string,
   ): Promise<{ path: string; bytes: number }> {
     const fullPath = this.ensureWithinRoot(inputPath);
-    await mkdir(dirname(fullPath), { recursive: true });
-    await writeFile(fullPath, content, "utf8");
+    await Bun.$`mkdir -p ${dirname(fullPath)}`;
+    await Bun.write(fullPath, content);
     this.recordRecent("write", relativePath(this.root, fullPath), `${content.length} chars`);
     return {
       path: relativePath(this.root, fullPath),
-      bytes: Buffer.byteLength(content),
+      bytes: TEXT_ENCODER.encode(content).byteLength,
     };
   }
 
   private async makeDirectory(inputPath: string): Promise<{ path: string }> {
     const fullPath = this.ensureWithinRoot(inputPath);
-    await mkdir(fullPath, { recursive: true });
+    await Bun.$`mkdir -p ${fullPath}`;
     this.recordRecent("mkdir", relativePath(this.root, fullPath));
     return { path: relativePath(this.root, fullPath) };
   }

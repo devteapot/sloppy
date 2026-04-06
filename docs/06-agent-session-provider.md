@@ -54,6 +54,7 @@ The provider may expose session metadata in the `hello` payload, but the state t
 The root tree should expose these top-level children:
 
 - `/session`
+- `/llm`
 - `/turn`
 - `/composer`
 - `/transcript`
@@ -70,8 +71,10 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
 ```text
 [root] agent-session: Agent Session
   [context] session (session_id="sess-123", status="active", model_provider="anthropic", model="claude-sonnet", client_count=2)
+  [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_provider="openai", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
+    [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
-  [control] composer (accepts_attachments=true, max_attachments=8)  actions: {send_message(text, attachments?)}
+  [control] composer (accepts_attachments=false, max_attachments=0, ready=false, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
   [collection] transcript
     [item] msg-1 (role="user", state="complete", turn_id="turn-1")
       [group] content
@@ -147,6 +150,57 @@ Rules:
 - `cancel_turn` should only be present when cancellation is actually possible
 - when the session is idle, `turn_id` should be `null` and `phase` should be `none`
 
+### `/llm`
+
+Node type: `collection`
+
+Required props:
+
+- `status`: `ready | needs_credentials`
+- `message`: short onboarding or readiness summary
+- `active_profile_id`: selected profile id
+- `selected_provider`: currently selected provider name
+- `selected_model`: currently selected model identifier
+- `secure_store_kind`: `keychain | secret-service | none`
+- `secure_store_status`: `available | unavailable | unsupported`
+
+Children:
+
+- zero or more profile items
+
+Required profile item props:
+
+- `provider`: provider name
+- `model`: selected model identifier
+- `origin`: `managed | environment | fallback`
+- `is_default`: boolean
+- `has_key`: boolean
+- `key_source`: `env | secure_store | missing | not_required`
+- `ready`: boolean
+- `managed`: boolean indicating whether the profile is persisted in config or only the fallback active selection
+- `can_delete_profile`: boolean
+- `can_delete_api_key`: boolean
+
+Optional profile item props:
+
+- `label`: display label
+- `api_key_env`: environment variable name that can satisfy the profile for this process
+- `base_url`: provider base URL override
+
+Affordances:
+
+- `save_profile(profile_id?, label?, provider, model?, base_url?, api_key?, make_default?)`
+- `set_default_profile(profile_id)`
+- `delete_profile(profile_id)`
+- `delete_api_key(profile_id)`
+
+Rules:
+
+- secret values must never be exposed in state, transcript, activity, or logs
+- `api_key` is write-only input for secure persistence
+- env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
+- the session should remain attachable even when `status=needs_credentials`
+
 ### `/composer`
 
 Node type: `control`
@@ -155,6 +209,11 @@ Required props:
 
 - `accepts_attachments`: boolean
 - `max_attachments`: number
+
+Optional props:
+
+- `ready`: boolean indicating whether a model turn can start immediately
+- `disabled_reason`: short onboarding message when `send_message` is unavailable
 
 Affordances:
 
@@ -185,6 +244,7 @@ Recommended `send_message` params:
 Rules:
 
 - callers should provide non-empty `text`, at least one attachment, or both
+- `send_message` may be absent while no ready LLM profile is configured
 - `send_message` should return an error in v1 if a turn is already active instead of implicitly queueing
 - `attachments` are session input content, not persistent local UI drafts
 

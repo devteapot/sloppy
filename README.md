@@ -42,7 +42,11 @@ Current Phase 1 implementation includes:
 - dynamic affordance tools generated from visible SLOP state
 - CLI single-shot mode and interactive REPL
 - initial `src/session/` scaffold for a headless agent-session provider
-- initial attach-only Go + Bubble Tea scaffold under `apps/tui/`
+- idle session startup without an API key
+- persisted LLM profile metadata plus secure API-key storage on macOS and Linux
+- env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
+- session-provider LLM/profile onboarding and management state
+- Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
 - initial end-to-end tests for transport and built-in providers
 
 ## Interface direction
@@ -166,9 +170,10 @@ bun run src/cli.ts
 Run the session provider surface:
 
 ```sh
-export ANTHROPIC_API_KEY=...
 bun run session:serve
 ```
+
+If no ready model profile is configured, the session still starts and waits for a UI to attach.
 
 Run the Go TUI against a running session provider:
 
@@ -194,6 +199,12 @@ Example:
 llm:
   provider: openai
   model: gpt-5.4
+  defaultProfileId: openai-main
+  profiles:
+    - id: openai-main
+      label: OpenAI Main
+      provider: openai
+      model: gpt-5.4
 ```
 
 Provider defaults:
@@ -205,6 +216,17 @@ Provider defaults:
 - `ollama` -> `http://localhost:11434/v1` and no API key by default
 
 You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, and `SLOPPY_LLM_BASE_URL`.
+
+Managed profile metadata is stored in `~/.sloppy/config.yaml`.
+
+API keys are not written to YAML:
+
+- macOS stores them in Keychain
+- Linux stores them in Secret Service via `secret-tool`
+- environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
+- selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
+
+The current TUI uses the session provider's `/llm` state to onboard and manage those profiles.
 
 ## Design references
 

@@ -3,6 +3,8 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { AgentCallbacks } from "../src/core/agent";
+import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
+import { LlmProfileManager } from "../src/llm/profile-manager";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
@@ -12,6 +14,17 @@ const TEST_CONFIG: SloppyConfig = {
   llm: {
     provider: "openai",
     model: "gpt-5.4",
+    apiKeyEnv: "OPENAI_API_KEY",
+    defaultProfileId: "test-openai",
+    profiles: [
+      {
+        id: "test-openai",
+        label: "Test OpenAI",
+        provider: "openai",
+        model: "gpt-5.4",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+    ],
     maxTokens: 4096,
   },
   agent: {
@@ -48,6 +61,45 @@ const TEST_CONFIG: SloppyConfig = {
     },
   },
 };
+
+class MemoryCredentialStore implements CredentialStore {
+  readonly kind = "keychain" as const;
+
+  constructor(
+    private status: CredentialStoreStatus = "available",
+    private secrets = new Map<string, string>(),
+  ) {}
+
+  async getStatus(): Promise<CredentialStoreStatus> {
+    return this.status;
+  }
+
+  async get(profileId: string): Promise<string | null> {
+    return this.secrets.get(profileId) ?? null;
+  }
+
+  async set(profileId: string, secret: string): Promise<void> {
+    this.secrets.set(profileId, secret);
+  }
+
+  async delete(profileId: string): Promise<void> {
+    this.secrets.delete(profileId);
+  }
+}
+
+function createTestProfileManager(options?: {
+  status?: CredentialStoreStatus;
+  secrets?: Record<string, string>;
+}): LlmProfileManager {
+  return new LlmProfileManager({
+    config: TEST_CONFIG,
+    credentialStore: new MemoryCredentialStore(
+      options?.status,
+      new Map(Object.entries(options?.secrets ?? { "test-openai": "test-key" })),
+    ),
+    writeConfig: async () => undefined,
+  });
+}
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -313,11 +365,45 @@ function createTaskMirrorHarnessFactory() {
 }
 
 describe("AgentSessionProvider", () => {
+  test("session starts without credentials and exposes LLM onboarding state", async () => {
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-onboarding",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager: createTestProfileManager({ secrets: {} }),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-onboarding",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      const llm = await consumer.query("/llm", 3);
+      expect(llm.properties?.status).toBe("needs_credentials");
+      expect(llm.properties?.active_profile_id).toBe("test-openai");
+      expect(llm.children?.[0]?.properties?.ready).toBe(false);
+
+      const composer = await consumer.query("/composer", 2);
+      expect(
+        composer.affordances?.some((affordance) => affordance.action === "send_message") ?? false,
+      ).toBe(false);
+      expect(composer.properties?.disabled_reason).toBeTruthy();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("send_message updates transcript, activity, and turn state", async () => {
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
       sessionId: "sess-test",
       agentFactory: createStreamingAgentFactory(),
+      llmProfileManager: createTestProfileManager(),
     });
     const provider = new AgentSessionProvider(runtime, {
       providerId: "sloppy-session-test",
@@ -325,6 +411,7 @@ describe("AgentSessionProvider", () => {
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {
+      await runtime.start();
       await consumer.connect();
       await consumer.subscribe("/", 5);
 
@@ -364,6 +451,7 @@ describe("AgentSessionProvider", () => {
       config: TEST_CONFIG,
       sessionId: "sess-blocking",
       agentFactory: createBlockingAgentFactory(gate),
+      llmProfileManager: createTestProfileManager(),
     });
 
     try {
@@ -385,6 +473,7 @@ describe("AgentSessionProvider", () => {
       config: TEST_CONFIG,
       sessionId: "sess-approval",
       agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
     });
     const provider = new AgentSessionProvider(runtime, {
       providerId: "sloppy-session-approval",
@@ -392,6 +481,7 @@ describe("AgentSessionProvider", () => {
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {
+      await runtime.start();
       await consumer.connect();
       await consumer.subscribe("/", 5);
 
@@ -434,6 +524,7 @@ describe("AgentSessionProvider", () => {
       config: TEST_CONFIG,
       sessionId: "sess-tasks",
       agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
     });
     const provider = new AgentSessionProvider(runtime, {
       providerId: "sloppy-session-tasks",
@@ -441,6 +532,7 @@ describe("AgentSessionProvider", () => {
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {
+      await runtime.start();
       await consumer.connect();
       await consumer.subscribe("/", 5);
 

@@ -1,9 +1,9 @@
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
-import { loadConfig } from "../config/load";
+import { defaultConfigPromise } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
-import { createLlmAdapter } from "../llm/factory";
-import type { LlmAdapter, ToolResultContentBlock } from "../llm/types";
+import { LlmProfileManager } from "../llm/profile-manager";
+import type { ToolResultContentBlock } from "../llm/types";
 import {
   discoverProviderDescriptors,
   type ProviderDiscoveryUpdate,
@@ -25,6 +25,8 @@ import {
 } from "./loop";
 
 export type { AgentToolEvent, AgentToolInvocation } from "./loop";
+
+const DEFAULT_CONFIG = await defaultConfigPromise;
 
 export type AgentRunResult =
   | {
@@ -64,13 +66,15 @@ export class Agent {
   private discoveryStop: (() => void) | null = null;
   private discoverySync: Promise<void> = Promise.resolve();
   private history: ConversationHistory;
-  private llm: LlmAdapter;
+  private llmProfileManager: LlmProfileManager;
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
   private pendingApproval: PendingApprovalContinuation | null = null;
 
-  constructor(options?: { config?: SloppyConfig } & AgentCallbacks) {
-    this.config = options?.config ?? loadConfig();
+  constructor(
+    options?: { config?: SloppyConfig; llmProfileManager?: LlmProfileManager } & AgentCallbacks,
+  ) {
+    this.config = options?.config ?? DEFAULT_CONFIG;
     this.callbacks = {
       onText: options?.onText,
       onToolCall: options?.onToolCall,
@@ -82,7 +86,11 @@ export class Agent {
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
     });
-    this.llm = createLlmAdapter(this.config);
+    this.llmProfileManager =
+      options?.llmProfileManager ??
+      new LlmProfileManager({
+        config: this.config,
+      });
   }
 
   async start(): Promise<void> {
@@ -94,7 +102,7 @@ export class Agent {
     this.builtinProviderIds = new Set(builtins.map((provider) => provider.id));
 
     const discoveredDescriptors = this.config.providers.discovery.enabled
-      ? discoverProviderDescriptors(this.config.providers.discovery.paths)
+      ? await discoverProviderDescriptors(this.config.providers.discovery.paths)
       : [];
     const providers = [
       ...builtins,
@@ -135,12 +143,13 @@ export class Agent {
     }
 
     this.history.addUserText(userMessage);
+    const llm = await this.llmProfileManager.createAdapter();
     return this.executeLoop(
       await runLoop({
         config: this.config,
         hub: this.hub,
         history: this.history,
-        llm: this.llm,
+        llm,
         onText: this.callbacks.onText,
         onToolCall: this.callbacks.onToolCall,
         onToolResult: this.callbacks.onToolResult,
@@ -170,12 +179,13 @@ export class Agent {
       errorMessage: result.errorMessage,
     });
 
+    const llm = await this.llmProfileManager.createAdapter();
     return this.executeLoop(
       await runLoop({
         config: this.config,
         hub: this.hub,
         history: this.history,
-        llm: this.llm,
+        llm,
         onText: this.callbacks.onText,
         onToolCall: this.callbacks.onToolCall,
         onToolResult: this.callbacks.onToolResult,
@@ -207,6 +217,11 @@ export class Agent {
 
   clearPendingApproval(): void {
     this.pendingApproval = null;
+  }
+
+  updateConfig(config: SloppyConfig): void {
+    this.config = config;
+    this.llmProfileManager.updateConfig(config);
   }
 
   shutdown(): void {

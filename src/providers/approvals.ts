@@ -44,7 +44,7 @@ function now(): string {
 }
 
 function buildApprovalId(): string {
-  return `approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `approval-${crypto.randomUUID()}`;
 }
 
 function normalizeResultPayload(value: unknown): ApprovalResolutionPayload["result"] {

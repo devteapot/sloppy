@@ -1,0 +1,39 @@
+import type { LlmProvider } from "../config/schema";
+
+export type ProviderDefault = {
+  model: string;
+  apiKeyEnv?: string;
+  baseUrl?: string;
+};
+
+export const DEFAULT_LLM_PROVIDER_CONFIG: Record<LlmProvider, ProviderDefault> = {
+  anthropic: {
+    model: "claude-sonnet-4-20250514",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+  },
+  openai: {
+    model: "gpt-5.4",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+  openrouter: {
+    model: "openai/gpt-5.4",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    baseUrl: "https://openrouter.ai/api/v1",
+  },
+  ollama: {
+    model: "llama3.2",
+    baseUrl: "http://localhost:11434/v1",
+  },
+  gemini: {
+    model: "gemini-2.5-pro",
+    apiKeyEnv: "GEMINI_API_KEY",
+  },
+};
+
+export function getProviderDefaults(provider: LlmProvider): ProviderDefault {
+  return DEFAULT_LLM_PROVIDER_CONFIG[provider];
+}
+
+export function providerRequiresApiKey(provider: LlmProvider): boolean {
+  return provider !== "ollama";
+}

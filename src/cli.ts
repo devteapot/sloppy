@@ -1,22 +1,37 @@
 #!/usr/bin/env bun
 
-import { stdin as input, stdout as output } from "node:process";
-import readline from "node:readline/promises";
-
+import { defaultConfigPromise } from "./config/load";
 import { Agent } from "./core/agent";
 
-async function runSingleShot(prompt: string): Promise<void> {
+const DEFAULT_CONFIG = await defaultConfigPromise;
+const stdout = Bun.stdout.writer();
+const stderr = Bun.stderr.writer();
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function writeStdout(text: string): void {
+  stdout.write(text);
+}
+
+function writeStderr(text: string): void {
+  stderr.write(text);
+}
+
+async function runSingleShot(prompt: string): Promise<number> {
   let streamed = false;
   const agent = new Agent({
+    config: DEFAULT_CONFIG,
     onText: (chunk) => {
       streamed = true;
-      process.stdout.write(chunk);
+      writeStdout(chunk);
     },
     onToolCall: (summary) => {
-      process.stdout.write(`\n[tool] ${summary}\n`);
+      writeStdout(`\n[tool] ${summary}\n`);
     },
     onToolResult: (summary) => {
-      process.stdout.write(`[result] ${summary}\n`);
+      writeStdout(`[result] ${summary}\n`);
     },
   });
 
@@ -25,35 +40,43 @@ async function runSingleShot(prompt: string): Promise<void> {
     const response = await agent.chat(prompt);
     if (response.status === "completed") {
       if (!streamed && response.response) {
-        process.stdout.write(response.response);
+        writeStdout(response.response);
       }
     } else {
-      process.stdout.write("\n[approval] turn is waiting on provider approval\n");
+      writeStdout("\n[approval] turn is waiting on provider approval\n");
     }
-    process.stdout.write("\n");
+    writeStdout("\n");
+    return 0;
+  } catch (error) {
+    writeStderr(`[error] ${errorMessage(error)}\n`);
+    return 1;
   } finally {
     agent.shutdown();
   }
 }
 
-async function runRepl(): Promise<void> {
+async function runRepl(): Promise<number> {
   const agent = new Agent({
+    config: DEFAULT_CONFIG,
     onText: (chunk) => {
-      process.stdout.write(chunk);
+      writeStdout(chunk);
     },
     onToolCall: (summary) => {
-      process.stdout.write(`\n[tool] ${summary}\n`);
+      writeStdout(`\n[tool] ${summary}\n`);
     },
     onToolResult: (summary) => {
-      process.stdout.write(`[result] ${summary}\n`);
+      writeStdout(`[result] ${summary}\n`);
     },
   });
-  const rl = readline.createInterface({ input, output });
 
   try {
     await agent.start();
     while (true) {
-      const line = await rl.question("sloppy> ");
+      const line = prompt("sloppy> ");
+      if (line == null) {
+        break;
+      }
+
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
@@ -62,22 +85,28 @@ async function runRepl(): Promise<void> {
         break;
       }
 
-      const result = await agent.chat(trimmed);
-      if (result.status === "waiting_approval") {
-        process.stdout.write("\n[approval] turn is waiting on provider approval\n");
+      try {
+        const result = await agent.chat(trimmed);
+        if (result.status === "waiting_approval") {
+          writeStdout("\n[approval] turn is waiting on provider approval\n");
+        }
+      } catch (error) {
+        writeStdout(`\n[error] ${errorMessage(error)}\n`);
       }
-      process.stdout.write("\n");
+      writeStdout("\n");
     }
+    return 0;
   } finally {
-    rl.close();
     agent.shutdown();
   }
 }
 
-const prompt = process.argv.slice(2).join(" ").trim();
+const inputPrompt = Bun.argv.slice(2).join(" ").trim();
+const exitCode = inputPrompt ? await runSingleShot(inputPrompt) : await runRepl();
 
-if (prompt) {
-  await runSingleShot(prompt);
-} else {
-  await runRepl();
+await stdout.flush();
+await stderr.flush();
+
+if (exitCode !== 0) {
+  process.exitCode = exitCode;
 }

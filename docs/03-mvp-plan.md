@@ -38,9 +38,11 @@ Implemented now:
 - native Anthropic adapter
 - OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama
 - native Gemini adapter
+- lazy LLM startup so the session can boot without a ready API key
+- managed LLM profiles with secure credential storage for macOS and Linux
 - CLI single-shot mode and REPL
-- initial `src/session/` scaffold for an agent-session provider and Unix-socket session server
-- initial attach-only Go + Bubble Tea TUI scaffold under `apps/tui/`
+- checked-in `src/session/` agent-session provider with `/llm` onboarding and profile-management state
+- checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding and settings management
 - initial tests covering transport, runtime tool generation, and both built-in providers
 
 ## Interface direction after Phase 1
@@ -81,6 +83,7 @@ src/
 ├── index.ts
 ├── config/
 │   ├── load.ts
+│   ├── persist.ts
 │   └── schema.ts
 ├── core/
 │   ├── agent.ts
@@ -92,9 +95,12 @@ src/
 │   └── tools.ts
 ├── llm/
 │   ├── anthropic.ts
+│   ├── credential-store.ts
 │   ├── factory.ts
 │   ├── gemini.ts
 │   ├── openai-compatible.ts
+│   ├── profile-manager.ts
+│   ├── provider-defaults.ts
 │   └── types.ts
 └── providers/
     ├── discovery.ts

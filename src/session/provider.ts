@@ -9,6 +9,7 @@ import {
 import type { SessionRuntime } from "./runtime";
 import type {
   ActivityItem,
+  LlmProfileSnapshot,
   TranscriptContentBlock,
   TranscriptMessage,
   TurnStateSnapshot,
@@ -90,6 +91,28 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
   };
 }
 
+function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
+  return {
+    id: profile.id,
+    props: {
+      label: profile.label,
+      provider: profile.provider,
+      model: profile.model,
+      api_key_env: profile.apiKeyEnv,
+      base_url: profile.baseUrl,
+      is_default: profile.isDefault,
+      has_key: profile.hasKey,
+      key_source: profile.keySource,
+      ready: profile.ready,
+      managed: profile.managed,
+      origin: profile.origin,
+      can_delete_profile: profile.canDeleteProfile,
+      can_delete_api_key: profile.canDeleteApiKey,
+    },
+    summary: `${profile.provider} ${profile.model}`,
+  };
+}
+
 export class AgentSessionProvider {
   readonly server: SlopServer;
 
@@ -109,6 +132,7 @@ export class AgentSessionProvider {
     });
 
     this.server.register("session", () => this.buildSessionDescriptor());
+    this.server.register("llm", () => this.buildLlmDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
     this.server.register("composer", () => this.buildComposerDescriptor());
     this.server.register("transcript", () => this.buildTranscriptDescriptor());
@@ -170,25 +194,124 @@ export class AgentSessionProvider {
     };
   }
 
+  private buildLlmDescriptor(): NodeDescriptor {
+    const snapshot = this.runtime.store.getSnapshot();
+
+    return {
+      type: "collection",
+      props: {
+        status: snapshot.llm.status,
+        message: snapshot.llm.message,
+        active_profile_id: snapshot.llm.activeProfileId,
+        selected_provider: snapshot.llm.selectedProvider,
+        selected_model: snapshot.llm.selectedModel,
+        secure_store_kind: snapshot.llm.secureStoreKind,
+        secure_store_status: snapshot.llm.secureStoreStatus,
+        count: snapshot.llm.profiles.length,
+      },
+      summary: "Configured LLM profiles and credential readiness.",
+      actions: {
+        save_profile: action(
+          {
+            profile_id: {
+              type: "string",
+              description: "Optional existing profile id to update.",
+            },
+            label: {
+              type: "string",
+              description: "Optional display label for the profile.",
+            },
+            provider: "string",
+            model: {
+              type: "string",
+              description: "Optional model override for the provider.",
+            },
+            base_url: {
+              type: "string",
+              description: "Optional base URL override.",
+            },
+            api_key: {
+              type: "string",
+              description: "Optional API key to store securely.",
+            },
+            make_default: {
+              type: "boolean",
+              description: "Set the saved profile as the default session profile.",
+            },
+          },
+          async (params) => this.runtime.saveLlmProfile(params),
+          {
+            label: "Save Profile",
+            description: "Create or update a persisted LLM profile and optional API key.",
+            estimate: "fast",
+          },
+        ),
+        set_default_profile: action(
+          {
+            profile_id: "string",
+          },
+          async ({ profile_id }) => this.runtime.setDefaultLlmProfile(profile_id),
+          {
+            label: "Set Default Profile",
+            description: "Make a saved LLM profile the active default for new turns.",
+            estimate: "instant",
+          },
+        ),
+        delete_profile: action(
+          {
+            profile_id: "string",
+          },
+          async ({ profile_id }) => this.runtime.deleteLlmProfile(profile_id),
+          {
+            label: "Delete Profile",
+            description: "Delete a saved LLM profile and its stored API key.",
+            dangerous: true,
+            estimate: "fast",
+          },
+        ),
+        delete_api_key: action(
+          {
+            profile_id: "string",
+          },
+          async ({ profile_id }) => this.runtime.deleteLlmApiKey(profile_id),
+          {
+            label: "Delete API Key",
+            description: "Delete the stored API key for a profile.",
+            dangerous: true,
+            estimate: "fast",
+          },
+        ),
+      },
+      items: snapshot.llm.profiles.map((profile) => buildLlmProfileItem(profile)),
+    };
+  }
+
   private buildComposerDescriptor(): NodeDescriptor {
+    const snapshot = this.runtime.store.getSnapshot();
+    const llmReady = snapshot.llm.status === "ready";
+
     return {
       type: "control",
       props: {
         accepts_attachments: false,
         max_attachments: 0,
+        ready: llmReady,
+        disabled_reason: llmReady ? undefined : snapshot.llm.message,
       },
       summary: "Send a user message into the running session.",
-      actions: {
-        send_message: action(
-          { text: "string" },
-          async ({ text }) => this.runtime.sendMessage(text),
-          {
-            label: "Send Message",
-            description: "Append a user message and start a new turn.",
-            estimate: "instant",
-          },
-        ),
-      },
+      actions: llmReady
+        ? {
+            send_message: action(
+              { text: "string" },
+              async ({ text }) => this.runtime.sendMessage(text),
+              {
+                label: "Send Message",
+                description: "Append a user message and start a new turn.",
+                estimate: "instant",
+              },
+            ),
+          }
+        : undefined,
     };
   }
 

@@ -3,6 +3,8 @@ import { createSlopServer } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
+import type { ProviderTreeView } from "../src/core/subscriptions";
+import { buildRuntimeToolSet } from "../src/core/tools";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import type { RegisteredProvider } from "../src/providers/registry";
 
@@ -18,6 +20,7 @@ const TEST_CONFIG: SloppyConfig = {
   llm: {
     provider: "openai",
     model: "gpt-5.4",
+    profiles: [],
     maxTokens: 4096,
   },
   agent: {
@@ -105,5 +108,46 @@ describe("ConsumerHub", () => {
     } finally {
       hub.shutdown();
     }
+  });
+
+  test("skips malformed provider nodes without ids when building runtime tools", () => {
+    const view: ProviderTreeView = {
+      providerId: "demo",
+      providerName: "Demo",
+      kind: "external",
+      overviewTree: {
+        id: "demo",
+        type: "collection",
+        affordances: [],
+        children: [
+          {
+            id: undefined as unknown as string,
+            type: "item",
+            affordances: [
+              {
+                action: "broken",
+                label: "Broken",
+              },
+            ],
+          },
+          {
+            id: "workspace",
+            type: "collection",
+            affordances: [
+              {
+                action: "focus",
+                label: "Focus",
+              },
+            ],
+          },
+        ],
+      } as ProviderTreeView["overviewTree"],
+    };
+
+    const toolSet = buildRuntimeToolSet([view]);
+
+    expect(toolSet.tools.some((tool) => tool.function.name === "demo__workspace__focus")).toBe(
+      true,
+    );
   });
 });

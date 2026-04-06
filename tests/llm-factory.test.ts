@@ -1,53 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import type { SloppyConfig } from "../src/config/schema";
+import type { LlmAdapterConfig } from "../src/llm/factory";
 import { createLlmAdapter } from "../src/llm/factory";
 
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 const originalGeminiKey = process.env.GEMINI_API_KEY;
 
-function createConfig(overrides: Partial<SloppyConfig["llm"]>): SloppyConfig {
+function createConfig(overrides: Partial<LlmAdapterConfig>): LlmAdapterConfig {
   return {
-    llm: {
-      provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-      maxTokens: 4096,
-      ...overrides,
-    },
-    agent: {
-      maxIterations: 12,
-      contextBudgetTokens: 24000,
-      minSalience: 0.2,
-      overviewDepth: 2,
-      overviewMaxNodes: 200,
-      detailDepth: 4,
-      detailMaxNodes: 200,
-      historyTurns: 8,
-      toolResultMaxChars: 16000,
-    },
-    providers: {
-      builtin: {
-        terminal: true,
-        filesystem: true,
-      },
-      discovery: {
-        enabled: true,
-        paths: [],
-      },
-      terminal: {
-        cwd: process.cwd(),
-        historyLimit: 10,
-        syncTimeoutMs: 30000,
-      },
-      filesystem: {
-        root: process.cwd(),
-        focus: process.cwd(),
-        recentLimit: 10,
-        searchLimit: 20,
-        readMaxBytes: 65536,
-      },
-    },
+    provider: "anthropic",
+    model: "claude-sonnet-4-20250514",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    ...overrides,
   };
 }
 
@@ -73,6 +38,7 @@ describe("createLlmAdapter", () => {
       createConfig({
         provider: "gemini",
         model: "gemini-2.5-pro",
+        apiKey: process.env.GEMINI_API_KEY,
         apiKeyEnv: "GEMINI_API_KEY",
       }),
     );
@@ -96,8 +62,8 @@ describe("createLlmAdapter", () => {
   test("requires API keys for Anthropic-backed providers", () => {
     delete process.env.ANTHROPIC_API_KEY;
 
-    expect(() => createLlmAdapter(createConfig({}))).toThrow(
-      "Missing ANTHROPIC_API_KEY. Set it before starting Sloppy.",
+    expect(() => createLlmAdapter(createConfig({ apiKey: undefined }))).toThrow(
+      "No API key was resolved for anthropic. Set ANTHROPIC_API_KEY, store a key in the app, or choose another profile before starting a model turn.",
     );
   });
 });

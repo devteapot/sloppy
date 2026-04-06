@@ -1,51 +1,67 @@
-import type { SloppyConfig } from "../config/schema";
+import type { LlmProvider } from "../config/schema";
 
 import { AnthropicAdapter } from "./anthropic";
 import { GeminiAdapter } from "./gemini";
 import { OpenAICompatibleAdapter } from "./openai-compatible";
+import { providerRequiresApiKey } from "./provider-defaults";
 import type { LlmAdapter } from "./types";
 
-function requireApiKey(config: SloppyConfig): string {
-  const envName = config.llm.apiKeyEnv;
-  if (!envName) {
-    throw new Error(`Provider ${config.llm.provider} requires an API key environment variable.`);
+export type LlmAdapterConfig = {
+  provider: LlmProvider;
+  model: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  baseUrl?: string;
+};
+
+function requireApiKey(config: LlmAdapterConfig): string {
+  if (!providerRequiresApiKey(config.provider)) {
+    return "ollama";
   }
 
-  const apiKey = process.env[envName];
+  const apiKey = config.apiKey;
   if (!apiKey) {
-    throw new Error(`Missing ${envName}. Set it before starting Sloppy.`);
+    if (config.apiKeyEnv) {
+      throw new Error(
+        `No API key was resolved for ${config.provider}. Set ${config.apiKeyEnv}, store a key in the app, or choose another profile before starting a model turn.`,
+      );
+    }
+
+    throw new Error(
+      `No API key was resolved for ${config.provider}. Store a key in the app or choose another profile before starting a model turn.`,
+    );
   }
 
   return apiKey;
 }
 
-export function createLlmAdapter(config: SloppyConfig): LlmAdapter {
-  switch (config.llm.provider) {
+export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
+  switch (config.provider) {
     case "anthropic":
       return new AnthropicAdapter({
         apiKey: requireApiKey(config),
-        model: config.llm.model,
+        model: config.model,
       });
     case "openai":
     case "openrouter":
       return new OpenAICompatibleAdapter({
         apiKey: requireApiKey(config),
-        model: config.llm.model,
-        provider: config.llm.provider,
-        baseUrl: config.llm.baseUrl,
+        model: config.model,
+        provider: config.provider,
+        baseUrl: config.baseUrl,
       });
     case "ollama":
       return new OpenAICompatibleAdapter({
-        apiKey: config.llm.apiKeyEnv ? (process.env[config.llm.apiKeyEnv] ?? "ollama") : "ollama",
-        model: config.llm.model,
+        apiKey: config.apiKey ?? "ollama",
+        model: config.model,
         provider: "ollama",
-        baseUrl: config.llm.baseUrl,
+        baseUrl: config.baseUrl,
       });
     case "gemini":
       return new GeminiAdapter({
         apiKey: requireApiKey(config),
-        model: config.llm.model,
-        baseUrl: config.llm.baseUrl,
+        model: config.model,
+        baseUrl: config.baseUrl,
       });
   }
 }

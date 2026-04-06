@@ -1,4 +1,4 @@
-import { affordancesToTools, type LlmTool } from "@slop-ai/consumer/browser";
+import { affordancesToTools, type LlmTool, type SlopNode } from "@slop-ai/consumer/browser";
 
 import { buildVisibleTree, type ProviderTreeView } from "./subscriptions";
 
@@ -106,6 +106,24 @@ function prefixToolName(providerId: string, toolName: string): string {
   return `${providerId}__${toolName}`;
 }
 
+function normalizeTreeForTools(node: SlopNode, fallbackId: string, path: string): SlopNode {
+  const nodeId = typeof node.id === "string" && node.id.length > 0 ? node.id : fallbackId;
+  const children = (node.children ?? []).flatMap((child: SlopNode, index: number) => {
+    if (typeof child.id !== "string" || child.id.length === 0) {
+      console.warn(`[sloppy] skipped malformed provider node without id at ${path}`);
+      return [];
+    }
+
+    return [normalizeTreeForTools(child, `${nodeId}_${index}`, `${path}/${child.id}`)];
+  });
+
+  return {
+    ...node,
+    id: nodeId,
+    children,
+  };
+}
+
 export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
   const tools: LlmTool[] = [];
   const resolutions = new Map<string, RuntimeToolResolution>();
@@ -119,7 +137,11 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
   }
 
   for (const view of views) {
-    const visibleTree = buildVisibleTree(view);
+    const visibleTree = normalizeTreeForTools(
+      buildVisibleTree(view),
+      view.providerId,
+      `/${view.providerId}`,
+    );
     const toolSet = affordancesToTools(visibleTree);
 
     for (const tool of toolSet.tools) {

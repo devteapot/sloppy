@@ -102,13 +102,15 @@ export function createDiscoveredProviders(
   return providers;
 }
 
-export function createRegisteredProviders(config: SloppyConfig): RegisteredProvider[] {
+export async function createRegisteredProviders(
+  config: SloppyConfig,
+): Promise<RegisteredProvider[]> {
   const builtins = createBuiltinProviders(config);
   if (!config.providers.discovery.enabled) {
     return builtins;
   }
 
-  const descriptors = discoverProviderDescriptors(config.providers.discovery.paths);
+  const descriptors = await discoverProviderDescriptors(config.providers.discovery.paths);
   const externalProviders = createDiscoveredProviders(
     descriptors,
     builtins.map((provider) => provider.id),

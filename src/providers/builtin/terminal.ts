@@ -45,7 +45,7 @@ function looksDestructive(command: string): boolean {
 }
 
 function buildTaskId(): string {
-  return `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `task-${crypto.randomUUID()}`;
 }
 
 export class TerminalProvider {
@@ -88,8 +88,14 @@ export class TerminalProvider {
 
   private async changeDirectory(path: string): Promise<{ cwd: string }> {
     const next = resolve(this.cwd, path);
-    const info = await Bun.file(next).exists();
+    const info = await Bun.file(next)
+      .stat()
+      .catch(() => null);
     if (!info) {
+      throw new Error(`Directory does not exist: ${path}`);
+    }
+
+    if (!info.isDirectory()) {
       throw new Error(`Directory does not exist: ${path}`);
     }
 
@@ -99,12 +105,12 @@ export class TerminalProvider {
 
   private spawnCommand(command: string) {
     return Bun.spawn({
-      cmd: [process.env.SHELL ?? "/bin/sh", "-lc", command],
+      cmd: [Bun.env.SHELL ?? "/bin/sh", "-lc", command],
       cwd: this.cwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
-      env: process.env,
+      env: Bun.env,
     });
   }
 
@@ -290,7 +296,7 @@ export class TerminalProvider {
       type: "context",
       props: {
         cwd: this.cwd,
-        shell: process.env.SHELL ?? "/bin/sh",
+        shell: Bun.env.SHELL ?? "/bin/sh",
         running_tasks: [...this.tasks.values()].filter((task) => task.status === "running").length,
       },
       summary: "Current shell session and command affordances.",

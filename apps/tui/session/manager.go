@@ -143,7 +143,7 @@ func (m *Manager) SendMessage(ctx context.Context, text string) error {
 }
 
 func (m *Manager) ApproveApproval(ctx context.Context, approvalID string) error {
-	return m.invoke(ctx, fmt.Sprintf("/approvals/%s", approvalID), "approve", slop.Params{})
+	return m.Invoke(ctx, fmt.Sprintf("/approvals/%s", approvalID), "approve", slop.Params{})
 }
 
 func (m *Manager) RejectApproval(ctx context.Context, approvalID string, reason string) error {
@@ -152,15 +152,15 @@ func (m *Manager) RejectApproval(ctx context.Context, approvalID string, reason 
 		params["reason"] = trimmed
 	}
 
-	return m.invoke(ctx, fmt.Sprintf("/approvals/%s", approvalID), "reject", params)
+	return m.Invoke(ctx, fmt.Sprintf("/approvals/%s", approvalID), "reject", params)
 }
 
 func (m *Manager) CancelTask(ctx context.Context, taskID string) error {
-	return m.invoke(ctx, fmt.Sprintf("/tasks/%s", taskID), "cancel", slop.Params{})
+	return m.Invoke(ctx, fmt.Sprintf("/tasks/%s", taskID), "cancel", slop.Params{})
 }
 
 func (m *Manager) CancelTurn(ctx context.Context) error {
-	return m.invoke(ctx, "/turn", "cancel_turn", slop.Params{})
+	return m.Invoke(ctx, "/turn", "cancel_turn", slop.Params{})
 }
 
 func (m *Manager) Snapshot() (*slop.WireNode, error) {
@@ -181,7 +181,7 @@ func (m *Manager) ProviderInfo() string {
 	return m.lastInfo
 }
 
-func (m *Manager) invoke(ctx context.Context, path string, action string, params slop.Params) error {
+func (m *Manager) Invoke(ctx context.Context, path string, action string, params slop.Params) error {
 	m.mu.RLock()
 	consumer := m.consumer
 	m.mu.RUnlock()

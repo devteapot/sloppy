@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	slop "github.com/devteapot/slop/packages/go/slop-ai"
 	"github.com/devteapot/sloppy/apps/tui/provider"
 	"github.com/devteapot/sloppy/apps/tui/session"
 )
@@ -36,12 +37,19 @@ type sessionActionMsg struct {
 
 type paneFocus int
 
+type profilePaneFocus int
+
 const (
 	paneTranscript paneFocus = iota
 	paneApprovals
 	paneTasks
 	paneActivity
 	paneComposer
+)
+
+const (
+	profileList profilePaneFocus = iota
+	profileForm
 )
 
 type App struct {
@@ -54,14 +62,25 @@ type App struct {
 	providers []provider.Descriptor
 	err       error
 
-	manager *session.Manager
-	state   session.ViewState
-	input   textinput.Model
+	manager       *session.Manager
+	state         session.ViewState
+	input         textinput.Model
+	sessionScreen string
 
 	rejectInput      textinput.Model
 	rejectApprovalID string
 	sessionErr       string
 	focus            paneFocus
+
+	profileFocus         profilePaneFocus
+	profileFieldFocus    int
+	profileCursor        int
+	editingProfileID     string
+	profileLabelInput    textinput.Model
+	profileProviderInput textinput.Model
+	profileModelInput    textinput.Model
+	profileBaseURLInput  textinput.Model
+	profileAPIKeyInput   textinput.Model
 
 	transcriptCursor int
 	approvalCursor   int
@@ -79,18 +98,39 @@ func NewApp(address string) App {
 	rejectInput.Width = 48
 	rejectInput.Blur()
 
+	profileLabelInput := newCodeInput("Profile label")
+	profileProviderInput := newCodeInput("Provider: anthropic, openai, openrouter, ollama, gemini")
+	profileModelInput := newCodeInput("Model")
+	profileBaseURLInput := newCodeInput("Optional base URL")
+	profileAPIKeyInput := newCodeInput("Optional API key")
+	profileAPIKeyInput.EchoMode = textinput.EchoPassword
+	profileAPIKeyInput.EchoCharacter = '*'
+
+	profileLabelInput.Blur()
+	profileProviderInput.Blur()
+	profileModelInput.Blur()
+	profileBaseURLInput.Blur()
+	profileAPIKeyInput.Blur()
+
 	mode := "discovery"
 	if address != "" {
 		mode = "session"
 	}
 
 	return App{
-		address:     address,
-		mode:        mode,
-		manager:     session.NewManager(),
-		input:       input,
-		rejectInput: rejectInput,
-		focus:       paneComposer,
+		address:              address,
+		mode:                 mode,
+		manager:              session.NewManager(),
+		input:                input,
+		rejectInput:          rejectInput,
+		focus:                paneComposer,
+		sessionScreen:        "main",
+		profileFocus:         profileList,
+		profileLabelInput:    profileLabelInput,
+		profileProviderInput: profileProviderInput,
+		profileModelInput:    profileModelInput,
+		profileBaseURLInput:  profileBaseURLInput,
+		profileAPIKeyInput:   profileAPIKeyInput,
 	}
 }
 
@@ -161,6 +201,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sessionErr = message.err.Error()
 		} else {
 			a.sessionErr = ""
+			a.profileAPIKeyInput.SetValue("")
 		}
 		return a, nil
 
@@ -177,6 +218,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) View() string {
 	if a.mode == "discovery" {
 		return a.discoveryView()
+	}
+	if a.sessionScreen == "profiles" {
+		return a.profileView()
 	}
 
 	return a.sessionView()
@@ -211,10 +255,54 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.rejectPromptOpen() {
 		return a.updateRejectPrompt(message)
 	}
+	if a.sessionScreen == "profiles" {
+		return a.updateProfiles(message)
+	}
+	if a.focus == paneComposer {
+		switch message.String() {
+		case "ctrl+c":
+			return a, tea.Quit
+		case "esc":
+			a.manager.Disconnect()
+			a.state = session.ViewState{}
+			a.address = ""
+			a.mode = "discovery"
+			a.sessionErr = ""
+			a.rejectApprovalID = ""
+			a.focus = paneComposer
+			a.sessionScreen = "main"
+			a.syncInputs()
+			return a, discoverCmd()
+		case "tab":
+			a.focus = nextPane(a.focus)
+			a.syncInputs()
+			return a, nil
+		case "shift+tab":
+			a.focus = previousPane(a.focus)
+			a.syncInputs()
+			return a, nil
+		case "enter":
+			text := strings.TrimSpace(a.input.Value())
+			if text == "" {
+				return a, nil
+			}
+			return a, sendMessageCmd(a.manager, text)
+		}
+
+		var cmd tea.Cmd
+		a.input, cmd = a.input.Update(message)
+		return a, cmd
+	}
 
 	switch message.String() {
 	case "ctrl+c", "q":
 		return a, tea.Quit
+	case "s":
+		a.sessionScreen = "profiles"
+		a.profileFocus = profileList
+		a.loadSelectedProfileIntoForm()
+		a.syncInputs()
+		return a, nil
 	case "esc":
 		a.manager.Disconnect()
 		a.state = session.ViewState{}
@@ -223,6 +311,7 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.sessionErr = ""
 		a.rejectApprovalID = ""
 		a.focus = paneComposer
+		a.sessionScreen = "main"
 		a.syncInputs()
 		return a, discoverCmd()
 	case "tab", "right":
@@ -268,12 +357,6 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		switch a.focus {
-		case paneComposer:
-			text := strings.TrimSpace(a.input.Value())
-			if text == "" {
-				return a, nil
-			}
-			return a, sendMessageCmd(a.manager, text)
 		case paneApprovals:
 			if approval := a.selectedApproval(); approval != nil && approval.CanApprove {
 				return a, approveApprovalCmd(a.manager, approval.ID)
@@ -285,18 +368,12 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if a.focus == paneComposer {
-		var cmd tea.Cmd
-		a.input, cmd = a.input.Update(message)
-		return a, cmd
-	}
-
 	return a, nil
 }
 
 func (a App) updateRejectPrompt(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch message.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
 		return a, tea.Quit
 	case "esc":
 		a.rejectApprovalID = ""
@@ -318,6 +395,299 @@ func (a App) updateRejectPrompt(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	a.rejectInput, cmd = a.rejectInput.Update(message)
 	return a, cmd
+}
+
+func (a App) updateProfiles(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.profileFocus == profileForm {
+		switch message.String() {
+		case "ctrl+c":
+			return a, tea.Quit
+		case "esc":
+			if a.state.CanSendMessage {
+				a.sessionScreen = "main"
+				a.focus = paneComposer
+			} else {
+				a.profileFocus = profileList
+			}
+			a.syncInputs()
+			return a, nil
+		case "tab":
+			a.profileFieldFocus = (a.profileFieldFocus + 1) % 5
+			a.syncInputs()
+			return a, nil
+		case "shift+tab":
+			a.profileFieldFocus = (a.profileFieldFocus + 4) % 5
+			a.syncInputs()
+			return a, nil
+		case "enter":
+			provider := strings.TrimSpace(a.profileProviderInput.Value())
+			model := strings.TrimSpace(a.profileModelInput.Value())
+			if provider == "" || model == "" {
+				a.sessionErr = "Provider and model are required."
+				return a, nil
+			}
+
+			params := slop.Params{
+				"provider": provider,
+				"model":    model,
+			}
+			if trimmed := strings.TrimSpace(a.profileLabelInput.Value()); trimmed != "" {
+				params["label"] = trimmed
+			}
+			if trimmed := strings.TrimSpace(a.profileBaseURLInput.Value()); trimmed != "" {
+				params["base_url"] = trimmed
+			}
+			if trimmed := strings.TrimSpace(a.profileAPIKeyInput.Value()); trimmed != "" {
+				params["api_key"] = trimmed
+			}
+			if a.editingProfileID != "" {
+				params["profile_id"] = a.editingProfileID
+			}
+			return a, saveProfileCmd(a.manager, params)
+		}
+
+		var cmd tea.Cmd
+		switch a.profileFieldFocus {
+		case 0:
+			a.profileLabelInput, cmd = a.profileLabelInput.Update(message)
+		case 1:
+			a.profileProviderInput, cmd = a.profileProviderInput.Update(message)
+		case 2:
+			a.profileModelInput, cmd = a.profileModelInput.Update(message)
+		case 3:
+			a.profileBaseURLInput, cmd = a.profileBaseURLInput.Update(message)
+		default:
+			a.profileAPIKeyInput, cmd = a.profileAPIKeyInput.Update(message)
+		}
+
+		return a, cmd
+	}
+
+	switch message.String() {
+	case "ctrl+c", "q":
+		return a, tea.Quit
+	case "s", "esc":
+		if a.state.CanSendMessage {
+			a.sessionScreen = "main"
+			a.focus = paneComposer
+			a.syncInputs()
+		}
+		return a, nil
+	case "left", "h":
+		a.profileFocus = profileList
+		a.syncInputs()
+		return a, nil
+	case "right", "l", "i":
+		a.profileFocus = profileForm
+		if a.editingProfileID == "" {
+			a.loadSelectedProfileIntoForm()
+		}
+		a.syncInputs()
+		return a, nil
+	}
+
+	if a.profileFocus == profileList {
+		switch message.String() {
+		case "up", "k":
+			if a.profileCursor > 0 {
+				a.profileCursor--
+			}
+			return a, nil
+		case "down", "j":
+			if a.profileCursor < len(a.state.Profiles)-1 {
+				a.profileCursor++
+			}
+			return a, nil
+		case "enter":
+			a.profileFocus = profileForm
+			a.loadSelectedProfileIntoForm()
+			a.syncInputs()
+			return a, nil
+		case "n":
+			a.startNewProfileForm()
+			a.profileFocus = profileForm
+			a.syncInputs()
+			return a, nil
+		case "f":
+			if profile := a.selectedProfile(); profile != nil {
+				return a, setDefaultProfileCmd(a.manager, profile.ID)
+			}
+		case "d":
+			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteProfile {
+				return a, deleteProfileCmd(a.manager, profile.ID)
+			}
+		case "x":
+			if profile := a.selectedProfile(); profile != nil && profile.CanDeleteAPIKey {
+				return a, deleteAPIKeyCmd(a.manager, profile.ID)
+			}
+		}
+
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func (a App) profileView() string {
+	width := a.width
+	if width == 0 {
+		width = 120
+	}
+	height := a.height
+	if height == 0 {
+		height = 36
+	}
+
+	bodyWidth := width - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	bodyHeight := height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	title := a.state.SessionTitle
+	if title == "" {
+		title = "Model Settings"
+	}
+
+	var lines []string
+	lines = append(lines, accentTitleStyle.Render(title))
+	meta := make([]string, 0, 4)
+	if a.state.SessionStatus != "" {
+		meta = append(meta, renderMetaPair("session", strings.ToUpper(a.state.SessionStatus), a.state.SessionStatus))
+	}
+	if a.state.LlmStatus != "" {
+		meta = append(meta, renderMetaPair("llm", strings.ToUpper(strings.ReplaceAll(a.state.LlmStatus, "_", " ")), a.state.LlmStatus))
+	}
+	if a.state.SecureStoreStatus != "" {
+		meta = append(meta, renderMetaPair("store", strings.ToUpper(strings.ReplaceAll(a.state.SecureStoreStatus, "_", " ")), a.state.SecureStoreStatus))
+	}
+	if len(meta) > 0 {
+		lines = append(lines, strings.Join(meta, "   "))
+	}
+	if a.state.LlmMessage != "" {
+		lines = append(lines, mutedStyle.Render(a.state.LlmMessage))
+	}
+	if a.sessionErr != "" {
+		lines = append(lines, dangerStyle.Render(a.sessionErr))
+	}
+
+	header := lipgloss.NewStyle().Width(bodyWidth).Render(strings.Join(lines, "\n"))
+	headerHeight := blockHeight(header)
+	panelHeight := maxInt(bodyHeight-headerHeight-4, 16)
+
+	if bodyWidth < 108 {
+		listHeight := maxInt(panelHeight/2, 8)
+		formHeight := maxInt(panelHeight-listHeight-1, 10)
+		list := paneStyle(a.profileFocus == profileList, true).Width(bodyWidth).Height(listHeight).Render(a.profileListView(bodyWidth-4, listHeight-2))
+		form := paneStyle(a.profileFocus == profileForm, false).Width(bodyWidth).Height(formHeight).Render(a.profileFormView(bodyWidth-4, formHeight-2))
+		content := lipgloss.JoinVertical(lipgloss.Left, header, "", list, "", form, "", helpStyle.Render(a.profileHelp()))
+		return appStyle.Render(content)
+	}
+
+	leftWidth := maxInt((bodyWidth*2)/5, 34)
+	if leftWidth > bodyWidth-36 {
+		leftWidth = bodyWidth - 36
+	}
+	rightWidth := maxInt(bodyWidth-leftWidth-2, 32)
+	list := paneStyle(a.profileFocus == profileList, true).Width(leftWidth).Height(panelHeight).Render(a.profileListView(leftWidth-4, panelHeight-2))
+	form := paneStyle(a.profileFocus == profileForm, false).Width(rightWidth).Height(panelHeight).Render(a.profileFormView(rightWidth-4, panelHeight-2))
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		"",
+		lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", form),
+		"",
+		helpStyle.Render(a.profileHelp()),
+	)
+	return appStyle.Render(content)
+}
+
+func (a App) profileListView(width int, height int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Profiles", a.profileFocus == profileList, fmt.Sprintf("%d available", len(a.state.Profiles))))
+	lines = append(lines, "")
+
+	if len(a.state.Profiles) == 0 {
+		lines = append(lines, ghostTextStyle.Render("No profiles yet. Press n to create the first one."))
+		return strings.Join(lines, "\n")
+	}
+
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Profiles), a.profileCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Profiles[index]
+		selected := index == a.profileCursor
+		lines = append(lines, renderProfileEntry(entry, selected, width))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (a App) profileFormView(width int, _ int) string {
+	mode := "new profile"
+	if a.editingProfileID != "" {
+		mode = "editing selected profile"
+	} else if profile := a.selectedProfile(); profile != nil && profile.Origin == "environment" {
+		mode = "saving environment profile as managed"
+	}
+
+	labelWidth := 10
+	fieldWidth := width - labelWidth - 2
+	if fieldWidth < 12 {
+		fieldWidth = 12
+	}
+	a.profileLabelInput.Width = fieldWidth
+	a.profileProviderInput.Width = fieldWidth
+	a.profileModelInput.Width = fieldWidth
+	a.profileBaseURLInput.Width = fieldWidth
+	a.profileAPIKeyInput.Width = fieldWidth
+
+	rows := []string{
+		paneHeader("Profile Form", a.profileFocus == profileForm, mode),
+		"",
+		renderInputRow("Label", a.profileLabelInput),
+		renderInputRow("Provider", a.profileProviderInput),
+		renderInputRow("Model", a.profileModelInput),
+		renderInputRow("Base URL", a.profileBaseURLInput),
+		renderInputRow("API key", a.profileAPIKeyInput),
+		"",
+		mutedStyle.Render("Saving with a non-empty API key stores it securely when the machine supports it. Environment-backed profiles are copied into managed profiles when saved here."),
+	}
+
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(rows, "\n"))
+}
+
+func renderInputRow(label string, input textinput.Model) string {
+	return fmt.Sprintf("%s %s", lipgloss.NewStyle().Width(10).Render(metaLabelStyle.Render(strings.ToUpper(label))), input.View())
+}
+
+func renderProfileEntry(entry session.LlmProfileEntry, selected bool, width int) string {
+	status := statusStyle(map[bool]string{true: "ready", false: "needs_credentials"}[entry.Ready]).Render(strings.ToUpper(strings.ReplaceAll(map[bool]string{true: "ready", false: "needs_credentials"}[entry.Ready], "_", " ")))
+	title := entry.Label
+	if title == "" {
+		title = strings.TrimSpace(fmt.Sprintf("%s %s", entry.Provider, entry.Model))
+	}
+	detailParts := []string{joinNonEmpty(" ", entry.Provider, entry.Model)}
+	if entry.IsDefault {
+		detailParts = append(detailParts, "default")
+	}
+	if entry.Origin != "" {
+		detailParts = append(detailParts, entry.Origin)
+	}
+	if entry.KeySource != "" {
+		detailParts = append(detailParts, entry.KeySource)
+	}
+	if entry.APIKeyEnv != "" {
+		detailParts = append(detailParts, entry.APIKeyEnv)
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status),
+		"  " + truncate(compact(strings.Join(detailParts, " | ")), width-4),
+	}
+	return renderListItem(selected, width, lines)
 }
 
 func (a App) discoveryView() string {
@@ -565,7 +935,11 @@ func (a App) composerView(width int) string {
 	var lines []string
 	lines = append(lines, paneHeader("Composer", a.focus == paneComposer, "send into the live session"))
 	lines = append(lines, "")
-	lines = append(lines, a.input.View())
+	if a.state.CanSendMessage {
+		lines = append(lines, a.input.View())
+	} else {
+		lines = append(lines, mutedStyle.Render(a.state.LlmMessage))
+	}
 	lines = append(lines, "")
 	lines = append(lines, mutedStyle.Render(a.sessionHelp()))
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
@@ -612,6 +986,7 @@ func (a App) applyViewState(next session.ViewState) App {
 	a.approvalCursor = preserveCursor(len(previous.Approvals), len(next.Approvals), a.approvalCursor)
 	a.taskCursor = preserveCursor(len(previous.Tasks), len(next.Tasks), a.taskCursor)
 	a.activityCursor = preserveCursor(len(previous.Activity), len(next.Activity), a.activityCursor)
+	a.profileCursor = preserveCursor(len(previous.Profiles), len(next.Profiles), a.profileCursor)
 
 	if !hasPendingApprovals(previous.Approvals) && hasPendingApprovals(next.Approvals) && !a.rejectPromptOpen() {
 		if pendingIndex := firstPendingApprovalIndex(next.Approvals); pendingIndex >= 0 {
@@ -622,23 +997,72 @@ func (a App) applyViewState(next session.ViewState) App {
 		}
 	}
 
+	if !next.CanSendMessage || next.LlmStatus != "ready" {
+		a.sessionScreen = "profiles"
+	}
+	if a.sessionScreen == "profiles" {
+		if a.editingProfileID == "" {
+			a.loadSelectedProfileIntoForm()
+		} else if profile := a.selectedProfileByID(a.editingProfileID); profile != nil {
+			a.profileLabelInput.SetValue(profile.Label)
+			a.profileProviderInput.SetValue(profile.Provider)
+			a.profileModelInput.SetValue(profile.Model)
+			a.profileBaseURLInput.SetValue(profile.BaseURL)
+		} else {
+			a.startNewProfileForm()
+		}
+	}
+
 	a.syncInputs()
 	return a
 }
 
 func (a *App) syncInputs() {
 	if a.rejectPromptOpen() {
+		a.blurProfileInputs()
 		a.rejectInput.Focus()
 		a.input.Blur()
 		return
 	}
 
 	a.rejectInput.Blur()
+	if a.sessionScreen == "profiles" {
+		a.input.Blur()
+		if a.profileFocus != profileForm {
+			a.blurProfileInputs()
+			return
+		}
+
+		a.blurProfileInputs()
+		switch a.profileFieldFocus {
+		case 0:
+			a.profileLabelInput.Focus()
+		case 1:
+			a.profileProviderInput.Focus()
+		case 2:
+			a.profileModelInput.Focus()
+		case 3:
+			a.profileBaseURLInput.Focus()
+		default:
+			a.profileAPIKeyInput.Focus()
+		}
+		return
+	}
+
+	a.blurProfileInputs()
 	if a.focus == paneComposer {
 		a.input.Focus()
 	} else {
 		a.input.Blur()
 	}
+}
+
+func (a *App) blurProfileInputs() {
+	a.profileLabelInput.Blur()
+	a.profileProviderInput.Blur()
+	a.profileModelInput.Blur()
+	a.profileBaseURLInput.Blur()
+	a.profileAPIKeyInput.Blur()
 }
 
 func (a *App) moveSelection(delta int) {
@@ -680,6 +1104,71 @@ func (a App) selectedTask() *session.TaskEntry {
 	}
 	index := clampRange(a.taskCursor, len(a.state.Tasks))
 	return &a.state.Tasks[index]
+}
+
+func (a App) selectedProfile() *session.LlmProfileEntry {
+	if len(a.state.Profiles) == 0 {
+		return nil
+	}
+	index := clampRange(a.profileCursor, len(a.state.Profiles))
+	return &a.state.Profiles[index]
+}
+
+func (a App) selectedProfileByID(id string) *session.LlmProfileEntry {
+	if id == "" {
+		return nil
+	}
+	for index := range a.state.Profiles {
+		if a.state.Profiles[index].ID == id {
+			return &a.state.Profiles[index]
+		}
+	}
+	return nil
+}
+
+func (a *App) loadSelectedProfileIntoForm() {
+	if profile := a.selectedProfile(); profile != nil {
+		if profile.Managed {
+			a.editingProfileID = profile.ID
+		} else {
+			a.editingProfileID = ""
+		}
+		a.profileFieldFocus = 0
+		label := profile.Label
+		if profile.Origin == "environment" && profile.APIKeyEnv != "" {
+			label = strings.TrimSuffix(label, fmt.Sprintf(" (%s)", profile.APIKeyEnv))
+		}
+		a.profileLabelInput.SetValue(label)
+		a.profileProviderInput.SetValue(profile.Provider)
+		a.profileModelInput.SetValue(profile.Model)
+		a.profileBaseURLInput.SetValue(profile.BaseURL)
+		a.profileAPIKeyInput.SetValue("")
+		return
+	}
+
+	a.startNewProfileForm()
+}
+
+func (a *App) startNewProfileForm() {
+	a.editingProfileID = ""
+	a.profileFieldFocus = 0
+	a.profileLabelInput.SetValue("")
+	if a.state.LlmStatus == "ready" && len(a.state.Profiles) > 0 {
+		if profile := a.selectedProfile(); profile != nil {
+			a.profileProviderInput.SetValue(profile.Provider)
+			a.profileModelInput.SetValue(profile.Model)
+			a.profileBaseURLInput.SetValue(profile.BaseURL)
+		} else {
+			a.profileProviderInput.SetValue("")
+			a.profileModelInput.SetValue("")
+			a.profileBaseURLInput.SetValue("")
+		}
+	} else {
+		a.profileProviderInput.SetValue("")
+		a.profileModelInput.SetValue("")
+		a.profileBaseURLInput.SetValue("")
+	}
+	a.profileAPIKeyInput.SetValue("")
 }
 
 func (a App) rejectPromptOpen() bool {
@@ -738,6 +1227,38 @@ func cancelTurnCmd(manager *session.Manager) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		return sessionActionMsg{err: manager.CancelTurn(ctx)}
+	}
+}
+
+func saveProfileCmd(manager *session.Manager, params slop.Params) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.Invoke(ctx, "/llm", "save_profile", params)}
+	}
+}
+
+func setDefaultProfileCmd(manager *session.Manager, profileID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.Invoke(ctx, "/llm", "set_default_profile", slop.Params{"profile_id": profileID})}
+	}
+}
+
+func deleteProfileCmd(manager *session.Manager, profileID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.Invoke(ctx, "/llm", "delete_profile", slop.Params{"profile_id": profileID})}
+	}
+}
+
+func deleteAPIKeyCmd(manager *session.Manager, profileID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.Invoke(ctx, "/llm", "delete_api_key", slop.Params{"profile_id": profileID})}
 	}
 }
 
@@ -883,14 +1404,28 @@ func (a App) sessionHelp() string {
 
 	switch a.focus {
 	case paneComposer:
-		return "tab cycle  enter send  esc back  q quit"
+		return "tab cycle  enter send  esc back  ctrl+c quit"
 	case paneApprovals:
-		return "j/k move  enter or a approve  r reject  t cancel turn  i compose"
+		return "j/k move  enter or a approve  r reject  t cancel turn  s settings  i compose"
 	case paneTasks:
-		return "j/k move  enter or c cancel task  t cancel turn  i compose"
+		return "j/k move  enter or c cancel task  t cancel turn  s settings  i compose"
 	default:
-		return "tab cycle  j/k move  t cancel turn  i compose  esc back"
+		return "tab cycle  j/k move  t cancel turn  s settings  i compose  esc back"
 	}
+}
+
+func (a App) profileHelp() string {
+	if a.profileFocus == profileList {
+		if a.state.CanSendMessage {
+			return "j/k move  enter copy/edit  n new  f default  d delete managed  x drop stored key  s back"
+		}
+		return "j/k move  enter copy/edit  n new  f default  d delete managed  x drop stored key  q quit"
+	}
+
+	if a.state.CanSendMessage {
+		return "tab next field  shift+tab prev  enter save  esc back"
+	}
+	return "tab next field  shift+tab prev  enter save  esc list  ctrl+c quit"
 }
 
 func newCodeInput(placeholder string) textinput.Model {

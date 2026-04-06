@@ -23,8 +23,8 @@
 - State observation is primary; affordance invocation is secondary.
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, and an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama.
-- The current checked-in interfaces are a CLI/REPL, an initial headless `src/session/` agent-session surface, and an attach-only Go TUI scaffold under `apps/tui/`.
+- The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, and a managed LLM-profile layer with secure credential storage for macOS and Linux.
+- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state, and a Go TUI under `apps/tui/` that can onboard and manage LLM profiles.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -65,12 +65,16 @@ src/
   cli.ts
   index.ts
   config/
+    persist.ts
   core/
   llm/
     anthropic.ts
+    credential-store.ts
     factory.ts
     gemini.ts
     openai-compatible.ts
+    profile-manager.ts
+    provider-defaults.ts
     types.ts
   providers/
   session/
@@ -163,7 +167,11 @@ docs/
 - Primary config locations:
   - `~/.sloppy/config.yaml`
   - `.sloppy/config.yaml` in the workspace
-- Read secrets from environment variables referenced by config.
+- Managed LLM-profile metadata is persisted in `~/.sloppy/config.yaml`.
+- Persisted API keys are stored in the OS secure store, not in YAML:
+  - macOS: Keychain
+  - Linux: Secret Service via `secret-tool`
+- Environment variables referenced by config are exposed as selectable env-backed LLM profiles instead of silently overriding the currently selected managed profile.
 - Never hardcode API keys or credentials.
 - Do not commit `.env` files.
 

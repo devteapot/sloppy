@@ -148,9 +148,10 @@ Checked-in location: `src/session/`.
 Responsibilities:
 
 - expose a running agent session as SLOP state
-- accept user-facing session affordances such as `send_message`, `cancel_turn`, `approve`, and `reject`
+- accept user-facing session affordances such as `send_message`, `cancel_turn`, `approve`, `reject`, and LLM-profile management actions
 - stream transcript updates, tool activity, and pending approvals through `snapshot` + `patch`
 - mirror provider-native approvals and async tasks from downstream providers into session state
+- expose LLM readiness, saved profiles, and onboarding state without leaking secrets
 - support multiple concurrent consumers attached to the same session
 - keep the first-party UI on the same public contract that third-party UIs will use
 
@@ -178,6 +179,7 @@ That keeps the architecture consistent:
 The session provider should expose state that is meaningful across multiple clients:
 
 - transcript and multimodal message content
+- LLM readiness and saved profile summaries
 - active turn status
 - tool calls, tool results, and async tasks
 - pending approvals and policy gates

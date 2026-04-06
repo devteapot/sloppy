@@ -4,6 +4,7 @@ import type {
   AgentSessionSnapshot,
   AgentTurnPhase,
   ApprovalItem,
+  LlmStateSnapshot,
   SessionStoreChangeListener,
   SessionTask,
   TranscriptMessage,
@@ -27,6 +28,10 @@ export function buildMirroredItemId(prefix: string, providerId: string, sourceId
 function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
   return {
     session: { ...snapshot.session },
+    llm: {
+      ...snapshot.llm,
+      profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
+    },
     turn: { ...snapshot.turn },
     transcript: snapshot.transcript.map((message) => ({
       ...message,
@@ -65,6 +70,16 @@ export class SessionStore {
         title: options.title,
         workspaceRoot: options.workspaceRoot,
       },
+      llm: {
+        status: "needs_credentials",
+        message: "Add an API key to start the agent.",
+        activeProfileId: "default",
+        selectedProvider: options.modelProvider,
+        selectedModel: options.model,
+        secureStoreKind: "none",
+        secureStoreStatus: "unsupported",
+        profiles: [],
+      },
       turn: {
         turnId: null,
         state: "idle",
@@ -100,6 +115,17 @@ export class SessionStore {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  syncLlmState(state: LlmStateSnapshot): void {
+    this.snapshot.llm = {
+      ...state,
+      profiles: state.profiles.map((profile) => ({ ...profile })),
+    };
+    this.snapshot.session.modelProvider = state.selectedProvider;
+    this.snapshot.session.model = state.selectedModel;
+    this.snapshot.session.updatedAt = now();
+    this.emitChange();
   }
 
   beginTurn(userText: string): string {

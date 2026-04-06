@@ -92,6 +92,39 @@ export type SessionTask = {
   turnId?: string;
 };
 
+export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required";
+export type LlmProfileOrigin = "managed" | "environment" | "fallback";
+
+export type LlmSecureStoreStatus = "available" | "unavailable" | "unsupported";
+
+export type LlmProfileSnapshot = {
+  id: string;
+  label?: string;
+  provider: string;
+  model: string;
+  apiKeyEnv?: string;
+  baseUrl?: string;
+  isDefault: boolean;
+  hasKey: boolean;
+  keySource: LlmKeySource;
+  ready: boolean;
+  managed: boolean;
+  origin: LlmProfileOrigin;
+  canDeleteProfile: boolean;
+  canDeleteApiKey: boolean;
+};
+
+export type LlmStateSnapshot = {
+  status: "ready" | "needs_credentials";
+  message: string;
+  activeProfileId: string;
+  selectedProvider: string;
+  selectedModel: string;
+  secureStoreKind: string;
+  secureStoreStatus: LlmSecureStoreStatus;
+  profiles: LlmProfileSnapshot[];
+};
+
 export type SessionMetadata = {
   sessionId: string;
   status: AgentSessionStatus;
@@ -119,6 +152,7 @@ export type TurnStateSnapshot = {
 
 export type AgentSessionSnapshot = {
   session: SessionMetadata;
+  llm: LlmStateSnapshot;
   turn: TurnStateSnapshot;
   transcript: TranscriptMessage[];
   activity: ActivityItem[];

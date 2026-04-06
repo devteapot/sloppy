@@ -50,18 +50,41 @@ type TaskEntry struct {
 	CanCancel      bool
 }
 
+type LlmProfileEntry struct {
+	ID               string
+	Label            string
+	Provider         string
+	Model            string
+	APIKeyEnv        string
+	BaseURL          string
+	KeySource        string
+	Origin           string
+	Ready            bool
+	IsDefault        bool
+	Managed          bool
+	HasKey           bool
+	CanDeleteProfile bool
+	CanDeleteAPIKey  bool
+}
+
 type ViewState struct {
-	SessionTitle  string
-	SessionStatus string
-	Model         string
-	TurnState     string
-	TurnMessage   string
-	CanCancelTurn bool
-	Transcript    []TranscriptEntry
-	Activity      []ActivityEntry
-	Approvals     []ApprovalEntry
-	Tasks         []TaskEntry
-	Error         string
+	SessionTitle      string
+	SessionStatus     string
+	Model             string
+	LlmStatus         string
+	LlmMessage        string
+	CanSendMessage    bool
+	SecureStoreKind   string
+	SecureStoreStatus string
+	TurnState         string
+	TurnMessage       string
+	CanCancelTurn     bool
+	Profiles          []LlmProfileEntry
+	Transcript        []TranscriptEntry
+	Activity          []ActivityEntry
+	Approvals         []ApprovalEntry
+	Tasks             []TaskEntry
+	Error             string
 }
 
 func BuildView(tree *slop.WireNode, err error) ViewState {
@@ -90,6 +113,44 @@ func BuildView(tree *slop.WireNode, err error) ViewState {
 		state.TurnState = stringProp(turnNode, "state")
 		state.TurnMessage = stringProp(turnNode, "message")
 		state.CanCancelTurn = hasAffordance(turnNode, "cancel_turn")
+	}
+
+	if llmNode := findChild(tree, "llm"); llmNode != nil {
+		state.LlmStatus = stringProp(llmNode, "status")
+		state.LlmMessage = stringProp(llmNode, "message")
+		state.SecureStoreKind = stringProp(llmNode, "secure_store_kind")
+		state.SecureStoreStatus = stringProp(llmNode, "secure_store_status")
+
+		for i := range llmNode.Children {
+			child := &llmNode.Children[i]
+			label := stringProp(child, "label")
+			if label == "" {
+				label = strings.TrimSpace(fmt.Sprintf("%s %s", stringProp(child, "provider"), stringProp(child, "model")))
+			}
+			state.Profiles = append(state.Profiles, LlmProfileEntry{
+				ID:               child.ID,
+				Label:            label,
+				Provider:         stringProp(child, "provider"),
+				Model:            stringProp(child, "model"),
+				APIKeyEnv:        stringProp(child, "api_key_env"),
+				BaseURL:          stringProp(child, "base_url"),
+				KeySource:        stringProp(child, "key_source"),
+				Origin:           stringProp(child, "origin"),
+				Ready:            boolProp(child, "ready"),
+				IsDefault:        boolProp(child, "is_default"),
+				Managed:          boolProp(child, "managed"),
+				HasKey:           boolProp(child, "has_key"),
+				CanDeleteProfile: boolProp(child, "can_delete_profile"),
+				CanDeleteAPIKey:  boolProp(child, "can_delete_api_key"),
+			})
+		}
+	}
+
+	if composerNode := findChild(tree, "composer"); composerNode != nil {
+		state.CanSendMessage = hasAffordance(composerNode, "send_message")
+		if !state.CanSendMessage && state.LlmMessage == "" {
+			state.LlmMessage = stringProp(composerNode, "disabled_reason")
+		}
 	}
 
 	if transcriptNode := findChild(tree, "transcript"); transcriptNode != nil {

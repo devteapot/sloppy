@@ -62,15 +62,17 @@ afterEach(async () => {
 
 describe("loadConfig", () => {
   test("applies provider-specific defaults for OpenRouter", async () => {
+    const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(workspace, "llm:\n  provider: openrouter\n");
 
+    process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
     delete process.env.SLOPPY_LLM_BASE_URL;
     process.chdir(workspace);
 
-    const config = loadConfig();
+    const config = await loadConfig();
 
     expect(config.llm.provider).toBe("openrouter");
     expect(config.llm.model).toBe("openai/gpt-5.4");
@@ -79,15 +81,17 @@ describe("loadConfig", () => {
   });
 
   test("applies provider-specific defaults for Gemini", async () => {
+    const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(workspace, "llm:\n  provider: gemini\n");
 
+    process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
     delete process.env.SLOPPY_LLM_BASE_URL;
     process.chdir(workspace);
 
-    const config = loadConfig();
+    const config = await loadConfig();
 
     expect(config.llm.provider).toBe("gemini");
     expect(config.llm.model).toBe("gemini-2.5-pro");
@@ -96,15 +100,17 @@ describe("loadConfig", () => {
   });
 
   test("applies env overrides for provider and base URL", async () => {
+    const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(workspace, "llm:\n  provider: anthropic\n");
 
+    process.env.HOME = home;
     process.env.SLOPPY_LLM_PROVIDER = "ollama";
     process.env.SLOPPY_LLM_BASE_URL = "http://127.0.0.1:11434/v1";
     delete process.env.SLOPPY_MODEL;
     process.chdir(workspace);
 
-    const config = loadConfig();
+    const config = await loadConfig();
 
     expect(config.llm.provider).toBe("ollama");
     expect(config.llm.model).toBe("llama3.2");

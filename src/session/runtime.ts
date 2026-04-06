@@ -1,7 +1,7 @@
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
-import { loadConfig } from "../config/load";
-import type { SloppyConfig } from "../config/schema";
+import { defaultConfigPromise } from "../config/load";
+import { llmProviderSchema, type SloppyConfig } from "../config/schema";
 import {
   Agent,
   type AgentCallbacks,
@@ -10,13 +10,20 @@ import {
   type AgentToolInvocation,
   type ResolvedApprovalToolResult,
 } from "../core/agent";
+import {
+  LlmConfigurationError,
+  LlmProfileManager,
+  type LlmStateSnapshot as RuntimeLlmStateSnapshot,
+} from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import { buildMirroredItemId, SessionStore } from "./store";
-import type { ApprovalItem, SessionTask, SessionTaskStatus } from "./types";
+import type { ApprovalItem, LlmStateSnapshot, SessionTask, SessionTaskStatus } from "./types";
 
 function hasAffordance(node: SlopNode, action: string): boolean {
   return (node.affordances ?? []).some((affordance) => affordance.action === action);
 }
+
+const DEFAULT_CONFIG = await defaultConfigPromise;
 
 function normalizeTaskStatus(status: unknown): SessionTaskStatus {
   switch (status) {
@@ -160,20 +167,58 @@ export interface SessionAgent {
     action: string,
     params?: Record<string, unknown>,
   ): Promise<ResultMessage>;
+  updateConfig?(config: SloppyConfig): void;
   shutdown(): void;
 }
 
-export type SessionAgentFactory = (callbacks: AgentCallbacks, config: SloppyConfig) => SessionAgent;
+export type SessionAgentFactory = (
+  callbacks: AgentCallbacks,
+  config: SloppyConfig,
+  llmProfileManager: LlmProfileManager,
+) => SessionAgent;
 
-function createDefaultSessionAgent(callbacks: AgentCallbacks, config: SloppyConfig): SessionAgent {
-  return new Agent({ config, ...callbacks });
+function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnapshot {
+  return {
+    status: state.status,
+    message: state.message,
+    activeProfileId: state.activeProfileId,
+    selectedProvider: state.selectedProvider,
+    selectedModel: state.selectedModel,
+    secureStoreKind: state.secureStoreKind,
+    secureStoreStatus: state.secureStoreStatus,
+    profiles: state.profiles.map((profile) => ({
+      id: profile.id,
+      label: profile.label,
+      provider: profile.provider,
+      model: profile.model,
+      apiKeyEnv: profile.apiKeyEnv,
+      baseUrl: profile.baseUrl,
+      isDefault: profile.isDefault,
+      hasKey: profile.hasKey,
+      keySource: profile.keySource,
+      ready: profile.ready,
+      managed: profile.managed,
+      origin: profile.origin,
+      canDeleteProfile: profile.canDeleteProfile,
+      canDeleteApiKey: profile.canDeleteApiKey,
+    })),
+  };
+}
+
+function createDefaultSessionAgent(
+  callbacks: AgentCallbacks,
+  config: SloppyConfig,
+  llmProfileManager: LlmProfileManager,
+): SessionAgent {
+  return new Agent({ config, llmProfileManager, ...callbacks });
 }
 
 export class SessionRuntime {
-  readonly config: SloppyConfig;
+  config: SloppyConfig;
   readonly store: SessionStore;
 
   private agent: SessionAgent;
+  private llmProfileManager: LlmProfileManager;
   private started = false;
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
@@ -189,8 +234,14 @@ export class SessionRuntime {
     title?: string;
     store?: SessionStore;
     agentFactory?: SessionAgentFactory;
+    llmProfileManager?: LlmProfileManager;
   }) {
-    this.config = options?.config ?? loadConfig();
+    this.config = options?.config ?? DEFAULT_CONFIG;
+    this.llmProfileManager =
+      options?.llmProfileManager ??
+      new LlmProfileManager({
+        config: this.config,
+      });
     this.store =
       options?.store ??
       new SessionStore({
@@ -240,7 +291,7 @@ export class SessionRuntime {
     };
 
     const agentFactory = options?.agentFactory ?? createDefaultSessionAgent;
-    this.agent = agentFactory(callbacks, this.config);
+    this.agent = agentFactory(callbacks, this.config, this.llmProfileManager);
   }
 
   async start(): Promise<void> {
@@ -249,6 +300,7 @@ export class SessionRuntime {
     }
 
     await this.agent.start();
+    await this.refreshLlmState();
     this.started = true;
   }
 
@@ -263,10 +315,60 @@ export class SessionRuntime {
     }
 
     await this.start();
+    await this.refreshLlmState({ requireReady: true });
     const turnId = this.store.beginTurn(trimmed);
     this.currentTurnId = turnId;
     this.activeTurnPromise = this.runTurn(turnId, trimmed);
     return { turnId };
+  }
+
+  async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
+    const provider = llmProviderSchema.parse(String(params.provider ?? "").trim());
+    const profileId = typeof params.profile_id === "string" ? params.profile_id : undefined;
+    const label = typeof params.label === "string" ? params.label : undefined;
+    const model = typeof params.model === "string" ? params.model : undefined;
+    const baseUrl = typeof params.base_url === "string" ? params.base_url : undefined;
+    const apiKey = typeof params.api_key === "string" ? params.api_key : undefined;
+    const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
+
+    const state = await this.llmProfileManager.saveProfile({
+      profileId,
+      label,
+      provider,
+      model,
+      baseUrl,
+      apiKey,
+      makeDefault,
+    });
+    this.applyLlmState(state);
+    return { status: "ok" };
+  }
+
+  async setDefaultLlmProfile(profileId: string): Promise<{ profileId: string; status: string }> {
+    const state = await this.llmProfileManager.setDefaultProfile(profileId);
+    this.applyLlmState(state);
+    return {
+      profileId,
+      status: "ok",
+    };
+  }
+
+  async deleteLlmProfile(profileId: string): Promise<{ profileId: string; status: string }> {
+    const state = await this.llmProfileManager.deleteProfile(profileId);
+    this.applyLlmState(state);
+    return {
+      profileId,
+      status: "ok",
+    };
+  }
+
+  async deleteLlmApiKey(profileId: string): Promise<{ profileId: string; status: string }> {
+    const state = await this.llmProfileManager.deleteApiKey(profileId);
+    this.applyLlmState(state);
+    return {
+      profileId,
+      status: "ok",
+    };
   }
 
   async approveApproval(approvalId: string): Promise<{ approvalId: string; status: string }> {
@@ -500,5 +602,28 @@ export class SessionRuntime {
     this.pendingApproval = null;
     this.currentTurnId = null;
     this.store.failTurn(turnId, error instanceof Error ? error.message : String(error));
+  }
+
+  private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {
+    try {
+      const state = options?.requireReady
+        ? await this.llmProfileManager.ensureReady()
+        : await this.llmProfileManager.getState();
+      this.applyLlmState(state);
+    } catch (error) {
+      if (!(error instanceof LlmConfigurationError)) {
+        throw error;
+      }
+
+      const state = await this.llmProfileManager.getState();
+      this.applyLlmState(state);
+      throw error;
+    }
+  }
+
+  private applyLlmState(state: RuntimeLlmStateSnapshot): void {
+    this.config = this.llmProfileManager.getConfig();
+    this.agent.updateConfig?.(this.config);
+    this.store.syncLlmState(toSessionLlmState(state));
   }
 }

@@ -23,6 +23,34 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 				},
 			},
 			{
+				ID:   "llm",
+				Type: "collection",
+				Properties: slop.Props{
+					"status":              "needs_credentials",
+					"message":             "Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.",
+					"secure_store_kind":   "keychain",
+					"secure_store_status": "available",
+				},
+				Children: []slop.WireNode{{
+					ID:   "profile-1",
+					Type: "item",
+					Properties: slop.Props{
+						"label":              "Primary",
+						"provider":           "openai",
+						"model":              "gpt-5.4",
+						"api_key_env":        "OPENAI_API_KEY",
+						"ready":              false,
+						"is_default":         true,
+						"managed":            true,
+						"origin":             "managed",
+						"has_key":            false,
+						"key_source":         "missing",
+						"can_delete_profile": true,
+						"can_delete_api_key": true,
+					},
+				}},
+			},
+			{
 				ID:   "turn",
 				Type: "status",
 				Properties: slop.Props{
@@ -30,6 +58,13 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 					"message": "Command marked dangerous",
 				},
 				Affordances: []slop.Affordance{{Action: "cancel_turn"}},
+			},
+			{
+				ID:   "composer",
+				Type: "control",
+				Properties: slop.Props{
+					"disabled_reason": "Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.",
+				},
 			},
 			{
 				ID:   "transcript",
@@ -118,6 +153,15 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 	}
 	if state.Model != "openai gpt-5.4" {
 		t.Fatalf("expected model summary, got %q", state.Model)
+	}
+	if state.LlmStatus != "needs_credentials" || state.CanSendMessage {
+		t.Fatalf("expected llm onboarding state to disable composer, got status=%q canSend=%v", state.LlmStatus, state.CanSendMessage)
+	}
+	if len(state.Profiles) != 1 || state.Profiles[0].Provider != "openai" {
+		t.Fatalf("expected llm profile metadata to be parsed, got %#v", state.Profiles)
+	}
+	if state.Profiles[0].Origin != "managed" || !state.Profiles[0].CanDeleteProfile || !state.Profiles[0].CanDeleteAPIKey {
+		t.Fatalf("expected llm profile origin and capabilities to be parsed, got %#v", state.Profiles[0])
 	}
 	if state.TurnState != "waiting_approval" || !state.CanCancelTurn {
 		t.Fatalf("expected waiting approval turn with cancel affordance, got state=%q cancel=%v", state.TurnState, state.CanCancelTurn)

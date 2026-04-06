@@ -2,18 +2,20 @@
 
 import { SessionService } from "./service";
 
+const stdout = Bun.stdout.writer();
+
 function readOption(flag: string): string | undefined {
-  const index = process.argv.indexOf(flag);
+  const index = Bun.argv.indexOf(flag);
   if (index === -1) {
     return undefined;
   }
 
-  return process.argv[index + 1];
+  return Bun.argv[index + 1];
 }
 
 const socketPath = readOption("--socket");
 const sessionId = readOption("--session-id");
-const noRegister = process.argv.includes("--no-register");
+const noRegister = Bun.argv.includes("--no-register");
 
 const service = new SessionService({
   sessionId,
@@ -21,7 +23,8 @@ const service = new SessionService({
 });
 
 await service.start({ register: !noRegister });
-process.stdout.write(`[sloppy] session provider listening on ${service.socketPath}\n`);
+stdout.write(`[sloppy] session provider listening on ${service.socketPath}\n`);
+await stdout.flush();
 
 const shutdown = () => {
   service.stop();

@@ -1,62 +1,46 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import YAML from "yaml";
-
+import { getProviderDefaults } from "../llm/provider-defaults";
 import {
   type LlmConfig,
-  type LlmProvider,
+  type LlmProfileConfig,
   type RawSloppyConfig,
   type SloppyConfig,
   sloppyConfigSchema,
 } from "./schema";
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 
-const DEFAULT_LLM_CONFIG: Record<
-  LlmProvider,
-  {
-    model: string;
-    apiKeyEnv?: string;
-    baseUrl?: string;
+function getHomeDirectory(): string {
+  const home = Bun.env.HOME;
+  if (!home) {
+    throw new Error("HOME is not set. Sloppy requires a home directory to resolve config paths.");
   }
-> = {
-  anthropic: {
-    model: "claude-sonnet-4-20250514",
-    apiKeyEnv: "ANTHROPIC_API_KEY",
-  },
-  openai: {
-    model: "gpt-5.4",
-    apiKeyEnv: "OPENAI_API_KEY",
-  },
-  openrouter: {
-    model: "openai/gpt-5.4",
-    apiKeyEnv: "OPENROUTER_API_KEY",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  ollama: {
-    model: "llama3.2",
-    baseUrl: "http://localhost:11434/v1",
-  },
-  gemini: {
-    model: "gemini-2.5-pro",
-    apiKeyEnv: "GEMINI_API_KEY",
-  },
-};
 
-function expandHomePath(path: string): string {
+  return home;
+}
+
+export function getHomeConfigPath(): string {
+  return resolve(getHomeDirectory(), ".sloppy/config.yaml");
+}
+
+export function getWorkspaceConfigPath(cwd = process.cwd()): string {
+  return resolve(cwd, ".sloppy/config.yaml");
+}
+
+export function expandHomePath(path: string): string {
   if (path === "~") {
-    return homedir();
+    return getHomeDirectory();
   }
 
   if (path.startsWith("~/")) {
-    return resolve(homedir(), path.slice(2));
+    return resolve(getHomeDirectory(), path.slice(2));
   }
 
   return path;
 }
 
-function deepMerge(base: JsonObject, incoming: JsonObject): JsonObject {
+export function deepMerge(base: JsonObject, incoming: JsonObject): JsonObject {
   const merged: JsonObject = { ...base };
 
   for (const [key, value] of Object.entries(incoming)) {
@@ -78,12 +62,13 @@ function deepMerge(base: JsonObject, incoming: JsonObject): JsonObject {
   return merged;
 }
 
-function readConfigFile(filePath: string): JsonObject {
-  if (!existsSync(filePath)) {
+export async function readConfigFile(filePath: string): Promise<JsonObject> {
+  const file = Bun.file(filePath);
+  if (!(await file.exists())) {
     return {};
   }
 
-  const raw = readFileSync(filePath, "utf8");
+  const raw = await file.text();
   const parsed = YAML.parse(raw);
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -93,53 +78,68 @@ function readConfigFile(filePath: string): JsonObject {
   return parsed as JsonObject;
 }
 
-function applyEnvironmentOverrides(config: JsonObject): JsonObject {
+export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   const overrides: JsonObject = {};
 
-  if (process.env.SLOPPY_LLM_PROVIDER) {
+  if (Bun.env.SLOPPY_LLM_PROVIDER) {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
-      provider: process.env.SLOPPY_LLM_PROVIDER,
+      provider: Bun.env.SLOPPY_LLM_PROVIDER,
     };
   }
 
-  if (process.env.SLOPPY_MODEL) {
+  if (Bun.env.SLOPPY_MODEL) {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
-      model: process.env.SLOPPY_MODEL,
+      model: Bun.env.SLOPPY_MODEL,
     };
   }
 
-  if (process.env.SLOPPY_LLM_BASE_URL) {
+  if (Bun.env.SLOPPY_LLM_BASE_URL) {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
-      baseUrl: process.env.SLOPPY_LLM_BASE_URL,
+      baseUrl: Bun.env.SLOPPY_LLM_BASE_URL,
     };
   }
 
-  if (process.env.SLOPPY_CONTEXT_BUDGET_TOKENS) {
+  if (Bun.env.SLOPPY_CONTEXT_BUDGET_TOKENS) {
     overrides.agent = {
       ...(overrides.agent as JsonObject | undefined),
-      contextBudgetTokens: Number.parseInt(process.env.SLOPPY_CONTEXT_BUDGET_TOKENS, 10),
+      contextBudgetTokens: Number.parseInt(Bun.env.SLOPPY_CONTEXT_BUDGET_TOKENS, 10),
     };
   }
 
   return deepMerge(config, overrides);
 }
 
+function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): LlmProfileConfig {
+  const defaults = getProviderDefaults(profile.provider);
+
+  return {
+    id: profile.id,
+    label: profile.label,
+    provider: profile.provider,
+    model: profile.model ?? defaults.model,
+    apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
+    baseUrl: profile.baseUrl ?? defaults.baseUrl,
+  };
+}
+
 function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
-  const defaults = DEFAULT_LLM_CONFIG[config.provider];
+  const defaults = getProviderDefaults(config.provider);
 
   return {
     provider: config.provider,
     model: config.model ?? defaults.model,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
+    defaultProfileId: config.defaultProfileId,
+    profiles: config.profiles.map((profile) => normalizeProfile(profile)),
     maxTokens: config.maxTokens,
   };
 }
 
-function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
+export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
   const terminalCwd = resolve(expandHomePath(config.providers.terminal.cwd));
   const filesystemRoot = resolve(expandHomePath(config.providers.filesystem.root));
   const filesystemFocus = config.providers.filesystem.focus
@@ -168,13 +168,13 @@ function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
   };
 }
 
-export function loadConfig(): SloppyConfig {
-  const homeConfigPath = resolve(homedir(), ".sloppy/config.yaml");
-  const workspaceConfigPath = resolve(process.cwd(), ".sloppy/config.yaml");
-
+export async function loadConfigFromPaths(
+  homeConfigPath: string,
+  workspaceConfigPath: string,
+): Promise<SloppyConfig> {
   const merged = deepMerge(
-    deepMerge({}, readConfigFile(homeConfigPath)),
-    readConfigFile(workspaceConfigPath),
+    deepMerge({}, await readConfigFile(homeConfigPath)),
+    await readConfigFile(workspaceConfigPath),
   );
 
   const withEnv = applyEnvironmentOverrides(merged);
@@ -182,3 +182,9 @@ export function loadConfig(): SloppyConfig {
 
   return normalizeConfig(parsed);
 }
+
+export async function loadConfig(): Promise<SloppyConfig> {
+  return loadConfigFromPaths(getHomeConfigPath(), getWorkspaceConfigPath());
+}
+
+export const defaultConfigPromise = loadConfig();

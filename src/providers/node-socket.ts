@@ -1,5 +1,3 @@
-import { createConnection, type Socket } from "node:net";
-import { createInterface } from "node:readline";
 import type {
   ClientTransport,
   Connection,
@@ -11,32 +9,42 @@ export class NodeSocketClientTransport implements ClientTransport {
   constructor(private socketPath: string) {}
 
   async connect(): Promise<Connection> {
-    const socket = await this.connectSocket();
     const messageHandlers: MessageHandler[] = [];
     const closeHandlers: Array<() => void> = [];
-    const reader = createInterface({ input: socket });
-
-    reader.on("line", (line) => {
-      if (!line) {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let closed = false;
+    const socket = await this.connectSocket(() => {
+      if (closed) {
         return;
       }
 
-      try {
-        const message = JSON.parse(line) as SlopMessage;
-        for (const handler of messageHandlers) {
-          handler(message);
-        }
-      } catch (error) {
-        console.warn("[sloppy] failed to parse unix socket message:", error);
-      }
-    });
-
-    socket.on("close", () => {
-      reader.close();
+      closed = true;
       for (const handler of closeHandlers) {
         handler();
       }
     });
+
+    socket.data.onMessage = (data) => {
+      buffer += decoder.decode(data, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line) {
+          continue;
+        }
+
+        try {
+          const message = JSON.parse(line) as SlopMessage;
+          for (const handler of messageHandlers) {
+            handler(message);
+          }
+        } catch (error) {
+          console.warn("[sloppy] failed to parse unix socket message:", error);
+        }
+      }
+    };
 
     return {
       send(message: SlopMessage) {
@@ -49,19 +57,37 @@ export class NodeSocketClientTransport implements ClientTransport {
         closeHandlers.push(handler);
       },
       close() {
-        reader.close();
         socket.end();
       },
     } satisfies Connection;
   }
 
-  private connectSocket(): Promise<Socket> {
-    return new Promise((resolve, reject) => {
-      const socket = createConnection(this.socketPath);
-      socket.once("connect", () => resolve(socket));
-      socket.once("error", (error) => {
-        reject(new Error(`Unix socket connection failed: ${this.socketPath}: ${error.message}`));
+  private async connectSocket(
+    onClose: () => void,
+  ): Promise<Bun.Socket<{ onMessage: (data: Uint8Array) => void }>> {
+    try {
+      return await Bun.connect<{ onMessage: (data: Uint8Array) => void }>({
+        unix: this.socketPath,
+        data: {
+          onMessage: () => undefined,
+        },
+        socket: {
+          binaryType: "uint8array",
+          data(socket, data) {
+            socket.data.onMessage(data);
+          },
+          close() {
+            onClose();
+          },
+          error(_socket, error) {
+            console.warn("[sloppy] unix socket connection error:", error);
+          },
+        },
       });
-    });
+    } catch (error) {
+      throw new Error(
+        `Unix socket connection failed: ${this.socketPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }

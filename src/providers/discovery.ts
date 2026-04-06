@@ -1,4 +1,3 @@
-import { existsSync, type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
 import { resolve } from "node:path";
 import YAML from "yaml";
 
@@ -32,8 +31,7 @@ interface WatchedDescriptor {
 }
 
 const DESCRIPTOR_EXTENSIONS = new Set([".json", ".yaml", ".yml"]);
-const DISCOVERY_DEBOUNCE_MS = 100;
-const DISCOVERY_RESCAN_INTERVAL_MS = 1000;
+const DISCOVERY_RESCAN_INTERVAL_MS = 250;
 
 function isProviderDescriptor(value: unknown): value is ProviderDescriptor {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -50,9 +48,9 @@ function isProviderDescriptor(value: unknown): value is ProviderDescriptor {
   );
 }
 
-function readDescriptor(filePath: string): ProviderDescriptor | null {
+async function readDescriptor(filePath: string): Promise<ProviderDescriptor | null> {
   try {
-    const raw = readFileSync(filePath, "utf8");
+    const raw = await Bun.file(filePath).text();
     const parsed =
       filePath.endsWith(".yaml") || filePath.endsWith(".yml") ? YAML.parse(raw) : JSON.parse(raw);
 
@@ -135,27 +133,24 @@ function diffDescriptorMaps(
   };
 }
 
-export function discoverProviderDescriptors(paths: string[]): ProviderDescriptor[] {
+export async function discoverProviderDescriptors(paths: string[]): Promise<ProviderDescriptor[]> {
   const descriptors = new Map<string, ProviderDescriptor>();
 
   for (const path of paths) {
     const directory = resolve(path);
-    if (!existsSync(directory)) {
+    const directoryInfo = await Bun.file(directory)
+      .stat()
+      .catch(() => null);
+    if (!directoryInfo?.isDirectory()) {
       continue;
     }
 
-    const entries = readdirSync(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) {
+    for (const filePath of new Bun.Glob("*").scanSync({ cwd: directory, absolute: true })) {
+      if (!hasDescriptorExtension(filePath)) {
         continue;
       }
 
-      if (!hasDescriptorExtension(entry.name)) {
-        continue;
-      }
-
-      const filePath = resolve(directory, entry.name);
-      const descriptor = readDescriptor(filePath);
+      const descriptor = await readDescriptor(filePath);
       if (!descriptor) {
         continue;
       }
@@ -174,99 +169,35 @@ export function watchProviderDescriptors(options: {
   initialDescriptors?: ProviderDescriptor[];
   onChange: (update: ProviderDiscoveryUpdate) => void;
 }): () => void {
-  const watchers = new Map<string, FSWatcher>();
   let stopped = false;
-  let scanTimer: ReturnType<typeof setTimeout> | null = null;
-  let currentDescriptors = buildDescriptorMap(
-    options.initialDescriptors ?? discoverProviderDescriptors(options.paths),
-  );
-
-  const closeWatcher = (path: string) => {
-    const watcher = watchers.get(path);
-    if (!watcher) {
-      return;
-    }
-
-    watcher.close();
-    watchers.delete(path);
-  };
-
-  const scheduleScan = () => {
-    if (stopped) {
-      return;
-    }
-
-    if (scanTimer) {
-      clearTimeout(scanTimer);
-    }
-
-    scanTimer = setTimeout(() => {
-      scanTimer = null;
-      runScan();
-    }, DISCOVERY_DEBOUNCE_MS);
-  };
-
-  const refreshWatchers = () => {
-    const configuredPaths = new Set(options.paths.map((path) => resolve(path)));
-
-    for (const path of configuredPaths) {
-      if (!existsSync(path)) {
-        closeWatcher(path);
-        continue;
-      }
-
-      if (watchers.has(path)) {
-        continue;
-      }
-
-      try {
-        const watcher = watch(path, (_eventType, fileName) => {
-          if (typeof fileName === "string" && fileName.length > 0) {
-            if (!hasDescriptorExtension(fileName)) {
-              return;
-            }
-          }
-
-          scheduleScan();
-        });
-
-        watcher.on("error", () => {
-          closeWatcher(path);
-          scheduleScan();
-        });
-
-        watchers.set(path, watcher);
-      } catch {
-        closeWatcher(path);
-      }
-    }
-
-    for (const path of watchers.keys()) {
-      if (!configuredPaths.has(path)) {
-        closeWatcher(path);
-      }
-    }
-  };
+  let currentDescriptors = buildDescriptorMap(options.initialDescriptors ?? []);
+  let runningScan: Promise<void> | null = null;
 
   const runScan = () => {
     if (stopped) {
       return;
     }
 
-    refreshWatchers();
-
-    const nextDescriptors = buildDescriptorMap(discoverProviderDescriptors(options.paths));
-    const update = diffDescriptorMaps(currentDescriptors, nextDescriptors);
-    currentDescriptors = nextDescriptors;
-
-    if (update.added.length === 0 && update.updated.length === 0 && update.removed.length === 0) {
+    if (runningScan) {
       return;
     }
 
-    options.onChange(update);
+    runningScan = (async () => {
+      const nextDescriptors = buildDescriptorMap(await discoverProviderDescriptors(options.paths));
+      const update = diffDescriptorMaps(currentDescriptors, nextDescriptors);
+      currentDescriptors = nextDescriptors;
+
+      if (update.added.length === 0 && update.updated.length === 0 && update.removed.length === 0) {
+        return;
+      }
+
+      options.onChange(update);
+    })().finally(() => {
+      runningScan = null;
+    });
   };
 
-  refreshWatchers();
+  runScan();
 
   const interval = setInterval(() => {
     runScan();
@@ -275,16 +206,6 @@ export function watchProviderDescriptors(options: {
 
   return () => {
     stopped = true;
-
-    if (scanTimer) {
-      clearTimeout(scanTimer);
-      scanTimer = null;
-    }
-
     clearInterval(interval);
-
-    for (const path of watchers.keys()) {
-      closeWatcher(path);
-    }
   };
 }
