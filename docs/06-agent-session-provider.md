@@ -314,6 +314,7 @@ Node type: `collection`
 Purpose:
 
 - expose actions blocked on explicit user approval
+- mirror provider-native approval state rather than owning the downstream approval policy itself
 
 Each approval item:
 
@@ -344,6 +345,7 @@ Rules:
 
 - when at least one approval is pending, `/turn.state` should become `waiting_approval`
 - approving or rejecting should patch both the approval item and `/turn`
+- approval items are expected to correspond to real downstream provider approval nodes and should forward resolution back to that provider
 - resolved approvals may remain visible for session history unless trimmed by retention policy
 
 ### `/tasks`

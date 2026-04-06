@@ -12,6 +12,75 @@ type ToolResult = {
   summary: string;
 };
 
+export type AgentToolInvocation = {
+  toolUseId: string;
+  toolName: string;
+  kind: "observation" | "affordance";
+  providerId?: string;
+  path?: string;
+  action: string;
+  params: Record<string, unknown>;
+};
+
+export type AgentToolEvent =
+  | {
+      kind: "started";
+      invocation: AgentToolInvocation;
+      summary: string;
+    }
+  | {
+      kind: "completed";
+      invocation: AgentToolInvocation;
+      summary: string;
+      status: "ok" | "error" | "accepted" | "cancelled";
+      taskId?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    }
+  | {
+      kind: "approval_requested";
+      invocation: AgentToolInvocation;
+      summary: string;
+      errorCode: string;
+      errorMessage: string;
+    };
+
+export type PendingApprovalContinuation = {
+  blockedInvocation: AgentToolInvocation;
+  iteration: number;
+  toolCalls: ToolUseContentBlock[];
+  nextToolCallIndex: number;
+  toolResults: ToolResultContentBlock[];
+};
+
+export type RunLoopResult =
+  | {
+      status: "completed";
+      response: string;
+    }
+  | {
+      status: "waiting_approval";
+      pending: PendingApprovalContinuation;
+    };
+
+type ExecuteToolCallResult =
+  | {
+      kind: "completed";
+      invocation?: AgentToolInvocation;
+      result: ToolResult;
+      status: "ok" | "error" | "accepted";
+      taskId?: string;
+      errorCode?: string;
+      errorMessage?: string;
+    }
+  | {
+      kind: "approval_requested";
+      invocation: AgentToolInvocation;
+      summary: string;
+      errorCode: string;
+      errorMessage: string;
+    };
+
 function stringifyResult(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -25,25 +94,47 @@ async function executeToolCall(
   toolSet: RuntimeToolSet,
   hub: ConsumerHub,
   config: SloppyConfig,
-): Promise<ToolResult> {
+  onToolEvent?: (event: AgentToolEvent) => void,
+): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
     return {
-      block: {
-        type: "tool_result",
-        toolUseId: toolUse.id,
-        isError: true,
-        content: `Unknown tool: ${toolUse.name}`,
+      kind: "completed",
+      result: {
+        block: {
+          type: "tool_result",
+          toolUseId: toolUse.id,
+          isError: true,
+          content: `Unknown tool: ${toolUse.name}`,
+        },
+        summary: `unknown ${toolUse.name}`,
       },
-      summary: `unknown ${toolUse.name}`,
+      status: "error",
+      errorMessage: `Unknown tool: ${toolUse.name}`,
     };
   }
 
   try {
     if (resolution.kind === "observation") {
+      const providerId = String(toolUse.input.provider ?? "");
+      const path = String(toolUse.input.path ?? "/");
+      const invocation: AgentToolInvocation = {
+        toolUseId: toolUse.id,
+        toolName: toolUse.name,
+        kind: "observation",
+        providerId,
+        path,
+        action: resolution.action,
+        params: { ...toolUse.input },
+      };
+      const summary = `${resolution.action} ${providerId}${path}`;
+      onToolEvent?.({
+        kind: "started",
+        invocation,
+        summary,
+      });
+
       if (resolution.action === "query_state") {
-        const providerId = String(toolUse.input.provider ?? "");
-        const path = String(toolUse.input.path ?? "/");
         const depth = typeof toolUse.input.depth === "number" ? toolUse.input.depth : 2;
         const maxNodes =
           typeof toolUse.input.max_nodes === "number" ? toolUse.input.max_nodes : undefined;
@@ -64,17 +155,20 @@ async function executeToolCall(
         });
 
         return {
-          block: {
-            type: "tool_result",
-            toolUseId: toolUse.id,
-            content: `Queried ${providerId}${path}\n\n${formatTree(tree)}`,
+          kind: "completed",
+          invocation,
+          result: {
+            block: {
+              type: "tool_result",
+              toolUseId: toolUse.id,
+              content: `Queried ${providerId}${path}\n\n${formatTree(tree)}`,
+            },
+            summary,
           },
-          summary: `query ${providerId}${path}`,
+          status: "ok",
         };
       }
 
-      const providerId = String(toolUse.input.provider ?? "");
-      const path = String(toolUse.input.path ?? "/");
       const depth =
         typeof toolUse.input.depth === "number" ? toolUse.input.depth : config.agent.detailDepth;
       const maxNodes =
@@ -89,12 +183,17 @@ async function executeToolCall(
       });
 
       return {
-        block: {
-          type: "tool_result",
-          toolUseId: toolUse.id,
-          content: `Focused ${providerId}${path}\n\n${formatTree(tree)}`,
+        kind: "completed",
+        invocation,
+        result: {
+          block: {
+            type: "tool_result",
+            toolUseId: toolUse.id,
+            content: `Focused ${providerId}${path}\n\n${formatTree(tree)}`,
+          },
+          summary,
         },
-        summary: `focus ${providerId}${path}`,
+        status: "ok",
       };
     }
 
@@ -109,6 +208,22 @@ async function executeToolCall(
       delete rawInput.target;
     }
 
+    const invocation: AgentToolInvocation = {
+      toolUseId: toolUse.id,
+      toolName: toolUse.name,
+      kind: "affordance",
+      providerId: resolution.providerId,
+      path,
+      action: resolution.action,
+      params: rawInput,
+    };
+    const summary = `${resolution.providerId}:${resolution.action} ${path}`;
+    onToolEvent?.({
+      kind: "started",
+      invocation,
+      summary,
+    });
+
     const result = await hub.invoke(resolution.providerId, path, resolution.action, rawInput);
     if (result.status === "accepted") {
       await hub
@@ -121,26 +236,133 @@ async function executeToolCall(
         .catch(() => undefined);
     }
 
+    if (result.status === "error" && result.error?.code === "approval_required") {
+      return {
+        kind: "approval_requested",
+        invocation,
+        summary,
+        errorCode: result.error.code,
+        errorMessage: result.error.message,
+      };
+    }
+
+    const taskId =
+      result.status === "accepted" &&
+      result.data &&
+      typeof result.data === "object" &&
+      !Array.isArray(result.data) &&
+      typeof (result.data as { taskId?: unknown }).taskId === "string"
+        ? (result.data as { taskId: string }).taskId
+        : undefined;
+
     return {
-      block: {
-        type: "tool_result",
-        toolUseId: toolUse.id,
-        isError: result.status === "error",
-        content: stringifyResult(result),
+      kind: "completed",
+      invocation,
+      result: {
+        block: {
+          type: "tool_result",
+          toolUseId: toolUse.id,
+          isError: result.status === "error",
+          content: stringifyResult(result),
+        },
+        summary,
       },
-      summary: `${resolution.providerId}:${resolution.action} ${path}`,
+      status: result.status,
+      taskId,
+      errorCode: result.error?.code,
+      errorMessage: result.error?.message,
     };
   } catch (error) {
     return {
-      block: {
-        type: "tool_result",
-        toolUseId: toolUse.id,
-        isError: true,
-        content: error instanceof Error ? error.message : String(error),
+      kind: "completed",
+      result: {
+        block: {
+          type: "tool_result",
+          toolUseId: toolUse.id,
+          isError: true,
+          content: error instanceof Error ? error.message : String(error),
+        },
+        summary: `error ${toolUse.name}`,
       },
-      summary: `error ${toolUse.name}`,
+      status: "error",
+      errorMessage: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function executeToolCalls(options: {
+  toolCalls: ToolUseContentBlock[];
+  startIndex: number;
+  toolResults: ToolResultContentBlock[];
+  iteration: number;
+  toolSet: RuntimeToolSet;
+  hub: ConsumerHub;
+  config: SloppyConfig;
+  onToolCall?: (summary: string) => void;
+  onToolResult?: (summary: string) => void;
+  onToolEvent?: (event: AgentToolEvent) => void;
+}): Promise<
+  | {
+      status: "completed";
+      toolResults: ToolResultContentBlock[];
+    }
+  | {
+      status: "waiting_approval";
+      pending: PendingApprovalContinuation;
+    }
+> {
+  const toolResults = [...options.toolResults];
+
+  for (let index = options.startIndex; index < options.toolCalls.length; index += 1) {
+    const toolCall = options.toolCalls[index];
+    options.onToolCall?.(`${toolCall.name} ${JSON.stringify(toolCall.input)}`);
+    const result = await executeToolCall(
+      toolCall,
+      options.toolSet,
+      options.hub,
+      options.config,
+      options.onToolEvent,
+    );
+
+    if (result.kind === "approval_requested") {
+      options.onToolEvent?.({
+        kind: "approval_requested",
+        invocation: result.invocation,
+        summary: result.summary,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+      });
+      return {
+        status: "waiting_approval",
+        pending: {
+          blockedInvocation: result.invocation,
+          iteration: options.iteration,
+          toolCalls: options.toolCalls,
+          nextToolCallIndex: index + 1,
+          toolResults,
+        },
+      };
+    }
+
+    options.onToolResult?.(result.result.summary);
+    if (result.invocation) {
+      options.onToolEvent?.({
+        kind: "completed",
+        invocation: result.invocation,
+        summary: result.result.summary,
+        status: result.status,
+        taskId: result.taskId,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+      });
+    }
+    toolResults.push(result.result.block);
+  }
+
+  return {
+    status: "completed",
+    toolResults,
+  };
 }
 
 export async function runLoop(options: {
@@ -151,10 +373,46 @@ export async function runLoop(options: {
   onText?: (chunk: string) => void;
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
-}): Promise<string> {
+  onToolEvent?: (event: AgentToolEvent) => void;
+  resume?: {
+    continuation: PendingApprovalContinuation;
+    resolvedToolResult: ToolResultContentBlock;
+  };
+}): Promise<RunLoopResult> {
   const system = buildSystemPrompt();
+  let pendingResume = options.resume;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
+    if (pendingResume && iteration < pendingResume.continuation.iteration) {
+      continue;
+    }
+
+    if (pendingResume && iteration === pendingResume.continuation.iteration) {
+      const resumedExecution = await executeToolCalls({
+        toolCalls: pendingResume.continuation.toolCalls,
+        startIndex: pendingResume.continuation.nextToolCallIndex,
+        toolResults: [...pendingResume.continuation.toolResults, pendingResume.resolvedToolResult],
+        iteration,
+        toolSet: options.hub.getRuntimeToolSet(),
+        hub: options.hub,
+        config: options.config,
+        onToolCall: options.onToolCall,
+        onToolResult: options.onToolResult,
+        onToolEvent: options.onToolEvent,
+      });
+
+      if (resumedExecution.status === "waiting_approval") {
+        return {
+          status: "waiting_approval",
+          pending: resumedExecution.pending,
+        };
+      }
+
+      options.history.addToolResults(resumedExecution.toolResults);
+      pendingResume = undefined;
+      continue;
+    }
+
     const stateContext = buildStateContext(options.hub.getProviderViews(), options.config);
     const toolSet = options.hub.getRuntimeToolSet();
     const response = await options.llm.chat({
@@ -171,18 +429,32 @@ export async function runLoop(options: {
       (block): block is ToolUseContentBlock => block.type === "tool_use",
     );
     if (toolCalls.length === 0 || response.stopReason !== "tool_use") {
-      return options.history.latestAssistantText();
+      return {
+        status: "completed",
+        response: options.history.latestAssistantText(),
+      };
     }
 
-    const toolResults: ToolResultContentBlock[] = [];
-    for (const toolCall of toolCalls) {
-      options.onToolCall?.(`${toolCall.name} ${JSON.stringify(toolCall.input)}`);
-      const result = await executeToolCall(toolCall, toolSet, options.hub, options.config);
-      options.onToolResult?.(result.summary);
-      toolResults.push(result.block);
+    const execution = await executeToolCalls({
+      toolCalls,
+      startIndex: 0,
+      toolResults: [],
+      iteration,
+      toolSet,
+      hub: options.hub,
+      config: options.config,
+      onToolCall: options.onToolCall,
+      onToolResult: options.onToolResult,
+      onToolEvent: options.onToolEvent,
+    });
+    if (execution.status === "waiting_approval") {
+      return {
+        status: "waiting_approval",
+        pending: execution.pending,
+      };
     }
 
-    options.history.addToolResults(toolResults);
+    options.history.addToolResults(execution.toolResults);
   }
 
   throw new Error(`Exceeded max iterations (${options.config.agent.maxIterations}).`);

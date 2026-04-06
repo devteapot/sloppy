@@ -1,0 +1,129 @@
+export type AgentSessionStatus = "active" | "closing" | "closed" | "error";
+
+export type AgentTurnState = "idle" | "running" | "waiting_approval" | "error";
+
+export type AgentTurnPhase = "none" | "model" | "tool_use" | "awaiting_result" | "complete";
+
+export type TranscriptMessageRole = "user" | "assistant" | "system";
+
+export type TranscriptMessageState = "complete" | "streaming" | "error";
+
+export type TranscriptContentBlock = {
+  id: string;
+  type: "text";
+  mime: string;
+  text: string;
+};
+
+export type TranscriptMessage = {
+  id: string;
+  role: TranscriptMessageRole;
+  state: TranscriptMessageState;
+  turnId: string | null;
+  createdAt: string;
+  author?: string;
+  error?: string;
+  content: TranscriptContentBlock[];
+};
+
+export type ActivityKind =
+  | "model_call"
+  | "tool_call"
+  | "tool_result"
+  | "approval"
+  | "task"
+  | "error";
+
+export type ActivityStatus = "running" | "ok" | "error" | "accepted" | "cancelled";
+
+export type ActivityItem = {
+  id: string;
+  kind: ActivityKind;
+  status: ActivityStatus;
+  summary: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  turnId?: string;
+  provider?: string;
+  path?: string;
+  action?: string;
+  approvalId?: string;
+  taskId?: string;
+  toolUseId?: string;
+};
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+export type ApprovalItem = {
+  id: string;
+  status: ApprovalStatus;
+  provider: string;
+  path: string;
+  action: string;
+  reason: string;
+  createdAt: string;
+  resolvedAt?: string;
+  paramsPreview?: string;
+  dangerous?: boolean;
+  sourceApprovalId?: string;
+  sourcePath?: string;
+  canApprove?: boolean;
+  canReject?: boolean;
+  turnId?: string;
+};
+
+export type SessionTaskStatus = "running" | "completed" | "failed" | "cancelled";
+
+export type SessionTask = {
+  id: string;
+  status: SessionTaskStatus;
+  provider: string;
+  providerTaskId: string;
+  startedAt: string;
+  updatedAt: string;
+  message: string;
+  progress?: number;
+  linkedActivityId?: string;
+  error?: string;
+  sourceTaskId?: string;
+  sourcePath?: string;
+  canCancel?: boolean;
+  turnId?: string;
+};
+
+export type SessionMetadata = {
+  sessionId: string;
+  status: AgentSessionStatus;
+  modelProvider: string;
+  model: string;
+  startedAt: string;
+  updatedAt: string;
+  clientCount: number;
+  title?: string;
+  workspaceRoot?: string;
+  lastError?: string;
+};
+
+export type TurnStateSnapshot = {
+  turnId: string | null;
+  state: AgentTurnState;
+  phase: AgentTurnPhase;
+  iteration: number;
+  startedAt: string | null;
+  updatedAt: string;
+  message: string;
+  lastError?: string;
+  waitingOn?: "approval" | "task" | "model" | "tool" | null;
+};
+
+export type AgentSessionSnapshot = {
+  session: SessionMetadata;
+  turn: TurnStateSnapshot;
+  transcript: TranscriptMessage[];
+  activity: ActivityItem[];
+  approvals: ApprovalItem[];
+  tasks: SessionTask[];
+};
+
+export type SessionStoreChangeListener = (snapshot: AgentSessionSnapshot) => void;

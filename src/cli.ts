@@ -23,8 +23,12 @@ async function runSingleShot(prompt: string): Promise<void> {
   try {
     await agent.start();
     const response = await agent.chat(prompt);
-    if (!streamed && response) {
-      process.stdout.write(response);
+    if (response.status === "completed") {
+      if (!streamed && response.response) {
+        process.stdout.write(response.response);
+      }
+    } else {
+      process.stdout.write("\n[approval] turn is waiting on provider approval\n");
     }
     process.stdout.write("\n");
   } finally {
@@ -58,7 +62,10 @@ async function runRepl(): Promise<void> {
         break;
       }
 
-      await agent.chat(trimmed);
+      const result = await agent.chat(trimmed);
+      if (result.status === "waiting_approval") {
+        process.stdout.write("\n[approval] turn is waiting on provider approval\n");
+      }
       process.stdout.write("\n");
     }
   } finally {

@@ -105,6 +105,17 @@ Nodes beyond the depth limit become **stubs** — lightweight placeholders with 
 - `error` — action failed (with error details)
 - `accepted` — action accepted for async execution (returns `taskId`)
 
+### Local Approval Convention
+
+Sloppy currently uses a provider-native approval pattern on top of the base SLOP messages:
+
+1. a provider blocks the original invoke and returns `error.code = "approval_required"`
+2. the provider exposes the pending request under `/approvals/{approvalId}`
+3. that approval item exposes `approve` and `reject`
+4. the session provider mirrors those approval items and forwards approval actions back downstream
+
+This keeps approval ownership with the downstream provider while still surfacing shared approval state to attached UIs.
+
 ---
 
 ## Async Actions

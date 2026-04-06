@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
+import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
+
 type CommandRecord = {
   id: string;
   command: string;
@@ -51,6 +53,7 @@ export class TerminalProvider {
   private cwd: string;
   private historyLimit: number;
   private syncTimeoutMs: number;
+  private approvals: ProviderApprovalManager;
   private history: CommandRecord[] = [];
   private tasks = new Map<string, RunningTask>();
 
@@ -63,9 +66,11 @@ export class TerminalProvider {
       id: "terminal",
       name: "Terminal",
     });
+    this.approvals = new ProviderApprovalManager(this.server);
 
     this.server.register("session", () => this.buildSessionDescriptor());
     this.server.register("history", () => this.buildHistoryDescriptor());
+    this.server.register("approvals", () => this.approvals.buildDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
   }
 
@@ -105,8 +110,16 @@ export class TerminalProvider {
 
   private async runSyncCommand(command: string, confirmed = false): Promise<CommandRecord> {
     if (looksDestructive(command) && !confirmed) {
-      throw new Error(
-        "Destructive shell commands require explicit user approval. Re-run with confirmed=true only after the user approves.",
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "execute",
+        reason: "Destructive shell commands require explicit user approval.",
+        paramsPreview: JSON.stringify({ command, background: false }),
+        dangerous: true,
+        execute: () => this.runSyncCommand(command, true),
+      });
+      throw createApprovalRequiredError(
+        `Destructive shell commands require approval via /approvals/${approvalId}.`,
       );
     }
 
@@ -163,8 +176,16 @@ export class TerminalProvider {
 
   private startBackgroundCommand(command: string, confirmed = false): CoreAsyncActionResult {
     if (looksDestructive(command) && !confirmed) {
-      throw new Error(
-        "Destructive shell commands require explicit user approval. Re-run with confirmed=true only after the user approves.",
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "execute",
+        reason: "Destructive shell commands require explicit user approval.",
+        paramsPreview: JSON.stringify({ command, background: true }),
+        dangerous: true,
+        execute: () => this.startBackgroundCommand(command, true),
+      });
+      throw createApprovalRequiredError(
+        `Destructive shell commands require approval via /approvals/${approvalId}.`,
       );
     }
 
@@ -355,8 +376,8 @@ export class TerminalProvider {
         cwd: task.cwd,
         status: task.status,
         message: task.message,
-        startedAt: task.startedAt,
-        exitCode: task.exitCode,
+        started_at: task.startedAt,
+        exit_code: task.exitCode,
       },
       actions: {
         ...(task.status === "running"

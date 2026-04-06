@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -45,5 +45,79 @@ describe("TerminalProvider", () => {
 
     const history = await consumer.query("/history", 2);
     expect(history.children?.length).toBeGreaterThan(0);
+  });
+
+  test("creates a provider-native approval for destructive commands", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+    await writeFile(join(cwd, "remove-me.txt"), "hello", "utf8");
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    await consumer.connect();
+    await consumer.subscribe("/", 4);
+
+    const result = await consumer.invoke("/session", "execute", {
+      command: "rm remove-me.txt",
+      background: false,
+      confirmed: false,
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.error?.code).toBe("approval_required");
+
+    const approvals = await consumer.query("/approvals", 2);
+    expect(approvals.children?.length).toBe(1);
+    expect(approvals.children?.[0]?.properties?.status).toBe("pending");
+    expect(approvals.children?.[0]?.properties?.action).toBe("execute");
+
+    const approvalId = approvals.children?.[0]?.id;
+    expect(typeof approvalId).toBe("string");
+    const approveResult = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+    expect(approveResult.status).toBe("ok");
+    expect(await Bun.file(join(cwd, "remove-me.txt")).exists()).toBe(false);
+
+    const updatedApprovals = await consumer.query("/approvals", 2);
+    expect(updatedApprovals.children?.[0]?.properties?.status).toBe("approved");
+  });
+
+  test("rejecting a provider-native approval leaves state unchanged", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+    await writeFile(join(cwd, "keep-me.txt"), "hello", "utf8");
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    await consumer.connect();
+    await consumer.subscribe("/", 4);
+
+    await consumer.invoke("/session", "execute", {
+      command: "rm keep-me.txt",
+      background: false,
+      confirmed: false,
+    });
+
+    const approvals = await consumer.query("/approvals", 2);
+    const approvalId = approvals.children?.[0]?.id;
+    expect(typeof approvalId).toBe("string");
+
+    const rejectResult = await consumer.invoke(`/approvals/${approvalId}`, "reject", {
+      reason: "keep the file",
+    });
+    expect(rejectResult.status).toBe("ok");
+    expect(await Bun.file(join(cwd, "keep-me.txt")).exists()).toBe(true);
+
+    const updatedApprovals = await consumer.query("/approvals", 2);
+    expect(updatedApprovals.children?.[0]?.properties?.status).toBe("rejected");
   });
 });

@@ -21,12 +21,29 @@ type ConnectedProvider = RegisteredProvider & {
   detailTree?: SlopNode;
   patchListener: (subscriptionId: string) => void;
   disconnectListener: () => void;
+  unsubscribeEvent: (() => void) | null;
+  watchedSubscriptions: Map<
+    string,
+    {
+      path: string;
+      subscriptionId: string;
+      tree: SlopNode;
+      listeners: Set<(tree: SlopNode | null) => void>;
+    }
+  >;
+};
+
+export type ProviderEvent = {
+  providerId: string;
+  name: string;
+  data: unknown;
 };
 
 export class ConsumerHub {
   private providers = new Map<string, ConnectedProvider>();
   private config: SloppyConfig;
   private registeredProviders: RegisteredProvider[];
+  private providerEventListeners = new Set<(event: ProviderEvent) => void>();
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
@@ -70,11 +87,33 @@ export class ConsumerHub {
 
         if (subscriptionId === connectedProvider.detailSubscriptionId) {
           connectedProvider.detailTree = tree;
+          return;
+        }
+
+        for (const watched of connectedProvider.watchedSubscriptions.values()) {
+          if (subscriptionId !== watched.subscriptionId) {
+            continue;
+          }
+
+          watched.tree = tree;
+          for (const listener of watched.listeners) {
+            listener(tree);
+          }
+          return;
         }
       };
       const disconnectListener = () => {
         this.teardownProvider(registeredProvider.id, { connectionAlive: false });
       };
+      const unsubscribeEvent = consumer.onEvent((name, data) => {
+        for (const listener of this.providerEventListeners) {
+          listener({
+            providerId: registeredProvider.id,
+            name,
+            data,
+          });
+        }
+      });
 
       const provider: ConnectedProvider = {
         ...registeredProvider,
@@ -84,6 +123,8 @@ export class ConsumerHub {
         overviewTree: overview.snapshot,
         patchListener,
         disconnectListener,
+        unsubscribeEvent,
+        watchedSubscriptions: new Map(),
       };
 
       consumer.on("patch", patchListener);
@@ -112,6 +153,17 @@ export class ConsumerHub {
 
     provider.consumer.off("patch", provider.patchListener);
     provider.consumer.off("disconnect", provider.disconnectListener);
+    provider.unsubscribeEvent?.();
+    provider.unsubscribeEvent = null;
+
+    for (const watched of provider.watchedSubscriptions.values()) {
+      try {
+        provider.consumer.unsubscribe(watched.subscriptionId);
+      } catch {
+        // The provider may have already disconnected before watched subscriptions could be removed.
+      }
+    }
+    provider.watchedSubscriptions.clear();
 
     if (options.connectionAlive && provider.detailSubscriptionId) {
       try {
@@ -208,6 +260,57 @@ export class ConsumerHub {
     return provider.consumer.invoke(path, action, params);
   }
 
+  async watchPath(
+    providerId: string,
+    path: string,
+    listener: (tree: SlopNode | null) => void,
+    options?: {
+      depth?: number;
+      maxNodes?: number;
+    },
+  ): Promise<() => void> {
+    const provider = this.requireProvider(providerId);
+    const existing = provider.watchedSubscriptions.get(path);
+    if (existing) {
+      existing.listeners.add(listener);
+      listener(existing.tree);
+      return () => {
+        this.removeWatchListener(provider, path, listener);
+      };
+    }
+
+    try {
+      const subscription = await provider.consumer.subscribe(path, options?.depth ?? 2, {
+        max_nodes: options?.maxNodes ?? this.config.agent.detailMaxNodes,
+      });
+      const watched = {
+        path,
+        subscriptionId: subscription.id,
+        tree: subscription.snapshot,
+        listeners: new Set<(tree: SlopNode | null) => void>([listener]),
+      };
+      provider.watchedSubscriptions.set(path, watched);
+      listener(subscription.snapshot);
+      return () => {
+        this.removeWatchListener(provider, path, listener);
+      };
+    } catch (error) {
+      const candidate = error as { code?: string };
+      if (candidate?.code === "not_found") {
+        listener(null);
+        return () => undefined;
+      }
+      throw error;
+    }
+  }
+
+  onProviderEvent(listener: (event: ProviderEvent) => void): () => void {
+    this.providerEventListeners.add(listener);
+    return () => {
+      this.providerEventListeners.delete(listener);
+    };
+  }
+
   shutdown(): void {
     for (const providerId of [...this.providers.keys()]) {
       this.removeProvider(providerId);
@@ -225,5 +328,28 @@ export class ConsumerHub {
     }
 
     return provider;
+  }
+
+  private removeWatchListener(
+    provider: ConnectedProvider,
+    path: string,
+    listener: (tree: SlopNode | null) => void,
+  ): void {
+    const watched = provider.watchedSubscriptions.get(path);
+    if (!watched) {
+      return;
+    }
+
+    watched.listeners.delete(listener);
+    if (watched.listeners.size > 0) {
+      return;
+    }
+
+    provider.watchedSubscriptions.delete(path);
+    try {
+      provider.consumer.unsubscribe(watched.subscriptionId);
+    } catch {
+      // Best-effort cleanup when the provider disconnected before unsubscribe.
+    }
   }
 }

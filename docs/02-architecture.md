@@ -143,13 +143,14 @@ The current implementation supports:
 
 ### 7. Agent session provider
 
-Planned location: a new session or bridge layer above the runtime core.
+Checked-in location: `src/session/`.
 
 Responsibilities:
 
 - expose a running agent session as SLOP state
 - accept user-facing session affordances such as `send_message`, `cancel_turn`, `approve`, and `reject`
 - stream transcript updates, tool activity, and pending approvals through `snapshot` + `patch`
+- mirror provider-native approvals and async tasks from downstream providers into session state
 - support multiple concurrent consumers attached to the same session
 - keep the first-party UI on the same public contract that third-party UIs will use
 
@@ -346,6 +347,6 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
-- The session-provider contract is now documented, but the implementation is still planned. The current CLI talks to `Agent` directly as a temporary development surface.
+- The session provider now mirrors downstream provider-native approvals and async tasks into shared session state. Terminal is the first built-in provider using the approval contract; broader provider adoption is still ongoing.
 
 These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.
