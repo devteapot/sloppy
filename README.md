@@ -41,6 +41,8 @@ Current Phase 1 implementation includes:
   - `slop_focus_state`
 - dynamic affordance tools generated from visible SLOP state
 - CLI single-shot mode and interactive REPL
+- initial `src/session/` scaffold for a headless agent-session provider
+- initial attach-only Go + Bubble Tea scaffold under `apps/tui/`
 - initial end-to-end tests for transport and built-in providers
 
 ## Interface direction
@@ -159,6 +161,20 @@ Interactive mode with the default Anthropic config:
 ```sh
 export ANTHROPIC_API_KEY=...
 bun run src/cli.ts
+```
+
+Run the session provider surface:
+
+```sh
+export ANTHROPIC_API_KEY=...
+bun run session:serve
+```
+
+Run the Go TUI against a running session provider:
+
+```sh
+cd apps/tui
+go run .
 ```
 
 ## Config

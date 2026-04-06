@@ -39,6 +39,8 @@ Implemented now:
 - OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama
 - native Gemini adapter
 - CLI single-shot mode and REPL
+- initial `src/session/` scaffold for an agent-session provider and Unix-socket session server
+- initial attach-only Go + Bubble Tea TUI scaffold under `apps/tui/`
 - initial tests covering transport, runtime tool generation, and both built-in providers
 
 ## Interface direction after Phase 1
@@ -104,7 +106,7 @@ src/
         └── terminal.ts
 ```
 
-### Planned interface layout
+### Checked-in interface layout
 
 ```text
 apps/
@@ -114,7 +116,7 @@ src/
   core/
   llm/
   providers/
-  session/            planned agent-session provider / bridge layer
+  session/            initial agent-session provider / bridge layer scaffold
 ```
 
 ---

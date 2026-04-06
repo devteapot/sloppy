@@ -2,7 +2,7 @@
 
 ## Repository Snapshot
 - This repository is pre-alpha, but it is no longer docs-only.
-- Checked in today: `package.json`, `tsconfig.json`, `biome.json`, `src/`, `tests/`, `README.md`, `CLAUDE.md`, `docs/`.
+- Checked in today: `package.json`, `tsconfig.json`, `biome.json`, `src/`, `apps/`, `tests/`, `README.md`, `CLAUDE.md`, `docs/`.
 - There is a Bun lockfile and a working Bun/TypeScript scaffold.
 - There is no `.cursor/rules/` directory.
 - There is no `.cursorrules` file.
@@ -24,7 +24,7 @@
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
 - The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, and an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama.
-- The current checked-in interface is a CLI/REPL, but the intended next boundary is a headless agent session surface that can serve multiple UI consumers.
+- The current checked-in interfaces are a CLI/REPL, an initial headless `src/session/` agent-session surface, and an attach-only Go TUI scaffold under `apps/tui/`.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -35,6 +35,7 @@
 bun install
 bun run build
 bun run lint
+bun run session:serve
 bun run typecheck
 bun run test
 ```
@@ -46,6 +47,7 @@ bun run test
 bun test
 bun test tests/filesystem-provider.test.ts
 bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
+bun test tests/agent-session-provider.test.ts
 bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
 bun test tests/gemini-adapter.test.ts
@@ -57,6 +59,8 @@ bun test tests/gemini-adapter.test.ts
 ## Current Layout
 
 ```text
+apps/
+  tui/
 src/
   cli.ts
   index.ts
@@ -69,6 +73,7 @@ src/
     openai-compatible.ts
     types.ts
   providers/
+  session/
 tests/
 docs/
 ```
@@ -93,7 +98,8 @@ docs/
 - Keep config loading, provider wiring, protocol handling, and model logic separate.
 - Prefer the browser-safe consumer entrypoint: `@slop-ai/consumer/browser`.
 - Do not switch back to the top-level `@slop-ai/consumer` entrypoint unless the published package export issue is fixed.
-- Use the npm-installed SLOP SDK packages, not local workspace links to the sibling SLOP repo.
+- Use the npm-installed SLOP SDK packages for TypeScript code, not local workspace links to the sibling SLOP repo.
+- The checked-in Go TUI scaffold currently uses a local `replace` to the sibling Go SDK path until the module is consumed through a stable external release workflow.
 
 ## Formatting
 - Use 2-space indentation.

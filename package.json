@@ -9,7 +9,8 @@
   "scripts": {
     "start": "bun run src/cli.ts",
     "dev": "bun --watch src/cli.ts",
-    "build": "rm -rf dist && bun build src/index.ts src/cli.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
+    "session:serve": "bun run src/session/server.ts",
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/session/server.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write .",
     "typecheck": "bunx tsc --noEmit",
