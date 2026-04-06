@@ -151,7 +151,7 @@ The agent sees the **summary** and **preview** in the state tree. It can request
 
 ### Local (Desktop/CLI agents)
 
-Providers register descriptor files:
+Providers register descriptor files. A desktop or CLI consumer can watch these directories and reconcile providers live:
 - `~/.slop/providers/{name}.json`
 - `/tmp/slop/providers/{name}.json`
 
@@ -161,10 +161,7 @@ Descriptor format:
   "id": "my-app",
   "name": "My Application",
   "description": "Todo list manager",
-  "transports": [
-    { "type": "unix", "path": "/tmp/slop/my-app.sock" },
-    { "type": "ws", "url": "ws://localhost:3001/slop" }
-  ],
+  "transport": { "type": "unix", "path": "/tmp/slop/my-app.sock" },
   "capabilities": ["state", "affordances", "async"]
 }
 ```

@@ -29,7 +29,7 @@ Implemented now:
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
 - built-in `terminal` and `filesystem` providers
 - in-process transport for built-in providers
-- provider descriptor discovery for Unix socket and WebSocket providers
+- live-watched provider descriptor discovery for Unix socket and WebSocket providers
 - consumer hub with overview and detail subscriptions
 - fixed observation tools:
   - `slop_query_state`
@@ -43,7 +43,6 @@ Implemented now:
 
 Still intentionally minimal:
 
-- no live-watched provider discovery yet
 - no SQLite history store yet
 - no skills loader yet
 - no subagent delegation yet
@@ -69,10 +68,10 @@ src/
 │   └── tools.ts
 ├── llm/
 │   ├── anthropic.ts
-│   └── types.ts
 │   ├── factory.ts
 │   ├── gemini.ts
 │   ├── openai-compatible.ts
+│   └── types.ts
 └── providers/
     ├── discovery.ts
     ├── node-socket.ts
@@ -178,12 +177,12 @@ Deliverables:
 - multi-provider consumer hub
 - overview and focus subscriptions
 - invoke/query routing
-- descriptor-based provider discovery
+- live-watched descriptor-based provider discovery
 
 Success criteria:
 
 - built-in providers connect immediately
-- external Unix socket and WebSocket descriptors are discovered at startup
+- external Unix socket and WebSocket descriptors are discovered at startup and reconciled live when descriptor files change
 - the runtime can focus a subtree with `slop_focus_state`
 
 ### C. Built-in providers
@@ -243,9 +242,9 @@ bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 - `@slop-ai/core`
 - `@slop-ai/consumer`
 - `@slop-ai/server`
+- `@anthropic-ai/sdk`
 - `@google/genai`
 - `openai`
-- `@anthropic-ai/sdk`
 - `yaml`
 - `zod`
 

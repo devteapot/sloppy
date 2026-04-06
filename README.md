@@ -32,7 +32,7 @@ Current Phase 1 implementation includes:
   - native Anthropic/Claude support
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native Gemini support
-- consumer hub for built-in and discovered SLOP providers
+- consumer hub for built-in and live-discovered SLOP providers
 - two built-in in-process providers:
   - `terminal`
   - `filesystem`
@@ -62,7 +62,7 @@ Agent Loop
         v
 ConsumerHub
   - built-in providers
-  - discovered SLOP providers
+  - live-discovered SLOP providers
   - overview/detail subscriptions
         |
         v

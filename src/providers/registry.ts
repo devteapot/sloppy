@@ -4,7 +4,7 @@ import type { SloppyConfig } from "../config/schema";
 import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
 import { TerminalProvider } from "./builtin/terminal";
-import { discoverProviderDescriptors } from "./discovery";
+import { discoverProviderDescriptors, type ProviderDescriptor } from "./discovery";
 import { NodeSocketClientTransport } from "./node-socket";
 
 export interface RegisteredProvider {
@@ -15,7 +15,7 @@ export interface RegisteredProvider {
   stop?: () => void;
 }
 
-export function createRegisteredProviders(config: SloppyConfig): RegisteredProvider[] {
+export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider[] {
   const providers: RegisteredProvider[] = [];
 
   if (config.providers.builtin.terminal) {
@@ -50,37 +50,69 @@ export function createRegisteredProviders(config: SloppyConfig): RegisteredProvi
     });
   }
 
-  if (config.providers.discovery.enabled) {
-    const descriptors = discoverProviderDescriptors(config.providers.discovery.paths);
-    const knownIds = new Set(providers.map((provider) => provider.id));
+  return providers;
+}
 
-    for (const descriptor of descriptors) {
-      if (knownIds.has(descriptor.id)) {
-        continue;
-      }
+export function createRegisteredProviderFromDescriptor(
+  descriptor: ProviderDescriptor,
+): RegisteredProvider | null {
+  let transport: ClientTransport | null = null;
 
-      let transport: ClientTransport | null = null;
-      if (descriptor.transport.type === "unix") {
-        transport = new NodeSocketClientTransport(descriptor.transport.path);
-      }
+  if (descriptor.transport.type === "unix") {
+    transport = new NodeSocketClientTransport(descriptor.transport.path);
+  }
 
-      if (descriptor.transport.type === "ws") {
-        transport = new WebSocketClientTransport(descriptor.transport.url);
-      }
+  if (descriptor.transport.type === "ws") {
+    transport = new WebSocketClientTransport(descriptor.transport.url);
+  }
 
-      if (!transport) {
-        continue;
-      }
+  if (!transport) {
+    return null;
+  }
 
-      providers.push({
-        id: descriptor.id,
-        name: descriptor.name,
-        kind: "external",
-        transport,
-      });
-      knownIds.add(descriptor.id);
+  return {
+    id: descriptor.id,
+    name: descriptor.name,
+    kind: "external",
+    transport,
+  };
+}
+
+export function createDiscoveredProviders(
+  descriptors: ProviderDescriptor[],
+  reservedIds: Iterable<string> = [],
+): RegisteredProvider[] {
+  const providers: RegisteredProvider[] = [];
+  const knownIds = new Set(reservedIds);
+
+  for (const descriptor of descriptors) {
+    if (knownIds.has(descriptor.id)) {
+      continue;
     }
+
+    const provider = createRegisteredProviderFromDescriptor(descriptor);
+    if (!provider) {
+      continue;
+    }
+
+    providers.push(provider);
+    knownIds.add(provider.id);
   }
 
   return providers;
+}
+
+export function createRegisteredProviders(config: SloppyConfig): RegisteredProvider[] {
+  const builtins = createBuiltinProviders(config);
+  if (!config.providers.discovery.enabled) {
+    return builtins;
+  }
+
+  const descriptors = discoverProviderDescriptors(config.providers.discovery.paths);
+  const externalProviders = createDiscoveredProviders(
+    descriptors,
+    builtins.map((provider) => provider.id),
+  );
+
+  return [...builtins, ...externalProviders];
 }

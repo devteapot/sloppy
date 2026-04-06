@@ -130,6 +130,7 @@ Responsibilities:
 
 - create built-in providers
 - discover external SLOP providers from descriptor files
+- watch descriptor directories and reconcile external providers live
 - attach the right transport per provider
 
 The current implementation supports:
@@ -273,7 +274,7 @@ The central replacement is simple:
 
 - The adapter layer supports native Anthropic and Gemini integrations plus an OpenAI-compatible path for OpenAI, OpenRouter, and Ollama.
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
-- Provider discovery is implemented as a startup scan, not a live watched registry yet.
+- Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
 
 These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.
