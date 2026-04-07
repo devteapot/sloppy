@@ -28,14 +28,17 @@ export class SessionService {
     providerName?: string;
     socketPath?: string;
   }) {
+    const sessionId = options?.sessionId ?? crypto.randomUUID();
+    const providerId = options?.providerId ?? `sloppy-session-${sessionId}`;
+
     this.runtime = new SessionRuntime({
       config: options?.config,
-      sessionId: options?.sessionId,
+      sessionId,
       title: options?.title,
+      ignoredProviderIds: [providerId],
     });
 
-    this.providerId =
-      options?.providerId ?? `sloppy-session-${this.runtime.store.getSnapshot().session.sessionId}`;
+    this.providerId = providerId;
     this.provider = new AgentSessionProvider(this.runtime, {
       providerId: this.providerId,
       providerName: options?.providerName,

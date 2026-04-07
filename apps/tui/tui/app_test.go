@@ -174,6 +174,47 @@ func TestShiftArrowMovesFocusOutOfComposer(t *testing.T) {
 	}
 }
 
+func TestShiftArrowMovesFromTasksToApps(t *testing.T) {
+	app := newTestApp()
+	app.mode = "session"
+	app.width = 140
+	app.focus = paneTasks
+	app.syncInputs()
+
+	updatedModel, _ := app.updateSession(tea.KeyMsg{Type: tea.KeyShiftDown})
+	updated := updatedModel.(App)
+
+	if updated.focus != paneApps {
+		t.Fatalf("expected shift+down to move focus from tasks to apps, got %v", updated.focus)
+	}
+}
+
+func TestSessionViewRendersAppsPane(t *testing.T) {
+	app := newTestApp()
+	app.mode = "session"
+	app.width = 140
+	app.height = 40
+	app.state = session.ViewState{
+		SessionTitle:  "Nocturnal Session",
+		SessionStatus: "active",
+		TurnState:     "idle",
+		Apps: []session.AppEntry{{
+			ID:        "native-demo",
+			Name:      "Native Demo",
+			Transport: "unix:/tmp/native-demo.sock",
+			Status:    "connected",
+		}},
+	}
+
+	view := app.sessionView()
+	if !strings.Contains(view, "APPS") {
+		t.Fatalf("expected session view to render apps pane, got %q", view)
+	}
+	if !strings.Contains(view, "Native Demo") || !strings.Contains(view, "unix:/tmp/native-demo.sock") {
+		t.Fatalf("expected session view to include app attachment details, got %q", view)
+	}
+}
+
 func TestTranscriptEntryLinesWrapLongMessages(t *testing.T) {
 	entry := session.TranscriptEntry{
 		Role:   "assistant",

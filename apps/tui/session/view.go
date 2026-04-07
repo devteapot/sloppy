@@ -50,6 +50,14 @@ type TaskEntry struct {
 	CanCancel      bool
 }
 
+type AppEntry struct {
+	ID        string
+	Name      string
+	Transport string
+	Status    string
+	LastError string
+}
+
 type LlmProfileEntry struct {
 	ID               string
 	Label            string
@@ -84,6 +92,7 @@ type ViewState struct {
 	Activity          []ActivityEntry
 	Approvals         []ApprovalEntry
 	Tasks             []TaskEntry
+	Apps              []AppEntry
 	Error             string
 }
 
@@ -214,6 +223,22 @@ func BuildView(tree *slop.WireNode, err error) ViewState {
 				Error:          stringProp(child, "error"),
 				CanCancel:      hasAffordance(child, "cancel"),
 			})
+		}
+	}
+
+	if appsNode := findChild(tree, "apps"); appsNode != nil {
+		for i := range appsNode.Children {
+			child := &appsNode.Children[i]
+			state.Apps = append(state.Apps, AppEntry{
+				ID:        stringProp(child, "provider_id"),
+				Name:      stringProp(child, "name"),
+				Transport: stringProp(child, "transport"),
+				Status:    stringProp(child, "status"),
+				LastError: stringProp(child, "last_error"),
+			})
+			if state.Apps[len(state.Apps)-1].ID == "" {
+				state.Apps[len(state.Apps)-1].ID = child.ID
+			}
 		}
 	}
 

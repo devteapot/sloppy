@@ -92,6 +92,16 @@ export type SessionTask = {
   turnId?: string;
 };
 
+export type ExternalAppStatus = "connected" | "disconnected" | "error";
+
+export type ExternalAppSnapshot = {
+  id: string;
+  name: string;
+  transport: string;
+  status: ExternalAppStatus;
+  lastError?: string;
+};
+
 export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 
@@ -158,6 +168,7 @@ export type AgentSessionSnapshot = {
   activity: ActivityItem[];
   approvals: ApprovalItem[];
   tasks: SessionTask[];
+  apps: ExternalAppSnapshot[];
 };
 
 export type SessionStoreChangeListener = (snapshot: AgentSessionSnapshot) => void;

@@ -61,6 +61,7 @@ The root tree should expose these top-level children:
 - `/activity`
 - `/approvals`
 - `/tasks`
+- `/apps`
 
 These paths are intentionally small and human-meaningful so UIs can subscribe shallowly and deepen only where needed.
 
@@ -88,6 +89,8 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
     [item] approval-1 (status="pending", provider="terminal", path="/session", action="execute", reason="Command marked dangerous")  actions: {approve, reject}
   [collection] tasks
     [item] task-1 (status="running", provider="terminal", provider_task_id="task-123", message="Running tests")  actions: {cancel}
+  [collection] apps
+    [item] native-notes (name="Native Notes", transport="unix:/tmp/slop/native-notes.sock", status="connected", last_error=null)
 ```
 
 ---
@@ -247,6 +250,36 @@ Rules:
 - `send_message` may be absent while no ready LLM profile is configured
 - `send_message` should return an error in v1 if a turn is already active instead of implicitly queueing
 - `attachments` are session input content, not persistent local UI drafts
+
+### `/apps`
+
+Node type: `collection`
+
+Children:
+
+- zero or more external provider attachment items
+
+Each item:
+
+- node type: `item`
+- path shape: `/apps/{providerId}`
+
+Required item props:
+
+- `provider_id`: external provider id
+- `name`: human-readable provider name
+- `transport`: transport summary such as `unix:/tmp/demo.sock` or `ws:wss://example.test/slop`
+- `status`: `connected | disconnected | error`
+
+Optional item props:
+
+- `last_error`: latest connection or transport error summary
+
+Rules:
+
+- this path is a shallow attachment/debugging summary, not a proxied subtree of downstream provider state
+- item ids should match the external provider ids used by the runtime consumer hub
+- disconnected or failed attachments may remain visible with `last_error` while their descriptor is still present
 
 ### `/transcript`
 

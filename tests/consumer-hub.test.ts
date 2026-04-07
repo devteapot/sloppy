@@ -6,6 +6,7 @@ import { ConsumerHub } from "../src/core/consumer";
 import type { ProviderTreeView } from "../src/core/subscriptions";
 import { buildRuntimeToolSet } from "../src/core/tools";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { NodeSocketClientTransport } from "../src/providers/node-socket";
 import type { RegisteredProvider } from "../src/providers/registry";
 
 type QueryToolProviderSchema = {
@@ -70,6 +71,23 @@ function createProvider(id: string, name: string): RegisteredProvider {
     name,
     kind: "external",
     transport: new InProcessTransport(server),
+    transportLabel: "in-process:test",
+  };
+}
+
+function createBuiltinProvider(id: string, name: string): RegisteredProvider {
+  const server = createSlopServer({ id, name });
+  server.register("workspace", {
+    type: "collection",
+    props: { focus: "/" },
+  });
+
+  return {
+    id,
+    name,
+    kind: "builtin",
+    transport: new InProcessTransport(server),
+    transportLabel: "in-process",
   };
 }
 
@@ -84,6 +102,14 @@ describe("ConsumerHub", () => {
       const connected = await hub.addProvider(createProvider("demo", "Demo"));
       expect(connected).toBe(true);
       expect(hub.getProviderViews().map((view) => view.providerId)).toEqual(["demo"]);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "demo",
+          name: "Demo",
+          transport: "in-process:test",
+          status: "connected",
+        },
+      ]);
 
       const queryTool = hub
         .getRuntimeToolSet()
@@ -96,6 +122,7 @@ describe("ConsumerHub", () => {
 
       hub.removeProvider("demo");
       expect(hub.getProviderViews()).toHaveLength(0);
+      expect(hub.getExternalProviderStates()).toEqual([]);
 
       const queryToolAfterRemoval = hub
         .getRuntimeToolSet()
@@ -105,6 +132,55 @@ describe("ConsumerHub", () => {
       )?.properties?.provider;
 
       expect(providerSchemaAfterRemoval?.enum).not.toContain("demo");
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("tracks external provider connection errors", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+
+      const connected = await hub.addProvider({
+        id: "missing-socket",
+        name: "Missing Socket",
+        kind: "external",
+        transport: new NodeSocketClientTransport(`/tmp/sloppy-missing-${crypto.randomUUID()}.sock`),
+        transportLabel: "unix:/tmp/missing.sock",
+      });
+
+      expect(connected).toBe(false);
+      expect(hub.getProviderViews()).toHaveLength(0);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "missing-socket",
+          name: "Missing Socket",
+          transport: "unix:/tmp/missing.sock",
+          status: "error",
+          lastError: expect.stringContaining("Unix socket connection failed:"),
+        },
+      ]);
+
+      hub.removeProvider("missing-socket");
+      expect(hub.getExternalProviderStates()).toEqual([]);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("does not surface built-in providers in external provider state", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+
+      const connected = await hub.addProvider(createBuiltinProvider("terminal", "Terminal"));
+
+      expect(connected).toBe(true);
+      expect(hub.getProviderViews().map((view) => view.providerId)).toEqual(["terminal"]);
+      expect(hub.getExternalProviderStates()).toEqual([]);
     } finally {
       hub.shutdown();
     }

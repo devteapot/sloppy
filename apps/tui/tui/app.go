@@ -44,6 +44,7 @@ const (
 	paneTranscript paneFocus = iota
 	paneApprovals
 	paneTasks
+	paneApps
 	paneActivity
 	paneComposer
 )
@@ -101,6 +102,7 @@ type App struct {
 	transcriptCursor int
 	approvalCursor   int
 	taskCursor       int
+	appCursor        int
 	activityCursor   int
 }
 
@@ -736,7 +738,7 @@ func (a App) profileSaveParams() (slop.Params, error) {
 }
 
 func (a *App) moveMainPane(key string) bool {
-	order := []paneFocus{paneTranscript, paneApprovals, paneTasks, paneActivity, paneComposer}
+	order := []paneFocus{paneTranscript, paneApprovals, paneTasks, paneApps, paneActivity, paneComposer}
 	if a.sessionBodyWidth() < 112 {
 		index := 0
 		for i := range order {
@@ -783,6 +785,15 @@ func (a *App) moveMainPane(key string) bool {
 		case "shift+up":
 			next = paneApprovals
 		case "shift+down":
+			next = paneApps
+		}
+	case paneApps:
+		switch key {
+		case "shift+left":
+			next = paneTranscript
+		case "shift+up":
+			next = paneTasks
+		case "shift+down":
 			next = paneActivity
 		}
 	case paneActivity:
@@ -790,7 +801,7 @@ func (a *App) moveMainPane(key string) bool {
 		case "shift+left":
 			next = paneTranscript
 		case "shift+up":
-			next = paneTasks
+			next = paneApps
 		case "shift+down":
 			next = paneComposer
 		}
@@ -1188,17 +1199,19 @@ func (a App) sessionHeaderView(width int) string {
 func (a App) sessionMainView(width int, height int) string {
 	if width < 112 {
 		transcriptHeight := maxInt(height/2, 8)
-		railHeight := maxInt(height-transcriptHeight-3, 12)
-		approvalHeight := maxInt(railHeight/4, 6)
-		taskHeight := maxInt(railHeight/4, 6)
-		activityHeight := maxInt(railHeight-approvalHeight-taskHeight-2, 8)
+		railHeight := maxInt(height-transcriptHeight-4, 16)
+		approvalHeight := maxInt(railHeight/5, 5)
+		taskHeight := maxInt(railHeight/5, 5)
+		appsHeight := maxInt(railHeight/5, 5)
+		activityHeight := maxInt(railHeight-approvalHeight-taskHeight-appsHeight-3, 7)
 
 		transcript := paneStyle(a.focus == paneTranscript, false).Width(width).Height(transcriptHeight).Render(a.transcriptView(width-4, transcriptHeight-2))
 		approvals := paneStyle(a.focus == paneApprovals, true).Width(width).Height(approvalHeight).Render(a.approvalsView(width-4, approvalHeight-2))
 		tasks := paneStyle(a.focus == paneTasks, true).Width(width).Height(taskHeight).Render(a.tasksView(width-4, taskHeight-2))
+		apps := paneStyle(a.focus == paneApps, true).Width(width).Height(appsHeight).Render(a.appsView(width-4, appsHeight-2))
 		activity := paneStyle(a.focus == paneActivity, true).Width(width).Height(activityHeight).Render(a.activityView(width-4, activityHeight-2))
 
-		return lipgloss.JoinVertical(lipgloss.Left, transcript, "", approvals, "", tasks, "", activity)
+		return lipgloss.JoinVertical(lipgloss.Left, transcript, "", approvals, "", tasks, "", apps, "", activity)
 	}
 
 	leftWidth := maxInt((width*5)/8, 48)
@@ -1206,15 +1219,17 @@ func (a App) sessionMainView(width int, height int) string {
 		leftWidth = width - 32
 	}
 	rightWidth := maxInt(width-leftWidth-2, 30)
-	approvalsHeight := maxInt(height/4, 7)
-	tasksHeight := maxInt(height/4, 7)
-	activityHeight := maxInt(height-approvalsHeight-tasksHeight-2, 8)
+	approvalsHeight := maxInt(height/5, 6)
+	tasksHeight := maxInt(height/5, 6)
+	appsHeight := maxInt(height/5, 6)
+	activityHeight := maxInt(height-approvalsHeight-tasksHeight-appsHeight-3, 8)
 
 	transcript := paneStyle(a.focus == paneTranscript, false).Width(leftWidth).Height(height).Render(a.transcriptView(leftWidth-4, height-2))
 	approvals := paneStyle(a.focus == paneApprovals, true).Width(rightWidth).Height(approvalsHeight).Render(a.approvalsView(rightWidth-4, approvalsHeight-2))
 	tasks := paneStyle(a.focus == paneTasks, true).Width(rightWidth).Height(tasksHeight).Render(a.tasksView(rightWidth-4, tasksHeight-2))
+	apps := paneStyle(a.focus == paneApps, true).Width(rightWidth).Height(appsHeight).Render(a.appsView(rightWidth-4, appsHeight-2))
 	activity := paneStyle(a.focus == paneActivity, true).Width(rightWidth).Height(activityHeight).Render(a.activityView(rightWidth-4, activityHeight-2))
-	right := lipgloss.JoinVertical(lipgloss.Left, approvals, "", tasks, "", activity)
+	right := lipgloss.JoinVertical(lipgloss.Left, approvals, "", tasks, "", apps, "", activity)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, transcript, "  ", right)
 }
@@ -1288,6 +1303,27 @@ func (a App) tasksView(width int, height int) string {
 		entry := a.state.Tasks[index]
 		selected := index == a.taskCursor
 		lines = append(lines, renderTaskEntry(entry, selected, width))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (a App) appsView(width int, height int) string {
+	var lines []string
+	lines = append(lines, paneHeader("Apps", a.focus == paneApps, fmt.Sprintf("%d tracked", len(a.state.Apps))))
+	lines = append(lines, "")
+
+	if len(a.state.Apps) == 0 {
+		lines = append(lines, ghostTextStyle.Render("No external apps discovered."))
+		return strings.Join(lines, "\n")
+	}
+
+	visible := maxInt((height-2)/2, 1)
+	start, end := windowBounds(len(a.state.Apps), a.appCursor, visible)
+	for index := start; index < end; index++ {
+		entry := a.state.Apps[index]
+		selected := index == a.appCursor
+		lines = append(lines, renderAppEntry(entry, selected, width))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1368,6 +1404,7 @@ func (a App) applyViewState(next session.ViewState) App {
 	a.transcriptCursor = preserveCursor(len(previous.Transcript), len(next.Transcript), a.transcriptCursor)
 	a.approvalCursor = preserveCursor(len(previous.Approvals), len(next.Approvals), a.approvalCursor)
 	a.taskCursor = preserveCursor(len(previous.Tasks), len(next.Tasks), a.taskCursor)
+	a.appCursor = preserveCursor(len(previous.Apps), len(next.Apps), a.appCursor)
 	a.activityCursor = preserveCursor(len(previous.Activity), len(next.Activity), a.activityCursor)
 	a.profileCursor = preserveCursor(len(previous.Profiles), len(next.Profiles), a.profileCursor)
 
@@ -1469,6 +1506,8 @@ func (a *App) moveSelection(delta int) {
 		a.approvalCursor = clampRange(a.approvalCursor+delta, len(a.state.Approvals))
 	case paneTasks:
 		a.taskCursor = clampRange(a.taskCursor+delta, len(a.state.Tasks))
+	case paneApps:
+		a.appCursor = clampRange(a.appCursor+delta, len(a.state.Apps))
 	case paneActivity:
 		a.activityCursor = clampRange(a.activityCursor+delta, len(a.state.Activity))
 	}
@@ -1748,6 +1787,30 @@ func renderActivityEntry(entry session.ActivityEntry, selected bool, width int) 
 		"  " + truncate(compact(detail), width-4),
 	}
 	return renderListItem(selected, width, lines)
+}
+
+func renderAppEntry(entry session.AppEntry, selected bool, width int) string {
+	status := statusStyle(entry.Status).Render(strings.ToUpper(strings.ReplaceAll(entry.Status, "_", " ")))
+	title := entry.Name
+	if title == "" {
+		title = entry.ID
+	}
+	line := fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render(title), status)
+	if entry.ID != "" && entry.ID != title {
+		line = fmt.Sprintf("%s  %s", line, mutedStyle.Render(entry.ID))
+	}
+	detail := entry.Transport
+	if entry.LastError != "" {
+		detail = joinNonEmpty(" | ", detail, entry.LastError)
+	}
+	if detail == "" {
+		detail = entry.ID
+	}
+
+	return renderListItem(selected, width, []string{
+		line,
+		"  " + truncate(compact(detail), maxInt(width-2, 1)),
+	})
 }
 
 func renderListItem(selected bool, width int, lines []string) string {

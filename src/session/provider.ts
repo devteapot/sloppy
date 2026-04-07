@@ -9,6 +9,7 @@ import {
 import type { SessionRuntime } from "./runtime";
 import type {
   ActivityItem,
+  ExternalAppSnapshot,
   LlmProfileSnapshot,
   TranscriptContentBlock,
   TranscriptMessage,
@@ -113,6 +114,20 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
   };
 }
 
+function buildAppItem(app: ExternalAppSnapshot): ItemDescriptor {
+  return {
+    id: app.id,
+    props: {
+      provider_id: app.id,
+      name: app.name,
+      transport: app.transport,
+      status: app.status,
+      last_error: app.lastError,
+    },
+    summary: `${app.name} (${app.status})`,
+  };
+}
+
 export class AgentSessionProvider {
   readonly server: SlopServer;
 
@@ -139,6 +154,7 @@ export class AgentSessionProvider {
     this.server.register("activity", () => this.buildActivityDescriptor());
     this.server.register("approvals", () => this.buildApprovalsDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
+    this.server.register("apps", () => this.buildAppsDescriptor());
 
     this.unsubscribeStore = this.runtime.store.onChange(() => {
       this.server.refresh();
@@ -435,6 +451,18 @@ export class AgentSessionProvider {
             }
           : undefined,
       })),
+    };
+  }
+
+  private buildAppsDescriptor(): NodeDescriptor {
+    const snapshot = this.runtime.store.getSnapshot();
+    return {
+      type: "collection",
+      props: {
+        count: snapshot.apps.length,
+      },
+      summary: "External provider attachments tracked for this session.",
+      items: snapshot.apps.map((app) => buildAppItem(app)),
     };
   }
 }

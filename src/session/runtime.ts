@@ -10,6 +10,7 @@ import {
   type AgentToolInvocation,
   type ResolvedApprovalToolResult,
 } from "../core/agent";
+import type { ExternalProviderState } from "../core/consumer";
 import {
   LlmConfigurationError,
   LlmProfileManager,
@@ -18,7 +19,13 @@ import {
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
 import { buildMirroredItemId, SessionStore } from "./store";
-import type { ApprovalItem, LlmStateSnapshot, SessionTask, SessionTaskStatus } from "./types";
+import type {
+  ApprovalItem,
+  ExternalAppSnapshot,
+  LlmStateSnapshot,
+  SessionTask,
+  SessionTaskStatus,
+} from "./types";
 
 function hasAffordance(node: SlopNode, action: string): boolean {
   return (node.affordances ?? []).some((affordance) => affordance.action === action);
@@ -208,12 +215,23 @@ function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnapshot {
   };
 }
 
+function toSessionApps(states: ExternalProviderState[]): ExternalAppSnapshot[] {
+  return states.map((state) => ({
+    id: state.id,
+    name: state.name,
+    transport: state.transport,
+    status: state.status,
+    lastError: state.lastError,
+  }));
+}
+
 function createDefaultSessionAgent(
   callbacks: AgentCallbacks,
   config: SloppyConfig,
   llmProfileManager: LlmProfileManager,
+  ignoredProviderIds: string[] = [],
 ): SessionAgent {
-  return new Agent({ config, llmProfileManager, ...callbacks });
+  return new Agent({ config, llmProfileManager, ignoredProviderIds, ...callbacks });
 }
 
 export class SessionRuntime {
@@ -238,6 +256,7 @@ export class SessionRuntime {
     store?: SessionStore;
     agentFactory?: SessionAgentFactory;
     llmProfileManager?: LlmProfileManager;
+    ignoredProviderIds?: string[];
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.llmProfileManager =
@@ -291,9 +310,31 @@ export class SessionRuntime {
           parseTasksTree(update.providerId, update.tree),
         );
       },
+      onExternalProviderStates: (states) => {
+        const currentApps = this.store.getSnapshot().apps;
+        const nextConnectedAppIds = new Set(
+          states.filter((state) => state.status === "connected").map((state) => state.id),
+        );
+
+        for (const app of currentApps) {
+          if (app.status === "connected" && !nextConnectedAppIds.has(app.id)) {
+            this.store.clearProviderMirrors(app.id);
+          }
+        }
+
+        this.store.syncApps(toSessionApps(states));
+      },
     };
 
-    const agentFactory = options?.agentFactory ?? createDefaultSessionAgent;
+    const agentFactory =
+      options?.agentFactory ??
+      ((callbacks, config, llmProfileManager) =>
+        createDefaultSessionAgent(
+          callbacks,
+          config,
+          llmProfileManager,
+          options?.ignoredProviderIds,
+        ));
     this.agent = agentFactory(callbacks, this.config, this.llmProfileManager);
   }
 

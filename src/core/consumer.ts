@@ -33,17 +33,41 @@ type ConnectedProvider = RegisteredProvider & {
   >;
 };
 
+export type ExternalProviderStatus = "connected" | "disconnected" | "error";
+
+export type ExternalProviderState = {
+  id: string;
+  name: string;
+  transport: string;
+  status: ExternalProviderStatus;
+  lastError?: string;
+};
+
 export type ProviderEvent = {
   providerId: string;
   name: string;
   data: unknown;
 };
 
+function compareExternalProviders(
+  left: ExternalProviderState,
+  right: ExternalProviderState,
+): number {
+  const nameComparison = left.name.localeCompare(right.name);
+  if (nameComparison !== 0) {
+    return nameComparison;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
 export class ConsumerHub {
   private providers = new Map<string, ConnectedProvider>();
+  private externalProviderStates = new Map<string, ExternalProviderState>();
   private config: SloppyConfig;
   private registeredProviders: RegisteredProvider[];
   private providerEventListeners = new Set<(event: ProviderEvent) => void>();
+  private externalProviderStateListeners = new Set<(states: ExternalProviderState[]) => void>();
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
@@ -103,7 +127,10 @@ export class ConsumerHub {
         }
       };
       const disconnectListener = () => {
-        this.teardownProvider(registeredProvider.id, { connectionAlive: false });
+        this.teardownProvider(registeredProvider.id, {
+          connectionAlive: false,
+          disconnectError: "Provider disconnected.",
+        });
       };
       const unsubscribeEvent = consumer.onEvent((name, data) => {
         for (const listener of this.providerEventListeners) {
@@ -131,9 +158,26 @@ export class ConsumerHub {
       consumer.on("disconnect", disconnectListener);
 
       this.providers.set(provider.id, provider);
+      if (provider.kind === "external") {
+        this.upsertExternalProviderState({
+          id: provider.id,
+          name: provider.name,
+          transport: provider.transportLabel,
+          status: "connected",
+        });
+      }
       return true;
     } catch (error) {
       registeredProvider.stop?.();
+      if (registeredProvider.kind === "external") {
+        this.upsertExternalProviderState({
+          id: registeredProvider.id,
+          name: registeredProvider.name,
+          transport: registeredProvider.transportLabel,
+          status: "error",
+          lastError: error instanceof Error ? error.message : String(error),
+        });
+      }
       console.warn(
         `[sloppy] skipped provider ${registeredProvider.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -142,12 +186,22 @@ export class ConsumerHub {
   }
 
   removeProvider(providerId: string): void {
-    this.teardownProvider(providerId, { connectionAlive: true });
+    this.teardownProvider(providerId, { connectionAlive: true, removeExternalState: true });
   }
 
-  private teardownProvider(providerId: string, options: { connectionAlive: boolean }): void {
+  private teardownProvider(
+    providerId: string,
+    options: {
+      connectionAlive: boolean;
+      removeExternalState?: boolean;
+      disconnectError?: string;
+    },
+  ): void {
     const provider = this.providers.get(providerId);
     if (!provider) {
+      if (options.removeExternalState) {
+        this.deleteExternalProviderState(providerId);
+      }
       return;
     }
 
@@ -189,6 +243,19 @@ export class ConsumerHub {
 
     provider.stop?.();
     this.providers.delete(providerId);
+    if (provider.kind === "external") {
+      if (options.removeExternalState) {
+        this.deleteExternalProviderState(providerId);
+      } else {
+        this.upsertExternalProviderState({
+          id: provider.id,
+          name: provider.name,
+          transport: provider.transportLabel,
+          status: "disconnected",
+          lastError: options.disconnectError ?? "Provider disconnected.",
+        });
+      }
+    }
   }
 
   getProviderViews(): ProviderTreeView[] {
@@ -204,6 +271,10 @@ export class ConsumerHub {
 
   getRuntimeToolSet(): RuntimeToolSet {
     return buildRuntimeToolSet(this.getProviderViews());
+  }
+
+  getExternalProviderStates(): ExternalProviderState[] {
+    return [...this.externalProviderStates.values()].sort(compareExternalProviders);
   }
 
   async queryState(options: {
@@ -311,6 +382,13 @@ export class ConsumerHub {
     };
   }
 
+  onExternalProviderStateChange(listener: (states: ExternalProviderState[]) => void): () => void {
+    this.externalProviderStateListeners.add(listener);
+    return () => {
+      this.externalProviderStateListeners.delete(listener);
+    };
+  }
+
   shutdown(): void {
     for (const providerId of [...this.providers.keys()]) {
       this.removeProvider(providerId);
@@ -350,6 +428,26 @@ export class ConsumerHub {
       provider.consumer.unsubscribe(watched.subscriptionId);
     } catch {
       // Best-effort cleanup when the provider disconnected before unsubscribe.
+    }
+  }
+
+  private upsertExternalProviderState(state: ExternalProviderState): void {
+    this.externalProviderStates.set(state.id, state);
+    this.emitExternalProviderStateChange();
+  }
+
+  private deleteExternalProviderState(providerId: string): void {
+    if (!this.externalProviderStates.delete(providerId)) {
+      return;
+    }
+
+    this.emitExternalProviderStateChange();
+  }
+
+  private emitExternalProviderStateChange(): void {
+    const states = this.getExternalProviderStates();
+    for (const listener of this.externalProviderStateListeners) {
+      listener(states);
     }
   }
 }

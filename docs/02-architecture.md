@@ -184,6 +184,7 @@ The session provider should expose state that is meaningful across multiple clie
 - tool calls, tool results, and async tasks
 - pending approvals and policy gates
 - current visible provider summaries and focus
+- external app attachment summaries and connection errors
 
 It should not try to own purely local rendering state such as:
 
@@ -349,6 +350,6 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
-- The session provider now mirrors downstream provider-native approvals and async tasks into shared session state. Terminal is the first built-in provider using the approval contract; broader provider adoption is still ongoing.
+- The session provider now mirrors downstream provider-native approvals and async tasks into shared session state, and exposes shallow external app attachment state for TUI/debug visibility. Terminal is the first built-in provider using the approval contract; broader provider adoption is still ongoing.
 
 These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.

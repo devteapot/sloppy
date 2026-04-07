@@ -46,6 +46,7 @@ Current Phase 1 implementation includes:
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
 - session-provider LLM/profile onboarding and management state
+- session-provider `/apps` attachment state for external provider visibility and debugging
 - Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
 - initial end-to-end tests for transport and built-in providers
 
@@ -229,7 +230,7 @@ API keys are not written to YAML:
 - environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
 
-The current TUI uses the session provider's `/llm` state to onboard and manage those profiles.
+The current TUI uses the session provider's `/llm` state to onboard and manage profiles, and its `/apps` state to surface external provider attachment status.
 
 TUI-specific settings are configured under `tui`.
 

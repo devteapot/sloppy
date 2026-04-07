@@ -143,6 +143,20 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 					Affordances: []slop.Affordance{{Action: "cancel"}},
 				}},
 			},
+			{
+				ID:   "apps",
+				Type: "collection",
+				Children: []slop.WireNode{{
+					ID:   "native-demo",
+					Type: "item",
+					Properties: slop.Props{
+						"provider_id": "native-demo",
+						"name":        "Native Demo",
+						"transport":   "unix:/tmp/native-demo.sock",
+						"status":      "connected",
+					},
+				}},
+			},
 		},
 	}
 
@@ -183,6 +197,12 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 	}
 	if !state.Tasks[0].CanCancel || !state.Tasks[0].HasProgress || state.Tasks[0].Progress != 0.5 {
 		t.Fatalf("expected task affordance and progress, got %#v", state.Tasks[0])
+	}
+	if len(state.Apps) != 1 || state.Apps[0].ID != "native-demo" {
+		t.Fatalf("expected app attachment metadata to be parsed, got %#v", state.Apps)
+	}
+	if state.Apps[0].Transport != "unix:/tmp/native-demo.sock" || state.Apps[0].Status != "connected" {
+		t.Fatalf("expected app transport and status to be parsed, got %#v", state.Apps[0])
 	}
 }
 

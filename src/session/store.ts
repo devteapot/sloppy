@@ -4,6 +4,7 @@ import type {
   AgentSessionSnapshot,
   AgentTurnPhase,
   ApprovalItem,
+  ExternalAppSnapshot,
   LlmStateSnapshot,
   SessionStoreChangeListener,
   SessionTask,
@@ -40,7 +41,17 @@ function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
     activity: snapshot.activity.map((item) => ({ ...item })),
     approvals: snapshot.approvals.map((item) => ({ ...item })),
     tasks: snapshot.tasks.map((task) => ({ ...task })),
+    apps: snapshot.apps.map((app) => ({ ...app })),
   };
+}
+
+function compareApps(left: ExternalAppSnapshot, right: ExternalAppSnapshot): number {
+  const nameComparison = left.name.localeCompare(right.name);
+  if (nameComparison !== 0) {
+    return nameComparison;
+  }
+
+  return left.id.localeCompare(right.id);
 }
 
 export class SessionStore {
@@ -94,6 +105,7 @@ export class SessionStore {
       activity: [],
       approvals: [],
       tasks: [],
+      apps: [],
     };
   }
 
@@ -423,6 +435,12 @@ export class SessionStore {
     this.emitChange();
   }
 
+  syncApps(apps: ExternalAppSnapshot[]): void {
+    this.snapshot.apps = apps.map((app) => ({ ...app })).sort(compareApps);
+    this.snapshot.session.updatedAt = now();
+    this.emitChange();
+  }
+
   cancelTurn(
     _turnId: string,
     options?: {
@@ -526,6 +544,22 @@ export class SessionStore {
       ...mergedTasks,
     ];
     this.snapshot.session.updatedAt = time;
+    this.emitChange();
+  }
+
+  clearProviderMirrors(providerId: string): void {
+    const nextApprovals = this.snapshot.approvals.filter((item) => item.provider !== providerId);
+    const nextTasks = this.snapshot.tasks.filter((item) => item.provider !== providerId);
+    if (
+      nextApprovals.length === this.snapshot.approvals.length &&
+      nextTasks.length === this.snapshot.tasks.length
+    ) {
+      return;
+    }
+
+    this.snapshot.approvals = nextApprovals;
+    this.snapshot.tasks = nextTasks;
+    this.snapshot.session.updatedAt = now();
     this.emitChange();
   }
 

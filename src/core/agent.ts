@@ -6,15 +6,17 @@ import { LlmProfileManager } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import {
   discoverProviderDescriptors,
+  type ProviderDescriptor,
   type ProviderDiscoveryUpdate,
   watchProviderDescriptors,
 } from "../providers/discovery";
 import {
   createBuiltinProviders,
-  createDiscoveredProviders,
   createRegisteredProviderFromDescriptor,
+  describeProviderTransport,
+  type RegisteredProvider,
 } from "../providers/registry";
-import { ConsumerHub } from "./consumer";
+import { ConsumerHub, type ExternalProviderState } from "./consumer";
 import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
@@ -52,6 +54,7 @@ export interface AgentCallbacks {
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
+  onExternalProviderStates?: (states: ExternalProviderState[]) => void;
   onProviderSnapshot?: (update: {
     providerId: string;
     path: "/approvals" | "/tasks";
@@ -69,11 +72,18 @@ export class Agent {
   private llmProfileManager: LlmProfileManager;
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
+  private externalProviderErrors = new Map<string, ExternalProviderState>();
+  private ignoredProviderIds: Set<string>;
+  private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
   private activeRunAbortController: AbortController | null = null;
 
   constructor(
-    options?: { config?: SloppyConfig; llmProfileManager?: LlmProfileManager } & AgentCallbacks,
+    options?: {
+      config?: SloppyConfig;
+      llmProfileManager?: LlmProfileManager;
+      ignoredProviderIds?: string[];
+    } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.callbacks = {
@@ -81,8 +91,10 @@ export class Agent {
       onToolCall: options?.onToolCall,
       onToolResult: options?.onToolResult,
       onToolEvent: options?.onToolEvent,
+      onExternalProviderStates: options?.onExternalProviderStates,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
+    this.ignoredProviderIds = new Set(options?.ignoredProviderIds ?? []);
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
@@ -101,17 +113,24 @@ export class Agent {
 
     const builtins = createBuiltinProviders(this.config);
     this.builtinProviderIds = new Set(builtins.map((provider) => provider.id));
+    this.externalProviderErrors.clear();
 
     const discoveredDescriptors = this.config.providers.discovery.enabled
       ? await discoverProviderDescriptors(this.config.providers.discovery.paths)
       : [];
-    const providers = [
-      ...builtins,
-      ...createDiscoveredProviders(discoveredDescriptors, this.builtinProviderIds),
-    ];
+    const discoveredProviders = discoveredDescriptors.flatMap((descriptor) => {
+      const provider = this.resolveExternalProviderDescriptor(descriptor);
+      return provider ? [provider] : [];
+    });
+    const providers = [...builtins, ...discoveredProviders];
     const hub = new ConsumerHub(providers, this.config);
+    this.unsubscribeExternalProviderStateChanges = hub.onExternalProviderStateChange((states) => {
+      this.emitExternalProviderStates(states);
+    });
+    this.emitExternalProviderStates();
     await hub.connect();
     this.hub = hub;
+    this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     for (const view of hub.getProviderViews()) {
       await this.registerProviderMirrors(view.providerId);
@@ -253,6 +272,8 @@ export class Agent {
   shutdown(): void {
     this.discoveryStop?.();
     this.discoveryStop = null;
+    this.unsubscribeExternalProviderStateChanges?.();
+    this.unsubscribeExternalProviderStateChanges = null;
 
     for (const [providerId, stops] of this.providerWatchStops) {
       for (const stop of stops) {
@@ -267,6 +288,7 @@ export class Agent {
 
     this.pendingApproval = null;
     this.builtinProviderIds.clear();
+    this.externalProviderErrors.clear();
     this.discoverySync = Promise.resolve();
   }
 
@@ -372,28 +394,32 @@ export class Agent {
 
     for (const descriptor of update.removed) {
       if (this.builtinProviderIds.has(descriptor.id)) {
+        this.externalProviderErrors.delete(descriptor.id);
+        this.emitExternalProviderStates();
         continue;
       }
 
+      this.externalProviderErrors.delete(descriptor.id);
       this.unregisterProviderMirrors(descriptor.id);
       hub.removeProvider(descriptor.id);
+      this.emitExternalProviderStates();
     }
 
     for (const descriptor of update.updated) {
       if (this.builtinProviderIds.has(descriptor.id)) {
+        this.externalProviderErrors.delete(descriptor.id);
+        this.emitExternalProviderStates();
         continue;
       }
 
+      this.externalProviderErrors.delete(descriptor.id);
       this.unregisterProviderMirrors(descriptor.id);
       hub.removeProvider(descriptor.id);
+      this.emitExternalProviderStates();
     }
 
     for (const descriptor of [...update.updated, ...update.added]) {
-      if (this.builtinProviderIds.has(descriptor.id)) {
-        continue;
-      }
-
-      const provider = createRegisteredProviderFromDescriptor(descriptor);
+      const provider = this.resolveExternalProviderDescriptor(descriptor);
       if (!provider) {
         continue;
       }
@@ -403,5 +429,66 @@ export class Agent {
         await this.registerProviderMirrors(provider.id);
       }
     }
+  }
+
+  private resolveExternalProviderDescriptor(
+    descriptor: ProviderDescriptor,
+  ): RegisteredProvider | null {
+    if (this.ignoredProviderIds.has(descriptor.id)) {
+      this.externalProviderErrors.delete(descriptor.id);
+      this.emitExternalProviderStates();
+      return null;
+    }
+
+    if (this.builtinProviderIds.has(descriptor.id)) {
+      this.externalProviderErrors.set(descriptor.id, {
+        id: descriptor.id,
+        name: descriptor.name,
+        transport: describeProviderTransport(descriptor.transport),
+        status: "error",
+        lastError: `Descriptor id conflicts with built-in provider '${descriptor.id}'.`,
+      });
+      this.emitExternalProviderStates();
+      return null;
+    }
+
+    const provider = createRegisteredProviderFromDescriptor(descriptor);
+    if (!provider) {
+      this.externalProviderErrors.set(descriptor.id, {
+        id: descriptor.id,
+        name: descriptor.name,
+        transport: describeProviderTransport(descriptor.transport),
+        status: "error",
+        lastError: `Unsupported transport: ${descriptor.transport.type}`,
+      });
+      this.emitExternalProviderStates();
+      return null;
+    }
+
+    if (this.externalProviderErrors.delete(descriptor.id)) {
+      this.emitExternalProviderStates();
+    }
+    return provider;
+  }
+
+  private emitExternalProviderStates(hubStates?: ExternalProviderState[]): void {
+    const merged = new Map<string, ExternalProviderState>();
+    for (const state of this.externalProviderErrors.values()) {
+      merged.set(state.id, state);
+    }
+    for (const state of hubStates ?? this.hub?.getExternalProviderStates() ?? []) {
+      merged.set(state.id, state);
+    }
+
+    this.callbacks.onExternalProviderStates?.(
+      [...merged.values()].sort((left, right) => {
+        const nameComparison = left.name.localeCompare(right.name);
+        if (nameComparison !== 0) {
+          return nameComparison;
+        }
+
+        return left.id.localeCompare(right.id);
+      }),
+    );
   }
 }

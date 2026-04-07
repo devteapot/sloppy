@@ -4,7 +4,11 @@ import type { SloppyConfig } from "../config/schema";
 import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
 import { TerminalProvider } from "./builtin/terminal";
-import { discoverProviderDescriptors, type ProviderDescriptor } from "./discovery";
+import {
+  discoverProviderDescriptors,
+  type ProviderDescriptor,
+  type ProviderTransportDescriptor,
+} from "./discovery";
 import { NodeSocketClientTransport } from "./node-socket";
 
 export interface RegisteredProvider {
@@ -12,7 +16,23 @@ export interface RegisteredProvider {
   name: string;
   kind: "builtin" | "external";
   transport: ClientTransport;
+  transportLabel: string;
   stop?: () => void;
+}
+
+export function describeProviderTransport(transport: ProviderTransportDescriptor): string {
+  switch (transport.type) {
+    case "unix":
+      return `unix:${transport.path}`;
+    case "ws":
+      return `ws:${transport.url}`;
+    case "stdio":
+      return `stdio:${transport.command.join(" ")}`;
+    case "pipe":
+      return `pipe:${transport.name}`;
+    case "postmessage":
+      return "postmessage";
+  }
 }
 
 export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider[] {
@@ -29,6 +49,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       name: "Terminal",
       kind: "builtin",
       transport: new InProcessTransport(terminal.server),
+      transportLabel: "in-process",
       stop: () => terminal.stop(),
     });
   }
@@ -46,6 +67,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       name: "Filesystem",
       kind: "builtin",
       transport: new InProcessTransport(filesystem.server),
+      transportLabel: "in-process",
       stop: () => filesystem.stop(),
     });
   }
@@ -75,6 +97,7 @@ export function createRegisteredProviderFromDescriptor(
     name: descriptor.name,
     kind: "external",
     transport,
+    transportLabel: describeProviderTransport(descriptor.transport),
   };
 }
 

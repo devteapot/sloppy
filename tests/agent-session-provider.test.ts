@@ -3,6 +3,7 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { AgentCallbacks } from "../src/core/agent";
+import type { ExternalProviderState } from "../src/core/consumer";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
 import { LlmAbortError } from "../src/llm/types";
@@ -411,6 +412,56 @@ function createTaskMirrorHarnessFactory() {
   };
 }
 
+function createAppMirrorHarnessFactory() {
+  let callbacks: AgentCallbacks | null = null;
+
+  const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
+    callbacks = agentCallbacks;
+    return {
+      start: async () => undefined,
+      chat: async () => ({
+        status: "completed",
+        response: "apps updated",
+      }),
+      resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+      invokeProvider: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    };
+  };
+
+  return {
+    factory,
+    emitApps(states: ExternalProviderState[]) {
+      callbacks?.onExternalProviderStates?.(states);
+    },
+    emitTaskSnapshot(providerId: string) {
+      callbacks?.onProviderSnapshot?.({
+        providerId,
+        path: "/tasks",
+        tree: {
+          id: "tasks",
+          type: "collection",
+          children: [
+            {
+              id: "task-1",
+              type: "item",
+              properties: {
+                status: "running",
+                provider_task_id: "task-1",
+                started_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                message: "Syncing native state",
+              },
+            },
+          ],
+        },
+      });
+    },
+  };
+}
+
 describe("AgentSessionProvider", () => {
   test("session starts without credentials and exposes LLM onboarding state", async () => {
     const runtime = new SessionRuntime({
@@ -692,6 +743,67 @@ describe("AgentSessionProvider", () => {
       expect(tasks.children?.length).toBe(1);
       expect(tasks.children?.[0]?.properties?.provider_task_id).toBe("task-123");
       expect(tasks.children?.[0]?.properties?.status).toBe("running");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session exposes external apps and clears mirrored state when one disconnects", async () => {
+    const harness = createAppMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-apps",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-apps",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitApps([
+        {
+          id: "native-demo",
+          name: "Native Demo",
+          transport: "unix:/tmp/native-demo.sock",
+          status: "connected",
+        },
+      ]);
+      harness.emitTaskSnapshot("native-demo");
+
+      const apps = await consumer.query("/apps", 3);
+      expect(apps.children?.length).toBe(1);
+      expect(apps.children?.[0]?.id).toBe("native-demo");
+      expect(apps.children?.[0]?.properties?.status).toBe("connected");
+      expect(apps.children?.[0]?.properties?.transport).toBe("unix:/tmp/native-demo.sock");
+
+      const tasks = await consumer.query("/tasks", 3);
+      expect(tasks.children?.length).toBe(1);
+
+      harness.emitApps([
+        {
+          id: "native-demo",
+          name: "Native Demo",
+          transport: "unix:/tmp/native-demo.sock",
+          status: "disconnected",
+          lastError: "Provider disconnected.",
+        },
+      ]);
+
+      const appsAfterDisconnect = await consumer.query("/apps", 3);
+      expect(appsAfterDisconnect.children?.[0]?.properties?.status).toBe("disconnected");
+      expect(appsAfterDisconnect.children?.[0]?.properties?.last_error).toBe(
+        "Provider disconnected.",
+      );
+
+      const tasksAfterDisconnect = await consumer.query("/tasks", 3);
+      expect(tasksAfterDisconnect.children ?? []).toHaveLength(0);
     } finally {
       provider.stop();
       runtime.shutdown();

@@ -41,7 +41,7 @@ Implemented now:
 - lazy LLM startup so the session can boot without a ready API key
 - managed LLM profiles with secure credential storage for macOS and Linux
 - CLI single-shot mode and REPL
-- checked-in `src/session/` agent-session provider with `/llm` onboarding and profile-management state
+- checked-in `src/session/` agent-session provider with `/llm` onboarding/profile-management state and `/apps` external-provider attachment visibility
 - checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding and settings management
 - initial tests covering transport, runtime tool generation, and both built-in providers
 
