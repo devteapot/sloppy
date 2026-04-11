@@ -13,8 +13,10 @@ const (
 	colorSubtle           = "#667089"
 	colorPrimary          = "#91db37"
 	colorSecondary        = "#adc6ff"
+	colorSuccess          = "#6fad3a"
 	colorDanger           = "#ff8f8f"
 	colorWarning          = "#ffd479"
+	colorGhostBorder      = "#1e2436"
 )
 
 var (
@@ -23,17 +25,19 @@ var (
 	accentTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPrimary))
 	mutedStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
 	helpStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSubtle))
+	helpKeyStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorMuted))
 	labelStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorSecondary))
 	metaLabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorMuted))
-	keyStyle            = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPrimary))
+	keyStyle            = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorSecondary))
+	promptStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorSecondary))
 	codeStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
 	selectedRowStyle    = lipgloss.NewStyle().Background(lipgloss.Color(colorSurfaceHigh)).Foreground(lipgloss.Color(colorText)).Padding(0, 1)
 	rowStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)).Padding(0, 1)
-	successStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPrimary))
+	successStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorSuccess))
 	dangerStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorDanger))
 	warningStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarning))
 	ghostTextStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorSubtle))
-	selectedAccentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPrimary))
+	selectedAccentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorSecondary))
 )
 
 func paneStyle(focused bool, elevated bool) lipgloss.Style {
@@ -45,10 +49,17 @@ func paneStyle(focused bool, elevated bool) lipgloss.Style {
 		background = colorSurfaceHigh
 	}
 
+	borderColor := colorGhostBorder
+	if focused {
+		borderColor = colorSecondary
+	}
+
 	return lipgloss.NewStyle().
 		Background(lipgloss.Color(background)).
 		Foreground(lipgloss.Color(colorText)).
-		Padding(1, 2)
+		Padding(1, 2).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color(borderColor))
 }
 
 func composerStyle(focused bool) lipgloss.Style {
@@ -68,5 +79,7 @@ func modalStyle(width int) lipgloss.Style {
 		Background(lipgloss.Color(colorSurfaceHigh)).
 		Foreground(lipgloss.Color(colorText)).
 		Padding(1, 2).
-		Width(width)
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(colorSubtle))
 }

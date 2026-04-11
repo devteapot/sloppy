@@ -207,7 +207,7 @@ func TestSessionViewRendersAppsPane(t *testing.T) {
 	}
 
 	view := app.sessionView()
-	if !strings.Contains(view, "APPS") {
+	if !strings.Contains(view, "Apps") {
 		t.Fatalf("expected session view to render apps pane, got %q", view)
 	}
 	if !strings.Contains(view, "Native Demo") || !strings.Contains(view, "unix:/tmp/native-demo.sock") {
