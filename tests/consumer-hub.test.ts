@@ -39,6 +39,14 @@ const TEST_CONFIG: SloppyConfig = {
     builtin: {
       terminal: false,
       filesystem: false,
+      memory: false,
+      skills: false,
+      web: false,
+      browser: false,
+      cron: false,
+      messaging: false,
+      delegation: false,
+      vision: false,
     },
     discovery: {
       enabled: false,
@@ -55,6 +63,35 @@ const TEST_CONFIG: SloppyConfig = {
       recentLimit: 10,
       searchLimit: 20,
       readMaxBytes: 65536,
+    },
+    memory: {
+      maxMemories: 500,
+      defaultWeight: 0.5,
+      compactThreshold: 0.2,
+    },
+    skills: {
+      skillsDir: "~/.hermes/skills",
+    },
+    web: {
+      historyLimit: 20,
+    },
+    browser: {
+      viewportWidth: 1280,
+      viewportHeight: 720,
+    },
+    cron: {
+      maxJobs: 50,
+    },
+    messaging: {
+      maxMessages: 500,
+    },
+    delegation: {
+      maxAgents: 10,
+    },
+    vision: {
+      maxImages: 50,
+      defaultWidth: 512,
+      defaultHeight: 512,
     },
   },
 };

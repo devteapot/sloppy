@@ -27,7 +27,7 @@ Implemented now:
 - Bun + TypeScript project scaffold
 - npm-installed SLOP SDK dependencies
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
-- built-in `terminal` and `filesystem` providers
+- built-in `terminal`, `filesystem`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
 - in-process transport for built-in providers
 - live-watched provider descriptor discovery for Unix socket and WebSocket providers
 - consumer hub with overview and detail subscriptions
@@ -43,7 +43,7 @@ Implemented now:
 - CLI single-shot mode and REPL
 - checked-in `src/session/` agent-session provider with `/llm` onboarding/profile-management state and `/apps` external-provider attachment visibility
 - checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding and settings management
-- initial tests covering transport, runtime tool generation, and both built-in providers
+- tests covering transport, runtime tool generation, session-provider flows, and all built-in providers
 
 ## Interface direction after Phase 1
 
@@ -67,11 +67,11 @@ This keeps the interface model aligned with the core architecture instead of inv
 
 The concrete provider shape is defined in `docs/06-agent-session-provider.md`.
 
-Still intentionally minimal:
+Still intentionally minimal in important ways:
 
-- no SQLite history store yet
-- no skills loader yet
-- no subagent delegation yet
+- no SQLite history/search store yet
+- several Phase 2 providers are still simulated/local-first rather than integrated with real external systems
+- no unified policy layer across every dangerous affordance yet
 
 ---
 
@@ -107,9 +107,17 @@ src/
     ├── node-socket.ts
     ├── registry.ts
     └── builtin/
+        ├── browser.ts
+        ├── cron.ts
+        ├── delegation.ts
         ├── filesystem.ts
         ├── in-process.ts
-        └── terminal.ts
+        ├── memory.ts
+        ├── messaging.ts
+        ├── skills.ts
+        ├── terminal.ts
+        ├── vision.ts
+        └── web.ts
 ```
 
 ### Checked-in interface layout
@@ -269,12 +277,20 @@ Deliverables:
 
 - stateful terminal provider
 - stateful filesystem provider
+- stateful memory provider
+- discoverable skills provider
+- browser/web provider pair
+- cron scheduler provider
+- messaging provider
+- delegation provider
+- vision provider
 - in-process transport bridge
 
 Success criteria:
 
 - the agent sees directory state instead of blind file tools
 - the agent sees command history and async task state instead of blind shell execution only
+- the agent can inspect and act on memory/skills/browser/web/cron/messaging/delegation/vision state through the same provider boundary
 - state changes are reflected back through new snapshots/patches
 
 ### D. Test slice
@@ -285,6 +301,7 @@ Deliverables:
 - runtime tool generation test
 - filesystem provider integration test
 - terminal provider integration test
+- integration coverage for memory, skills, browser, web, cron, messaging, delegation, and vision providers
 
 Success criteria:
 
@@ -339,14 +356,14 @@ The SDK dependencies are installed from npm, not linked from the local SLOP work
 
 ## Immediate next steps
 
-After the current Phase 1 implementation, the most important follow-ups are:
+After the current implementation, the most important follow-ups are:
 
-1. define the agent-session provider boundary and shared session state model
+1. keep hardening the agent-session provider boundary as the public interface surface
 2. build the first `apps/tui/` client against that public boundary
 3. harden adapter compatibility coverage across Anthropic, OpenAI-compatible providers, and Gemini
-4. improve approval and policy enforcement for dangerous affordances
-5. add SQLite-backed history and search
-6. add a skill loader that injects markdown skills without reintroducing a plugin registry
+4. replace simulated Phase 2 providers with real external integrations where appropriate
+5. improve approval and policy enforcement for dangerous affordances
+6. add SQLite-backed history and search
 
 ---
 
@@ -354,9 +371,7 @@ After the current Phase 1 implementation, the most important follow-ups are:
 
 - MCP compatibility as a primary abstraction
 - a large plugin system
-- messaging gateway support
 - browser extension support
-- subagents and parallel delegation
 - learning loops, RL, or training infrastructure
 
 Those may come later, but they should be built on top of the SLOP-first core rather than replacing it.

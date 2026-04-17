@@ -137,7 +137,7 @@ Responsibilities:
 
 The current implementation supports:
 
-- built-in in-process providers
+- built-in in-process providers for terminal, filesystem, memory, skills, browser, web, cron, messaging, delegation, and vision
 - external Unix socket providers
 - external WebSocket providers
 
@@ -297,6 +297,37 @@ Example shape:
 
 This keeps directory listings and search results visible as state, rather than forcing the model to rediscover them through imperative read tools.
 
+### Phase 2 built-in providers
+
+The provider surface now extends beyond the initial terminal/filesystem pair.
+
+Additional built-ins currently checked in:
+
+- `memory`
+  - `session`, `memories`, `tags`, `approvals`
+  - supports memory add/search/update/delete, compaction, weak-memory pruning, and approval-gated clear-all
+- `skills`
+  - `session`, `skills`, `approvals`
+  - supports skill discovery refresh and reading installed skill content
+- `browser`
+  - `session`, `tabs`, `history`
+  - supports navigation, tab switching/closing, screenshots, and history traversal
+- `web`
+  - `session`, `search`, `history`, `approvals`
+  - supports web search, URL reads, and result/history replay
+- `cron`
+  - `session`, `jobs`, `approvals`
+  - supports adding, running, toggling, deleting, and clearing scheduled jobs
+- `messaging`
+  - `session`, `channels`, `approvals`
+  - supports channel creation/removal, outbound send, and message-history reads
+- `delegation`
+  - `session`, `agents`
+  - supports agent spawning, monitoring, cancellation, and result retrieval
+- `vision`
+  - `session`, `images`, `analyses`, `approvals`
+  - supports image generation, image analysis, cached outputs, and result inspection
+
 ---
 
 ## Why native provider tool use
@@ -350,6 +381,8 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
-- The session provider now mirrors downstream provider-native approvals and async tasks into shared session state, and exposes shallow external app attachment state for TUI/debug visibility. Terminal is the first built-in provider using the approval contract; broader provider adoption is still ongoing.
+- The session provider mirrors downstream provider-native approvals and async tasks into shared session state, and exposes shallow external app attachment state for TUI/debug visibility.
+- The broader built-in provider surface is now real, but several providers still use simulated or local-only implementations where external integrations are not wired yet (notably browser, delegation, and vision).
+- Skill discovery exposes both item-level affordances and a session-level `view_skill(name)` fallback because direct item invocation on skills hit a routing quirk during implementation.
 
-These are acceptable Phase 1 tradeoffs. None of them alter the core SLOP-first design.
+These are acceptable tradeoffs for the current pre-alpha runtime. None of them alter the core SLOP-first design.

@@ -56,10 +56,26 @@ export const sloppyConfigSchema = z.object({
         .object({
           terminal: z.boolean().default(true),
           filesystem: z.boolean().default(true),
+          memory: z.boolean().default(true),
+          skills: z.boolean().default(true),
+          web: z.boolean().default(true),
+          browser: z.boolean().default(true),
+          cron: z.boolean().default(true),
+          messaging: z.boolean().default(true),
+          delegation: z.boolean().default(true),
+          vision: z.boolean().default(true),
         })
         .default({
           terminal: true,
           filesystem: true,
+          memory: true,
+          skills: true,
+          web: true,
+          browser: true,
+          cron: true,
+          messaging: true,
+          delegation: true,
+          vision: true,
         }),
       discovery: z
         .object({
@@ -95,11 +111,85 @@ export const sloppyConfigSchema = z.object({
           searchLimit: 20,
           readMaxBytes: 65536,
         }),
+      memory: z
+        .object({
+          maxMemories: z.number().int().min(1).default(500),
+          defaultWeight: z.number().min(0).max(1).default(0.5),
+          compactThreshold: z.number().min(0).max(1).default(0.2),
+        })
+        .default({
+          maxMemories: 500,
+          defaultWeight: 0.5,
+          compactThreshold: 0.2,
+        }),
+      skills: z
+        .object({
+          skillsDir: z.string().default("~/.hermes/skills"),
+        })
+        .default({
+          skillsDir: "~/.hermes/skills",
+        }),
+      web: z
+        .object({
+          historyLimit: z.number().int().min(1).default(20),
+        })
+        .default({
+          historyLimit: 20,
+        }),
+      browser: z
+        .object({
+          viewportWidth: z.number().int().min(320).default(1280),
+          viewportHeight: z.number().int().min(240).default(720),
+        })
+        .default({
+          viewportWidth: 1280,
+          viewportHeight: 720,
+        }),
+      cron: z
+        .object({
+          maxJobs: z.number().int().min(1).default(50),
+        })
+        .default({
+          maxJobs: 50,
+        }),
+      messaging: z
+        .object({
+          maxMessages: z.number().int().min(1).default(500),
+        })
+        .default({
+          maxMessages: 500,
+        }),
+      delegation: z
+        .object({
+          maxAgents: z.number().int().min(1).default(10),
+        })
+        .default({
+          maxAgents: 10,
+        }),
+      vision: z
+        .object({
+          maxImages: z.number().int().min(1).default(50),
+          defaultWidth: z.number().int().min(64).default(512),
+          defaultHeight: z.number().int().min(64).default(512),
+        })
+        .default({
+          maxImages: 50,
+          defaultWidth: 512,
+          defaultHeight: 512,
+        }),
     })
     .default({
       builtin: {
         terminal: true,
         filesystem: true,
+        memory: true,
+        skills: true,
+        web: true,
+        browser: true,
+        cron: true,
+        messaging: true,
+        delegation: true,
+        vision: true,
       },
       discovery: {
         enabled: true,
@@ -115,6 +205,35 @@ export const sloppyConfigSchema = z.object({
         recentLimit: 10,
         searchLimit: 20,
         readMaxBytes: 65536,
+      },
+      memory: {
+        maxMemories: 500,
+        defaultWeight: 0.5,
+        compactThreshold: 0.2,
+      },
+      skills: {
+        skillsDir: "~/.hermes/skills",
+      },
+      web: {
+        historyLimit: 20,
+      },
+      browser: {
+        viewportWidth: 1280,
+        viewportHeight: 720,
+      },
+      cron: {
+        maxJobs: 50,
+      },
+      messaging: {
+        maxMessages: 500,
+      },
+      delegation: {
+        maxAgents: 10,
+      },
+      vision: {
+        maxImages: 50,
+        defaultWidth: 512,
+        defaultHeight: 512,
       },
     }),
 });

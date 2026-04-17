@@ -25,7 +25,7 @@ This project is explicitly inspired by OpenClaw and Hermes Agent, but it replace
 
 Pre-alpha, but no longer docs-only.
 
-Current Phase 1 implementation includes:
+Current checked-in implementation includes:
 
 - Bun + TypeScript project scaffold
 - provider-native LLM adapter layer with:
@@ -33,9 +33,17 @@ Current Phase 1 implementation includes:
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native Gemini support
 - consumer hub for built-in and live-discovered SLOP providers
-- two built-in in-process providers:
+- ten built-in in-process providers:
   - `terminal`
   - `filesystem`
+  - `memory`
+  - `skills`
+  - `browser`
+  - `web`
+  - `cron`
+  - `messaging`
+  - `delegation`
+  - `vision`
 - fixed observation tools:
   - `slop_query_state`
   - `slop_focus_state`
@@ -48,7 +56,7 @@ Current Phase 1 implementation includes:
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
-- initial end-to-end tests for transport and built-in providers
+- end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
 
@@ -104,6 +112,23 @@ The actual runtime model is still SLOP:
 
 ## What is implemented now
 
+### Additional built-in providers
+
+The runtime now ships with a broader first-party provider surface beyond terminal and filesystem.
+
+These providers are currently implemented as in-process SLOP providers:
+
+- `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
+- `skills` for discovering installed skills and reading skill content
+- `browser` for tab state, navigation history, and simulated screenshots
+- `web` for search/read operations plus browsed-history state
+- `cron` for scheduled jobs and job lifecycle state
+- `messaging` for channel/message history and send affordances
+- `delegation` for subagent lifecycle state and cancellation/result retrieval
+- `vision` for simulated image-generation and image-analysis workflows
+
+They follow the same architectural rule as terminal/filesystem: state first, affordances second.
+
 ### Filesystem provider
 
 The filesystem provider is stateful, not just a bag of file actions.
@@ -137,6 +162,23 @@ It supports affordances such as:
 - `cd`
 - `cancel`
 - `show_output`
+
+### Built-in provider registry
+
+All built-ins are created through `src/providers/registry.ts` and can be enabled or disabled from config under `providers.builtin`.
+
+Provider-specific config now exists for:
+
+- `terminal`
+- `filesystem`
+- `memory`
+- `skills`
+- `web`
+- `browser`
+- `cron`
+- `messaging`
+- `delegation`
+- `vision`
 
 ## Development
 

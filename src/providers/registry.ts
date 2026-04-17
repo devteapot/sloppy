@@ -1,9 +1,18 @@
-import { type ClientTransport, WebSocketClientTransport } from "@slop-ai/consumer/browser";
+import type { ClientTransport } from "@slop-ai/consumer/browser";
+import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
+import { BrowserProvider } from "./builtin/browser";
+import { CronProvider } from "./builtin/cron";
+import { DelegationProvider } from "./builtin/delegation";
 import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
+import { MemoryProvider } from "./builtin/memory";
+import { MessagingProvider } from "./builtin/messaging";
+import { SkillsProvider } from "./builtin/skills";
 import { TerminalProvider } from "./builtin/terminal";
+import { VisionProvider } from "./builtin/vision";
+import { WebProvider } from "./builtin/web";
 import {
   discoverProviderDescriptors,
   type ProviderDescriptor,
@@ -69,6 +78,123 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(filesystem.server),
       transportLabel: "in-process",
       stop: () => filesystem.stop(),
+    });
+  }
+
+  if (config.providers.builtin.memory) {
+    const memory = new MemoryProvider({
+      maxMemories: config.providers.memory.maxMemories,
+      defaultWeight: config.providers.memory.defaultWeight,
+      compactThreshold: config.providers.memory.compactThreshold,
+    });
+    providers.push({
+      id: "memory",
+      name: "Memory",
+      kind: "builtin",
+      transport: new InProcessTransport(memory.server),
+      transportLabel: "in-process",
+      stop: () => memory.stop(),
+    });
+  }
+
+  if (config.providers.builtin.skills) {
+    const skills = new SkillsProvider({
+      skillsDir: config.providers.skills.skillsDir,
+    });
+    providers.push({
+      id: "skills",
+      name: "Skills",
+      kind: "builtin",
+      transport: new InProcessTransport(skills.server),
+      transportLabel: "in-process",
+      stop: () => skills.stop(),
+    });
+  }
+
+  if (config.providers.builtin.web) {
+    const web = new WebProvider({
+      historyLimit: config.providers.web.historyLimit,
+    });
+    providers.push({
+      id: "web",
+      name: "Web",
+      kind: "builtin",
+      transport: new InProcessTransport(web.server),
+      transportLabel: "in-process",
+      stop: () => web.stop(),
+    });
+  }
+
+  if (config.providers.builtin.browser) {
+    const browser = new BrowserProvider({
+      viewportWidth: config.providers.browser.viewportWidth,
+      viewportHeight: config.providers.browser.viewportHeight,
+    });
+    providers.push({
+      id: "browser",
+      name: "Browser",
+      kind: "builtin",
+      transport: new InProcessTransport(browser.server),
+      transportLabel: "in-process",
+      stop: () => browser.stop(),
+    });
+  }
+
+  if (config.providers.builtin.cron) {
+    const cron = new CronProvider({
+      maxJobs: config.providers.cron.maxJobs,
+    });
+    providers.push({
+      id: "cron",
+      name: "Cron",
+      kind: "builtin",
+      transport: new InProcessTransport(cron.server),
+      transportLabel: "in-process",
+      stop: () => cron.stop(),
+    });
+  }
+
+  if (config.providers.builtin.messaging) {
+    const messaging = new MessagingProvider({
+      maxMessages: config.providers.messaging.maxMessages,
+    });
+    providers.push({
+      id: "messaging",
+      name: "Messaging",
+      kind: "builtin",
+      transport: new InProcessTransport(messaging.server),
+      transportLabel: "in-process",
+      stop: () => messaging.stop(),
+    });
+  }
+
+  if (config.providers.builtin.delegation) {
+    const delegation = new DelegationProvider({
+      maxAgents: config.providers.delegation.maxAgents,
+    });
+    providers.push({
+      id: "delegation",
+      name: "Delegation",
+      kind: "builtin",
+      transport: new InProcessTransport(delegation.server),
+      transportLabel: "in-process",
+      stop: () => delegation.stop(),
+    });
+  }
+
+  if (config.providers.builtin.vision) {
+    const vision = new VisionProvider({
+      maxImages: config.providers.vision.maxImages,
+      defaultWidth: config.providers.vision.defaultWidth,
+      defaultHeight: config.providers.vision.defaultHeight,
+    });
+    providers.push({
+      id: "vision",
+      name: "Vision",
+      kind: "builtin",
+      transport: new InProcessTransport(vision.server),
+      transportLabel: "in-process",
+      stop: () => vision.stop(),
     });
   }
 
