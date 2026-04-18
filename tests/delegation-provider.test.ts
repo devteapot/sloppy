@@ -18,6 +18,11 @@ function createDelegationHarness(
 
 async function connect(consumer: SlopConsumer): Promise<void> {
   await consumer.connect();
+  // Disconnect and reconnect to ensure clean subscription state
+  // Each test gets a fresh consumer, but re-connecting guarantees
+  // no stale subscriptions from prior test runs in the same process.
+  await consumer.disconnect();
+  await consumer.connect();
   await consumer.subscribe("/", 3);
 }
 
