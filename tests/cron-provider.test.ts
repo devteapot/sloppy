@@ -245,9 +245,9 @@ describe("CronProvider", () => {
 
       const disabled = await consumer.query(`/jobs/${jobId}`, 2);
       expect(disabled.properties?.status).toBe("disabled");
-      expect(disabled.affordances?.find((affordance) => affordance.action === "toggle")?.label).toBe(
-        "Enable",
-      );
+      expect(
+        disabled.affordances?.find((affordance) => affordance.action === "toggle")?.label,
+      ).toBe("Enable");
 
       const enableResult = await consumer.invoke(`/jobs/${jobId}`, "toggle", {});
       expect(enableResult.status).toBe("ok");

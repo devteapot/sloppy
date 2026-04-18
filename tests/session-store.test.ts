@@ -9,7 +9,9 @@ import type {
   SessionTask,
 } from "../src/session/types";
 
-function createStore(overrides?: Partial<{ sessionId: string; title: string; workspaceRoot: string }>) {
+function createStore(
+  overrides?: Partial<{ sessionId: string; title: string; workspaceRoot: string }>,
+) {
   return new SessionStore({
     sessionId: overrides?.sessionId ?? "sess-1",
     modelProvider: "openai",
@@ -93,7 +95,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(turnId).toMatch(/^turn-/);
     expect(snapshot.transcript).toHaveLength(1);
 
-    const userMessage = snapshot.transcript[0]!;
+    const userMessage = snapshot.transcript[0];
     expect(userMessage.role).toBe("user");
     expect(userMessage.state).toBe("complete");
     expect(userMessage.turnId).toBe(turnId);
@@ -154,7 +156,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
 
     const snapshot = store.getSnapshot();
     expect(snapshot.transcript).toHaveLength(2);
-    const assistant = snapshot.transcript[1]!;
+    const assistant = snapshot.transcript[1];
     expect(assistant.role).toBe("assistant");
     expect(assistant.state).toBe("streaming");
     expect(assistant.author).toBe("gpt-5.4");
@@ -183,7 +185,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     store.completeTurn(turnId, "final text");
 
     const snapshot = store.getSnapshot();
-    const assistant = snapshot.transcript[1]!;
+    const assistant = snapshot.transcript[1];
     expect(assistant.state).toBe("complete");
     expect(assistant.error).toBeUndefined();
     expect(textBlock(snapshot, 1)).toBe("final text");
@@ -206,7 +208,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
 
     const snapshot = store.getSnapshot();
     expect(snapshot.transcript).toHaveLength(2);
-    const assistant = snapshot.transcript[1]!;
+    const assistant = snapshot.transcript[1];
     expect(assistant.role).toBe("assistant");
     expect(assistant.state).toBe("complete");
     expect(textBlock(snapshot, 1)).toBe("synthesized");
@@ -228,7 +230,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(snapshot.turn.waitingOn).toBeNull();
     expect(snapshot.session.lastError).toBe("model exploded");
 
-    const assistant = snapshot.transcript[1]!;
+    const assistant = snapshot.transcript[1];
     expect(assistant.state).toBe("error");
     expect(assistant.error).toBe("model exploded");
 
@@ -251,7 +253,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(snapshot.turn.turnId).toBeNull();
     expect(snapshot.turn.message).toBe("user pressed stop");
 
-    const assistant = snapshot.transcript[1]!;
+    const assistant = snapshot.transcript[1];
     expect(assistant.state).toBe("complete");
     expect(assistant.error).toBeUndefined();
 
@@ -622,7 +624,11 @@ describe("SessionStore — tasks and apps", () => {
   test("syncProviderTasks merges with previous state, preserving linkedActivityId and turnId", () => {
     const store = createStore();
     const turnId = store.beginTurn("hi");
-    store.recordToolStart(turnId, { toolUseId: "tu-1", summary: "delegating", provider: "delegation" });
+    store.recordToolStart(turnId, {
+      toolUseId: "tu-1",
+      summary: "delegating",
+      provider: "delegation",
+    });
     store.recordToolCompletion(turnId, {
       toolUseId: "tu-1",
       summary: "accepted",
@@ -642,7 +648,7 @@ describe("SessionStore — tasks and apps", () => {
         status: "completed",
         provider: "delegation",
         providerTaskId: "task-1",
-        startedAt: before!.startedAt,
+        startedAt: before?.startedAt,
         updatedAt: new Date().toISOString(),
         message: "done",
       } satisfies SessionTask,
@@ -683,7 +689,12 @@ describe("SessionStore — tasks and apps", () => {
       },
     ]);
 
-    expect(store.getSnapshot().tasks.map((t) => t.id).sort()).toEqual(["task-a", "task-b"]);
+    expect(
+      store
+        .getSnapshot()
+        .tasks.map((t) => t.id)
+        .sort(),
+    ).toEqual(["task-a", "task-b"]);
 
     store.syncProviderTasks("provider-a", []);
     expect(store.getSnapshot().tasks.map((t) => t.id)).toEqual(["task-b"]);
@@ -813,7 +824,7 @@ describe("SessionStore — listeners", () => {
     unsub();
     store.beginTurn("again");
     const after = events.length;
-    store.appendAssistantText(store.getSnapshot().turn.turnId!, "y");
+    store.appendAssistantText(store.getSnapshot().turn.turnId, "y");
     expect(events.length).toBe(after);
   });
 

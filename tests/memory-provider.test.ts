@@ -89,7 +89,11 @@ describe("MemoryProvider", () => {
         limit: 5,
       });
       expect(searchResult.status).toBe("ok");
-      const matches = searchResult.data as Array<{ content: string; tags: string[]; score: number }>;
+      const matches = searchResult.data as Array<{
+        content: string;
+        tags: string[];
+        score: number;
+      }>;
       expect(matches).toHaveLength(1);
       expect(matches[0]?.content).toContain("Lucerne");
       expect(matches[0]?.tags).toContain("location");
@@ -127,9 +131,9 @@ describe("MemoryProvider", () => {
         "update_memory",
         "delete_memory",
       ]);
-      expect(memory?.affordances?.find((affordance) => affordance.action === "delete_memory")?.dangerous).toBe(
-        true,
-      );
+      expect(
+        memory?.affordances?.find((affordance) => affordance.action === "delete_memory")?.dangerous,
+      ).toBe(true);
     } finally {
       provider.stop();
     }
@@ -168,7 +172,8 @@ describe("MemoryProvider", () => {
         limit: 5,
       });
       expect(searchResult.status).toBe("ok");
-      expect((searchResult.data as Array<{ id: string }>)[0]?.id).toBe(memoryId);
+      const firstResult = searchResult.data as Array<{ id: string } | undefined>;
+      expect(firstResult[0]?.id).toEqual(memoryId);
     } finally {
       provider.stop();
     }
@@ -278,9 +283,9 @@ describe("MemoryProvider", () => {
         limit: 10,
       });
       expect(searchResult.status).toBe("ok");
-      expect((searchResult.data as Array<{ content: string }>).map((memory) => memory.content)).toEqual([
-        "Strong note",
-      ]);
+      expect(
+        (searchResult.data as Array<{ content: string }>).map((memory) => memory.content),
+      ).toEqual(["Strong note"]);
     } finally {
       provider.stop();
     }

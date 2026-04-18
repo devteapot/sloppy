@@ -72,9 +72,7 @@ describe("DelegationProvider", () => {
         failed_agents: 0,
         max_agents: 3,
       });
-      expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
-        "spawn_agent",
-      ]);
+      expect(session.affordances?.map((affordance) => affordance.action)).toEqual(["spawn_agent"]);
       expect(session.meta).toMatchObject({ focus: true, salience: 1 });
 
       const agents = await consumer.query("/agents", 2);
@@ -289,7 +287,9 @@ describe("DelegationProvider", () => {
         goal: "Should not start",
       });
       expect(secondResult.status).toBe("error");
-      expect(secondResult.error?.message).toContain("Agent limit reached (max 1 concurrent agents)");
+      expect(secondResult.error?.message).toContain(
+        "Agent limit reached (max 1 concurrent agents)",
+      );
 
       const agents = await consumer.query("/agents", 2);
       expect(agents.children).toHaveLength(1);
