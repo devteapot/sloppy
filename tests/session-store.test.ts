@@ -648,8 +648,7 @@ describe("SessionStore — tasks and apps", () => {
         status: "completed",
         provider: "delegation",
         providerTaskId: "task-1",
-        startedAt: before?.startedAt,
-        updatedAt: new Date().toISOString(),
+        startedAt: before!.startedAt,        updatedAt: new Date().toISOString(),
         message: "done",
       } satisfies SessionTask,
     ]);
@@ -824,8 +823,7 @@ describe("SessionStore — listeners", () => {
     unsub();
     store.beginTurn("again");
     const after = events.length;
-    store.appendAssistantText(store.getSnapshot().turn.turnId, "y");
-    expect(events.length).toBe(after);
+    const currentTurn = store.getSnapshot().turn;    expect(currentTurn.turnId).toBeDefined();    store.appendAssistantText(currentTurn.turnId!, "y");    expect(events.length).toBe(after);
   });
 
   test("close marks session closed and notifies listeners", () => {
