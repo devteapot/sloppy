@@ -46,7 +46,11 @@ export class DelegationProvider {
     this.server.stop();
   }
 
-  private spawnAgent(name: string, goal: string, model?: string): { id: string; status: AgentStatus; created_at: string } {
+  private spawnAgent(
+    name: string,
+    goal: string,
+    model?: string,
+  ): { id: string; status: AgentStatus; created_at: string } {
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
     ).length;
@@ -188,35 +192,27 @@ export class DelegationProvider {
         error: agent.error,
       },
       actions: {
-        monitor: action(
-          async () => this.monitor(agent.id),
-          {
-            label: "Monitor Agent",
-            description: "Return the full current state of this agent, including result if completed.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
-        get_result: action(
-          async () => this.getResult(agent.id),
-          {
-            label: "Get Result",
-            description: "Return the full result text for a completed agent.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
+        monitor: action(async () => this.monitor(agent.id), {
+          label: "Monitor Agent",
+          description:
+            "Return the full current state of this agent, including result if completed.",
+          idempotent: true,
+          estimate: "instant",
+        }),
+        get_result: action(async () => this.getResult(agent.id), {
+          label: "Get Result",
+          description: "Return the full result text for a completed agent.",
+          idempotent: true,
+          estimate: "instant",
+        }),
         ...(agent.status === "pending" || agent.status === "running"
           ? {
-              cancel: action(
-                async () => this.cancel(agent.id),
-                {
-                  label: "Cancel Agent",
-                  description: "Abort this agent before it completes.",
-                  dangerous: true,
-                  estimate: "instant",
-                },
-              ),
+              cancel: action(async () => this.cancel(agent.id), {
+                label: "Cancel Agent",
+                description: "Abort this agent before it completes.",
+                dangerous: true,
+                estimate: "instant",
+              }),
             }
           : {}),
       },

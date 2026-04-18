@@ -31,7 +31,7 @@ function truncateContent(text: string, maxBytes: number): string {
   if (encoded.length <= maxBytes) {
     return text;
   }
-  return new TextDecoder().decode(encoded.slice(0, maxBytes)) + "\n...[truncated]";
+  return `${new TextDecoder().decode(encoded.slice(0, maxBytes))}\n...[truncated]`;
 }
 
 export class WebProvider {
@@ -90,7 +90,10 @@ export class WebProvider {
     }));
   }
 
-  private async doSearch(query: string, limit: number): Promise<{ query: string; results: SearchResult[] }> {
+  private async doSearch(
+    query: string,
+    limit: number,
+  ): Promise<{ query: string; results: SearchResult[] }> {
     const opId = buildOpId();
     const timestamp = new Date().toISOString();
     try {
@@ -122,7 +125,10 @@ export class WebProvider {
     }
   }
 
-  private async doRead(url: string, maxBytes: number): Promise<{ url: string; content: string; contentLength: number }> {
+  private async doRead(
+    url: string,
+    maxBytes: number,
+  ): Promise<{ url: string; content: string; contentLength: number }> {
     const opId = buildOpId();
     const timestamp = new Date().toISOString();
     try {

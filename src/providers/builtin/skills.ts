@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
-import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
+import { ProviderApprovalManager } from "../approvals";
 
 type SkillInfo = {
   id: string;
@@ -94,16 +94,11 @@ export class SkillsProvider {
 
           skills.push({
             id: stableId,
-            name:
-              typeof fm.name === "string"
-                ? fm.name
-                : relativePath.replace(/\/SKILL\.md$/, ""),
+            name: typeof fm.name === "string" ? fm.name : relativePath.replace(/\/SKILL\.md$/, ""),
             description: typeof fm.description === "string" ? fm.description : "",
             version: typeof fm.version === "string" ? fm.version : "0.0.0",
             tags: Array.isArray(fm.tags) ? (fm.tags as string[]) : [],
-            related_skills: Array.isArray(fm.related_skills)
-              ? (fm.related_skills as string[])
-              : [],
+            related_skills: Array.isArray(fm.related_skills) ? (fm.related_skills as string[]) : [],
             dangerous: fm.dangerous === true,
             file_path: filePath,
           });
@@ -195,19 +190,14 @@ export class SkillsProvider {
       },
       summary: skill.description || skill.name,
       actions: {
-        view_skill: action(
-          async () => this.viewSkill(skill.name),
-          {
-            label: "View Skill",
-            description: "Read the full content of this skill's SKILL.md file.",
-            idempotent: true,
-            estimate: "fast",
-          },
-        ),
+        view_skill: action(async () => this.viewSkill(skill.name), {
+          label: "View Skill",
+          description: "Read the full content of this skill's SKILL.md file.",
+          idempotent: true,
+          estimate: "fast",
+        }),
       },
-      ...(skill.dangerous
-        ? { meta: { salience: 0.9, urgency: "high" as const } }
-        : {}),
+      ...(skill.dangerous ? { meta: { salience: 0.9, urgency: "high" as const } } : {}),
     }));
 
     return {

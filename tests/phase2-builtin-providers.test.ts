@@ -29,7 +29,11 @@ afterEach(async () => {
   }
 });
 
-async function waitFor<T>(check: () => Promise<T | null>, timeoutMs = 5000, intervalMs = 50): Promise<T> {
+async function waitFor<T>(
+  check: () => Promise<T | null>,
+  timeoutMs = 5000,
+  intervalMs = 50,
+): Promise<T> {
   const started = Date.now();
 
   while (Date.now() - started < timeoutMs) {
@@ -129,7 +133,7 @@ Use this for testing.
 
       const skills = await consumer.query("/skills", 2);
       expect(skills.children?.length).toBe(1);
-      const skillId = skills.children?.[0]?.id;
+      const _skillId = skills.children?.[0]?.id;
       expect(skills.children?.[0]?.properties?.name).toBe("demo-skill");
 
       const viewResult = await consumer.invoke("/session", "view_skill", {
@@ -151,7 +155,10 @@ Use this for testing.
       await consumer.subscribe("/", 3);
 
       await consumer.invoke("/session", "navigate", { url: "https://example.com", new_tab: false });
-      await consumer.invoke("/session", "navigate", { url: "https://nousresearch.com", new_tab: true });
+      await consumer.invoke("/session", "navigate", {
+        url: "https://nousresearch.com",
+        new_tab: true,
+      });
 
       const tabs = await consumer.query("/tabs", 2);
       expect(tabs.children?.length).toBe(2);
@@ -238,7 +245,11 @@ Use this for testing.
       });
       expect(historyResult.status).toBe("ok");
       const history = historyResult.data as Array<{ content: string; direction: string }>;
-      expect(history.some((message) => message.content === "hello world" && message.direction === "outbound")).toBe(true);
+      expect(
+        history.some(
+          (message) => message.content === "hello world" && message.direction === "outbound",
+        ),
+      ).toBe(true);
     } finally {
       provider.stop();
     }
@@ -308,7 +319,9 @@ Use this for testing.
 
       const downloadResult = await consumer.invoke(`/images/${imageId}`, "download", {});
       expect(downloadResult.status).toBe("ok");
-      expect((downloadResult.data as { url: string }).url).toContain("placeholder.invalid/generated/");
+      expect((downloadResult.data as { url: string }).url).toContain(
+        "placeholder.invalid/generated/",
+      );
 
       const readyAnalysis = await waitFor(async () => {
         const analyses = await consumer.query("/analyses", 2);
@@ -375,7 +388,9 @@ Use this for testing.
         maxBytes: 100,
       });
       expect(readResult.status).toBe("ok");
-      expect((readResult.data as { content: string }).content).toContain("Hello from stubbed fetch");
+      expect((readResult.data as { content: string }).content).toContain(
+        "Hello from stubbed fetch",
+      );
 
       const history = await consumer.query("/history", 2);
       expect(history.children?.length).toBe(2);

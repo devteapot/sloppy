@@ -73,7 +73,10 @@ export class BrowserProvider {
     this.historyPosition = this.history.length - 1;
   }
 
-  private navigate(url: string, options: { new_tab?: boolean } = {}): { url: string; title: string; status: number } {
+  private navigate(
+    url: string,
+    options: { new_tab?: boolean } = {},
+  ): { url: string; title: string; status: number } {
     const title = titleFromUrl(url);
     this.navigationCount++;
 
@@ -326,15 +329,11 @@ export class BrowserProvider {
           description: "Navigate to the next page in history.",
           estimate: "slow",
         }),
-        go_to: action(
-          { step: "number" },
-          async ({ step }) => this.goTo(step),
-          {
-            label: "Go To Step",
-            description: "Jump to a specific navigation history step.",
-            estimate: "slow",
-          },
-        ),
+        go_to: action({ step: "number" }, async ({ step }) => this.goTo(step), {
+          label: "Go To Step",
+          description: "Jump to a specific navigation history step.",
+          estimate: "slow",
+        }),
       },
       items,
     };

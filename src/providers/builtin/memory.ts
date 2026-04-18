@@ -1,4 +1,3 @@
-import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
@@ -42,10 +41,7 @@ function clampWeight(w: number): number {
 }
 
 function fuzzyScore(memory: MemoryItem, query: string): number {
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return 1;
   const haystack = `${memory.content} ${memory.tags.join(" ")}`.toLowerCase();
   const matched = terms.filter((t) => haystack.includes(t)).length;
@@ -65,7 +61,11 @@ export class MemoryProvider {
   private defaultWeight: number;
   private compactThreshold: number;
 
-  constructor(options: { maxMemories?: number; defaultWeight?: number; compactThreshold?: number }) {
+  constructor(options: {
+    maxMemories?: number;
+    defaultWeight?: number;
+    compactThreshold?: number;
+  }) {
     this.maxMemories = options.maxMemories ?? 500;
     this.defaultWeight = options.defaultWeight ?? 0.5;
     this.compactThreshold = options.compactThreshold ?? 0.3;
@@ -199,14 +199,11 @@ export class MemoryProvider {
             estimate: "instant",
           },
         ),
-        compact: action(
-          async () => this.compact(),
-          {
-            label: "Compact",
-            description: "Merge similar low-weight memories to reduce bloat.",
-            estimate: "fast",
-          },
-        ),
+        compact: action(async () => this.compact(), {
+          label: "Compact",
+          description: "Merge similar low-weight memories to reduce bloat.",
+          estimate: "fast",
+        }),
       },
       meta: {
         focus: true,
@@ -259,15 +256,12 @@ export class MemoryProvider {
               estimate: "instant",
             },
           ),
-          delete_memory: action(
-            async () => this.deleteMemory(memory.id),
-            {
-              label: "Delete Memory",
-              description: "Permanently remove this memory.",
-              dangerous: true,
-              estimate: "instant",
-            },
-          ),
+          delete_memory: action(async () => this.deleteMemory(memory.id), {
+            label: "Delete Memory",
+            description: "Permanently remove this memory.",
+            dangerous: true,
+            estimate: "instant",
+          }),
         },
       }));
 
@@ -299,15 +293,12 @@ export class MemoryProvider {
         },
         summary: `Tag "${tag}" — ${count} ${count === 1 ? "memory" : "memories"}`,
         actions: {
-          search_by_tag: action(
-            async () => this.searchMemories("", [tag], 50),
-            {
-              label: "Search by Tag",
-              description: `Return all memories tagged "${tag}".`,
-              idempotent: true,
-              estimate: "fast",
-            },
-          ),
+          search_by_tag: action(async () => this.searchMemories("", [tag], 50), {
+            label: "Search by Tag",
+            description: `Return all memories tagged "${tag}".`,
+            idempotent: true,
+            estimate: "fast",
+          }),
         },
       }));
 
@@ -321,12 +312,10 @@ export class MemoryProvider {
     };
   }
 
-  private addMemory(params: {
-    content: string;
-    tags: string[];
-    weight: number;
-    ttl?: string;
-  }): { id: string; created_at: string } {
+  private addMemory(params: { content: string; tags: string[]; weight: number; ttl?: string }): {
+    id: string;
+    created_at: string;
+  } {
     const created_at = now();
     const memory: MemoryItem = {
       id: buildMemoryId(),
@@ -390,13 +379,11 @@ export class MemoryProvider {
         .filter(({ score }) => score > 0)
         .sort((a, b) => b.score - a.score)
         .slice(0, limit)
-        .map(({ memory, score }) =>
-          Object.assign({}, memory, { score }) as SearchResult,
-        );
+        .map(({ memory, score }) => Object.assign({}, memory, { score }) as SearchResult);
     } else {
-      candidates = candidates.slice(0, limit).map(
-        (memory) => Object.assign({}, memory, { score: 1 }) as SearchResult,
-      );
+      candidates = candidates
+        .slice(0, limit)
+        .map((memory) => Object.assign({}, memory, { score: 1 }) as SearchResult);
     }
 
     return candidates as SearchResult[];

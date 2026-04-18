@@ -48,7 +48,10 @@ export class MessagingProvider {
     return [...this.channels.values()];
   }
 
-  private addChannel(name: string, transport: string): { id: string; name: string; transport: string } {
+  private addChannel(
+    name: string,
+    transport: string,
+  ): { id: string; name: string; transport: string } {
     const id = crypto.randomUUID();
     const channel: Channel = { id, name, transport, messages: [], unread_count: 0 };
     this.channels.set(id, channel);
@@ -56,7 +59,10 @@ export class MessagingProvider {
     return { id, name, transport };
   }
 
-  private sendMessage(channelId: string, message: string): { id: string; channel_id: string; sent_at: string } {
+  private sendMessage(
+    channelId: string,
+    message: string,
+  ): { id: string; channel_id: string; sent_at: string } {
     const channel = this.channels.get(channelId);
     if (!channel) {
       throw new Error(`Unknown channel: ${channelId}`);

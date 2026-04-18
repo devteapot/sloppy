@@ -55,7 +55,7 @@ function matchCronField(field: string, value: number, min: number, max: number):
 
   if (field.startsWith("*/")) {
     const step = parseInt(field.slice(2), 10);
-    return !isNaN(step) && (value - min) % step === 0;
+    return !Number.isNaN(step) && (value - min) % step === 0;
   }
 
   if (field.includes(",")) {
@@ -292,25 +292,17 @@ export class CronProvider {
             estimate: "instant",
           },
         ),
-        list_jobs: action(
-          {},
-          () => this.listJobs(),
-          {
-            label: "List Jobs",
-            description: "Return all cron jobs with full details.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
-        clear_expired: action(
-          {},
-          () => this.clearExpired(),
-          {
-            label: "Clear Expired",
-            description: "Remove all completed and errored jobs.",
-            estimate: "instant",
-          },
-        ),
+        list_jobs: action({}, () => this.listJobs(), {
+          label: "List Jobs",
+          description: "Return all cron jobs with full details.",
+          idempotent: true,
+          estimate: "instant",
+        }),
+        clear_expired: action({}, () => this.clearExpired(), {
+          label: "Clear Expired",
+          description: "Remove all completed and errored jobs.",
+          estimate: "instant",
+        }),
       },
       meta: {
         focus: true,
@@ -334,31 +326,22 @@ export class CronProvider {
         error_preview: job.error ? truncatePreview(job.error) : null,
       },
       actions: {
-        run_now: action(
-          async () => this.runNow(job.id),
-          {
-            label: "Run Now",
-            description: "Execute this job immediately, outside its schedule.",
-            estimate: "instant",
-          },
-        ),
-        toggle: action(
-          async () => this.toggleJob(job.id),
-          {
-            label: job.disabled ? "Enable" : "Disable",
-            description: "Enable or disable this job without deleting it.",
-            estimate: "instant",
-          },
-        ),
-        delete: action(
-          async () => this.deleteJob(job.id),
-          {
-            label: "Delete Job",
-            description: "Permanently remove this cron job.",
-            dangerous: true,
-            estimate: "instant",
-          },
-        ),
+        run_now: action(async () => this.runNow(job.id), {
+          label: "Run Now",
+          description: "Execute this job immediately, outside its schedule.",
+          estimate: "instant",
+        }),
+        toggle: action(async () => this.toggleJob(job.id), {
+          label: job.disabled ? "Enable" : "Disable",
+          description: "Enable or disable this job without deleting it.",
+          estimate: "instant",
+        }),
+        delete: action(async () => this.deleteJob(job.id), {
+          label: "Delete Job",
+          description: "Permanently remove this cron job.",
+          dangerous: true,
+          estimate: "instant",
+        }),
       },
       meta: {
         salience: job.status === "errored" ? 1 : job.status === "running" ? 0.9 : 0.6,

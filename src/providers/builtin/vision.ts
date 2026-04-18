@@ -195,7 +195,8 @@ export class VisionProvider {
             this.generateImage(prompt, width as number | undefined, height as number | undefined),
           {
             label: "Generate Image",
-            description: "Create an image from a text prompt. Returns immediately; poll /images for status.",
+            description:
+              "Create an image from a text prompt. Returns immediately; poll /images for status.",
             estimate: "slow",
           },
         ),
@@ -209,7 +210,8 @@ export class VisionProvider {
           async ({ source }) => this.analyzeImage(source as string),
           {
             label: "Analyze Image",
-            description: "Submit an image for analysis. Returns immediately; poll /analyses for results.",
+            description:
+              "Submit an image for analysis. Returns immediately; poll /analyses for results.",
             estimate: "slow",
           },
         ),
@@ -254,19 +256,17 @@ export class VisionProvider {
               ),
             }
           : {}),
-        delete: action(
-          async () => this.deleteImage(image.id),
-          {
-            label: "Delete Image",
-            description: "Remove this image from the cache.",
-            dangerous: true,
-            estimate: "instant",
-          },
-        ),
+        delete: action(async () => this.deleteImage(image.id), {
+          label: "Delete Image",
+          description: "Remove this image from the cache.",
+          dangerous: true,
+          estimate: "instant",
+        }),
       },
       meta: {
         salience: image.status === "generating" ? 0.9 : image.status === "error" ? 1 : 0.5,
-        urgency: image.status === "error" ? "high" : image.status === "generating" ? "medium" : "low",
+        urgency:
+          image.status === "error" ? "high" : image.status === "generating" ? "medium" : "low",
       },
     }));
 
