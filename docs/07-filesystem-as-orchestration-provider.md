@@ -4,7 +4,7 @@
 
 **Date:** 2026-04-23
 **Author:** Research agent, spawned by Hermes
-**Status:** Initial research synthesis
+**Status:** Revised synthesis (agent-as-provider layer added, CAS promoted)
 
 ---
 
@@ -13,6 +13,8 @@
 The hypothesis: **the filesystem itself can serve as the shared state layer for multi-agent orchestration**. Instead of optimistic polling, read-before-write, or a centralized message bus, agents observe file state through the existing SLOP filesystem provider's subscription/patch mechanism. When a file changes, all consumers are notified. The orchestrator always has real-time visibility into every agent's state, and every agent always has real-time visibility into the filesystem.
 
 This is not novel filesystem-as-storage; it is filesystem-as-**orchestration-protocol**.
+
+**Two complementary layers.** Durable coordination state (plans, task definitions, results, handoffs) lives in the filesystem provider — inspectable, diffable, crash-recoverable. Live agent state (current turn, pending messages, approvals, activity stream) is exposed through a per-agent **session provider** (see `docs/06-agent-session-provider.md`), so orchestrators can observe a running sub-agent without re-reading `progress.md` on every tick. The filesystem is the durable fabric; the session provider is the live surface. Both speak SLOP, both push patches, both are observed the same way.
 
 ---
 
@@ -195,7 +197,7 @@ Since multiple agents can write to the same files, we need a protocol:
 1. **Ownership model:** Each task directory is owned by one agent. No concurrent writes to the same file.
 2. **Append-only logs:** `progress.md` is append-only. Agents append, don't overwrite.
 3. **Atomic handoffs:** Handoff requests go into separate files. Responses are in separate files. No contention.
-4. **Etag-style versioning:** Each file can include a `version` or `checksum` that the provider can expose in its state tree. Writes include the expected version; mismatches return an error.
+4. **Version-guarded writes (CAS):** Every file node in the filesystem state tree carries a monotonically-increasing `version` (leveraging SLOP's existing patch `version` semantics — see `spec/core/messages.md:109`). Write and patch affordances take an `expectedVersion` parameter; the provider rejects the operation if the current version does not match. Because the consumer's `StateMirror` advances version on every inbound patch, the agent's live view is always current — it passes the version it just saw, no defensive re-read required. This is the primitive that makes shared files (e.g. `plan.json`, parent-owned indices) safe without exclusive ownership.
 
 ---
 
@@ -227,22 +229,32 @@ This is the key insight: **the orchestration state lives in the same filesystem 
 
 ### 5.2 Delegation Provider Evolution
 
-The current delegation provider is simulated. It could be evolved into a **file-backed delegation provider**:
+The current delegation provider is simulated (`src/providers/builtin/delegation.ts:1-246` — lifecycle via `setTimeout`, no real agent behind it). It evolves along **two axes simultaneously**:
+
+- **Durable axis — filesystem-backed state.** Task definitions, progress logs, results, and handoffs are files under `.sloppy/orchestration/tasks/`. This is what survives a crash and what a human can `git diff`.
+- **Live axis — session provider per sub-agent.** Each spawned sub-agent runs a real `Agent` loop and exposes its own `/session`, `/turn`, `/transcript`, `/activity`, and `/approvals` state (the same shape first-party UIs already consume — see `docs/06-agent-session-provider.md`). The orchestrator's `ConsumerHub` subscribes to the sub-agent's session provider just like any other provider.
+
+Concretely:
 
 ```
 DelegationProvider (current, simulated)
   └── agents: Map<string, DelegationAgent>
   └── spawnAgent: in-memory setTimeout simulation
 
-FilesystemDelegationProvider (file-backed, real)
-  └── agents: files under .sloppy/orchestration/tasks/
-  └── spawnAgent: writes definition.json, triggers filesystem patch
-  └── monitor: subscribes to task directory changes
-  └── cancel: writes cancel signal to task directory
-  └── getResult: reads result.md from task directory
+DelegationProvider (proposed, real)
+  ├── Durable layer (filesystem):
+  │     spawnAgent    → writes tasks/{id}/definition.json (patch pushed)
+  │     cancel        → writes tasks/{id}/cancel signal
+  │     getResult     → reads tasks/{id}/result.md
+  │     recovery      → on restart, re-hydrates from tasks/ directory
+  └── Live layer (session providers):
+        each sub-agent registers its own session provider in the hub
+        orchestrator observes /session/turn, /activity, /approvals live
+        send_message   → queues a turn on the sub-agent's session
+        (no polling: status changes arrive as patches)
 ```
 
-This eliminates the simulation entirely. Agent state is durable, inspectable, and observable.
+The two layers serve different questions: **"what is this agent doing right now?"** is answered by the session provider; **"what has this agent produced, and how do we resume if it crashed?"** is answered by the filesystem. Neither replaces the other. The simulation is eliminated on both axes.
 
 ### 5.3 Subscription Strategy
 
@@ -270,9 +282,12 @@ With filesystem-as-provider: the orchestrator's filesystem subscription receives
 
 ### 6.2 Read-Before-Write Prevention
 
-Current problem: an orchestrator writes a task, then reads the same task to verify -- wasting tokens on redundant reads.
+Current problem has two shapes, and the deeper one is the cross-agent case:
 
-With filesystem-as-provider: the orchestrator writes the task file, receives a patch confirming the write, and its next context snapshot includes the new state. No separate read needed.
+- *Self-write verification (minor):* an orchestrator writes a task, then reads it back to confirm — wasted tokens. The inbound patch that follows the write makes the reread unnecessary; the next context snapshot already reflects the new state.
+- *Cross-agent staleness (major):* Agent A wants to modify a file that Agent B (or the orchestrator) may have just touched. Today the safe move is a defensive re-read before writing. With live subscriptions plus a per-file `version` field, Agent A's `StateMirror` holds the current version at all times. A write via `write(path, content, expectedVersion: current)` either succeeds against the version it actually saw, or returns a conflict it can react to — never silently overwrites. The re-read collapses into the subscription that was already open.
+
+The subscription + versioned write is what eliminates read-before-write as a *discipline*. Ownership conventions (§4.4) reduce how often contention happens; CAS makes the remaining cases correct.
 
 ### 6.3 Deterministic State Observability
 
@@ -313,33 +328,40 @@ The filesystem approach is unique because:
 ### Phase 1: Orchestration File Schema
 Define the file structure and format for orchestration state under `/workspace/.sloppy/orchestration/`. Implement minimal types and validation.
 
-### Phase 2: Extended Filesystem Provider
-Extend the filesystem provider to expose `/orchestration` as a first-class collection alongside `/workspace`. Subscriptions to this path push real-time updates.
+### Phase 2: Extended Filesystem Provider with CAS
+Extend the filesystem provider to expose `/orchestration` as a first-class collection alongside `/workspace`, and add a `version` field + `expectedVersion` write/patch parameter to every file node. CAS moves from "later safety net" to the primitive that makes the rest of the phases safe — shared files like `plan.json` need it as soon as more than one writer exists. Subscriptions to this path push real-time updates carrying the version.
 
-### Phase 3: File-Backed Delegation Provider
-Replace the simulated delegation provider with a file-backed implementation. Agent lifecycle maps to file operations. Results are read from files.
+### Phase 3: Real Sub-Agent Delegation
+Replace the simulated delegation provider with a real implementation on both axes:
+- Durable: agent lifecycle maps to files under `tasks/{id}/`.
+- Live: each spawned sub-agent runs a real `Agent` loop and registers its session provider in the orchestrator's `ConsumerHub`.
 
 ### Phase 4: Orchestrator Agent Prompt
 Write the orchestrator prompt that teaches the agent to:
 - Decompose tasks into file-based task definitions
-- Observe task completion via patches (not polling)
+- Observe sub-agent progress via session-provider patches (live) and task-file patches (durable) — not polling
 - Synthesize results from file outputs
 - Handle handoffs between agents via the handoff directory
 
 ### Phase 5: Handoff Protocol
-Implement cross-agent communication via the handoff directory. Agent A can request data from Agent B's output directory. Responses are written as separate files.
+Implement cross-agent communication via the handoff directory. Agent A can request data from Agent B's output directory. Responses are written as separate files. Parent-owned index files (e.g. `handoffs/index.json`) use CAS from Phase 2.
 
-### Phase 6: Concurrency Control
-Implement file locking/version checking to prevent race conditions. Add conflict resolution strategies for parallel writes.
+### Phase 6: Approval Routing Across Boundaries
+Forward `waiting_approval` states from a sub-agent's session provider up to the orchestrator's approvals collection, and propagate the decision back down. Preserve the approver identity and audit trail across the boundary.
+
+### Phase 7: Scale Controls
+Salience filtering and depth caps for orchestrators watching many sub-agents (see `spec/extensions/scaling.md`). Content references for large blobs (file contents, images, long transcripts) so subscriptions don't inline them.
 
 ---
 
 ## 9. Risks and Tradeoffs
 
 ### Risks
-1. **File I/O latency:** Disk reads/writes are slower than in-memory operations. Mitigated by the fact that most agent coordination happens at the iteration level, not the sub-iteration level.
-2. **File locking:** Concurrent writes to the same file need careful handling. The ownership model (one agent per task directory) avoids this.
+1. **File I/O latency:** Disk reads/writes are slower than in-memory operations. Mitigated by the fact that most agent coordination happens at the iteration level, not the sub-iteration level. Live sub-turn signals (tool calls in progress, token streaming) go through the session provider, not the filesystem, so the disk is not on the hot path.
+2. **File locking:** Concurrent writes to the same file need careful handling. The ownership model (one agent per task directory) avoids this for task-local state; CAS covers the residual shared-file case (plan.json, index files).
 3. **Security:** The orchestrator writes files the LLM can read. Malicious content in orchestration files could poison the context. Mitigated by workspace-root containment (already enforced by the filesystem provider).
+4. **Subscription fan-out:** An orchestrator watching N sub-agents × M patches/sec can saturate its context budget and throughput. Mitigated by salience filtering, depth-0 overviews for the sub-agent collection, and detail subscriptions only on the focal agent.
+5. **Scratchpad leakage:** A sub-agent's chain-of-thought should not spill into the orchestrator's subscription tree. Keep full scratchpad behind an affordance; expose only a truncated `scratchpad_preview` property as state.
 
 ### Tradeoffs
 1. **Durability vs. speed:** File-backed state is durable but slower. For a system where coordination happens between turns (not within a turn), the latency impact is negligible.
@@ -381,4 +403,4 @@ The filesystem-as-orchestration-provider concept is viable because:
 4. It extends naturally from the existing delegation provider and filesystem provider without requiring new protocols or transports
 5. It aligns perfectly with SLOP's state-first design philosophy
 
-The next step is implementation, starting with Phase 1 (file schema) and Phase 2 (extended filesystem provider).
+The next step is implementation, starting with Phase 1 (file schema) and Phase 2 (extended filesystem provider with CAS) — treating version-guarded writes as a foundational primitive rather than a late-phase safety net, and layering the live session-provider axis on top in Phase 3.
