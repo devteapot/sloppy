@@ -358,6 +358,146 @@ describe("Agent orchestration (sub-agent federation)", () => {
     }
   });
 
+  test("SubAgentRunner drives a task to completed with a stub LLM + writes result.md", async () => {
+    const { mkdtemp, rm, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
+
+    const readyState = {
+      status: "ready" as const,
+      message: "ready",
+      activeProfileId: "stub",
+      selectedProvider: "openai" as const,
+      selectedModel: "stub-model",
+      secureStoreKind: "memory" as const,
+      secureStoreStatus: "ready" as const,
+      profiles: [
+        {
+          id: "stub",
+          label: "Stub",
+          provider: "openai" as const,
+          model: "stub-model",
+          apiKeyEnv: "STUB_KEY",
+          baseUrl: undefined,
+          isDefault: true,
+          hasKey: true,
+          keySource: "env" as const,
+          ready: true,
+          managed: true,
+          origin: "managed" as const,
+          canDeleteProfile: false,
+          canDeleteApiKey: false,
+        },
+      ],
+    };
+    const stubLlmProfileManager = {
+      ensureReady: async () => readyState,
+      getState: async () => readyState,
+      getConfig: () => TEST_CONFIG,
+      updateConfig: () => undefined,
+      createAdapter: async () => ({
+        async chat() {
+          throw new Error("stubLlmProfileManager.createAdapter should not be reached");
+        },
+      }),
+    } as unknown as import("../src/llm/profile-manager").LlmProfileManager;
+
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-orch-happy-"));
+    try {
+      const orchestration = new OrchestrationProvider({
+        workspaceRoot,
+        sessionId: "sess-happy",
+      });
+      const hub = new ConsumerHub([], TEST_CONFIG);
+      await hub.connect();
+      await hub.addProvider({
+        id: "orchestration",
+        name: "Orchestration",
+        kind: "builtin",
+        transport: new InProcessTransport(orchestration.server),
+        transportLabel: "in-process",
+        stop: () => orchestration.stop(),
+      });
+
+      // Custom agentFactory bypasses real Agent/LLM — returns a canned response.
+      const cannedResponse = "Analyzed requirements: needs X, Y, Z. All complete.";
+
+      const runner = new SubAgentRunner({
+        id: "happy1",
+        name: "analyzer",
+        goal: "analyze requirements",
+        parentHub: hub,
+        parentConfig: TEST_CONFIG,
+        orchestrationProviderId: "orchestration",
+        llmProfileManager: stubLlmProfileManager,
+        agentFactory: (callbacks) => ({
+          async start() {},
+          async chat(_userMessage: string) {
+            callbacks.onText?.(cannedResponse);
+            return { status: "completed" as const, response: cannedResponse };
+          },
+          async resumeWithToolResult(): Promise<never> {
+            throw new Error("not used in happy-path test");
+          },
+          async invokeProvider(): Promise<never> {
+            throw new Error("not used in happy-path test");
+          },
+          cancelActiveTurn() {
+            return false;
+          },
+          clearPendingApproval() {},
+          shutdown() {},
+        }),
+      });
+
+      await runner.start();
+
+      const consumer = new SlopConsumer(new InProcessTransport(orchestration.server));
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      try {
+        let completedTaskId: string | null = null;
+        for (let i = 0; i < 100; i++) {
+          const tasks = await consumer.query("/tasks", 2);
+          const task = tasks.children?.[0];
+          if (task?.properties?.status === "completed") {
+            completedTaskId = String(task.id);
+            expect(task.properties).toMatchObject({
+              name: "analyzer",
+              goal: "analyze requirements",
+              status: "completed",
+            });
+            break;
+          }
+          await Bun.sleep(20);
+        }
+        expect(completedTaskId).not.toBeNull();
+
+        const result = await consumer.invoke(`/tasks/${completedTaskId}`, "get_result", {});
+        expect((result.data as { result: string }).result).toBe(cannedResponse);
+
+        const resultFile = join(
+          workspaceRoot,
+          ".sloppy",
+          "orchestration",
+          "tasks",
+          completedTaskId ?? "",
+          "result.md",
+        );
+        expect(await readFile(resultFile, "utf8")).toBe(cannedResponse);
+      } finally {
+        consumer.disconnect();
+        runner.shutdown();
+        hub.shutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("cancel tears down the child session provider", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
     await hub.connect();

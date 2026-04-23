@@ -1,4 +1,5 @@
 import type { SloppyConfig } from "../config/schema";
+import type { LlmProfileManager } from "../llm/profile-manager";
 import { InProcessTransport } from "../providers/builtin/in-process";
 import type { RegisteredProvider } from "../providers/registry";
 import { AgentSessionProvider } from "../session/provider";
@@ -25,6 +26,7 @@ export interface SubAgentRunnerOptions {
   parentHub: ConsumerHub;
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
+  llmProfileManager?: LlmProfileManager;
   providerIdPrefix?: string;
   orchestrationProviderId?: string;
 }
@@ -48,6 +50,7 @@ export class SubAgentRunner {
   private registered = false;
   private orchestrationProviderId?: string;
   private orchestrationTaskId?: string;
+  private sawTurnInFlight = false;
 
   constructor(options: SubAgentRunnerOptions) {
     this.id = options.id;
@@ -63,6 +66,7 @@ export class SubAgentRunner {
       sessionId: this.sessionProviderId,
       title: options.name,
       agentFactory: options.agentFactory,
+      llmProfileManager: options.llmProfileManager,
     });
 
     this.provider = new AgentSessionProvider(this.runtime, {
@@ -110,9 +114,12 @@ export class SubAgentRunner {
 
     try {
       await this.runtime.start();
-      await this.runtime.sendMessage(this.goal);
+      // Record the orchestration-level start BEFORE kicking off the turn so
+      // that a fast-completing child doesn't race ahead of the task-level
+      // `start` affordance (which gates `complete`).
       await this.recordTaskTransition("start");
       this.transition("running");
+      await this.runtime.sendMessage(this.goal);
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error);
       this.completedAt = new Date().toISOString();
@@ -171,6 +178,7 @@ export class SubAgentRunner {
     const turnState = snapshot.turn.state;
 
     if (turnState === "running" || turnState === "waiting_approval") {
+      this.sawTurnInFlight = true;
       if (this.status === "pending") {
         this.transition("running");
       }
@@ -186,7 +194,11 @@ export class SubAgentRunner {
       return;
     }
 
-    if (turnState === "idle" && (this.status === "running" || this.status === "pending")) {
+    if (
+      turnState === "idle" &&
+      this.sawTurnInFlight &&
+      (this.status === "running" || this.status === "pending")
+    ) {
       const transcript = snapshot.transcript;
       const lastAssistant = [...transcript]
         .reverse()
