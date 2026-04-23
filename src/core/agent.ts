@@ -132,6 +132,10 @@ export class Agent {
     this.hub = hub;
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
+    for (const provider of providers) {
+      provider.onHubReady?.(hub, this.config);
+    }
+
     for (const view of hub.getProviderViews()) {
       await this.registerProviderMirrors(view.providerId);
     }

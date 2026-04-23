@@ -2,6 +2,33 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+export type DelegationAgentSpawn = {
+  id: string;
+  name: string;
+  goal: string;
+  model?: string;
+};
+
+export type DelegationAgentUpdate = {
+  status: AgentStatus;
+  result?: string;
+  error?: string;
+  session_provider_id?: string;
+  completed_at?: string;
+};
+
+export interface DelegationRunner {
+  start(): Promise<void>;
+  cancel(): Promise<void>;
+}
+
+export type DelegationRunnerFactory = (
+  spawn: DelegationAgentSpawn,
+  callbacks: {
+    onUpdate: (update: DelegationAgentUpdate) => void;
+  },
+) => DelegationRunner;
+
 type DelegationAgent = {
   id: string;
   name: string;
@@ -10,8 +37,10 @@ type DelegationAgent = {
   model?: string;
   result?: string;
   error?: string;
+  session_provider_id?: string;
   created_at: string;
   completed_at?: string;
+  runner?: DelegationRunner;
 };
 
 function buildAgentId(): string {
@@ -25,13 +54,51 @@ function resultPreview(result: string, maxChars = 200): string {
   return `${result.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
+function createSimulatedRunner(
+  spawn: DelegationAgentSpawn,
+  callbacks: { onUpdate: (update: DelegationAgentUpdate) => void },
+): DelegationRunner {
+  let cancelled = false;
+  let runningTimeout: ReturnType<typeof setTimeout> | null = null;
+  let completeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  return {
+    async start() {
+      runningTimeout = setTimeout(() => {
+        if (cancelled) return;
+        callbacks.onUpdate({ status: "running" });
+        completeTimeout = setTimeout(() => {
+          if (cancelled) return;
+          callbacks.onUpdate({
+            status: "completed",
+            result: `Agent "${spawn.name}" completed goal: ${spawn.goal}`,
+            completed_at: new Date().toISOString(),
+          });
+        }, 3000);
+      }, 500);
+    },
+    async cancel() {
+      cancelled = true;
+      if (runningTimeout) clearTimeout(runningTimeout);
+      if (completeTimeout) clearTimeout(completeTimeout);
+    },
+  };
+}
+
 export class DelegationProvider {
   readonly server: SlopServer;
   private maxAgents: number;
   private agents = new Map<string, DelegationAgent>();
+  private runnerFactory: DelegationRunnerFactory;
 
-  constructor(options: { maxAgents?: number } = {}) {
+  constructor(
+    options: {
+      maxAgents?: number;
+      runnerFactory?: DelegationRunnerFactory;
+    } = {},
+  ) {
     this.maxAgents = options.maxAgents ?? 10;
+    this.runnerFactory = options.runnerFactory ?? createSimulatedRunner;
 
     this.server = createSlopServer({
       id: "delegation",
@@ -46,11 +113,15 @@ export class DelegationProvider {
     this.server.stop();
   }
 
+  setRunnerFactory(factory: DelegationRunnerFactory): void {
+    this.runnerFactory = factory;
+  }
+
   private spawnAgent(
     name: string,
     goal: string,
     model?: string,
-  ): { id: string; status: AgentStatus; created_at: string } {
+  ): { id: string; status: AgentStatus; created_at: string; session_provider_id?: string } {
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
     ).length;
@@ -63,30 +134,46 @@ export class DelegationProvider {
     const created_at = new Date().toISOString();
     const agent: DelegationAgent = { id, name, goal, status: "pending", model, created_at };
     this.agents.set(id, agent);
+
+    const runner = this.runnerFactory(
+      { id, name, goal, model },
+      {
+        onUpdate: (update) => {
+          const current = this.agents.get(id);
+          if (!current || current.status === "cancelled") {
+            return;
+          }
+          if (update.status) current.status = update.status;
+          if (update.result !== undefined) current.result = update.result;
+          if (update.error !== undefined) current.error = update.error;
+          if (update.session_provider_id !== undefined) {
+            current.session_provider_id = update.session_provider_id;
+          }
+          if (update.completed_at !== undefined) current.completed_at = update.completed_at;
+          this.server.refresh();
+        },
+      },
+    );
+    agent.runner = runner;
     this.server.refresh();
 
-    // Simulate execution: pending → running → completed
-    setTimeout(() => {
-      const a = this.agents.get(id);
-      if (!a || a.status === "cancelled") {
+    void runner.start().catch((error) => {
+      const current = this.agents.get(id);
+      if (!current || current.status === "cancelled") {
         return;
       }
-      a.status = "running";
+      current.status = "failed";
+      current.error = error instanceof Error ? error.message : String(error);
+      current.completed_at = new Date().toISOString();
       this.server.refresh();
+    });
 
-      setTimeout(() => {
-        const a = this.agents.get(id);
-        if (!a || a.status === "cancelled") {
-          return;
-        }
-        a.status = "completed";
-        a.result = `Agent "${name}" completed goal: ${goal}`;
-        a.completed_at = new Date().toISOString();
-        this.server.refresh();
-      }, 3000);
-    }, 500);
-
-    return { id, status: agent.status, created_at };
+    return {
+      id,
+      status: agent.status,
+      created_at,
+      session_provider_id: agent.session_provider_id,
+    };
   }
 
   private monitor(agentId: string): DelegationAgent {
@@ -109,6 +196,9 @@ export class DelegationProvider {
     agent.status = "cancelled";
     agent.completed_at = new Date().toISOString();
     this.server.refresh();
+    void agent.runner?.cancel().catch(() => {
+      // best-effort teardown
+    });
     return { cancelled: true };
   }
 
@@ -190,6 +280,7 @@ export class DelegationProvider {
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
         error: agent.error,
+        session_provider_id: agent.session_provider_id,
       },
       actions: {
         monitor: action(async () => this.monitor(agent.id), {
