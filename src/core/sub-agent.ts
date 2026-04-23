@@ -30,6 +30,7 @@ export interface SubAgentRunnerOptions {
   llmProfileManager?: LlmProfileManager;
   providerIdPrefix?: string;
   orchestrationProviderId?: string;
+  orchestrationTaskId?: string;
 }
 
 export class SubAgentRunner {
@@ -60,6 +61,7 @@ export class SubAgentRunner {
     this.model = options.model;
     this.parentHub = options.parentHub;
     this.orchestrationProviderId = options.orchestrationProviderId;
+    this.orchestrationTaskId = options.orchestrationTaskId;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
     // Sub-agents do leaf work. Strip orchestrator-mode and the orchestration/
@@ -258,6 +260,15 @@ export class SubAgentRunner {
 
   private async createOrchestrationTask(): Promise<void> {
     if (!this.orchestrationProviderId) return;
+    if (this.orchestrationTaskId) {
+      // Orchestrator pre-created the task via /orchestration.create_task and
+      // handed us the id; attach to it instead of duplicating.
+      debug("sub-agent", "orchestration_task_attached", {
+        id: this.id,
+        orchestrationTaskId: this.orchestrationTaskId,
+      });
+      return;
+    }
     try {
       const result = await this.parentHub.invoke(
         this.orchestrationProviderId,

@@ -198,6 +198,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
             parentHub: hub,
             parentConfig: hubConfig,
             orchestrationProviderId,
+            orchestrationTaskId: spawn.orchestrationTaskId,
           });
           const unsubscribe = runner.onChange((event) => {
             callbacks.onUpdate({

@@ -10,6 +10,7 @@ export type DelegationAgentSpawn = {
   name: string;
   goal: string;
   model?: string;
+  orchestrationTaskId?: string;
 };
 
 export type DelegationAgentUpdate = {
@@ -272,6 +273,7 @@ export class DelegationProvider {
     name: string,
     goal: string,
     model?: string,
+    orchestrationTaskId?: string,
   ): { id: string; status: AgentStatus; created_at: string; session_provider_id?: string } {
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
@@ -293,7 +295,7 @@ export class DelegationProvider {
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, model },
+      { id, name, goal, model, orchestrationTaskId },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -417,8 +419,19 @@ export class DelegationProvider {
               type: "string",
               description: "Optional model identifier to run the agent with.",
             },
+            task_id: {
+              type: "string",
+              description:
+                "Optional orchestration task id (e.g. task-abcd1234) to attach to. If set, the sub-agent updates that task's lifecycle instead of creating a new one. Use this to execute a task you already planned via /orchestration.create_task.",
+            },
           },
-          async ({ name, goal, model }) => this.spawnAgent(name, goal, model),
+          async ({ name, goal, model, task_id }) =>
+            this.spawnAgent(
+              name as string,
+              goal as string,
+              typeof model === "string" ? model : undefined,
+              typeof task_id === "string" ? task_id : undefined,
+            ),
           {
             label: "Spawn Agent",
             description: "Create and launch a new subagent to accomplish a delegated goal.",
