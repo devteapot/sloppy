@@ -180,6 +180,60 @@ const CAS_COLLAB_GOAL = [
   "When both tasks are completed, call complete_plan.",
 ].join(" ");
 
+const SURGICAL_EDIT_SEED = `// src/config.ts — runtime configuration
+// Do not modify sections marked AUTO-GEN; they are regenerated on every build.
+
+import type { AppConfig } from "./types";
+
+/**
+ * Tunables for the request pipeline. Bump concurrency carefully.
+ */
+export const DEFAULT_TIMEOUT_MS = 5000;
+export const RETRY_ATTEMPTS = 3;
+export const MAX_CONCURRENT = 4;
+export const CACHE_SIZE = 1024;
+
+// AUTO-GEN START — build metadata, do not edit by hand
+export const BUILD_ID = "b-01HXZ1ABCDEF";
+export const GIT_SHA = "abc1234def5678";
+export const BUILT_AT = "2026-04-23T00:00:00.000Z";
+// AUTO-GEN END
+
+/** Runtime configuration consumed by the server bootstrap. */
+export const config: AppConfig = {
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+  retries: RETRY_ATTEMPTS,
+  concurrent: MAX_CONCURRENT,
+  cacheSize: CACHE_SIZE,
+  debug: false,
+  flags: {
+    useNewScheduler: false,
+    emitTraceSpans: true,
+  },
+};
+`;
+
+const SURGICAL_EDIT_GOAL = [
+  "The workspace already contains a file `config.ts`. Delegate a single-task plan to a sub-agent.",
+  "Task: change ONLY the value of `MAX_CONCURRENT` from 4 to 16 in `config.ts`. Every other byte of the file must stay identical — preserve every comment, every blank line, every other constant, the AUTO-GEN block, the config object literal, everything.",
+  "The sub-agent should read the file first (so it sees the current content and version), then apply the change. Use the filesystem affordances available to it. Remember to pass expected_version on any mutating call so concurrent edits would be detected (even though this plan has only one writer).",
+  "When the task is completed, complete the plan.",
+].join(" ");
+
+const IMPLEMENT_GOAL = [
+  "Your job: delegate to sub-agents to build a small TypeScript calculator module and its tests, under the workspace root.",
+  "Create a plan and two tasks:",
+  "Task 'calc': Write `calc.ts` under the workspace root. It MUST export exactly these four functions and nothing else:",
+  "  `export function add(a: number, b: number): number`  // returns a + b",
+  "  `export function sub(a: number, b: number): number`  // returns a - b",
+  "  `export function mul(a: number, b: number): number`  // returns a * b",
+  "  `export function div(a: number, b: number): number | null`  // returns a / b, or null when b === 0",
+  "Task 'tests': Write `calc.test.ts` under the workspace root. It MUST import from `./calc` and use `bun:test` (`import { describe, expect, test } from 'bun:test'`). Include at least:",
+  "  one add case, one sub case, one mul case, one div case with a non-zero divisor, and one div case with divisor 0 that asserts the result is null.",
+  "  This task depends on 'calc' — pass the task id returned by create_task('calc') in depends_on.",
+  "Protocol reminders: use task ids (e.g. 'task-abcd1234') in depends_on, not task names. Spawn each sub-agent via spawn_agent({ task_id, name, goal }) AFTER its dependencies are completed. Complete the plan when both tasks are completed.",
+].join(" ");
+
 const FANOUT_GOAL = [
   "Use the orchestration and delegation providers to complete this goal end-to-end.",
   "Create exactly five files under the workspace root:",
@@ -339,6 +393,134 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
       }
     },
     15 * 60_000,
+  );
+
+  test(
+    "orchestrator ships a working TS module with passing bun:test suite",
+    async () => {
+      const root = await setupWorkspace();
+      const debugLog = join(root, "debug.log");
+      const restoreStderr = redirectStderrTo(debugLog);
+
+      const config = await buildOrchestratorConfig(root);
+      await assertLlmRoutedToEnv(config);
+      const agent = new Agent({ config });
+      let passed = false;
+      try {
+        await agent.start();
+        const result = await agent.chat(IMPLEMENT_GOAL);
+        expect(result.status).toBe("completed");
+
+        const calcPath = join(root, "calc.ts");
+        const testPath = join(root, "calc.test.ts");
+        expect(existsSync(calcPath)).toBe(true);
+        expect(existsSync(testPath)).toBe(true);
+
+        const calcSource = readFileSync(calcPath, "utf8");
+        // Signature spot-checks — cheap sanity before running the real suite.
+        expect(calcSource).toMatch(/export\s+function\s+add\s*\(/);
+        expect(calcSource).toMatch(/export\s+function\s+sub\s*\(/);
+        expect(calcSource).toMatch(/export\s+function\s+mul\s*\(/);
+        expect(calcSource).toMatch(/export\s+function\s+div\s*\(/);
+
+        // External verification: run the agent-authored tests with bun.
+        const proc = Bun.spawn({
+          cmd: ["bun", "test", "calc.test.ts"],
+          cwd: root,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (exitCode !== 0) {
+          process.stderr.write(
+            `[e2e] bun test FAILED\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`,
+          );
+        }
+        expect(exitCode).toBe(0);
+
+        const plan = JSON.parse(
+          readFileSync(join(root, ".sloppy/orchestration/plan.json"), "utf8"),
+        );
+        expect(plan.status).toBe("completed");
+
+        const defs = loadTaskDefs(root);
+        expect(defs.length).toBeGreaterThanOrEqual(2);
+        expect(defs.some((d) => d.depends_on.length > 0)).toBe(true);
+        passed = true;
+      } finally {
+        agent.shutdown();
+        restoreStderr();
+        if (!passed) dumpArtifacts(root, debugLog, "e2e-implement");
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30 * 60_000,
+  );
+
+  test(
+    "surgical edit preserves surrounding content (affordance-driven tool choice)",
+    async () => {
+      const root = await setupWorkspace();
+      writeFileSync(join(root, "config.ts"), SURGICAL_EDIT_SEED, "utf8");
+      const debugLog = join(root, "debug.log");
+      const restoreStderr = redirectStderrTo(debugLog);
+
+      const config = await buildOrchestratorConfig(root);
+      await assertLlmRoutedToEnv(config);
+      const agent = new Agent({ config });
+      let passed = false;
+      try {
+        await agent.start();
+        const result = await agent.chat(SURGICAL_EDIT_GOAL);
+        expect(result.status).toBe("completed");
+
+        const configPath = join(root, "config.ts");
+        expect(existsSync(configPath)).toBe(true);
+        const after = readFileSync(configPath, "utf8");
+
+        // Core correctness: the target constant changed.
+        expect(after).toContain("export const MAX_CONCURRENT = 16;");
+        expect(after).not.toContain("export const MAX_CONCURRENT = 4;");
+
+        // Preservation: everything else that wasn't the target must be byte-identical.
+        // Compute the expected file by doing the same surgical substitution
+        // on the seed, then compare whole-file.
+        const expected = SURGICAL_EDIT_SEED.replace(
+          "export const MAX_CONCURRENT = 4;",
+          "export const MAX_CONCURRENT = 16;",
+        );
+        expect(after).toBe(expected);
+
+        // Observational: did the model pick the right affordance? Report, don't fail.
+        const logLines = existsSync(debugLog) ? readFileSync(debugLog, "utf8") : "";
+        const editCalls = (
+          logLines.match(/"toolName":"filesystem__workspace__edit"/g) ?? []
+        ).length;
+        const writeCalls = (
+          logLines.match(/"toolName":"filesystem__workspace__write"/g) ?? []
+        ).length;
+        process.stderr.write(
+          `[e2e] tool choice: edit=${editCalls} write=${writeCalls} ` +
+            `(affordance-driven steering is ${editCalls > 0 && writeCalls === 0 ? "WORKING" : "not exclusive"})\n`,
+        );
+
+        const plan = JSON.parse(
+          readFileSync(join(root, ".sloppy/orchestration/plan.json"), "utf8"),
+        );
+        expect(plan.status).toBe("completed");
+        passed = true;
+      } finally {
+        agent.shutdown();
+        restoreStderr();
+        if (!passed) dumpArtifacts(root, debugLog, "e2e-surgical-edit");
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    20 * 60_000,
   );
 });
 
