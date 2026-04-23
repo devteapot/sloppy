@@ -839,6 +839,121 @@ describe("SessionStore — listeners", () => {
     store.close();
     expect(received.at(-1)?.session.status).toBe("closed");
   });
+
+  test("onTurnChange fires when turn state changes", () => {
+    const store = createStore();
+    const events: Array<{ type: string; snapshot: AgentSessionSnapshot }> = [];
+    const unsub = store.onTurnChange((event) => {
+      events.push(event);
+    });
+
+    const turnId = store.beginTurn("hi");
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe("turn");
+    expect(events[0].snapshot.turn.state).toBe("running");
+
+    store.appendAssistantText(turnId, "x");
+    expect(events.length).toBe(2);
+    expect(events[1].type).toBe("turn");
+
+    unsub();
+    store.completeTurn(turnId, "done");
+    expect(events.length).toBe(2);
+  });
+
+  test("onTranscriptChange fires when assistant text is appended", () => {
+    const store = createStore();
+    const events: Array<{ type: string }> = [];
+    store.onTranscriptChange((event) => {
+      events.push(event);
+    });
+
+    const turnId = store.beginTurn("hi");
+    store.appendAssistantText(turnId, "hello");
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events.at(-1)?.type).toBe("transcript");
+    expect(store.getSnapshot().transcript).toHaveLength(2);
+  });
+
+  test("onActivityChange fires on tool recording", () => {
+    const store = createStore();
+    const events: Array<{ type: string }> = [];
+    store.onActivityChange((event) => {
+      events.push(event);
+    });
+
+    const turnId = store.beginTurn("hi");
+    store.recordToolStart(turnId, {
+      toolUseId: "tu-1",
+      summary: "Read file",
+    });
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events.at(-1)?.type).toBe("activity");
+    expect(store.getSnapshot().activity).toHaveLength(2);
+  });
+
+  test("onApprovalsChange fires on approval sync", () => {
+    const store = createStore();
+    const events: Array<{ type: string }> = [];
+    store.onApprovalsChange((event) => {
+      events.push(event);
+    });
+
+    const createdAt = new Date().toISOString();
+    store.syncProviderApprovals("filesystem", [
+      {
+        id: "appr-1",
+        status: "pending",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "confirm",
+        createdAt,
+      },
+    ]);
+
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe("approvals");
+    expect(store.getSnapshot().approvals).toHaveLength(1);
+  });
+
+  test("onChange backward compatible", () => {
+    const store = createStore();
+    const changeEvents: AgentSessionSnapshot[] = [];
+    store.onChange((snap) => {
+      changeEvents.push(snap);
+    });
+
+    const turnId = store.beginTurn("hi");
+    store.appendAssistantText(turnId, "x");
+    store.completeTurn(turnId, "done");
+
+    expect(changeEvents.length).toBeGreaterThanOrEqual(3);
+    // First event should have a user message
+    expect(changeEvents[0].transcript).toHaveLength(1);
+    // Last event should be complete
+    expect(changeEvents.at(-1)?.turn.state).toBe("idle");
+  });
+
+  test("unsubscribe works for granular listeners", () => {
+    const store = createStore();
+    const turnEvents: Array<{ type: string }> = [];
+    const unsub = store.onTurnChange((event) => {
+      turnEvents.push(event);
+    });
+
+    const turnId = store.beginTurn("first");
+    store.completeTurn(turnId, "done");
+    expect(turnEvents.length).toBe(2);
+
+    unsub();
+
+    const turnId2 = store.beginTurn("second");
+    store.completeTurn(turnId2, "done2");
+    expect(turnEvents.length).toBe(2);
+  });
 });
 
 describe("buildMirroredItemId", () => {
