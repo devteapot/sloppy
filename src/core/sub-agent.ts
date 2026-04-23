@@ -200,7 +200,13 @@ export class SubAgentRunner {
       }
 
       this.completedAt = new Date().toISOString();
-      void this.recordTaskCompletion(this.resultText ?? "");
+      // If the child produced no text, skip writing result.md so get_result returns null
+      // rather than an empty string indistinguishable from a failed write.
+      if (this.resultText) {
+        void this.recordTaskCompletion(this.resultText);
+      } else {
+        void this.recordTaskCompletion(null);
+      }
       this.transition("completed");
       this.teardown();
     }
@@ -240,14 +246,14 @@ export class SubAgentRunner {
     }
   }
 
-  private async recordTaskCompletion(resultText: string): Promise<void> {
+  private async recordTaskCompletion(resultText: string | null): Promise<void> {
     if (!this.orchestrationProviderId || !this.orchestrationTaskId) return;
     try {
       await this.parentHub.invoke(
         this.orchestrationProviderId,
         `/tasks/${this.orchestrationTaskId}`,
         "complete",
-        { result: resultText },
+        { result: resultText ?? "" },
       );
     } catch {
       // best-effort

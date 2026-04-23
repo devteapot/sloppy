@@ -112,6 +112,55 @@ describe("FilesystemProvider", () => {
     }
   });
 
+  test("CAS serializes concurrent writes with the same expected_version", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-race-"));
+    tempPaths.push(root);
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      await consumer.invoke("/workspace", "write", { path: "race.md", content: "v1" });
+      const read = await consumer.invoke("/workspace", "read", { path: "race.md" });
+      const version = (read.data as { version: number }).version;
+
+      const [a, b] = await Promise.all([
+        consumer.invoke("/workspace", "write", {
+          path: "race.md",
+          content: "A-wins",
+          expected_version: version,
+        }),
+        consumer.invoke("/workspace", "write", {
+          path: "race.md",
+          content: "B-wins",
+          expected_version: version,
+        }),
+      ]);
+
+      const results = [a.data, b.data] as Array<
+        { version: number; bytes: number } | { error: string; currentVersion: number }
+      >;
+      const successes = results.filter((r) => !("error" in r));
+      const conflicts = results.filter(
+        (r): r is { error: string; currentVersion: number } => "error" in r,
+      );
+      expect(successes).toHaveLength(1);
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]?.error).toBe("version_conflict");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("reads a line range without returning the whole file", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-range-"));
     tempPaths.push(root);

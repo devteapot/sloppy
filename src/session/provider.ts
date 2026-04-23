@@ -30,9 +30,7 @@ function toSnakeTurnProps(turn: TurnStateSnapshot) {
   };
 }
 
-function buildContentChildren(
-  content: TranscriptContentBlock[],
-): Record<string, NodeDescriptor> {
+function buildContentChildren(content: TranscriptContentBlock[]): Record<string, NodeDescriptor> {
   return Object.fromEntries(
     content.map((block) => {
       if (block.type === "media") {

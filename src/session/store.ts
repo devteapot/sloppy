@@ -60,9 +60,7 @@ function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
   return {
     session: {
       ...snapshot.session,
-      connectedClients: snapshot.session.connectedClients.map(
-        (client) => ({ ...client }),
-      ),
+      connectedClients: snapshot.session.connectedClients.map((client) => ({ ...client })),
     },
     llm: {
       ...snapshot.llm,
@@ -92,10 +90,7 @@ function compareApps(left: ExternalAppSnapshot, right: ExternalAppSnapshot): num
 export class SessionStore {
   private snapshot: AgentSessionSnapshot;
   private listeners = new Set<SessionStoreChangeListener>();
-  private granularListeners = new Map<
-    SessionStoreEventType,
-    Set<SessionStoreGranularListener>
-  >();
+  private granularListeners = new Map<SessionStoreEventType, Set<SessionStoreGranularListener>>();
   private activeAssistantMessageId: string | null = null;
   private activeModelActivityId: string | null = null;
   private activeApprovalActivityId: string | null = null;

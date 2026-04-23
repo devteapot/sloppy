@@ -23,8 +23,8 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-    maxToolResultSize: 4096,
   },
+  maxToolResultSize: 4096,
   providers: {
     builtin: {
       terminal: false,
@@ -36,6 +36,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
+      orchestration: false,
       vision: false,
     },
     discovery: { enabled: false, paths: [] },
@@ -54,6 +55,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 10 },
+    orchestration: { progressTailMaxChars: 2048 },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };
@@ -308,6 +310,14 @@ describe("Agent orchestration (sub-agent federation)", () => {
       });
       const { id: agentId } = spawnResult.data as { id: string };
       await Bun.sleep(20); // let onUpdate settle
+
+      const listed = await consumer.invoke(`/agents/${agentId}`, "list_approvals", {});
+      expect(listed.status).toBe("ok");
+      const listedApprovals = (listed.data as { approvals: Array<{ id: string; status?: string }> })
+        .approvals;
+      expect(listedApprovals).toHaveLength(1);
+      expect(listedApprovals[0]?.id).toBe("app-1");
+      expect(listedApprovals[0]?.status).toBe("pending");
 
       const approveResult = await consumer.invoke(`/agents/${agentId}`, "approve_child_approval", {
         approval_id: "app-1",

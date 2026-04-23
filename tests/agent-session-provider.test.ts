@@ -40,6 +40,7 @@ const TEST_CONFIG: SloppyConfig = {
     historyTurns: 8,
     toolResultMaxChars: 16000,
   },
+  maxToolResultSize: 4096,
   providers: {
     builtin: {
       terminal: false,
@@ -51,6 +52,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
+      orchestration: false,
       vision: false,
     },
     discovery: {
@@ -92,6 +94,9 @@ const TEST_CONFIG: SloppyConfig = {
     },
     delegation: {
       maxAgents: 10,
+    },
+    orchestration: {
+      progressTailMaxChars: 2048,
     },
     vision: {
       maxImages: 50,

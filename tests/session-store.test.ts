@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
-
-import { buildMirroredItemId, SessionStore } from "../src/session/store";
 import { SessionService } from "../src/session/service";
+import { buildMirroredItemId, SessionStore } from "../src/session/store";
 import type {
   AgentSessionSnapshot,
   ApprovalItem,
@@ -104,7 +103,11 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(userMessage.state).toBe("complete");
     expect(userMessage.turnId).toBe(turnId);
     expect(userMessage.author).toBe("user");
-    expect(userMessage.content[0]?.type === "text" ? userMessage.content[0]?.text : userMessage.content[0]?.summary ?? "").toBe("Hello there");
+    expect(
+      userMessage.content[0]?.type === "text"
+        ? userMessage.content[0]?.text
+        : (userMessage.content[0]?.summary ?? ""),
+    ).toBe("Hello there");
     expect(userMessage.content[0]?.mime).toBe("text/plain");
 
     expect(snapshot.turn.turnId).toBe(turnId);
@@ -652,7 +655,8 @@ describe("SessionStore — tasks and apps", () => {
         status: "completed",
         provider: "delegation",
         providerTaskId: "task-1",
-        startedAt: before!.startedAt,        updatedAt: new Date().toISOString(),
+        startedAt: before!.startedAt,
+        updatedAt: new Date().toISOString(),
         message: "done",
       } satisfies SessionTask,
     ]);
@@ -827,7 +831,10 @@ describe("SessionStore — listeners", () => {
     unsub();
     store.beginTurn("again");
     const after = events.length;
-    const currentTurn = store.getSnapshot().turn;    expect(currentTurn.turnId).toBeDefined();    store.appendAssistantText(currentTurn.turnId!, "y");    expect(events.length).toBe(after);
+    const currentTurn = store.getSnapshot().turn;
+    expect(currentTurn.turnId).toBeDefined();
+    store.appendAssistantText(currentTurn.turnId!, "y");
+    expect(events.length).toBe(after);
   });
 
   test("close marks session closed and notifies listeners", () => {
@@ -1018,9 +1025,7 @@ describe("SessionStore — trimResolvedApprovals", () => {
     expect(pendingAfter).toHaveLength(10);
 
     // All remaining must be resolved
-    const resolvedAfter = snapshot.approvals.filter(
-      (a) => a.status !== "pending",
-    );
+    const resolvedAfter = snapshot.approvals.filter((a) => a.status !== "pending");
     expect(resolvedAfter).toHaveLength(50);
 
     // Verify the 50 kept are the most recent (resolved-000 through resolved-049)
@@ -1093,7 +1098,8 @@ describe("SessionStore — trimResolvedTasks", () => {
     const resolvedTasks = [];
     for (let i = 0; i < 50; i++) {
       const time = new Date(baseTime).toISOString();
-      const status: SessionTask["status"] = i % 3 === 0 ? "completed" : i % 3 === 1 ? "failed" : "cancelled";
+      const status: SessionTask["status"] =
+        i % 3 === 0 ? "completed" : i % 3 === 1 ? "failed" : "cancelled";
       resolvedTasks.push({
         id: `resolved-task-${String(i).padStart(3, "0")}`,
         status,

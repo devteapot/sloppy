@@ -4,7 +4,7 @@
 
 **Date:** 2026-04-23
 **Author:** Research agent, spawned by Hermes
-**Status:** Phases 2 + 3 landed — filesystem CAS, sub-agent federation, and the `OrchestrationProvider` durable fabric are shipped. Each `SubAgentRunner` now auto-mirrors its lifecycle into a `tasks/{id}/` directory (commits `bd1469d`, `b70f52f`, `bc4cf17`, `d522471`).
+**Status:** Phases 1–5 landed — filesystem CAS (now atomic under concurrent writes), sub-agent federation, durable `OrchestrationProvider` (with persisted versions), handoffs, and parent→child approval forwarding are all shipped. Each `SubAgentRunner` auto-mirrors its lifecycle into a `tasks/{id}/` directory.
 
 ---
 
@@ -41,19 +41,21 @@ The SLOP architecture already implements the conceptual foundation for this:
 The current filesystem provider is **data-centric** -- it manages workspace files. The orchestration concept requires the filesystem to be **control-centric** -- where files themselves encode agent coordination state (task assignments, progress, handoffs, results).
 
 **Shipped:**
-- *Filesystem CAS + range reads* (`bd1469d`, `b70f52f`) — per-file `version`, `expected_version` guard on `write`, `start_line`/`end_line` slicing on `read`, drift detection on external edits.
-- *Sub-agent federation* (`bd1469d`) — `DelegationProvider` has a pluggable `runnerFactory`; registry wires a real `SubAgentRunner` via `RegisteredProvider.onHubReady`. Each sub-agent's `AgentSessionProvider` registers into the parent's `ConsumerHub` so `/session /turn /activity /approvals` arrive as live patches.
-- *Durable orchestration fabric* (`bc4cf17`) — new `OrchestrationProvider` exposes `/orchestration` (plan + counts) and `/tasks` (collection) backed by files under `.sloppy/orchestration/`. Affordances: `create_plan`, `create_task`, `start`, `append_progress`, `complete`, `fail`, `cancel`, `get_result`. All mutations accept `expected_version` for CAS.
-- *Live ↔ durable loop closed* (`d522471`) — `SubAgentRunner` auto-creates a task on spawn, transitions it through `start → complete/fail/cancel` as its session turn progresses, and writes the final assistant text to `tasks/{id}/result.md`. No orchestrator prompt work needed for durability to happen.
+- *Filesystem CAS + range reads* — per-file `version`, `expected_version` guard on `write` (atomic via per-path mutex), `start_line`/`end_line` slicing on `read`, drift detection on external edits.
+- *Sub-agent federation* — `DelegationProvider` has a pluggable `runnerFactory`; registry wires a real `SubAgentRunner` via `RegisteredProvider.onHubReady`. Each sub-agent's `AgentSessionProvider` registers into the parent's `ConsumerHub` so `/session /turn /activity /approvals` arrive as live patches.
+- *Durable orchestration fabric* — `OrchestrationProvider` exposes `/orchestration` (plan + counts), `/tasks` (collection), and `/handoffs` (collection) backed by files under `.sloppy/orchestration/`. CAS versions are persisted inside each JSON document and hydrated on restart.
+- *Lifecycle-gated affordances* — task affordances appear/disappear by status: `start` only for pending, `complete` only for running, `fail`/`cancel`/`append_progress` for active states, `get_result` always. Handoff `respond`/`cancel` only while pending.
+- *Live ↔ durable loop closed* — `SubAgentRunner` auto-creates a task on spawn, transitions it through `start → complete/fail/cancel` as its session turn progresses, and writes the final assistant text to `tasks/{id}/result.md`. Empty results do not produce a stub file.
+- *Approval forwarding primitives* — `/agents/{id}.list_approvals` returns the child's pending approvals, and `.approve_child_approval` / `.reject_child_approval` forward decisions to the child's session provider via the parent hub.
 
 **Still missing:**
-- Handoff directory + `create_handoff` / `respond_handoff` affordances (small, builds on `OrchestrationProvider`).
-- Approval routing across the parent/child boundary: a child's `waiting_approval` is visible in the parent's tree, but the parent can't yet approve through its own surface.
+- *Automatic* approval propagation: today the orchestrator must poll `list_approvals` or navigate the child's subscription tree. The forwarding primitive exists; the "child waiting → parent notified" push is future work.
 - Content references for large blobs in transcripts/tool results.
 - Automatic push on external edits (today drift is detected on query; no watcher).
 - End-to-end real-LLM test of the `SubAgentRunner` happy path (requires an LLM stub).
+- Task dependency enforcement (`depends_on` is stored but not checked before `start`).
 
-The remaining gaps are all additive — both axes of the core architecture are now load-bearing.
+Both axes of the core architecture are now load-bearing and audited.
 
 ---
 
@@ -338,9 +340,15 @@ The filesystem approach is unique because:
 ### Phase 2: Extended Filesystem Provider with CAS *(shipped — `bd1469d`, `b70f52f`)*
 Version + `expected_version` CAS live on every file node. Range reads (`start_line`/`end_line`) avoid loading full files into agent context. Drift detection bumps version on external edits.
 
-### Phase 3: Real Sub-Agent Delegation *(shipped — `bd1469d`, `d522471`)*
+### Phase 3: Real Sub-Agent Delegation *(shipped)*
 - **Live:** `SubAgentRunner` registers each sub-agent's `AgentSessionProvider` into the parent hub via `onHubReady`. Pluggable `runnerFactory` on `DelegationProvider` keeps the simulated path for tests.
 - **Durable:** when `OrchestrationProvider` is present, `SubAgentRunner` auto-creates + transitions a task per spawn, so crash-recovery and git-diffable progress come for free.
+
+### Phase 5: Handoff Protocol *(shipped)*
+`/handoffs` collection with `create_handoff(from_task, to_task, request)` and per-item `respond(response)` / `cancel`. Backed by `.sloppy/orchestration/handoffs/{id}.json`, CAS-guarded, affordances disappear once the handoff is no longer pending.
+
+### Phase 6: Approval Routing *(forwarding shipped, auto-propagation pending)*
+`/agents/{id}.list_approvals` returns the child session provider's pending approvals; `.approve_child_approval(approval_id)` / `.reject_child_approval(approval_id, reason?)` forward to the child's session provider. Automatic "child waiting → parent notified" push is future work — the orchestrator currently polls or navigates.
 
 ### Phase 4: Orchestrator Agent Prompt
 Write the orchestrator prompt that teaches the agent to:
@@ -409,4 +417,4 @@ The filesystem-as-orchestration-provider concept is viable because:
 4. It extends naturally from the existing delegation provider and filesystem provider without requiring new protocols or transports
 5. It aligns perfectly with SLOP's state-first design philosophy
 
-Phases 1–3 have all shipped. Both axes — the live session-provider surface and the durable `.sloppy/orchestration/` fabric — are load-bearing and wired together by `SubAgentRunner`. Remaining work, in order of leverage: handoffs between tasks (Phase 5); a real-LLM happy-path test for `SubAgentRunner`; content references for large blobs; approval routing across the parent/child boundary (Phase 6); and scale controls once concurrent sub-agent counts warrant them (Phase 7).
+Phases 1–5 have shipped and a correctness audit has been addressed (atomic CAS, guard-before-write for `complete`, persisted versions, status-gated affordances). Remaining work, in order of leverage: automatic approval propagation from child to parent (Phase 6 completion), a real-LLM happy-path test for `SubAgentRunner`, content references for large blobs, task-dependency enforcement, and scale controls (Phase 7).

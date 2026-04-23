@@ -56,6 +56,7 @@ export class FilesystemProvider {
   private lastSearch: { pattern: string; basePath: string; results: SearchResult[] } | null = null;
   private fileVersions = new Map<string, number>();
   private cachedMtimes = new Map<string, number>();
+  private writeLocks = new Map<string, Promise<unknown>>();
 
   constructor(options: {
     root: string;
@@ -195,19 +196,13 @@ export class FilesystemProvider {
       const endLine = Math.min(totalLines, range?.endLine ?? totalLines);
 
       if (startLine > endLine) {
-        throw new Error(
-          `Invalid range: start_line (${startLine}) is after end_line (${endLine}).`,
-        );
+        throw new Error(`Invalid range: start_line (${startLine}) is after end_line (${endLine}).`);
       }
 
       const sliced = lines.slice(startLine - 1, endLine).join("\n");
       const truncated = sliced.length > this.readMaxBytes;
       const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
-      this.recordRecent(
-        "read",
-        relativePath(this.root, fullPath),
-        `lines ${startLine}-${endLine}`,
-      );
+      this.recordRecent("read", relativePath(this.root, fullPath), `lines ${startLine}-${endLine}`);
 
       return {
         path: relativePath(this.root, fullPath),
@@ -241,33 +236,52 @@ export class FilesystemProvider {
     | { error: "version_conflict"; currentVersion: number; path: string }
   > {
     const fullPath = this.ensureWithinRoot(inputPath);
-    const preStat = await Bun.file(fullPath)
-      .stat()
-      .catch(() => null);
-    const currentVersion = this.observeVersion(fullPath, preStat?.mtimeMs ?? null);
+    return this.withWriteLock(fullPath, async () => {
+      const preStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const currentVersion = this.observeVersion(fullPath, preStat?.mtimeMs ?? null);
 
-    if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+      if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+        return {
+          error: "version_conflict" as const,
+          currentVersion,
+          path: relativePath(this.root, fullPath),
+        };
+      }
+
+      await Bun.$`mkdir -p ${dirname(fullPath)}`;
+      await Bun.write(fullPath, content);
+      const postStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const version = this.bumpVersion(fullPath, postStat?.mtimeMs ?? null);
+      this.recordRecent("write", relativePath(this.root, fullPath), `${content.length} chars`);
+      this.server.refresh();
+
       return {
-        error: "version_conflict",
-        currentVersion,
         path: relativePath(this.root, fullPath),
+        bytes: TEXT_ENCODER.encode(content).byteLength,
+        version,
       };
+    });
+  }
+
+  private async withWriteLock<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.writeLocks.get(key) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    const swallowed = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.writeLocks.set(key, swallowed);
+    try {
+      return await next;
+    } finally {
+      if (this.writeLocks.get(key) === swallowed) {
+        this.writeLocks.delete(key);
+      }
     }
-
-    await Bun.$`mkdir -p ${dirname(fullPath)}`;
-    await Bun.write(fullPath, content);
-    const postStat = await Bun.file(fullPath)
-      .stat()
-      .catch(() => null);
-    const version = this.bumpVersion(fullPath, postStat?.mtimeMs ?? null);
-    this.recordRecent("write", relativePath(this.root, fullPath), `${content.length} chars`);
-    this.server.refresh();
-
-    return {
-      path: relativePath(this.root, fullPath),
-      bytes: TEXT_ENCODER.encode(content).byteLength,
-      version,
-    };
   }
 
   private async makeDirectory(inputPath: string): Promise<{ path: string }> {

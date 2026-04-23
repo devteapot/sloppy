@@ -104,8 +104,7 @@ export function truncateToolResult(result: unknown, maxSize: number): string {
   const keep = maxSize - reservedForMessage;
 
   return (
-    content.slice(0, keep) +
-    truncationMessage.replace("$removed", String(contentLength - keep))
+    content.slice(0, keep) + truncationMessage.replace("$removed", String(contentLength - keep))
   );
 }
 

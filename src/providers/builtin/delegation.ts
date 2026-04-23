@@ -120,6 +120,44 @@ export class DelegationProvider {
     this.parentHub = hub;
   }
 
+  private async listChildApprovals(agentId: string): Promise<{
+    agent_id: string;
+    approvals: Array<{
+      id: string;
+      status?: string;
+      summary?: string;
+      action?: string;
+      path?: string;
+    }>;
+  }> {
+    const agent = this.agents.get(agentId);
+    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
+    if (!agent.session_provider_id) {
+      return { agent_id: agentId, approvals: [] };
+    }
+    if (!this.parentHub) {
+      throw new Error("Delegation provider has no parent hub reference.");
+    }
+
+    const tree = await this.parentHub.queryState({
+      providerId: agent.session_provider_id,
+      path: "/approvals",
+      depth: 2,
+    });
+    const approvals =
+      tree.children?.map((child) => {
+        const props = (child.properties ?? {}) as Record<string, unknown>;
+        return {
+          id: String(child.id ?? ""),
+          status: typeof props.status === "string" ? props.status : undefined,
+          summary: typeof props.summary === "string" ? props.summary : undefined,
+          action: typeof props.action === "string" ? props.action : undefined,
+          path: typeof props.path === "string" ? props.path : undefined,
+        };
+      }) ?? [];
+    return { agent_id: agentId, approvals };
+  }
+
   private async forwardApproval(
     agentId: string,
     approvalId: string,
@@ -342,6 +380,13 @@ export class DelegationProvider {
           : {}),
         ...(agent.session_provider_id
           ? {
+              list_approvals: action(async () => this.listChildApprovals(agent.id), {
+                label: "List Child Approvals",
+                description:
+                  "Return the pending approvals currently exposed by this sub-agent's session provider.",
+                idempotent: true,
+                estimate: "fast",
+              }),
               approve_child_approval: action(
                 { approval_id: "string" },
                 async ({ approval_id }) =>

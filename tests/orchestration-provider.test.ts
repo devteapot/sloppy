@@ -196,6 +196,80 @@ describe("OrchestrationProvider", () => {
     }
   });
 
+  test("terminal task status removes mutating affordances", async () => {
+    const { provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "x" });
+      const spawn = await consumer.invoke("/orchestration", "create_task", {
+        name: "t",
+        goal: "g",
+      });
+      const { id: taskId, version: v0 } = spawn.data as { id: string; version: number };
+      const start = await consumer.invoke(`/tasks/${taskId}`, "start", { expected_version: v0 });
+      const v1 = (start.data as { version: number }).version;
+      await consumer.invoke(`/tasks/${taskId}`, "complete", {
+        result: "done",
+        expected_version: v1,
+      });
+
+      const task = await consumer.query(`/tasks/${taskId}`, 1);
+      expect(task.properties?.status).toBe("completed");
+      expect(task.affordances?.map((a) => a.action).sort()).toEqual(["get_result"]);
+
+      const cancelAttempt = await consumer.invoke(`/tasks/${taskId}`, "cancel", {});
+      expect(cancelAttempt.status).toBe("error");
+      expect(cancelAttempt.error?.message).toContain("No handler");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rehydrates task versions from disk after restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-orch-rehydrate-"));
+    tempPaths.push(root);
+
+    const provider1 = new OrchestrationProvider({ workspaceRoot: root, sessionId: "sess-r" });
+    const consumer1 = new SlopConsumer(new InProcessTransport(provider1.server));
+    await consumer1.connect();
+    await consumer1.subscribe("/", 3);
+
+    await consumer1.invoke("/orchestration", "create_plan", { query: "x" });
+    const spawn = await consumer1.invoke("/orchestration", "create_task", { name: "t", goal: "g" });
+    const { id: taskId, version: v0 } = spawn.data as { id: string; version: number };
+    const start = await consumer1.invoke(`/tasks/${taskId}`, "start", { expected_version: v0 });
+    const v1 = (start.data as { version: number }).version;
+    consumer1.disconnect();
+    provider1.stop();
+
+    // Simulate restart: new provider reading the same directory.
+    const provider2 = new OrchestrationProvider({ workspaceRoot: root, sessionId: "sess-r" });
+    const consumer2 = new SlopConsumer(new InProcessTransport(provider2.server));
+    await consumer2.connect();
+    await consumer2.subscribe("/", 3);
+
+    try {
+      // v0 should no longer be accepted — durability preserves CAS.
+      const stale = await consumer2.invoke(`/tasks/${taskId}`, "complete", {
+        result: "should fail",
+        expected_version: v0,
+      });
+      const staleData = stale.data as { error?: string; currentVersion?: number };
+      expect(staleData.error).toBe("version_conflict");
+      expect(staleData.currentVersion).toBe(v1);
+
+      // Fresh version still works.
+      const fresh = await consumer2.invoke(`/tasks/${taskId}`, "complete", {
+        result: "ok",
+        expected_version: v1,
+      });
+      expect(fresh.status).toBe("ok");
+    } finally {
+      consumer2.disconnect();
+      provider2.stop();
+    }
+  });
+
   test("rejects task updates with stale expected_version (CAS)", async () => {
     const { provider, consumer } = await harness();
 
@@ -212,13 +286,17 @@ describe("OrchestrationProvider", () => {
       const v1 = (first.data as { version: number }).version;
 
       const stale = await consumer.invoke(`/tasks/${taskId}`, "complete", {
-        result: "done",
+        result: "STALE_RESULT",
         expected_version: v0,
       });
       expect(stale.status).toBe("ok");
       const staleData = stale.data as { error?: string; currentVersion?: number };
       expect(staleData.error).toBe("version_conflict");
       expect(staleData.currentVersion).toBe(v1);
+
+      // result.md must NOT be written on a conflicted complete.
+      const staleResult = await consumer.invoke(`/tasks/${taskId}`, "get_result", {});
+      expect((staleResult.data as { result: string | null }).result).toBeNull();
 
       const fresh = await consumer.invoke(`/tasks/${taskId}`, "complete", {
         result: "done",

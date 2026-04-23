@@ -19,6 +19,7 @@ type TaskState = {
   message?: string;
   error?: string;
   completed_at?: string;
+  version?: number;
 };
 
 type Plan = {
@@ -28,6 +29,7 @@ type Plan = {
   max_agents: number;
   created_at: string;
   status: "active" | "completed" | "cancelled";
+  version?: number;
 };
 
 type HandoffStatus = "pending" | "responded" | "cancelled";
@@ -41,6 +43,7 @@ type Handoff = {
   created_at: string;
   responded_at?: string;
   response?: string;
+  version?: number;
 };
 
 const ORCHESTRATION_DIR = ".sloppy/orchestration";
@@ -96,6 +99,8 @@ export class OrchestrationProvider {
     mkdirSync(this.root, { recursive: true });
     mkdirSync(join(this.root, "tasks"), { recursive: true });
     mkdirSync(join(this.root, "handoffs"), { recursive: true });
+
+    this.hydrateVersionsFromDisk();
 
     this.server = createSlopServer({
       id: "orchestration",
@@ -172,6 +177,37 @@ export class OrchestrationProvider {
     return next;
   }
 
+  private hydrateVersionsFromDisk(): void {
+    const plan = readJson<Plan>(this.planPath());
+    if (plan?.version !== undefined) {
+      this.planVersions.set("plan", plan.version);
+    }
+    for (const id of this.listTaskIdsUnchecked()) {
+      const state = readJson<TaskState>(join(this.taskDir(id), "state.json"));
+      if (state?.version !== undefined) {
+        this.taskVersions.set(id, state.version);
+      }
+    }
+    const handoffDir = join(this.root, "handoffs");
+    if (existsSync(handoffDir)) {
+      for (const entry of readdirSync(handoffDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const handoff = readJson<Handoff>(join(handoffDir, entry.name));
+        if (handoff?.version !== undefined) {
+          this.handoffVersions.set(handoff.id, handoff.version);
+        }
+      }
+    }
+  }
+
+  private listTaskIdsUnchecked(): string[] {
+    const dir = join(this.root, "tasks");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  }
+
   private planVersion(): number {
     return this.planVersions.get("plan") ?? 0;
   }
@@ -198,8 +234,8 @@ export class OrchestrationProvider {
       created_at: new Date().toISOString(),
       status: "active",
     };
-    writeJson(this.planPath(), plan);
     const version = this.bumpVersion(this.planVersions, "plan");
+    writeJson(this.planPath(), { ...plan, version });
     this.server.refresh();
     return { ...plan, version };
   }
@@ -214,9 +250,9 @@ export class OrchestrationProvider {
     if (params.expected_version !== undefined && params.expected_version !== current) {
       return { status: plan.status, version: current };
     }
-    const next: Plan = { ...plan, status: params.status };
-    writeJson(this.planPath(), next);
     const version = this.bumpVersion(this.planVersions, "plan");
+    const next: Plan = { ...plan, status: params.status, version };
+    writeJson(this.planPath(), next);
     this.server.refresh();
     return { status: next.status, version };
   }
@@ -238,9 +274,9 @@ export class OrchestrationProvider {
       updated_at: definition.created_at,
       iteration: 0,
     };
-    writeJson(join(this.taskDir(id), "definition.json"), definition);
-    writeJson(join(this.taskDir(id), "state.json"), state);
     const version = this.bumpVersion(this.taskVersions, id);
+    writeJson(join(this.taskDir(id), "definition.json"), definition);
+    writeJson(join(this.taskDir(id), "state.json"), { ...state, version });
     this.server.refresh();
     return { id, version };
   }
@@ -259,14 +295,15 @@ export class OrchestrationProvider {
       return { error: "version_conflict", currentVersion: current };
     }
 
+    const version = this.bumpVersion(this.taskVersions, taskId);
     const next: TaskState = {
       ...state,
       ...update,
       updated_at: new Date().toISOString(),
       iteration: state.iteration + 1,
+      version,
     };
     writeJson(join(this.taskDir(taskId), "state.json"), next);
-    const version = this.bumpVersion(this.taskVersions, taskId);
     this.server.refresh();
     return { version, state: next };
   }
@@ -309,15 +346,17 @@ export class OrchestrationProvider {
     if (!this.loadTaskState(params.task_id)) {
       throw new Error(`Unknown task: ${params.task_id}`);
     }
-    const resultPath = join(this.taskDir(params.task_id), "result.md");
-    mkdirSync(dirname(resultPath), { recursive: true });
-    writeFileSync(resultPath, params.result, "utf8");
     const result = this.updateTaskState(
       params.task_id,
       { status: "completed", completed_at: new Date().toISOString() },
       params.expected_version,
     );
     if ("error" in result) return result;
+    if (params.result.length > 0) {
+      const resultPath = join(this.taskDir(params.task_id), "result.md");
+      mkdirSync(dirname(resultPath), { recursive: true });
+      writeFileSync(resultPath, params.result, "utf8");
+    }
     return { version: result.version, status: result.state.status };
   }
 
@@ -377,8 +416,8 @@ export class OrchestrationProvider {
       status: "pending",
       created_at: new Date().toISOString(),
     };
-    writeJson(this.handoffPath(id), handoff);
     const version = this.bumpVersion(this.handoffVersions, id);
+    writeJson(this.handoffPath(id), { ...handoff, version });
     this.server.refresh();
     return { ...handoff, version };
   }
@@ -399,14 +438,15 @@ export class OrchestrationProvider {
     if (handoff.status !== "pending") {
       throw new Error(`Handoff ${params.handoff_id} is already ${handoff.status}.`);
     }
+    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
     const updated: Handoff = {
       ...handoff,
       status: "responded",
       responded_at: new Date().toISOString(),
       response: params.response,
+      version,
     };
     writeJson(this.handoffPath(params.handoff_id), updated);
-    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
     this.server.refresh();
     return { version, status: updated.status };
   }
@@ -426,13 +466,14 @@ export class OrchestrationProvider {
     if (handoff.status !== "pending") {
       throw new Error(`Handoff ${params.handoff_id} is already ${handoff.status}.`);
     }
+    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
     const updated: Handoff = {
       ...handoff,
       status: "cancelled",
       responded_at: new Date().toISOString(),
+      version,
     };
     writeJson(this.handoffPath(params.handoff_id), updated);
-    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
     this.server.refresh();
     return { version, status: updated.status };
   }
@@ -645,6 +686,109 @@ export class OrchestrationProvider {
     };
   }
 
+  private buildTaskActions(
+    id: string,
+    status: TaskStatus | "unknown" | undefined,
+  ): ItemDescriptor["actions"] {
+    const actions: ItemDescriptor["actions"] = {
+      get_result: action(async () => this.getResult(id), {
+        label: "Get Result",
+        description: "Read the full result.md for this task.",
+        idempotent: true,
+        estimate: "fast",
+      }),
+    };
+    if (!status) return actions;
+
+    const isPending = status === "pending";
+    const isRunning = status === "running";
+    const isActive = isPending || isRunning;
+
+    if (isPending) {
+      actions.start = action(
+        { expected_version: { type: "number" } },
+        async ({ expected_version }) =>
+          this.startTask({
+            task_id: id,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Start Task",
+          description: "Mark the task as running.",
+          estimate: "instant",
+        },
+      );
+    }
+
+    if (isActive) {
+      actions.append_progress = action(
+        { message: "string" },
+        async ({ message }) => this.appendProgress({ task_id: id, message: message as string }),
+        {
+          label: "Append Progress",
+          description: "Append a timestamped line to the task progress log.",
+          estimate: "instant",
+        },
+      );
+      actions.cancel = action(
+        { expected_version: { type: "number" } },
+        async ({ expected_version }) =>
+          this.cancelTask({
+            task_id: id,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Cancel Task",
+          description: "Mark the task as cancelled.",
+          dangerous: true,
+          estimate: "instant",
+        },
+      );
+    }
+
+    if (isRunning) {
+      actions.complete = action(
+        {
+          result: "string",
+          expected_version: { type: "number" },
+        },
+        async ({ result, expected_version }) =>
+          this.completeTask({
+            task_id: id,
+            result: result as string,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Complete Task",
+          description: "Write the task result and mark it completed.",
+          estimate: "instant",
+        },
+      );
+    }
+
+    if (isActive) {
+      actions.fail = action(
+        {
+          error: "string",
+          expected_version: { type: "number" },
+        },
+        async ({ error, expected_version }) =>
+          this.failTask({
+            task_id: id,
+            error: error as string,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Fail Task",
+          description: "Mark the task as failed with an error message.",
+          estimate: "instant",
+        },
+      );
+    }
+
+    return actions;
+  }
+
   private buildTasksDescriptor() {
     const ids = this.listTaskIds();
     const items: ItemDescriptor[] = ids.map((id) => {
@@ -670,90 +814,7 @@ export class OrchestrationProvider {
           progress_preview: truncateText(progress, 400),
         },
         summary: def ? `${def.name}: ${def.goal}` : id,
-        actions: {
-          start: action(
-            {
-              expected_version: { type: "number" },
-            },
-            async ({ expected_version }) =>
-              this.startTask({
-                task_id: id,
-                expected_version:
-                  typeof expected_version === "number" ? expected_version : undefined,
-              }),
-            {
-              label: "Start Task",
-              description: "Mark the task as running.",
-              estimate: "instant",
-            },
-          ),
-          append_progress: action(
-            { message: "string" },
-            async ({ message }) => this.appendProgress({ task_id: id, message: message as string }),
-            {
-              label: "Append Progress",
-              description: "Append a timestamped line to the task progress log.",
-              estimate: "instant",
-            },
-          ),
-          complete: action(
-            {
-              result: "string",
-              expected_version: { type: "number" },
-            },
-            async ({ result, expected_version }) =>
-              this.completeTask({
-                task_id: id,
-                result: result as string,
-                expected_version:
-                  typeof expected_version === "number" ? expected_version : undefined,
-              }),
-            {
-              label: "Complete Task",
-              description: "Write the task result and mark it completed.",
-              estimate: "instant",
-            },
-          ),
-          fail: action(
-            {
-              error: "string",
-              expected_version: { type: "number" },
-            },
-            async ({ error, expected_version }) =>
-              this.failTask({
-                task_id: id,
-                error: error as string,
-                expected_version:
-                  typeof expected_version === "number" ? expected_version : undefined,
-              }),
-            {
-              label: "Fail Task",
-              description: "Mark the task as failed with an error message.",
-              estimate: "instant",
-            },
-          ),
-          cancel: action(
-            { expected_version: { type: "number" } },
-            async ({ expected_version }) =>
-              this.cancelTask({
-                task_id: id,
-                expected_version:
-                  typeof expected_version === "number" ? expected_version : undefined,
-              }),
-            {
-              label: "Cancel Task",
-              description: "Mark the task as cancelled.",
-              dangerous: true,
-              estimate: "instant",
-            },
-          ),
-          get_result: action(async () => this.getResult(id), {
-            label: "Get Result",
-            description: "Read the full result.md for this task.",
-            idempotent: true,
-            estimate: "fast",
-          }),
-        },
+        actions: this.buildTaskActions(id, state?.status),
         meta: {
           salience:
             state?.status === "running"
