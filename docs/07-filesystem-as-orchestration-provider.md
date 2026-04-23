@@ -53,8 +53,8 @@ The current filesystem provider is **data-centric** -- it manages workspace file
 **Still missing:**
 - Transcript-level content refs (session provider still inlines assistant/tool-result text). Filesystem `read` is already ref-aware above `contentRefThresholdBytes`.
 - Automatic push on external filesystem edits (drift is detected on query; no `fs.watch`).
-- Orchestrator system prompt (Phase 4) — the plumbing is in place, but there is no curated prompt teaching an agent how to use it yet.
 - Scale controls (salience filtering, depth caps) once concurrent sub-agent counts warrant them.
+- Recorded-fixture e2e test (deterministic CI replay of a known-good live run). The env-gated live-LLM test exists; fixture capture does not.
 
 Both axes of the core architecture are load-bearing and audited.
 
@@ -351,15 +351,43 @@ Version + `expected_version` CAS live on every file node. Range reads (`start_li
 ### Phase 6: Approval Routing *(shipped)*
 `/agents/{id}.list_approvals` returns the child session provider's pending approvals (fallback); `.approve_child_approval(approval_id)` / `.reject_child_approval(approval_id, reason?)` forward to the child's session provider. For the state-first path, `DelegationProvider` subscribes to each registered child's `/approvals` and auto-mirrors pending entries into `/agents/{id}.pending_approvals` so the orchestrator sees them as patches without any explicit call.
 
-### Phase 4: Orchestrator Agent Prompt *(pending)*
-Write the orchestrator prompt that teaches the agent to:
-- Decompose tasks into file-based task definitions
-- Observe sub-agent progress via session-provider patches (live) and task-file patches (durable) — not polling
-- Synthesize results from file outputs
-- Handle handoffs between agents via the handoff directory
+### Phase 4: Orchestrator Agent Prompt *(shipped)*
+`agent.orchestratorMode` (default `false`) switches `buildSystemPrompt` to append an orchestrator preamble that teaches: observe `/orchestration` and `/agents` first; `create_plan` → `create_task` (with real `depends_on`) → `spawn_agent` → resolve handoffs/approvals → `complete_plan`. The delegation rule is explicit: leaf work (file edits, shell, research) belongs to sub-agents; the orchestrator only writes to `/orchestration` and `/agents`. Two worked examples are included.
+
+Prompt lives in `src/core/context.ts`. Verified against a real OpenAI-compatible endpoint (Qwen3-35B) via `tests/orchestration-e2e.test.ts` — plan completed, two tasks with dependency, CAS retry exercised organically.
 
 ### Phase 7: Scale Controls *(partially shipped — content refs done, fan-out limits pending)*
 Filesystem `read` returns a preview + content ref above `contentRefThresholdBytes` so large files don't inline into tool results. Salience filtering, depth caps, and subscription fan-out throttling for orchestrators watching many sub-agents are still future work — not yet needed at current scale.
+
+---
+
+## 8.5 Running it
+
+### End-to-end test (live LLM)
+
+`tests/orchestration-e2e.test.ts` is gated on `SLOPPY_E2E_LLM=1` and skipped in default CI. It spins up an `Agent` in orchestrator mode with a tmpdir workspace and feeds a two-file dependency goal (write `a.txt=HELLO`, then write `b.txt=OLLEH` from `a.txt`'s reversed content). Assertions are patch-and-file based: both files present with expected content, `plan.json.status === "completed"`, at least two tasks with at least one `depends_on`.
+
+Run against any OpenAI-compatible endpoint:
+
+```bash
+SLOPPY_LLM_PROVIDER=openai \
+SLOPPY_LLM_BASE_URL=http://<host>:<port> \
+SLOPPY_MODEL=<model-id> \
+OPENAI_API_KEY=<key-or-stub> \
+SLOPPY_E2E_LLM=1 \
+SLOPPY_DEBUG=all \
+bun test tests/orchestration-e2e.test.ts
+```
+
+Anthropic/Gemini: swap `SLOPPY_LLM_PROVIDER` and the key env var. Timeout is 5 min; on failure the test dumps the debug log + orchestration listing under `test-artifacts/e2e-*/` so you can read what the model did wrong. The typical first-run failure mode is prompt-shaped (model skips `create_plan`, executes leaf work directly, forgets `depends_on`) — iterate on `ORCHESTRATOR_PROMPT` in `src/core/context.ts`.
+
+### Debug logging
+
+`SLOPPY_DEBUG=all` emits single-line JSON to stderr across six scopes: `sub-agent`, `orchestration`, `filesystem`, `delegation`, `hub`, `loop`. Comma-separate to filter (`SLOPPY_DEBUG=sub-agent,orchestration`). Key events worth watching: `orchestration.create_plan`/`update_task`/`complete_plan`, `sub-agent.transition`, `filesystem.write_version_conflict` (CAS retries), `loop.turn` (per-iteration stop reason + tool call count).
+
+### Demo script (manual)
+
+`bun run demo:orchestrate "<goal>"` runs a one-shot orchestrator against a fresh `.sloppy-demo/` workspace, leaving `.sloppy-demo/.sloppy/orchestration/` populated for inspection. Useful alongside the TUI for watching live provider patches.
 
 ---
 
