@@ -1,5 +1,7 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
+import type { ConsumerHub } from "../../core/consumer";
+
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type DelegationAgentSpawn = {
@@ -90,6 +92,7 @@ export class DelegationProvider {
   private maxAgents: number;
   private agents = new Map<string, DelegationAgent>();
   private runnerFactory: DelegationRunnerFactory;
+  private parentHub: ConsumerHub | null = null;
 
   constructor(
     options: {
@@ -111,6 +114,37 @@ export class DelegationProvider {
 
   stop(): void {
     this.server.stop();
+  }
+
+  setParentHub(hub: ConsumerHub): void {
+    this.parentHub = hub;
+  }
+
+  private async forwardApproval(
+    agentId: string,
+    approvalId: string,
+    action: "approve" | "reject",
+    params?: Record<string, unknown>,
+  ): Promise<{ agent_id: string; approval_id: string; action: string; status: string }> {
+    const agent = this.agents.get(agentId);
+    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
+    if (!agent.session_provider_id) {
+      throw new Error(`Agent ${agentId} has no session provider registered.`);
+    }
+    if (!this.parentHub) {
+      throw new Error("Delegation provider has no parent hub reference.");
+    }
+
+    const result = await this.parentHub.invoke(
+      agent.session_provider_id,
+      `/approvals/${approvalId}`,
+      action,
+      params,
+    );
+    if (result.status === "error") {
+      throw new Error(result.error?.message ?? `Failed to ${action} approval ${approvalId}.`);
+    }
+    return { agent_id: agentId, approval_id: approvalId, action, status: result.status };
   }
 
   setRunnerFactory(factory: DelegationRunnerFactory): void {
@@ -304,6 +338,42 @@ export class DelegationProvider {
                 dangerous: true,
                 estimate: "instant",
               }),
+            }
+          : {}),
+        ...(agent.session_provider_id
+          ? {
+              approve_child_approval: action(
+                { approval_id: "string" },
+                async ({ approval_id }) =>
+                  this.forwardApproval(agent.id, approval_id as string, "approve"),
+                {
+                  label: "Approve Child Approval",
+                  description:
+                    "Forward an approve decision to a pending approval inside this sub-agent.",
+                  dangerous: true,
+                  estimate: "fast",
+                },
+              ),
+              reject_child_approval: action(
+                {
+                  approval_id: "string",
+                  reason: {
+                    type: "string",
+                    description: "Optional rejection explanation forwarded to the child.",
+                  },
+                },
+                async ({ approval_id, reason }) =>
+                  this.forwardApproval(agent.id, approval_id as string, "reject", {
+                    reason: typeof reason === "string" ? reason : undefined,
+                  }),
+                {
+                  label: "Reject Child Approval",
+                  description:
+                    "Forward a reject decision to a pending approval inside this sub-agent.",
+                  dangerous: true,
+                  estimate: "fast",
+                },
+              ),
             }
           : {}),
       },

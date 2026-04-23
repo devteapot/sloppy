@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-import { createSlopServer } from "@slop-ai/server";
+import { action, createSlopServer } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
@@ -234,6 +234,99 @@ describe("Agent orchestration (sub-agent federation)", () => {
       }
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("forwards approve/reject from /agents/{id} to the child session provider", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    await hub.connect();
+
+    const approvals: Array<{ id: string; decision: "approve" | "reject"; reason?: string }> = [];
+    const childId = "sub-agent-approver";
+
+    const childServer = createSlopServer({ id: childId, name: "child" });
+    childServer.register("approvals", {
+      type: "collection",
+      items: [
+        {
+          id: "app-1",
+          props: { id: "app-1", status: "pending" },
+          actions: {
+            approve: action(async () => {
+              approvals.push({ id: "app-1", decision: "approve" });
+              return { approved: true };
+            }),
+            reject: action(
+              { reason: { type: "string", description: "Why rejected" } },
+              async ({ reason }) => {
+                approvals.push({
+                  id: "app-1",
+                  decision: "reject",
+                  reason: typeof reason === "string" ? reason : undefined,
+                });
+                return { rejected: true };
+              },
+            ),
+          },
+        },
+      ],
+    });
+    await hub.addProvider({
+      id: childId,
+      name: "child",
+      kind: "builtin",
+      transport: new InProcessTransport(childServer),
+      transportLabel: "in-process",
+      stop: () => childServer.stop(),
+    });
+
+    const factory: DelegationRunnerFactory = (_spawn, callbacks) => ({
+      async start() {
+        callbacks.onUpdate({ status: "running", session_provider_id: childId });
+      },
+      async cancel() {},
+    });
+    const delegation = new DelegationProvider({ maxAgents: 5, runnerFactory: factory });
+    delegation.setParentHub(hub);
+    await hub.addProvider({
+      id: "delegation",
+      name: "Delegation",
+      kind: "builtin",
+      transport: new InProcessTransport(delegation.server),
+      transportLabel: "in-process",
+      stop: () => delegation.stop(),
+    });
+
+    const consumer = new SlopConsumer(new InProcessTransport(delegation.server));
+    await consumer.connect();
+    await consumer.subscribe("/", 3);
+
+    try {
+      const spawnResult = await consumer.invoke("/session", "spawn_agent", {
+        name: "approver",
+        goal: "test approvals",
+      });
+      const { id: agentId } = spawnResult.data as { id: string };
+      await Bun.sleep(20); // let onUpdate settle
+
+      const approveResult = await consumer.invoke(`/agents/${agentId}`, "approve_child_approval", {
+        approval_id: "app-1",
+      });
+      expect(approveResult.status).toBe("ok");
+      expect(approvals).toEqual([{ id: "app-1", decision: "approve" }]);
+
+      const rejectResult = await consumer.invoke(`/agents/${agentId}`, "reject_child_approval", {
+        approval_id: "app-1",
+        reason: "unsafe",
+      });
+      expect(rejectResult.status).toBe("ok");
+      expect(approvals).toEqual([
+        { id: "app-1", decision: "approve" },
+        { id: "app-1", decision: "reject", reason: "unsafe" },
+      ]);
+    } finally {
+      consumer.disconnect();
+      hub.shutdown();
     }
   });
 

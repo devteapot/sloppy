@@ -183,6 +183,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => delegation.stop(),
       onHubReady: (hub, hubConfig) => {
+        delegation.setParentHub(hub);
         const orchestrationProviderId = hubConfig.providers.builtin.orchestration
           ? "orchestration"
           : undefined;
