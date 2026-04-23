@@ -47,6 +47,24 @@ function displayNameForPath(path: string): string {
   return path.split("/").at(-1) ?? path;
 }
 
+function coerceEdits(value: unknown): Array<{ oldText: string; newText: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: Array<{ oldText: string; newText: string }> = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
+    const { oldText, newText } = raw as { oldText?: unknown; newText?: unknown };
+    if (typeof oldText !== "string" || typeof newText !== "string") {
+      continue;
+    }
+    out.push({ oldText, newText });
+  }
+  return out;
+}
+
 export class FilesystemProvider {
   readonly server: SlopServer;
   private root: string;
@@ -117,10 +135,10 @@ export class FilesystemProvider {
 
     if (existing === undefined) {
       if (mtimeMs == null) {
-        // File does not exist on disk and has never been observed. Report
-        // version 0 so that `write(expected_version=0)` succeeds for first
-        // creation. Do not cache — bumpVersion on the first successful
-        // write will establish version 1.
+        // Never observed and doesn't exist on disk. Report version 0 so
+        // `write(expected_version=0)` succeeds for first creation. Do not
+        // cache — bumpVersion on the first successful write will establish
+        // version 1.
         return 0;
       }
       const initial = 1;
@@ -129,7 +147,27 @@ export class FilesystemProvider {
       return initial;
     }
 
-    if (mtimeMs != null && cachedMtime != null && mtimeMs !== cachedMtime) {
+    // File is gone on disk. If cachedMtime is still set, this is the first
+    // observation after an external deletion: bump the version so callers
+    // with a stale expected_version see a conflict, drop the cached mtime.
+    // If cachedMtime is already cleared, the absence was already accounted
+    // for in `existing` — don't bump again on every subsequent call.
+    if (mtimeMs == null) {
+      if (cachedMtime == null) {
+        return existing;
+      }
+      const next = existing + 1;
+      this.fileVersions.set(absolutePath, next);
+      this.cachedMtimes.delete(absolutePath);
+      debug("filesystem", "external_delete", {
+        path: relativePath(this.root, absolutePath),
+        previous_version: existing,
+        version: next,
+      });
+      return next;
+    }
+
+    if (cachedMtime != null && mtimeMs !== cachedMtime) {
       const next = existing + 1;
       this.fileVersions.set(absolutePath, next);
       this.cachedMtimes.set(absolutePath, mtimeMs);
@@ -142,7 +180,7 @@ export class FilesystemProvider {
       return next;
     }
 
-    if (mtimeMs != null && cachedMtime == null) {
+    if (cachedMtime == null) {
       this.cachedMtimes.set(absolutePath, mtimeMs);
     }
 
@@ -184,6 +222,7 @@ export class FilesystemProvider {
     content: string;
     truncated: boolean;
     version: number;
+    exists: boolean;
     startLine?: number;
     endLine?: number;
     totalLines?: number;
@@ -196,14 +235,16 @@ export class FilesystemProvider {
       .stat()
       .catch(() => null);
     if (!stat) {
-      // Read-on-nonexistent returns empty content at version 0 so callers
-      // can implement a uniform "read then write with expected_version"
-      // protocol without special-casing ENOENT.
+      // Read-on-nonexistent returns empty content at the current tracked
+      // "void" version (0 if never observed; bumped if the file was tracked
+      // then deleted externally). Callers can implement a uniform
+      // read -> write(expected_version) -> retry loop with no ENOENT branch.
       return {
         path: relativePath(this.root, fullPath),
         content: "",
         truncated: false,
         version: this.observeVersion(fullPath, null),
+        exists: false,
       };
     }
     const bytes = await Bun.file(fullPath).bytes();
@@ -215,6 +256,7 @@ export class FilesystemProvider {
         content: `[binary file ${displayNameForPath(inputPath)} omitted]`,
         truncated: false,
         version,
+        exists: true,
       };
     }
 
@@ -242,6 +284,7 @@ export class FilesystemProvider {
         content: text,
         truncated,
         version,
+        exists: true,
         startLine,
         endLine,
         totalLines,
@@ -260,6 +303,7 @@ export class FilesystemProvider {
         content: truncateText(previewText, this.previewBytes),
         truncated: true,
         version,
+        exists: true,
         preview_only: true,
         total_bytes: bytes.byteLength,
         totalLines,
@@ -282,6 +326,7 @@ export class FilesystemProvider {
       content: truncated ? truncateText(text, this.readMaxBytes) : text,
       truncated,
       version,
+      exists: true,
     };
   }
 
@@ -326,6 +371,134 @@ export class FilesystemProvider {
         path: relativePath(this.root, fullPath),
         bytes: TEXT_ENCODER.encode(content).byteLength,
         version,
+      };
+    });
+  }
+
+  private async editTextFile(
+    inputPath: string,
+    edits: ReadonlyArray<{ oldText: string; newText: string }>,
+    expectedVersion?: number,
+  ): Promise<
+    | { path: string; bytes: number; version: number; edits_applied: number }
+    | { error: "version_conflict"; currentVersion: number; path: string }
+    | {
+        error: "no_match" | "multiple_matches" | "overlap" | "empty_old_text" | "identical_text";
+        path: string;
+        edit_index: number;
+      }
+    | { error: "empty_edits"; path: string }
+    | { error: "file_not_found"; path: string }
+  > {
+    const fullPath = this.ensureWithinRoot(inputPath);
+    const relPath = relativePath(this.root, fullPath);
+
+    if (edits.length === 0) {
+      return { error: "empty_edits" as const, path: relPath };
+    }
+
+    return this.withWriteLock(fullPath, async () => {
+      const preStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const currentVersion = this.observeVersion(fullPath, preStat?.mtimeMs ?? null);
+
+      if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+        debug("filesystem", "edit_version_conflict", {
+          path: relPath,
+          expected: expectedVersion,
+          current: currentVersion,
+        });
+        return {
+          error: "version_conflict" as const,
+          currentVersion,
+          path: relPath,
+        };
+      }
+
+      if (!preStat) {
+        return { error: "file_not_found" as const, path: relPath };
+      }
+
+      const originalBytes = await Bun.file(fullPath).bytes();
+      const original = TEXT_DECODER.decode(originalBytes);
+
+      const spans: Array<{ start: number; end: number; newText: string }> = [];
+      for (let i = 0; i < edits.length; i++) {
+        const edit = edits[i];
+        if (!edit) {
+          continue;
+        }
+        const { oldText, newText } = edit;
+
+        if (oldText.length === 0) {
+          debug("filesystem", "edit_empty_old_text", { path: relPath, edit_index: i });
+          return { error: "empty_old_text" as const, path: relPath, edit_index: i };
+        }
+        if (oldText === newText) {
+          debug("filesystem", "edit_identical_text", { path: relPath, edit_index: i });
+          return { error: "identical_text" as const, path: relPath, edit_index: i };
+        }
+
+        const first = original.indexOf(oldText);
+        if (first === -1) {
+          debug("filesystem", "edit_no_match", { path: relPath, edit_index: i });
+          return { error: "no_match" as const, path: relPath, edit_index: i };
+        }
+        const second = original.indexOf(oldText, first + 1);
+        if (second !== -1) {
+          debug("filesystem", "edit_multiple_matches", { path: relPath, edit_index: i });
+          return { error: "multiple_matches" as const, path: relPath, edit_index: i };
+        }
+
+        spans.push({ start: first, end: first + oldText.length, newText });
+      }
+
+      const sorted = [...spans].sort((a, b) => a.start - b.start);
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1];
+        const curr = sorted[i];
+        if (prev && curr && curr.start < prev.end) {
+          const originalIndex = spans.indexOf(curr);
+          debug("filesystem", "edit_overlap", { path: relPath, edit_index: originalIndex });
+          return { error: "overlap" as const, path: relPath, edit_index: originalIndex };
+        }
+      }
+
+      let next = original;
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const span = sorted[i];
+        if (!span) {
+          continue;
+        }
+        next = next.slice(0, span.start) + span.newText + next.slice(span.end);
+      }
+
+      await Bun.write(fullPath, next);
+      const postStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const version = this.bumpVersion(fullPath, postStat?.mtimeMs ?? null);
+      const bytes = TEXT_ENCODER.encode(next).byteLength;
+      const delta = bytes - originalBytes.byteLength;
+      this.recordRecent(
+        "edit",
+        relPath,
+        `${edits.length} edit${edits.length === 1 ? "" : "s"}, ${delta >= 0 ? "+" : ""}${delta} bytes`,
+      );
+      debug("filesystem", "edit_applied", {
+        path: relPath,
+        edits: edits.length,
+        bytes_delta: delta,
+        version,
+      });
+      this.server.refresh();
+
+      return {
+        path: relPath,
+        bytes,
+        version,
+        edits_applied: edits.length,
       };
     });
   }
@@ -490,7 +663,7 @@ export class FilesystemProvider {
                 {
                   label: "Read File",
                   description:
-                    "Read this file as text. Pass start_line/end_line to read just a slice.",
+                    "Read this file as text. Returns { content, version, exists, ... }. Pass start_line/end_line to read just a slice.",
                   idempotent: true,
                   estimate: "fast",
                 },
@@ -501,7 +674,7 @@ export class FilesystemProvider {
                   expected_version: {
                     type: "number",
                     description:
-                      "Optional CAS guard. If set, write fails with version_conflict when the file's current version does not match.",
+                      "Optional CAS guard. Pass the version returned by the last read to serialize concurrent writers. expected_version=0 succeeds only if the file does not exist yet (use it for atomic first-creation). expected_version=N (N>0) succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }.",
                   },
                 },
                 async ({ content, expected_version }) =>
@@ -512,7 +685,34 @@ export class FilesystemProvider {
                   ),
                 {
                   label: "Overwrite File",
-                  description: "Replace this file with new text content.",
+                  description:
+                    "Replace this file entirely with new text content. Prefer `edit` for targeted changes; use `write` only for full rewrites or when the file should be regenerated from scratch.",
+                  estimate: "fast",
+                },
+              ),
+              edit: action(
+                {
+                  edits: {
+                    type: "array",
+                    description:
+                      "One or more targeted replacements as { oldText, newText }. Rules: (1) oldText must match EXACTLY — no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique — do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Errors return { error, edit_index } identifying the offending edit.",
+                  },
+                  expected_version: {
+                    type: "number",
+                    description:
+                      "Optional CAS guard. Pass the version returned by the last read. expected_version=N succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }. Edit does not create files — use write with expected_version=0 for first creation.",
+                  },
+                },
+                async ({ edits, expected_version }) =>
+                  this.editTextFile(
+                    relativeToRoot,
+                    coerceEdits(edits),
+                    typeof expected_version === "number" ? expected_version : undefined,
+                  ),
+                {
+                  label: "Edit File",
+                  description:
+                    "Apply one or more strict string-replacements to this file, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
                   estimate: "fast",
                 },
               ),
@@ -573,7 +773,7 @@ export class FilesystemProvider {
           {
             label: "Read By Path",
             description:
-              "Read a text file relative to the workspace root. Pass start_line/end_line to read just a slice.",
+              "Read a text file relative to the workspace root. Always succeeds: returns { content, version, exists, ... }. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file.",
             idempotent: true,
             estimate: "fast",
           },
@@ -585,7 +785,7 @@ export class FilesystemProvider {
             expected_version: {
               type: "number",
               description:
-                "Optional CAS guard. If set, write fails with version_conflict when the file's current version does not match.",
+                "Optional CAS guard. Pass the version returned by the last read to serialize concurrent writers. expected_version=0 succeeds only if the file does not exist yet (use it for atomic first-creation). expected_version=N (N>0) succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }.",
             },
           },
           async ({ path, content, expected_version }) =>
@@ -596,7 +796,35 @@ export class FilesystemProvider {
             ),
           {
             label: "Write By Path",
-            description: "Write a text file relative to the workspace root.",
+            description:
+              "Write a text file relative to the workspace root. Prefer `edit` for targeted changes to existing files; use `write` for new files (with expected_version=0) or full rewrites.",
+            estimate: "fast",
+          },
+        ),
+        edit: action(
+          {
+            path: "string",
+            edits: {
+              type: "array",
+              description:
+                "One or more targeted replacements as { oldText, newText }. Rules: (1) oldText must match EXACTLY — no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique — do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Errors return { error, edit_index } identifying the offending edit.",
+            },
+            expected_version: {
+              type: "number",
+              description:
+                "Optional CAS guard. Pass the version returned by the last read. expected_version=N succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }. Edit does not create files — use write with expected_version=0 for first creation.",
+            },
+          },
+          async ({ path, edits, expected_version }) =>
+            this.editTextFile(
+              path as string,
+              coerceEdits(edits),
+              typeof expected_version === "number" ? expected_version : undefined,
+            ),
+          {
+            label: "Edit By Path",
+            description:
+              "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
             estimate: "fast",
           },
         ),
