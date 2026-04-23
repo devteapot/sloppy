@@ -167,6 +167,76 @@ describe("Agent orchestration (sub-agent federation)", () => {
     }
   });
 
+  test("SubAgentRunner creates + fails a task when orchestration provider is present", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
+
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-orch-fed-"));
+    try {
+      const orchestration = new OrchestrationProvider({
+        workspaceRoot,
+        sessionId: "sess-fed",
+      });
+      const hub = new ConsumerHub([], TEST_CONFIG);
+      await hub.connect();
+      await hub.addProvider({
+        id: "orchestration",
+        name: "Orchestration",
+        kind: "builtin",
+        transport: new InProcessTransport(orchestration.server),
+        transportLabel: "in-process",
+        stop: () => orchestration.stop(),
+      });
+
+      const runner = new SubAgentRunner({
+        id: "abc123",
+        name: "analyze",
+        goal: "analyze the spec",
+        parentHub: hub,
+        parentConfig: TEST_CONFIG,
+        orchestrationProviderId: "orchestration",
+      });
+
+      // Without a valid LLM profile, the runtime will fail on sendMessage.
+      // SubAgentRunner catches that and records a task failure.
+      await runner.start();
+
+      const consumer = new SlopConsumer(new InProcessTransport(orchestration.server));
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      try {
+        // Poll briefly for task to appear + settle into failed state
+        let failed = false;
+        for (let i = 0; i < 50; i++) {
+          const tasks = await consumer.query("/tasks", 2);
+          const task = tasks.children?.[0];
+          if (task?.properties?.status === "failed") {
+            expect(task.properties).toMatchObject({
+              name: "analyze",
+              goal: "analyze the spec",
+              status: "failed",
+            });
+            expect(task.properties?.error).toBeString();
+            failed = true;
+            break;
+          }
+          await Bun.sleep(20);
+        }
+        expect(failed).toBe(true);
+      } finally {
+        consumer.disconnect();
+        runner.shutdown();
+        hub.shutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("cancel tears down the child session provider", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
     await hub.connect();

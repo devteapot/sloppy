@@ -26,6 +26,7 @@ export interface SubAgentRunnerOptions {
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
   providerIdPrefix?: string;
+  orchestrationProviderId?: string;
 }
 
 export class SubAgentRunner {
@@ -45,6 +46,8 @@ export class SubAgentRunner {
   private errorMessage?: string;
   private completedAt?: string;
   private registered = false;
+  private orchestrationProviderId?: string;
+  private orchestrationTaskId?: string;
 
   constructor(options: SubAgentRunnerOptions) {
     this.id = options.id;
@@ -52,6 +55,7 @@ export class SubAgentRunner {
     this.goal = options.goal;
     this.model = options.model;
     this.parentHub = options.parentHub;
+    this.orchestrationProviderId = options.orchestrationProviderId;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
     this.runtime = new SessionRuntime({
@@ -98,6 +102,8 @@ export class SubAgentRunner {
     const added = await this.parentHub.addProvider(registered);
     this.registered = added;
 
+    await this.createOrchestrationTask();
+
     this.unsubscribeStore = this.runtime.store.onChange(() => {
       this.syncFromStore();
     });
@@ -105,10 +111,12 @@ export class SubAgentRunner {
     try {
       await this.runtime.start();
       await this.runtime.sendMessage(this.goal);
+      await this.recordTaskTransition("start");
       this.transition("running");
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error);
       this.completedAt = new Date().toISOString();
+      await this.recordTaskFailure(this.errorMessage);
       this.transition("failed");
     }
   }
@@ -125,6 +133,7 @@ export class SubAgentRunner {
     }
 
     this.completedAt = new Date().toISOString();
+    await this.recordTaskTransition("cancel");
     this.transition("cancelled");
     this.teardown();
   }
@@ -171,6 +180,7 @@ export class SubAgentRunner {
     if (turnState === "error") {
       this.errorMessage = snapshot.turn.lastError ?? "Sub-agent turn failed.";
       this.completedAt = new Date().toISOString();
+      void this.recordTaskFailure(this.errorMessage);
       this.transition("failed");
       this.teardown();
       return;
@@ -190,8 +200,71 @@ export class SubAgentRunner {
       }
 
       this.completedAt = new Date().toISOString();
+      void this.recordTaskCompletion(this.resultText ?? "");
       this.transition("completed");
       this.teardown();
+    }
+  }
+
+  private async createOrchestrationTask(): Promise<void> {
+    if (!this.orchestrationProviderId) return;
+    try {
+      const result = await this.parentHub.invoke(
+        this.orchestrationProviderId,
+        "/orchestration",
+        "create_task",
+        { name: this.name, goal: this.goal },
+      );
+      if (result.status === "ok") {
+        const data = result.data as { id?: string };
+        if (data?.id) {
+          this.orchestrationTaskId = data.id;
+        }
+      }
+    } catch {
+      // orchestration is optional; failures shouldn't break the sub-agent
+    }
+  }
+
+  private async recordTaskTransition(action: "start" | "cancel"): Promise<void> {
+    if (!this.orchestrationProviderId || !this.orchestrationTaskId) return;
+    try {
+      await this.parentHub.invoke(
+        this.orchestrationProviderId,
+        `/tasks/${this.orchestrationTaskId}`,
+        action,
+        {},
+      );
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async recordTaskCompletion(resultText: string): Promise<void> {
+    if (!this.orchestrationProviderId || !this.orchestrationTaskId) return;
+    try {
+      await this.parentHub.invoke(
+        this.orchestrationProviderId,
+        `/tasks/${this.orchestrationTaskId}`,
+        "complete",
+        { result: resultText },
+      );
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async recordTaskFailure(error: string): Promise<void> {
+    if (!this.orchestrationProviderId || !this.orchestrationTaskId) return;
+    try {
+      await this.parentHub.invoke(
+        this.orchestrationProviderId,
+        `/tasks/${this.orchestrationTaskId}`,
+        "fail",
+        { error },
+      );
+    } catch {
+      // best-effort
     }
   }
 

@@ -183,6 +183,9 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => delegation.stop(),
       onHubReady: (hub, hubConfig) => {
+        const orchestrationProviderId = hubConfig.providers.builtin.orchestration
+          ? "orchestration"
+          : undefined;
         delegation.setRunnerFactory((spawn, callbacks) => {
           const runner = new SubAgentRunner({
             id: spawn.id,
@@ -191,6 +194,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
             model: spawn.model,
             parentHub: hub,
             parentConfig: hubConfig,
+            orchestrationProviderId,
           });
           const unsubscribe = runner.onChange((event) => {
             callbacks.onUpdate({
