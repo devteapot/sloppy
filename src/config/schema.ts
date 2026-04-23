@@ -107,12 +107,16 @@ export const sloppyConfigSchema = z.object({
           recentLimit: z.number().int().min(1).default(10),
           searchLimit: z.number().int().min(1).default(20),
           readMaxBytes: z.number().int().min(256).default(65536),
+          contentRefThresholdBytes: z.number().int().min(256).default(8192),
+          previewBytes: z.number().int().min(128).default(2048),
         })
         .default({
           root: ".",
           recentLimit: 10,
           searchLimit: 20,
           readMaxBytes: 65536,
+          contentRefThresholdBytes: 8192,
+          previewBytes: 2048,
         }),
       memory: z
         .object({
@@ -216,6 +220,8 @@ export const sloppyConfigSchema = z.object({
         recentLimit: 10,
         searchLimit: 20,
         readMaxBytes: 65536,
+        contentRefThresholdBytes: 8192,
+        previewBytes: 2048,
       },
       memory: {
         maxMemories: 500,

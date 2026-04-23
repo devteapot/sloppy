@@ -65,6 +65,8 @@ const TEST_CONFIG: SloppyConfig = {
       recentLimit: 10,
       searchLimit: 20,
       readMaxBytes: 65536,
+      contentRefThresholdBytes: 8192,
+      previewBytes: 2048,
     },
     memory: {
       maxMemories: 500,

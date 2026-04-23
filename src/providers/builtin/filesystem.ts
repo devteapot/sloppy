@@ -52,6 +52,8 @@ export class FilesystemProvider {
   private recentLimit: number;
   private searchLimit: number;
   private readMaxBytes: number;
+  private contentRefThresholdBytes: number;
+  private previewBytes: number;
   private recent: RecentFileOperation[] = [];
   private lastSearch: { pattern: string; basePath: string; results: SearchResult[] } | null = null;
   private fileVersions = new Map<string, number>();
@@ -64,12 +66,16 @@ export class FilesystemProvider {
     recentLimit: number;
     searchLimit: number;
     readMaxBytes: number;
+    contentRefThresholdBytes?: number;
+    previewBytes?: number;
   }) {
     this.root = resolve(options.root);
     this.focusPath = resolve(options.focus || options.root);
     this.recentLimit = options.recentLimit;
     this.searchLimit = options.searchLimit;
     this.readMaxBytes = options.readMaxBytes;
+    this.contentRefThresholdBytes = options.contentRefThresholdBytes ?? 8192;
+    this.previewBytes = options.previewBytes ?? 2048;
 
     this.server = createSlopServer({
       id: "filesystem",
@@ -168,6 +174,9 @@ export class FilesystemProvider {
     startLine?: number;
     endLine?: number;
     totalLines?: number;
+    preview_only?: boolean;
+    total_bytes?: number;
+    ref?: { kind: "fs"; path: string; version: number; total_bytes: number; total_lines: number };
   }> {
     const fullPath = this.ensureWithinRoot(inputPath);
     const bytes = await Bun.file(fullPath).bytes();
@@ -212,6 +221,31 @@ export class FilesystemProvider {
         startLine,
         endLine,
         totalLines,
+      };
+    }
+
+    // No explicit range: decide whether to return full content or a preview+ref.
+    if (bytes.byteLength > this.contentRefThresholdBytes) {
+      const relPath = relativePath(this.root, fullPath);
+      const previewText = TEXT_DECODER.decode(bytes.subarray(0, this.previewBytes));
+      const totalLines = TEXT_DECODER.decode(bytes).split("\n").length;
+      this.recordRecent("read", relPath, "preview+ref");
+
+      return {
+        path: relPath,
+        content: truncateText(previewText, this.previewBytes),
+        truncated: true,
+        version,
+        preview_only: true,
+        total_bytes: bytes.byteLength,
+        totalLines,
+        ref: {
+          kind: "fs",
+          path: relPath,
+          version,
+          total_bytes: bytes.byteLength,
+          total_lines: totalLines,
+        },
       };
     }
 

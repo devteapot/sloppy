@@ -161,6 +161,100 @@ describe("FilesystemProvider", () => {
     }
   });
 
+  test("returns preview + content ref when file exceeds threshold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-ref-"));
+    tempPaths.push(root);
+    // 20KB body, 1000 lines
+    const body = Array.from({ length: 1000 }, (_, i) => `line-${i + 1}`.padEnd(20, "x")).join("\n");
+    await writeFile(join(root, "big.log"), body, "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+      contentRefThresholdBytes: 4096,
+      previewBytes: 512,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const noRange = await consumer.invoke("/workspace", "read", { path: "big.log" });
+      const data = noRange.data as {
+        content: string;
+        truncated: boolean;
+        preview_only?: boolean;
+        total_bytes?: number;
+        totalLines?: number;
+        ref?: {
+          kind: string;
+          path: string;
+          version: number;
+          total_bytes: number;
+          total_lines: number;
+        };
+      };
+      expect(data.preview_only).toBe(true);
+      expect(data.truncated).toBe(true);
+      expect(data.content.length).toBeLessThanOrEqual(512);
+      expect(data.total_bytes).toBe(Buffer.byteLength(body, "utf8"));
+      expect(data.ref).toBeDefined();
+      expect(data.ref?.path).toBe("big.log");
+      expect(data.ref?.kind).toBe("fs");
+      expect(data.ref?.total_lines).toBe(1000);
+
+      // Dereferencing via a range returns the exact slice, not the preview.
+      const slice = await consumer.invoke("/workspace", "read", {
+        path: "big.log",
+        start_line: 50,
+        end_line: 52,
+      });
+      const sliceData = slice.data as { content: string; preview_only?: boolean };
+      expect(sliceData.preview_only).toBeUndefined();
+      expect(sliceData.content.split("\n")).toHaveLength(3);
+      expect(sliceData.content).toContain("line-50");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("returns full content when file is under threshold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-small-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "small.txt"), "hello world", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+      contentRefThresholdBytes: 4096,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const result = await consumer.invoke("/workspace", "read", { path: "small.txt" });
+      const data = result.data as {
+        content: string;
+        preview_only?: boolean;
+        ref?: unknown;
+      };
+      expect(data.content).toBe("hello world");
+      expect(data.preview_only).toBeUndefined();
+      expect(data.ref).toBeUndefined();
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("reads a line range without returning the whole file", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-range-"));
     tempPaths.push(root);

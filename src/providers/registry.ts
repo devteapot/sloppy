@@ -73,6 +73,8 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       recentLimit: config.providers.filesystem.recentLimit,
       searchLimit: config.providers.filesystem.searchLimit,
       readMaxBytes: config.providers.filesystem.readMaxBytes,
+      contentRefThresholdBytes: config.providers.filesystem.contentRefThresholdBytes,
+      previewBytes: config.providers.filesystem.previewBytes,
     });
     providers.push({
       id: "filesystem",
