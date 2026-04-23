@@ -87,12 +87,24 @@ function createSimulatedRunner(
   };
 }
 
+export type ChildApprovalSnapshot = {
+  id: string;
+  status?: string;
+  summary?: string;
+  action?: string;
+  path?: string;
+};
+
 export class DelegationProvider {
   readonly server: SlopServer;
   private maxAgents: number;
   private agents = new Map<string, DelegationAgent>();
   private runnerFactory: DelegationRunnerFactory;
   private parentHub: ConsumerHub | null = null;
+  private approvalMirrors = new Map<
+    string,
+    { unsubscribe: () => void; providerId: string; pending: ChildApprovalSnapshot[] }
+  >();
 
   constructor(
     options: {
@@ -113,11 +125,71 @@ export class DelegationProvider {
   }
 
   stop(): void {
+    for (const agentId of [...this.approvalMirrors.keys()]) {
+      this.stopMirroringApprovals(agentId);
+    }
     this.server.stop();
   }
 
   setParentHub(hub: ConsumerHub): void {
     this.parentHub = hub;
+  }
+
+  private async mirrorChildApprovals(agentId: string, providerId: string): Promise<void> {
+    if (!this.parentHub) return;
+    this.stopMirroringApprovals(agentId);
+
+    try {
+      const unsubscribe = await this.parentHub.watchPath(
+        providerId,
+        "/approvals",
+        (tree) => {
+          const pending: ChildApprovalSnapshot[] = [];
+          for (const child of tree?.children ?? []) {
+            const props = (child.properties ?? {}) as Record<string, unknown>;
+            if (props.status !== undefined && props.status !== "pending") continue;
+            pending.push({
+              id: String(child.id ?? ""),
+              status: typeof props.status === "string" ? props.status : undefined,
+              summary: typeof props.summary === "string" ? props.summary : undefined,
+              action: typeof props.action === "string" ? props.action : undefined,
+              path: typeof props.path === "string" ? props.path : undefined,
+            });
+          }
+          const entry = this.approvalMirrors.get(agentId);
+          if (entry) {
+            entry.pending = pending;
+          } else {
+            this.approvalMirrors.set(agentId, {
+              unsubscribe: () => undefined,
+              providerId,
+              pending,
+            });
+          }
+          this.server.refresh();
+        },
+        { depth: 2 },
+      );
+      const existing = this.approvalMirrors.get(agentId);
+      this.approvalMirrors.set(agentId, {
+        unsubscribe,
+        providerId,
+        pending: existing?.pending ?? [],
+      });
+    } catch {
+      // best-effort: child may not expose /approvals
+    }
+  }
+
+  private stopMirroringApprovals(agentId: string): void {
+    const entry = this.approvalMirrors.get(agentId);
+    if (!entry) return;
+    try {
+      entry.unsubscribe();
+    } catch {
+      // ignore
+    }
+    this.approvalMirrors.delete(agentId);
   }
 
   private async listChildApprovals(agentId: string): Promise<{
@@ -220,8 +292,16 @@ export class DelegationProvider {
           if (update.error !== undefined) current.error = update.error;
           if (update.session_provider_id !== undefined) {
             current.session_provider_id = update.session_provider_id;
+            void this.mirrorChildApprovals(id, update.session_provider_id);
           }
           if (update.completed_at !== undefined) current.completed_at = update.completed_at;
+          if (
+            update.status === "completed" ||
+            update.status === "failed" ||
+            update.status === "cancelled"
+          ) {
+            this.stopMirroringApprovals(id);
+          }
           this.server.refresh();
         },
       },
@@ -267,6 +347,7 @@ export class DelegationProvider {
 
     agent.status = "cancelled";
     agent.completed_at = new Date().toISOString();
+    this.stopMirroringApprovals(agentId);
     this.server.refresh();
     void agent.runner?.cancel().catch(() => {
       // best-effort teardown
@@ -353,6 +434,7 @@ export class DelegationProvider {
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
         error: agent.error,
         session_provider_id: agent.session_provider_id,
+        pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
       },
       actions: {
         monitor: action(async () => this.monitor(agent.id), {

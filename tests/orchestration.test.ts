@@ -319,6 +319,22 @@ describe("Agent orchestration (sub-agent federation)", () => {
       expect(listedApprovals[0]?.id).toBe("app-1");
       expect(listedApprovals[0]?.status).toBe("pending");
 
+      // The pending approval should also be mirrored into the agent item's props
+      // automatically via the child /approvals subscription.
+      let mirrored: unknown[] | undefined;
+      for (let i = 0; i < 20; i++) {
+        const agent = await consumer.query(`/agents/${agentId}`, 1);
+        const props = (agent.properties ?? {}) as { pending_approvals?: unknown[] };
+        if (props.pending_approvals && props.pending_approvals.length > 0) {
+          mirrored = props.pending_approvals;
+          break;
+        }
+        await Bun.sleep(20);
+      }
+      expect(mirrored).toEqual([
+        { id: "app-1", status: "pending", summary: undefined, action: undefined, path: undefined },
+      ]);
+
       const approveResult = await consumer.invoke(`/agents/${agentId}`, "approve_child_approval", {
         approval_id: "app-1",
       });
