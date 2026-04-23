@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
 import YAML from "yaml";
 
+import { validateDescriptor } from "./descriptor-validation";
+
 export type ProviderTransportDescriptor =
   | { type: "unix"; path: string }
   | { type: "ws"; url: string }
@@ -55,6 +57,18 @@ async function readDescriptor(filePath: string): Promise<ProviderDescriptor | nu
       filePath.endsWith(".yaml") || filePath.endsWith(".yml") ? YAML.parse(raw) : JSON.parse(raw);
 
     if (!isProviderDescriptor(parsed)) {
+      console.warn(
+        `[provider-discovery] skipping invalid descriptor ${filePath}: missing required fields (id, name, transport)`,
+      );
+      return null;
+    }
+
+    const validation = validateDescriptor(parsed);
+
+    if ("errors" in validation) {
+      console.warn(
+        `[provider-discovery] skipping descriptor ${filePath}: ${validation.errors.join(", ")}`,
+      );
       return null;
     }
 

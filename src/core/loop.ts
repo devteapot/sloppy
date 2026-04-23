@@ -90,6 +90,25 @@ function stringifyResult(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+export function truncateToolResult(result: unknown, maxSize: number): string {
+  const content = stringifyResult(result);
+  const contentLength = content.length;
+
+  if (contentLength <= maxSize) {
+    return content;
+  }
+
+  const truncationMessage =
+    "[truncated: $removed chars removed, use slop_query_state for full details]";
+  const reservedForMessage = 100;
+  const keep = maxSize - reservedForMessage;
+
+  return (
+    content.slice(0, keep) +
+    truncationMessage.replace("$removed", String(contentLength - keep))
+  );
+}
+
 async function executeToolCall(
   toolUse: ToolUseContentBlock,
   toolSet: RuntimeToolSet,

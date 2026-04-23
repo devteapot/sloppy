@@ -50,6 +50,7 @@ export const sloppyConfigSchema = z.object({
       historyTurns: 8,
       toolResultMaxChars: 16000,
     }),
+  maxToolResultSize: z.number().int().min(100).default(4096),
   providers: z
     .object({
       builtin: z
