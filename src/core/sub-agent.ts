@@ -62,8 +62,25 @@ export class SubAgentRunner {
     this.orchestrationProviderId = options.orchestrationProviderId;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
+    // Sub-agents do leaf work. Strip orchestrator-mode and the orchestration/
+    // delegation providers so they can't re-enter planning mode and recurse.
+    // The parent hub still federates the child's session tree back to the
+    // orchestrator via AgentSessionProvider.
+    const childConfig = {
+      ...options.parentConfig,
+      agent: { ...options.parentConfig.agent, orchestratorMode: false },
+      providers: {
+        ...options.parentConfig.providers,
+        builtin: {
+          ...options.parentConfig.providers.builtin,
+          orchestration: false,
+          delegation: false,
+        },
+      },
+    };
+
     this.runtime = new SessionRuntime({
-      config: options.parentConfig,
+      config: childConfig,
       sessionId: this.sessionProviderId,
       title: options.name,
       agentFactory: options.agentFactory,

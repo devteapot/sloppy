@@ -22,19 +22,35 @@ function dumpArtifacts(root: string, logPath: string, label: string): void {
     mkdirSync(artifactDir, { recursive: true });
     const orchestration = join(root, ".sloppy/orchestration");
     if (existsSync(orchestration)) {
+      const entries = readdirSync(orchestration, { recursive: true, withFileTypes: true });
       writeFileSync(
         join(artifactDir, "orchestration-listing.txt"),
-        readdirSync(orchestration, { recursive: true, withFileTypes: true })
-          .map((e) => `${e.parentPath ?? ""}/${e.name}`)
-          .join("\n"),
+        entries.map((e) => `${e.parentPath ?? ""}/${e.name}`).join("\n"),
       );
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const parent = entry.parentPath ?? "";
+        const src = join(parent, entry.name);
+        const rel = src.slice(root.length + 1).replaceAll("/", "__");
+        writeFileSync(join(artifactDir, rel), readFileSync(src, "utf8"));
+      }
+    }
+    for (const file of readdirSync(root)) {
+      const full = join(root, file);
+      if (existsSync(full) && !file.startsWith(".") && file !== "debug.log") {
+        try {
+          writeFileSync(join(artifactDir, `workspace__${file}`), readFileSync(full, "utf8"));
+        } catch {
+          // skip non-text files
+        }
+      }
     }
     if (existsSync(logPath)) {
       writeFileSync(join(artifactDir, "debug.log"), readFileSync(logPath, "utf8"));
     }
     process.stderr.write(`[e2e] artifacts saved to ${artifactDir}\n`);
-  } catch {
-    // best-effort
+  } catch (error) {
+    process.stderr.write(`[e2e] artifact dump failed: ${String(error)}\n`);
   }
 }
 
@@ -197,7 +213,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
         await rm(root, { recursive: true, force: true });
       }
     },
-    5 * 60_000,
+    10 * 60_000,
   );
 
   test(
@@ -250,7 +266,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
         await rm(root, { recursive: true, force: true });
       }
     },
-    10 * 60_000,
+    20 * 60_000,
   );
 });
 
