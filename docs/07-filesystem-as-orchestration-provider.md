@@ -4,7 +4,7 @@
 
 **Date:** 2026-04-23
 **Author:** Research agent, spawned by Hermes
-**Status:** Revised synthesis (agent-as-provider layer added, CAS promoted)
+**Status:** Phase 2 landed — filesystem CAS + sub-agent federation primitive shipped (commits `bd1469d`, `b70f52f`)
 
 ---
 
@@ -40,13 +40,19 @@ The SLOP architecture already implements the conceptual foundation for this:
 
 The current filesystem provider is **data-centric** -- it manages workspace files. The orchestration concept requires the filesystem to be **control-centric** -- where files themselves encode agent coordination state (task assignments, progress, handoffs, results).
 
-Currently:
-- Agents read/write their own result files directly
-- The orchestrator must poll or query to see what changed
-- No automatic state synchronization between agents
-- No optimistic concurrency control
+**Shipped (commits `bd1469d`, `b70f52f`):**
+- Per-file `version` on every file node; `expected_version` CAS guard on `write` (`src/providers/builtin/filesystem.ts`). External mtime drift bumps the version on next observation.
+- `read` accepts `start_line`/`end_line` so agents pull slices of large files without loading the full body into context.
+- `DelegationProvider` has a pluggable `runnerFactory`; the default simulation remains for tests, and the registry wires a real `SubAgentRunner` factory via a new `RegisteredProvider.onHubReady` hook.
+- `SubAgentRunner` (`src/core/sub-agent.ts`) creates a scoped `SessionRuntime` + `AgentSessionProvider` per sub-agent and registers that provider into the **parent's** `ConsumerHub` — the parent observes the child's `/session /turn /activity /approvals` as live patches, no polling.
 
-The gap is between "the filesystem contains agent state" and "the orchestrator always knows the current state."
+**Still missing:**
+- Durable `.sloppy/orchestration/` schema (plan.json, tasks/, handoff/) — the crash-recovery story in §6.3 is still theoretical until these files exist.
+- Approval routing across the parent/child boundary: a child's `waiting_approval` is visible in the parent's tree, but the parent can't yet approve through its own surface.
+- Content references for large blobs in transcripts/tool results.
+- Automatic push on external edits (today drift is detected on query; no watcher).
+
+The gap is now narrower: we have the freshness primitive and the live-agent surface; what remains is the durable coordination fabric on top.
 
 ---
 
@@ -325,16 +331,15 @@ The filesystem approach is unique because:
 
 ## 8. Proposed Implementation Phases
 
-### Phase 1: Orchestration File Schema
+### Phase 1: Orchestration File Schema *(pending)*
 Define the file structure and format for orchestration state under `/workspace/.sloppy/orchestration/`. Implement minimal types and validation.
 
-### Phase 2: Extended Filesystem Provider with CAS
-Extend the filesystem provider to expose `/orchestration` as a first-class collection alongside `/workspace`, and add a `version` field + `expectedVersion` write/patch parameter to every file node. CAS moves from "later safety net" to the primitive that makes the rest of the phases safe — shared files like `plan.json` need it as soon as more than one writer exists. Subscriptions to this path push real-time updates carrying the version.
+### Phase 2: Extended Filesystem Provider with CAS *(shipped — `bd1469d`, `b70f52f`)*
+Version + `expected_version` CAS live on every file node. Range reads (`start_line`/`end_line`) avoid loading full files into agent context. Drift detection bumps version on external edits. The `/orchestration` collection surface itself is still pending — that lands with Phase 1's schema.
 
-### Phase 3: Real Sub-Agent Delegation
-Replace the simulated delegation provider with a real implementation on both axes:
-- Durable: agent lifecycle maps to files under `tasks/{id}/`.
-- Live: each spawned sub-agent runs a real `Agent` loop and registers its session provider in the orchestrator's `ConsumerHub`.
+### Phase 3: Real Sub-Agent Delegation *(live axis shipped, durable axis pending)*
+- **Live (shipped):** `SubAgentRunner` registers each sub-agent's `AgentSessionProvider` into the parent hub via `onHubReady`. Pluggable `runnerFactory` on `DelegationProvider` keeps the simulated path for tests.
+- **Durable (pending):** agent lifecycle mapped to files under `tasks/{id}/` — blocked on Phase 1.
 
 ### Phase 4: Orchestrator Agent Prompt
 Write the orchestrator prompt that teaches the agent to:
@@ -403,4 +408,4 @@ The filesystem-as-orchestration-provider concept is viable because:
 4. It extends naturally from the existing delegation provider and filesystem provider without requiring new protocols or transports
 5. It aligns perfectly with SLOP's state-first design philosophy
 
-The next step is implementation, starting with Phase 1 (file schema) and Phase 2 (extended filesystem provider with CAS) — treating version-guarded writes as a foundational primitive rather than a late-phase safety net, and layering the live session-provider axis on top in Phase 3.
+Phase 2 (CAS + range reads) and the live-axis half of Phase 3 (sub-agent federation via `SubAgentRunner`) have shipped. Remaining work, in order of leverage: a real-LLM happy-path test for `SubAgentRunner`; Phase 1's durable `.sloppy/orchestration/` schema; content references for large blobs; approval routing across the parent/child boundary; and Phase 7 scale controls once concurrent sub-agent counts warrant them.
