@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildMirroredItemId, SessionStore } from "../src/session/store";
+import { SessionService } from "../src/session/service";
 import type {
   AgentSessionSnapshot,
   ApprovalItem,
@@ -1129,5 +1130,189 @@ describe("SessionStore — beginTurn trims resolved history", () => {
     // Should have trimmed to 50 approvals and 50 tasks (default limits)
     expect(snap.approvals).toHaveLength(50);
     expect(snap.tasks).toHaveLength(50);
+  });
+});
+
+describe("SessionStore — client registration", () => {
+  test("registerClient adds client with timestamp", () => {
+    const store = createStore();
+    store.registerClient("client-1");
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.session.connectedClients).toHaveLength(1);
+    expect(snapshot.session.connectedClients[0]?.clientId).toBe("client-1");
+    expect(snapshot.session.connectedClients[0]?.connectedAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(snapshot.session.clientCount).toBe(1);
+  });
+
+  test("registerClient updates existing client timestamp", () => {
+    const store = createStore();
+    store.registerClient("client-1");
+    const firstConnectedAt = store.getSnapshot().session.connectedClients[0]?.connectedAt;
+
+    // Use a small delay to ensure different timestamp
+    const start = Date.now();
+    while (Date.now() - start < 5) {
+      // spin for 5ms to get a different timestamp
+    }
+    store.registerClient("client-1");
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.session.connectedClients).toHaveLength(1);
+    expect(snapshot.session.connectedClients[0]?.clientId).toBe("client-1");
+    expect(snapshot.session.connectedClients[0]?.connectedAt).not.toBe(firstConnectedAt);
+    expect(snapshot.session.clientCount).toBe(1);
+  });
+
+  test("unregisterClient removes client and updates count", () => {
+    const store = createStore();
+    store.registerClient("client-1");
+    store.registerClient("client-2");
+
+    const snapshotBefore = store.getSnapshot();
+    expect(snapshotBefore.session.connectedClients).toHaveLength(2);
+    expect(snapshotBefore.session.clientCount).toBe(2);
+
+    store.unregisterClient("client-1");
+
+    const snapshotAfter = store.getSnapshot();
+    expect(snapshotAfter.session.connectedClients).toHaveLength(1);
+    expect(snapshotAfter.session.connectedClients[0]?.clientId).toBe("client-2");
+    expect(snapshotAfter.session.clientCount).toBe(1);
+  });
+});
+
+describe("SessionStore — lastActivityAt tracking", () => {
+  test("lastActivityAt updates on beginTurn", () => {
+    const store = createStore();
+    const firstActivityAt = store.getSnapshot().session.lastActivityAt;
+
+    // Use a small delay to ensure different timestamp
+    const start = Date.now();
+    while (Date.now() - start < 5) {
+      // spin for 5ms to get a different timestamp
+    }
+    const _turnId = store.beginTurn("Hello");
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.session.lastActivityAt).not.toBe(firstActivityAt);
+    expect(snapshot.session.lastActivityAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("lastActivityAt updates on updateTurn", () => {
+    const store = createStore();
+    const turnId = store.beginTurn("Hello");
+    const firstActivityAt = store.getSnapshot().session.lastActivityAt;
+
+    // Use a small delay to ensure different timestamp
+    const start = Date.now();
+    while (Date.now() - start < 5) {
+      // spin for 5ms to get a different timestamp
+    }
+    store.recordToolStart(turnId, {
+      toolUseId: "tu-1",
+      summary: "Read file",
+    });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.session.lastActivityAt).not.toBe(firstActivityAt);
+    expect(snapshot.session.lastActivityAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe("SessionService — multi-session support", () => {
+  test("SessionService.createSession creates and starts a new session", () => {
+    const service = new SessionService({
+      sessionId: "test-session-1",
+      title: "Test Session",
+    });
+    const snapshot = service.runtime.store.getSnapshot();
+
+    expect(snapshot.session.sessionId).toBe("test-session-1");
+    expect(service.socketPath).toMatch(/\/tmp\/slop\/[^/]+\.sock$/);
+    expect(service.providerId).toMatch(/^sloppy-session-/);
+
+    service.stop();
+  });
+
+  test("SessionService.getActiveSessions returns active sessions", () => {
+    const service1 = new SessionService({
+      sessionId: "multi-sess-1",
+      title: "Session 1",
+    });
+    const service2 = new SessionService({
+      sessionId: "multi-sess-2",
+      title: "Session 2",
+    });
+
+    const sessions = SessionService.getActiveSessions();
+    expect(sessions).toHaveLength(2);
+
+    const sessionIds = sessions.map((s) => s.sessionId).sort();
+    expect(sessionIds).toEqual(["multi-sess-1", "multi-sess-2"]);
+
+    service1.stop();
+    service2.stop();
+  });
+
+  test("SessionService.stopSession stops and removes specific session", () => {
+    const service1 = new SessionService({
+      sessionId: "stop-sess-1",
+      title: "Session 1",
+    });
+    const service2 = new SessionService({
+      sessionId: "stop-sess-2",
+      title: "Session 2",
+    });
+
+    let sessions = SessionService.getActiveSessions();
+    expect(sessions).toHaveLength(2);
+
+    const stopped = SessionService.stopSession("stop-sess-1");
+    expect(stopped).toBe(true);
+
+    sessions = SessionService.getActiveSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.sessionId).toBe("stop-sess-2");
+
+    // StopSession returns false for unknown session
+    const notFound = SessionService.stopSession("nonexistent");
+    expect(notFound).toBe(false);
+
+    service2.stop();
+  });
+
+  test("stopping one session doesn't affect others", () => {
+    const service1 = new SessionService({
+      sessionId: "isolate-1",
+      title: "Session 1",
+    });
+    const service2 = new SessionService({
+      sessionId: "isolate-2",
+      title: "Session 2",
+    });
+
+    // Send message on service2 via store
+    const turnId = service2.runtime.store.beginTurn("Hello from session 2");
+    service2.runtime.store.appendAssistantText(turnId, "response");
+
+    const snapshot = service2.runtime.store.getSnapshot();
+    expect(snapshot.transcript).toHaveLength(2);
+    expect(snapshot.transcript[0]?.role).toBe("user");
+
+    // Stop service1
+    SessionService.stopSession("isolate-1");
+
+    // service2 should still have its messages
+    const snapshotAfter = service2.runtime.store.getSnapshot();
+    expect(snapshotAfter.transcript).toHaveLength(2);
+    expect(snapshotAfter.session.sessionId).toBe("isolate-2");
+
+    // Verify service1 is gone
+    const remaining = SessionService.getActiveSessions();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.sessionId).toBe("isolate-2");
+
+    service2.stop();
   });
 });

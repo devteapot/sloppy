@@ -147,6 +147,11 @@ export type LlmStateSnapshot = {
   profiles: LlmProfileSnapshot[];
 };
 
+export type ConnectedClient = {
+  clientId: string;
+  connectedAt: string;
+};
+
 export type SessionMetadata = {
   sessionId: string;
   status: AgentSessionStatus;
@@ -154,7 +159,9 @@ export type SessionMetadata = {
   model: string;
   startedAt: string;
   updatedAt: string;
+  lastActivityAt: string;
   clientCount: number;
+  connectedClients: ConnectedClient[];
   title?: string;
   workspaceRoot?: string;
   lastError?: string;
@@ -184,5 +191,20 @@ export type AgentSessionSnapshot = {
   tasks: SessionTask[];
   apps: ExternalAppSnapshot[];
 };
+
+export type SessionStoreEventType =
+  | "turn"
+  | "transcript"
+  | "activity"
+  | "approvals"
+  | "tasks"
+  | "apps"
+  | "llm"
+  | "session";
+
+export type SessionStoreGranularListener = (event: {
+  type: SessionStoreEventType;
+  snapshot: AgentSessionSnapshot;
+}) => void;
 
 export type SessionStoreChangeListener = (snapshot: AgentSessionSnapshot) => void;

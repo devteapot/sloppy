@@ -13,6 +13,8 @@ function defaultSocketPath(providerId: string): string {
 }
 
 export class SessionService {
+  private static sessions = new Map<string, SessionService>();
+
   readonly runtime: SessionRuntime;
   readonly provider: AgentSessionProvider;
   readonly providerId: string;
@@ -44,16 +46,40 @@ export class SessionService {
       providerName: options?.providerName,
     });
     this.socketPath = options?.socketPath ?? defaultSocketPath(this.providerId);
+
+    SessionService.sessions.set(sessionId, this);
   }
 
-  async start(options?: { register?: boolean }): Promise<void> {
-    await this.runtime.start();
+  static getActiveSessions(): {
+    sessionId: string;
+    providerId: string;
+    socketPath: string;
+  }[] {
+    return Array.from(SessionService.sessions.values()).map((s) => ({
+      sessionId: s.runtime.store.getSnapshot().session.sessionId,
+      providerId: s.providerId,
+      socketPath: s.socketPath,
+    }));
+  }
+
+  static stopSession(sessionId: string): boolean {
+    const session = SessionService.sessions.get(sessionId);
+    if (!session) {
+      return false;
+    }
+    session.stop();
+    return true;
+  }
+
+  start(options?: { register?: boolean }): void {
     this.unixListener = listenUnix(this.provider.server, this.socketPath, {
       register: options?.register ?? true,
     });
   }
 
   stop(): void {
+    const sessionId = this.runtime.store.getSnapshot().session.sessionId;
+    SessionService.sessions.delete(sessionId);
     this.unixListener?.close();
     this.unixListener = null;
     this.provider.stop();

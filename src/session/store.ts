@@ -7,6 +7,8 @@ import type {
   ExternalAppSnapshot,
   LlmStateSnapshot,
   SessionStoreChangeListener,
+  SessionStoreEventType,
+  SessionStoreGranularListener,
   SessionTask,
   TranscriptMessage,
   TurnStateSnapshot,
@@ -56,7 +58,12 @@ function deriveTitle(userText: string): string {
 
 function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
   return {
-    session: { ...snapshot.session },
+    session: {
+      ...snapshot.session,
+      connectedClients: snapshot.session.connectedClients.map(
+        (client) => ({ ...client }),
+      ),
+    },
     llm: {
       ...snapshot.llm,
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
@@ -85,10 +92,22 @@ function compareApps(left: ExternalAppSnapshot, right: ExternalAppSnapshot): num
 export class SessionStore {
   private snapshot: AgentSessionSnapshot;
   private listeners = new Set<SessionStoreChangeListener>();
+  private granularListeners = new Map<
+    SessionStoreEventType,
+    Set<SessionStoreGranularListener>
+  >();
   private activeAssistantMessageId: string | null = null;
   private activeModelActivityId: string | null = null;
   private activeApprovalActivityId: string | null = null;
   private toolActivityIds = new Map<string, string>();
+  private turnChanged = false;
+  private transcriptChanged = false;
+  private activityChanged = false;
+  private approvalsChanged = false;
+  private tasksChanged = false;
+  private appsChanged = false;
+  private llmChanged = false;
+  private sessionChanged = false;
 
   constructor(options: {
     sessionId: string;
@@ -106,7 +125,9 @@ export class SessionStore {
         model: options.model,
         startedAt,
         updatedAt: startedAt,
+        lastActivityAt: startedAt,
         clientCount: 0,
+        connectedClients: [],
         title: options.title,
         workspaceRoot: options.workspaceRoot,
       },
@@ -151,10 +172,84 @@ export class SessionStore {
     return task ? { ...task } : undefined;
   }
 
+  registerClient(clientId: string): void {
+    const time = now();
+    const existingIndex = this.snapshot.session.connectedClients.findIndex(
+      (client) => client.clientId === clientId,
+    );
+    if (existingIndex !== -1) {
+      this.snapshot.session.connectedClients[existingIndex].connectedAt = time;
+    } else {
+      this.snapshot.session.connectedClients.push({ clientId, connectedAt: time });
+    }
+    this.snapshot.session.clientCount = this.snapshot.session.connectedClients.length;
+    this.snapshot.session.lastActivityAt = time;
+    this.sessionChanged = true;
+    this.emitChange();
+  }
+
+  unregisterClient(clientId: string): void {
+    const time = now();
+    this.snapshot.session.connectedClients = this.snapshot.session.connectedClients.filter(
+      (client) => client.clientId !== clientId,
+    );
+    this.snapshot.session.clientCount = this.snapshot.session.connectedClients.length;
+    this.snapshot.session.lastActivityAt = time;
+    this.sessionChanged = true;
+    this.emitChange();
+  }
+
   onChange(listener: SessionStoreChangeListener): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  onTurnChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("turn", fn);
+  }
+
+  onTranscriptChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("transcript", fn);
+  }
+
+  onActivityChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("activity", fn);
+  }
+
+  onApprovalsChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("approvals", fn);
+  }
+
+  onTasksChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("tasks", fn);
+  }
+
+  onAppsChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("apps", fn);
+  }
+
+  onLlmChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("llm", fn);
+  }
+
+  onSessionChange(fn: SessionStoreGranularListener): () => void {
+    return this.subscribeGranular("session", fn);
+  }
+
+  private subscribeGranular(
+    eventType: SessionStoreEventType,
+    fn: SessionStoreGranularListener,
+  ): () => void {
+    let set = this.granularListeners.get(eventType);
+    if (!set) {
+      set = new Set();
+      this.granularListeners.set(eventType, set);
+    }
+    set.add(fn);
+    return () => {
+      set.delete(fn);
     };
   }
 
@@ -166,6 +261,8 @@ export class SessionStore {
     this.snapshot.session.modelProvider = state.selectedProvider;
     this.snapshot.session.model = state.selectedModel;
     this.snapshot.session.updatedAt = now();
+    this.llmChanged = true;
+    this.sessionChanged = true;
     this.emitChange();
   }
 
@@ -222,8 +319,13 @@ export class SessionStore {
       waitingOn: "model",
     });
     this.snapshot.session.lastError = undefined;
+    this.snapshot.session.lastActivityAt = time;
     this.trimResolvedApprovals();
     this.trimResolvedTasks();
+    this.turnChanged = true;
+    this.transcriptChanged = true;
+    this.activityChanged = true;
+    this.sessionChanged = true;
     this.emitChange();
     return turnId;
   }
@@ -282,6 +384,8 @@ export class SessionStore {
     }
 
     this.updateTurnPhase("model", "Generating response", "model", time);
+    this.turnChanged = true;
+    this.transcriptChanged = true;
     this.emitChange();
   }
 
@@ -338,6 +442,8 @@ export class SessionStore {
     }
 
     this.updateTurnPhase("model", "Generating response", "model", time);
+    this.turnChanged = true;
+    this.transcriptChanged = true;
     this.emitChange();
   }
 
@@ -368,6 +474,8 @@ export class SessionStore {
     });
     this.toolActivityIds.set(options.toolUseId, activityId);
     this.updateTurnPhase("tool_use", options.summary, "tool", time);
+    this.activityChanged = true;
+    this.turnChanged = true;
     this.emitChange();
   }
 
@@ -433,6 +541,9 @@ export class SessionStore {
     }
 
     this.updateTurnPhase("model", "Continuing after tool result", "model", time);
+    this.activityChanged = true;
+    this.tasksChanged = options.status === "accepted";
+    this.turnChanged = true;
     this.emitChange();
   }
 
@@ -472,6 +583,9 @@ export class SessionStore {
       message: options.reason,
       waitingOn: "approval",
     });
+    this.activityChanged = true;
+    this.approvalsChanged = true;
+    this.turnChanged = true;
     this.emitChange();
   }
 
@@ -529,12 +643,15 @@ export class SessionStore {
       ...approvals,
     ];
     this.snapshot.session.updatedAt = time;
+    this.approvalsChanged = true;
     this.emitChange();
   }
 
   syncApps(apps: ExternalAppSnapshot[]): void {
     this.snapshot.apps = apps.map((app) => ({ ...app })).sort(compareApps);
     this.snapshot.session.updatedAt = now();
+    this.appsChanged = true;
+    this.sessionChanged = true;
     this.emitChange();
   }
 
@@ -616,6 +733,9 @@ export class SessionStore {
       lastError: undefined,
       waitingOn: null,
     });
+    this.activityChanged = true;
+    this.turnChanged = true;
+    this.transcriptChanged = true;
     this.emitChange();
   }
 
@@ -641,6 +761,7 @@ export class SessionStore {
       ...mergedTasks,
     ];
     this.snapshot.session.updatedAt = time;
+    this.tasksChanged = true;
     this.emitChange();
   }
 
@@ -657,6 +778,8 @@ export class SessionStore {
     this.snapshot.approvals = nextApprovals;
     this.snapshot.tasks = nextTasks;
     this.snapshot.session.updatedAt = now();
+    this.approvalsChanged = true;
+    this.tasksChanged = true;
     this.emitChange();
   }
 
@@ -693,6 +816,9 @@ export class SessionStore {
       lastError: undefined,
       waitingOn: null,
     });
+    this.activityChanged = true;
+    this.turnChanged = true;
+    this.transcriptChanged = true;
     this.emitChange();
   }
 
@@ -742,12 +868,17 @@ export class SessionStore {
       lastError: message,
       waitingOn: null,
     });
+    this.activityChanged = true;
+    this.turnChanged = true;
+    this.transcriptChanged = true;
+    this.sessionChanged = true;
     this.emitChange();
   }
 
   close(): void {
     this.snapshot.session.status = "closed";
     this.snapshot.session.updatedAt = now();
+    this.sessionChanged = true;
     this.emitChange();
   }
 
@@ -806,6 +937,7 @@ export class SessionStore {
   private updateTurn(next: TurnStateSnapshot): void {
     this.snapshot.turn = next;
     this.snapshot.session.updatedAt = next.updatedAt;
+    this.snapshot.session.lastActivityAt = next.updatedAt;
   }
 
   private updateTurnPhase(
@@ -823,6 +955,7 @@ export class SessionStore {
       updatedAt,
     };
     this.snapshot.session.updatedAt = updatedAt;
+    this.snapshot.session.lastActivityAt = updatedAt;
   }
 
   trimResolvedApprovals(limit?: number): void {
@@ -836,6 +969,7 @@ export class SessionStore {
     }
     const toKeep = resolved.slice(0, maxResolved);
     this.snapshot.approvals = [...toKeep, ...pending];
+    this.approvalsChanged = true;
     this.emitChange();
   }
 
@@ -850,6 +984,7 @@ export class SessionStore {
     }
     const toKeep = resolved.slice(0, maxResolved);
     this.snapshot.tasks = [...toKeep, ...running];
+    this.tasksChanged = true;
     this.emitChange();
   }
 
@@ -858,5 +993,33 @@ export class SessionStore {
     for (const listener of this.listeners) {
       listener(snapshot);
     }
+
+    const changedTypes: SessionStoreEventType[] = [];
+    if (this.turnChanged) changedTypes.push("turn");
+    if (this.transcriptChanged) changedTypes.push("transcript");
+    if (this.activityChanged) changedTypes.push("activity");
+    if (this.approvalsChanged) changedTypes.push("approvals");
+    if (this.tasksChanged) changedTypes.push("tasks");
+    if (this.appsChanged) changedTypes.push("apps");
+    if (this.llmChanged) changedTypes.push("llm");
+    if (this.sessionChanged) changedTypes.push("session");
+
+    for (const eventType of changedTypes) {
+      const listeners = this.granularListeners.get(eventType);
+      if (listeners) {
+        for (const fn of listeners) {
+          fn({ type: eventType, snapshot });
+        }
+      }
+    }
+
+    this.turnChanged = false;
+    this.transcriptChanged = false;
+    this.activityChanged = false;
+    this.approvalsChanged = false;
+    this.tasksChanged = false;
+    this.appsChanged = false;
+    this.llmChanged = false;
+    this.sessionChanged = false;
   }
 }
