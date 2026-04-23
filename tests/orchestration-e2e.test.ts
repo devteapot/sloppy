@@ -164,6 +164,22 @@ const DEPENDENCY_GOAL = [
   "Create a plan, decompose into tasks with depends_on set correctly, spawn sub-agents, and complete the plan when done.",
 ].join(" ");
 
+const CAS_COLLAB_GOAL = [
+  "Use the orchestration and delegation providers to complete this goal end-to-end.",
+  "Two sub-agents will concurrently edit the SAME file, `ledger.txt`, under the workspace root.",
+  "Create a plan and two independent tasks (no dependencies between them) so both can run in parallel:",
+  "- Task A goal (verbatim, pass it exactly):",
+  "  `Append a single line 'A-DONE' to the file 'ledger.txt' under the workspace root.`",
+  "  `PROTOCOL (mandatory CAS loop): (1) Call the filesystem 'read' affordance on 'ledger.txt'. The read ALWAYS succeeds; if the file does not exist yet, read returns content='' and version=0. Record both values.`",
+  "  `(2) Compute new_content = current_content + 'A-DONE\\n'.`",
+  "  `(3) Call the filesystem 'write' affordance with path='ledger.txt', content=new_content, AND expected_version=<the version returned by step 1>.`",
+  "  `(4) Inspect the write result. If it contains {error: 'version_conflict', currentVersion: N}, DO NOT give up. Re-read the file (step 1), recompute new_content (step 2), and write again with the new version (step 3). Retry until the write result does NOT contain an 'error' field.`",
+  "  `Do not ever call 'write' without expected_version. Do not skip the read after a conflict.`",
+  "- Task B goal: identical to Task A but the line to append is 'B-DONE' instead of 'A-DONE'.",
+  "Spawn both sub-agents in the same orchestrator turn so they run concurrently and contend for the file.",
+  "When both tasks are completed, call complete_plan.",
+].join(" ");
+
 const FANOUT_GOAL = [
   "Use the orchestration and delegation providers to complete this goal end-to-end.",
   "Create exactly five files under the workspace root:",
@@ -269,6 +285,60 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
       }
     },
     20 * 60_000,
+  );
+
+  test(
+    "concurrent sub-agents collaborate on a shared file via CAS without losing writes",
+    async () => {
+      const root = await setupWorkspace();
+      const debugLog = join(root, "debug.log");
+      const restoreStderr = redirectStderrTo(debugLog);
+
+      const config = await buildOrchestratorConfig(root);
+      await assertLlmRoutedToEnv(config);
+      const agent = new Agent({ config });
+      let passed = false;
+      try {
+        await agent.start();
+        const result = await agent.chat(CAS_COLLAB_GOAL);
+        expect(result.status).toBe("completed");
+
+        const ledger = readFileSync(join(root, "ledger.txt"), "utf8");
+        // Both contributions must survive; CAS ensures no write is lost.
+        // We assert substring presence rather than strict line formatting —
+        // the important property is "no lost update", not agent
+        // formatting discipline.
+        expect(ledger).toContain("A-DONE");
+        expect(ledger).toContain("B-DONE");
+        // No duplicated contribution — a retry that re-reads must see the
+        // other agent's content and not append its own twice.
+        expect((ledger.match(/A-DONE/g) ?? []).length).toBe(1);
+        expect((ledger.match(/B-DONE/g) ?? []).length).toBe(1);
+
+        // Bonus signal: was CAS actually exercised? If both agents wrote
+        // sequentially by luck, no conflict fired. That's still a pass
+        // (outcome is correct), but we log it so the operator can tell.
+        const logLines = existsSync(debugLog) ? readFileSync(debugLog, "utf8") : "";
+        const conflicts = (logLines.match(/"event":"write_version_conflict"/g) ?? []).length;
+        process.stderr.write(`[e2e] CAS conflicts observed: ${conflicts}\n`);
+
+        const plan = JSON.parse(
+          readFileSync(join(root, ".sloppy/orchestration/plan.json"), "utf8"),
+        );
+        expect(plan.status).toBe("completed");
+
+        const defs = loadTaskDefs(root);
+        expect(defs.length).toBeGreaterThanOrEqual(2);
+        expect(defs.every((d) => d.depends_on.length === 0)).toBe(true);
+        passed = true;
+      } finally {
+        agent.shutdown();
+        restoreStderr();
+        if (!passed) dumpArtifacts(root, debugLog, "e2e-cas-collab");
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    15 * 60_000,
   );
 });
 

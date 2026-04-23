@@ -340,4 +340,48 @@ describe("FilesystemProvider", () => {
       provider.stop();
     }
   });
+
+  test("nonexistent file reads as empty at version 0 and write(expected_version=0) creates it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-"));
+    tempPaths.push(root);
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 2);
+
+      const readMissing = await consumer.invoke("/workspace", "read", { path: "new.txt" });
+      expect(readMissing.status).toBe("ok");
+      const readData = readMissing.data as { content: string; version: number };
+      expect(readData.content).toBe("");
+      expect(readData.version).toBe(0);
+
+      const writeNew = await consumer.invoke("/workspace", "write", {
+        path: "new.txt",
+        content: "hello",
+        expected_version: 0,
+      });
+      expect(writeNew.status).toBe("ok");
+      const writeData = writeNew.data as { version: number };
+      expect(writeData.version).toBe(1);
+
+      const stale = await consumer.invoke("/workspace", "write", {
+        path: "new.txt",
+        content: "oops",
+        expected_version: 0,
+      });
+      const staleData = stale.data as { error?: string; currentVersion?: number };
+      expect(staleData.error).toBe("version_conflict");
+      expect(staleData.currentVersion).toBe(1);
+    } finally {
+      provider.stop();
+    }
+  });
 });

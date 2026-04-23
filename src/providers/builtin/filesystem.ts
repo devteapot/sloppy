@@ -116,11 +116,16 @@ export class FilesystemProvider {
     const existing = this.fileVersions.get(absolutePath);
 
     if (existing === undefined) {
+      if (mtimeMs == null) {
+        // File does not exist on disk and has never been observed. Report
+        // version 0 so that `write(expected_version=0)` succeeds for first
+        // creation. Do not cache — bumpVersion on the first successful
+        // write will establish version 1.
+        return 0;
+      }
       const initial = 1;
       this.fileVersions.set(absolutePath, initial);
-      if (mtimeMs != null) {
-        this.cachedMtimes.set(absolutePath, mtimeMs);
-      }
+      this.cachedMtimes.set(absolutePath, mtimeMs);
       return initial;
     }
 
@@ -187,11 +192,22 @@ export class FilesystemProvider {
     ref?: { kind: "fs"; path: string; version: number; total_bytes: number; total_lines: number };
   }> {
     const fullPath = this.ensureWithinRoot(inputPath);
-    const bytes = await Bun.file(fullPath).bytes();
     const stat = await Bun.file(fullPath)
       .stat()
       .catch(() => null);
-    const version = this.observeVersion(fullPath, stat?.mtimeMs ?? null);
+    if (!stat) {
+      // Read-on-nonexistent returns empty content at version 0 so callers
+      // can implement a uniform "read then write with expected_version"
+      // protocol without special-casing ENOENT.
+      return {
+        path: relativePath(this.root, fullPath),
+        content: "",
+        truncated: false,
+        version: this.observeVersion(fullPath, null),
+      };
+    }
+    const bytes = await Bun.file(fullPath).bytes();
+    const version = this.observeVersion(fullPath, stat.mtimeMs);
 
     if (isProbablyBinary(bytes)) {
       return {
