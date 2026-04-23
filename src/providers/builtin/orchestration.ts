@@ -30,6 +30,19 @@ type Plan = {
   status: "active" | "completed" | "cancelled";
 };
 
+type HandoffStatus = "pending" | "responded" | "cancelled";
+
+type Handoff = {
+  id: string;
+  from_task: string;
+  to_task: string;
+  request: string;
+  status: HandoffStatus;
+  created_at: string;
+  responded_at?: string;
+  response?: string;
+};
+
 const ORCHESTRATION_DIR = ".sloppy/orchestration";
 
 function readJson<T>(path: string): T | null {
@@ -73,6 +86,7 @@ export class OrchestrationProvider {
   private progressTailMaxChars: number;
   private planVersions = new Map<string, number>();
   private taskVersions = new Map<string, number>();
+  private handoffVersions = new Map<string, number>();
 
   constructor(options: OrchestrationProviderOptions) {
     this.root = resolve(options.workspaceRoot, ORCHESTRATION_DIR);
@@ -81,6 +95,7 @@ export class OrchestrationProvider {
 
     mkdirSync(this.root, { recursive: true });
     mkdirSync(join(this.root, "tasks"), { recursive: true });
+    mkdirSync(join(this.root, "handoffs"), { recursive: true });
 
     this.server = createSlopServer({
       id: "orchestration",
@@ -89,6 +104,7 @@ export class OrchestrationProvider {
 
     this.server.register("orchestration", () => this.buildRootDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
+    this.server.register("handoffs", () => this.buildHandoffsDescriptor());
   }
 
   stop(): void {
@@ -130,6 +146,24 @@ export class OrchestrationProvider {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
+  }
+
+  private handoffPath(handoffId: string): string {
+    return join(this.root, "handoffs", `${handoffId}.json`);
+  }
+
+  private loadHandoff(handoffId: string): Handoff | null {
+    return readJson<Handoff>(this.handoffPath(handoffId));
+  }
+
+  private listHandoffs(): Handoff[] {
+    const dir = join(this.root, "handoffs");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<Handoff>(join(dir, entry.name)))
+      .filter((handoff): handoff is Handoff => handoff !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
   private bumpVersion(map: Map<string, number>, key: string): number {
@@ -322,6 +356,87 @@ export class OrchestrationProvider {
     return { task_id: taskId, result: readFileSync(resultPath, "utf8") };
   }
 
+  private createHandoff(params: {
+    from_task: string;
+    to_task: string;
+    request: string;
+  }): Handoff & { version: number } {
+    if (!this.loadTaskDefinition(params.from_task)) {
+      throw new Error(`Unknown from_task: ${params.from_task}`);
+    }
+    if (!this.loadTaskDefinition(params.to_task)) {
+      throw new Error(`Unknown to_task: ${params.to_task}`);
+    }
+
+    const id = `handoff-${crypto.randomUUID().slice(0, 8)}`;
+    const handoff: Handoff = {
+      id,
+      from_task: params.from_task,
+      to_task: params.to_task,
+      request: params.request,
+      status: "pending",
+      created_at: new Date().toISOString(),
+    };
+    writeJson(this.handoffPath(id), handoff);
+    const version = this.bumpVersion(this.handoffVersions, id);
+    this.server.refresh();
+    return { ...handoff, version };
+  }
+
+  private respondHandoff(params: {
+    handoff_id: string;
+    response: string;
+    expected_version?: number;
+  }): { version: number; status: HandoffStatus } | { error: string; currentVersion: number } {
+    const handoff = this.loadHandoff(params.handoff_id);
+    if (!handoff) {
+      throw new Error(`Unknown handoff: ${params.handoff_id}`);
+    }
+    const current = this.handoffVersions.get(params.handoff_id) ?? 0;
+    if (params.expected_version !== undefined && params.expected_version !== current) {
+      return { error: "version_conflict", currentVersion: current };
+    }
+    if (handoff.status !== "pending") {
+      throw new Error(`Handoff ${params.handoff_id} is already ${handoff.status}.`);
+    }
+    const updated: Handoff = {
+      ...handoff,
+      status: "responded",
+      responded_at: new Date().toISOString(),
+      response: params.response,
+    };
+    writeJson(this.handoffPath(params.handoff_id), updated);
+    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
+    this.server.refresh();
+    return { version, status: updated.status };
+  }
+
+  private cancelHandoff(params: {
+    handoff_id: string;
+    expected_version?: number;
+  }): { version: number; status: HandoffStatus } | { error: string; currentVersion: number } {
+    const handoff = this.loadHandoff(params.handoff_id);
+    if (!handoff) {
+      throw new Error(`Unknown handoff: ${params.handoff_id}`);
+    }
+    const current = this.handoffVersions.get(params.handoff_id) ?? 0;
+    if (params.expected_version !== undefined && params.expected_version !== current) {
+      return { error: "version_conflict", currentVersion: current };
+    }
+    if (handoff.status !== "pending") {
+      throw new Error(`Handoff ${params.handoff_id} is already ${handoff.status}.`);
+    }
+    const updated: Handoff = {
+      ...handoff,
+      status: "cancelled",
+      responded_at: new Date().toISOString(),
+    };
+    writeJson(this.handoffPath(params.handoff_id), updated);
+    const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
+    this.server.refresh();
+    return { version, status: updated.status };
+  }
+
   private buildRootDescriptor() {
     const plan = this.loadPlan();
     const taskIds = this.listTaskIds();
@@ -348,6 +463,10 @@ export class OrchestrationProvider {
         plan_created_at: plan?.created_at,
         plan_version: plan ? this.planVersion() : undefined,
         task_counts: counts,
+        handoff_counts: {
+          total: this.listHandoffs().length,
+          pending: this.listHandoffs().filter((h) => h.status === "pending").length,
+        },
       },
       summary: plan
         ? `Plan "${plan.query}" (${counts.completed}/${counts.total} done)`
@@ -423,11 +542,106 @@ export class OrchestrationProvider {
             estimate: "instant",
           },
         ),
+        create_handoff: action(
+          {
+            from_task: "string",
+            to_task: "string",
+            request: "string",
+          },
+          async ({ from_task, to_task, request }) =>
+            this.createHandoff({
+              from_task: from_task as string,
+              to_task: to_task as string,
+              request: request as string,
+            }),
+          {
+            label: "Create Handoff",
+            description:
+              "Request that one task pass data or context to another. The response lives in the handoff record.",
+            estimate: "instant",
+          },
+        ),
       },
       meta: {
         focus: true,
         salience: 1,
       },
+    };
+  }
+
+  private buildHandoffsDescriptor() {
+    const handoffs = this.listHandoffs();
+    const items: ItemDescriptor[] = handoffs.map((handoff) => {
+      const version = this.handoffVersions.get(handoff.id) ?? 0;
+      return {
+        id: handoff.id,
+        props: {
+          id: handoff.id,
+          from_task: handoff.from_task,
+          to_task: handoff.to_task,
+          request: handoff.request,
+          status: handoff.status,
+          created_at: handoff.created_at,
+          responded_at: handoff.responded_at,
+          response_preview: handoff.response ? truncateText(handoff.response, 400) : undefined,
+          version,
+        },
+        summary: `${handoff.from_task} → ${handoff.to_task}: ${handoff.request.slice(0, 80)}`,
+        actions: {
+          ...(handoff.status === "pending"
+            ? {
+                respond: action(
+                  {
+                    response: "string",
+                    expected_version: { type: "number" },
+                  },
+                  async ({ response, expected_version }) =>
+                    this.respondHandoff({
+                      handoff_id: handoff.id,
+                      response: response as string,
+                      expected_version:
+                        typeof expected_version === "number" ? expected_version : undefined,
+                    }),
+                  {
+                    label: "Respond",
+                    description: "Fulfil the handoff request with a response.",
+                    estimate: "instant",
+                  },
+                ),
+                cancel: action(
+                  { expected_version: { type: "number" } },
+                  async ({ expected_version }) =>
+                    this.cancelHandoff({
+                      handoff_id: handoff.id,
+                      expected_version:
+                        typeof expected_version === "number" ? expected_version : undefined,
+                    }),
+                  {
+                    label: "Cancel Handoff",
+                    description: "Cancel this pending handoff request.",
+                    dangerous: true,
+                    estimate: "instant",
+                  },
+                ),
+              }
+            : {}),
+        },
+        meta: {
+          salience: handoff.status === "pending" ? 0.9 : 0.5,
+          urgency: handoff.status === "pending" ? "high" : "low",
+        },
+      };
+    });
+
+    const pending = handoffs.filter((h) => h.status === "pending").length;
+    return {
+      type: "collection",
+      props: {
+        count: items.length,
+        pending,
+      },
+      summary: `Handoffs between tasks (${pending} pending).`,
+      items,
     };
   }
 

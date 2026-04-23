@@ -119,6 +119,83 @@ describe("OrchestrationProvider", () => {
     }
   });
 
+  test("creates and responds to a handoff between two tasks", async () => {
+    const { root, provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "build" });
+      const a = await consumer.invoke("/orchestration", "create_task", {
+        name: "producer",
+        goal: "produce data",
+      });
+      const b = await consumer.invoke("/orchestration", "create_task", {
+        name: "consumer",
+        goal: "consume data",
+      });
+      const fromId = (a.data as { id: string }).id;
+      const toId = (b.data as { id: string }).id;
+
+      const created = await consumer.invoke("/orchestration", "create_handoff", {
+        from_task: fromId,
+        to_task: toId,
+        request: "need the parsed output",
+      });
+      expect(created.status).toBe("ok");
+      const handoff = created.data as {
+        id: string;
+        status: string;
+        version: number;
+        from_task: string;
+        to_task: string;
+      };
+      expect(handoff.status).toBe("pending");
+      expect(handoff.from_task).toBe(fromId);
+      expect(handoff.to_task).toBe(toId);
+
+      const tree = await consumer.query("/handoffs", 2);
+      expect(tree.properties).toMatchObject({ count: 1, pending: 1 });
+      expect(tree.children?.[0]?.affordances?.map((a) => a.action)).toEqual(["respond", "cancel"]);
+
+      const responded = await consumer.invoke(`/handoffs/${handoff.id}`, "respond", {
+        response: "here is the data: [...]",
+        expected_version: handoff.version,
+      });
+      expect(responded.status).toBe("ok");
+      expect((responded.data as { status: string }).status).toBe("responded");
+
+      const afterFile = JSON.parse(
+        readFileSync(
+          join(root, ".sloppy", "orchestration", "handoffs", `${handoff.id}.json`),
+          "utf8",
+        ),
+      );
+      expect(afterFile.status).toBe("responded");
+      expect(afterFile.response).toBe("here is the data: [...]");
+
+      // Respond affordance disappears once handoff is no longer pending
+      const after = await consumer.query(`/handoffs/${handoff.id}`, 1);
+      expect(after.affordances ?? []).toEqual([]);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects handoff creation for unknown tasks", async () => {
+    const { provider, consumer } = await harness();
+
+    try {
+      const result = await consumer.invoke("/orchestration", "create_handoff", {
+        from_task: "task-doesnotexist",
+        to_task: "task-alsomissing",
+        request: "x",
+      });
+      expect(result.status).toBe("error");
+      expect(result.error?.message).toContain("Unknown from_task");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("rejects task updates with stale expected_version (CAS)", async () => {
     const { provider, consumer } = await harness();
 
