@@ -30,6 +30,9 @@ function textBlock(snapshot: AgentSessionSnapshot, messageIndex: number): string
   if (!block) {
     throw new Error("message has no content blocks");
   }
+  if (block.type === "media") {
+    return block.summary ?? "";
+  }
   return block.text;
 }
 
@@ -100,7 +103,7 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(userMessage.state).toBe("complete");
     expect(userMessage.turnId).toBe(turnId);
     expect(userMessage.author).toBe("user");
-    expect(userMessage.content[0]?.text).toBe("Hello there");
+    expect(userMessage.content[0]?.type === "text" ? userMessage.content[0]?.text : userMessage.content[0]?.summary ?? "").toBe("Hello there");
     expect(userMessage.content[0]?.mime).toBe("text/plain");
 
     expect(snapshot.turn.turnId).toBe(turnId);
@@ -848,5 +851,283 @@ describe("buildMirroredItemId", () => {
     expect(buildMirroredItemId("appr", "prov-1_X", "src-abc_123")).toBe(
       "appr-prov-1_X-src-abc_123",
     );
+  });
+});
+
+describe("SessionStore — trimResolvedApprovals", () => {
+  test("trimResolvedApprovals removes resolved approvals beyond limit", () => {
+    const store = createStore();
+    const baseTime = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create all 60 approvals in a single batch for the same provider
+    const allApprovals: ApprovalItem[] = [];
+    for (let i = 0; i < 50; i++) {
+      const time = new Date(baseTime).toISOString();
+      allApprovals.push({
+        id: `resolved-${String(i).padStart(3, "0")}`,
+        status: i % 2 === 0 ? "approved" : "rejected",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "resolved",
+        createdAt: time,
+        resolvedAt: time,
+      } as ApprovalItem);
+    }
+    for (let i = 0; i < 10; i++) {
+      const time = new Date(baseTime).toISOString();
+      allApprovals.push({
+        id: `pending-${String(i).padStart(3, "0")}`,
+        status: "pending",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "pending",
+        createdAt: time,
+      } as ApprovalItem);
+    }
+    store.syncProviderApprovals("filesystem", allApprovals);
+
+    let snapshot = store.getSnapshot();
+    expect(snapshot.approvals).toHaveLength(60);
+
+    store.trimResolvedApprovals(50);
+    snapshot = store.getSnapshot();
+
+    // Must have exactly 60 (50 resolved kept + 10 pending)
+    expect(snapshot.approvals).toHaveLength(60);
+
+    // No pending should have been removed
+    const pendingAfter = snapshot.approvals.filter((a) => a.status === "pending");
+    expect(pendingAfter).toHaveLength(10);
+
+    // All remaining must be resolved
+    const resolvedAfter = snapshot.approvals.filter(
+      (a) => a.status !== "pending",
+    );
+    expect(resolvedAfter).toHaveLength(50);
+
+    // Verify the 50 kept are the most recent (resolved-000 through resolved-049)
+    const resolvedIds = resolvedAfter.map((a) => a.id).sort();
+    for (let i = 0; i < 50; i++) {
+      expect(resolvedIds).toContain(`resolved-${String(i).padStart(3, "0")}`);
+    }
+  });
+
+  test("trimResolvedApprovals never removes pending approvals", () => {
+    const store = createStore();
+    const time = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 100 pending approvals in a single batch
+    const pending: ApprovalItem[] = [];
+    for (let i = 0; i < 100; i++) {
+      pending.push({
+        id: `pending-${String(i).padStart(3, "0")}`,
+        status: "pending",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "pending",
+        createdAt: time,
+      } as ApprovalItem);
+    }
+    store.syncProviderApprovals("filesystem", pending);
+
+    store.trimResolvedApprovals(10);
+    const snapshot = store.getSnapshot();
+
+    // All 100 pending approvals must still exist
+    expect(snapshot.approvals).toHaveLength(100);
+    const pendingAfter = snapshot.approvals.filter((a) => a.status === "pending");
+    expect(pendingAfter).toHaveLength(100);
+  });
+
+  test("trimResolvedApprovals respects custom limit in session metadata", () => {
+    const store = createStore();
+    const time = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 10 resolved approvals in a single batch
+    const resolved: ApprovalItem[] = [];
+    for (let i = 0; i < 10; i++) {
+      resolved.push({
+        id: `resolved-${String(i).padStart(3, "0")}`,
+        status: "approved",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "resolved",
+        createdAt: time,
+        resolvedAt: time,
+      } as ApprovalItem);
+    }
+    store.syncProviderApprovals("filesystem", resolved);
+
+    store.trimResolvedApprovals(3); // explicit limit overrides metadata
+    const snapshot = store.getSnapshot();
+    expect(snapshot.approvals).toHaveLength(3);
+  });
+});
+
+describe("SessionStore — trimResolvedTasks", () => {
+  test("trimResolvedTasks removes completed/failed/cancelled tasks beyond limit", () => {
+    const store = createStore();
+    const baseTime = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 50 resolved tasks in a single batch
+    const resolvedTasks = [];
+    for (let i = 0; i < 50; i++) {
+      const time = new Date(baseTime).toISOString();
+      const status: SessionTask["status"] = i % 3 === 0 ? "completed" : i % 3 === 1 ? "failed" : "cancelled";
+      resolvedTasks.push({
+        id: `resolved-task-${String(i).padStart(3, "0")}`,
+        status,
+        provider: "provider-a",
+        providerTaskId: `task-${i}`,
+        startedAt: time,
+        updatedAt: time,
+        message: "resolved",
+      } satisfies SessionTask);
+    }
+    store.syncProviderTasks("provider-a", resolvedTasks);
+
+    // Create 10 running tasks in a single batch
+    const runningTasks = [];
+    for (let i = 0; i < 10; i++) {
+      const time = new Date(baseTime).toISOString();
+      runningTasks.push({
+        id: `running-task-${String(i).padStart(3, "0")}`,
+        status: "running",
+        provider: "provider-b",
+        providerTaskId: `running-task-${i}`,
+        startedAt: time,
+        updatedAt: time,
+        message: "still running",
+      } satisfies SessionTask);
+    }
+    store.syncProviderTasks("provider-b", runningTasks);
+
+    let snapshot = store.getSnapshot();
+    expect(snapshot.tasks).toHaveLength(60);
+
+    store.trimResolvedTasks(50);
+    snapshot = store.getSnapshot();
+
+    // Must have exactly 60 (50 resolved kept + 10 running)
+    expect(snapshot.tasks).toHaveLength(60);
+
+    // No running should have been removed
+    const runningAfter = snapshot.tasks.filter((t) => t.status === "running");
+    expect(runningAfter).toHaveLength(10);
+
+    // All remaining resolved must be completed/failed/cancelled (not running)
+    const resolvedAfter = snapshot.tasks.filter((t) => t.status !== "running");
+    expect(resolvedAfter).toHaveLength(50);
+
+    // Verify the 50 kept are the most recent
+    const resolvedIds = resolvedAfter.map((t) => t.id).sort();
+    for (let i = 0; i < 50; i++) {
+      expect(resolvedIds).toContain(`resolved-task-${String(i).padStart(3, "0")}`);
+    }
+  });
+
+  test("trimResolvedTasks never removes running tasks", () => {
+    const store = createStore();
+    const time = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 100 running tasks in a single batch
+    const tasks = [];
+    for (let i = 0; i < 100; i++) {
+      tasks.push({
+        id: `running-${String(i).padStart(3, "0")}`,
+        status: "running",
+        provider: "provider-a",
+        providerTaskId: `running-${i}`,
+        startedAt: time,
+        updatedAt: time,
+        message: "running",
+      } satisfies SessionTask);
+    }
+    store.syncProviderTasks("provider-a", tasks);
+
+    store.trimResolvedTasks(10);
+    const snapshot = store.getSnapshot();
+
+    // All 100 running tasks must still exist
+    expect(snapshot.tasks).toHaveLength(100);
+    const runningAfter = snapshot.tasks.filter((t) => t.status === "running");
+    expect(runningAfter).toHaveLength(100);
+  });
+
+  test("trimResolvedTasks respects custom limit in session metadata", () => {
+    const store = createStore();
+    const time = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 10 completed tasks in a single batch
+    const tasks = [];
+    for (let i = 0; i < 10; i++) {
+      tasks.push({
+        id: `completed-${String(i).padStart(3, "0")}`,
+        status: "completed",
+        provider: "provider-a",
+        providerTaskId: `completed-${i}`,
+        startedAt: time,
+        updatedAt: time,
+        message: "done",
+      } satisfies SessionTask);
+    }
+    store.syncProviderTasks("provider-a", tasks);
+
+    store.trimResolvedTasks(3); // explicit limit
+    const snapshot = store.getSnapshot();
+    expect(snapshot.tasks).toHaveLength(3);
+  });
+});
+
+describe("SessionStore — beginTurn trims resolved history", () => {
+  test("beginTurn triggers trimResolvedApprovals and trimResolvedTasks", () => {
+    const store = createStore();
+    const time = new Date("2026-01-01T00:00:00.000Z").toISOString();
+
+    // Create 55 resolved approvals in a single batch to trigger trimming (default limit 50)
+    const approvals = [];
+    for (let i = 0; i < 55; i++) {
+      approvals.push({
+        id: `appr-${String(i).padStart(3, "0")}`,
+        status: "approved",
+        provider: "filesystem",
+        path: "/workspace",
+        action: "write",
+        reason: "done",
+        createdAt: time,
+        resolvedAt: time,
+      } as ApprovalItem);
+    }
+    store.syncProviderApprovals("filesystem", approvals);
+
+    // Create 55 completed tasks in a single batch to trigger trimming (default limit 50)
+    const tasks = [];
+    for (let i = 0; i < 55; i++) {
+      tasks.push({
+        id: `task-${String(i).padStart(3, "0")}`,
+        status: "completed",
+        provider: "provider-a",
+        providerTaskId: `task-${i}`,
+        startedAt: time,
+        updatedAt: time,
+        message: "done",
+      } satisfies SessionTask);
+    }
+    store.syncProviderTasks("provider-a", tasks);
+
+    let snap = store.getSnapshot();
+    expect(snap.approvals).toHaveLength(55);
+    expect(snap.tasks).toHaveLength(55);
+
+    store.beginTurn("trim me");
+    snap = store.getSnapshot();
+
+    // Should have trimmed to 50 approvals and 50 tasks (default limits)
+    expect(snap.approvals).toHaveLength(50);
+    expect(snap.tasks).toHaveLength(50);
   });
 });

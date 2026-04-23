@@ -26,6 +26,34 @@ export function buildMirroredItemId(prefix: string, providerId: string, sourceId
   return `${prefix}-${cleanProviderId}-${cleanSourceId}`;
 }
 
+function deriveTitle(userText: string): string {
+  const truncated = userText.slice(0, 60);
+  const trimmed = truncated.trim();
+  if (!trimmed) {
+    return "New Session";
+  }
+  const stripped = trimmed.replace(/[^a-zA-Z0-9 '-]/g, "");
+  const words = stripped.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) {
+    return "New Session";
+  }
+  const titled = words
+    .map((word) => {
+      const cleaned = word.replace(/[^a-zA-Z0-9'-]/g, "");
+      if (cleaned.length === 0) {
+        return "";
+      }
+      const firstChar = cleaned.charAt(0);
+      const rest = cleaned.slice(1);
+      return firstChar.toUpperCase() + rest;
+    })
+    .filter((w) => w.length > 0);
+  if (titled.length === 0) {
+    return "New Session";
+  }
+  return titled.join(" ");
+}
+
 function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
   return {
     session: { ...snapshot.session },
@@ -165,6 +193,10 @@ export class SessionStore {
       ],
     };
 
+    if (this.snapshot.session.title === undefined) {
+      this.snapshot.session.title = deriveTitle(userText);
+    }
+
     const modelActivityId = buildId("activity");
     this.snapshot.transcript.push(userMessage);
     this.snapshot.activity.push({
@@ -190,6 +222,8 @@ export class SessionStore {
       waitingOn: "model",
     });
     this.snapshot.session.lastError = undefined;
+    this.trimResolvedApprovals();
+    this.trimResolvedTasks();
     this.emitChange();
     return turnId;
   }
@@ -233,10 +267,73 @@ export class SessionStore {
           mime: "text/plain",
           text: chunk,
         });
-      } else {
+      } else if (firstBlock.type === "text") {
         firstBlock.text += chunk;
+      } else {
+        message.content.push({
+          id: buildId("block"),
+          type: "text",
+          mime: "text/plain",
+          text: chunk,
+        });
       }
       message.state = "streaming";
+      message.error = undefined;
+    }
+
+    this.updateTurnPhase("model", "Generating response", "model", time);
+    this.emitChange();
+  }
+
+  appendAssistantMedia(
+    turnId: string,
+    options: {
+      mime: string;
+      name?: string;
+      uri?: string;
+      summary?: string;
+      preview?: string;
+    },
+  ): void {
+    const time = now();
+    let message =
+      this.activeAssistantMessageId === null
+        ? undefined
+        : this.snapshot.transcript.find((entry) => entry.id === this.activeAssistantMessageId);
+
+    if (!message) {
+      message = {
+        id: buildId("msg"),
+        role: "assistant",
+        state: "complete",
+        turnId,
+        createdAt: time,
+        author: this.snapshot.session.model,
+        content: [
+          {
+            id: buildId("block"),
+            type: "media",
+            mime: options.mime,
+            name: options.name,
+            uri: options.uri,
+            summary: options.summary,
+            preview: options.preview,
+          },
+        ],
+      };
+      this.snapshot.transcript.push(message);
+      this.activeAssistantMessageId = message.id;
+    } else {
+      message.content.push({
+        id: buildId("block"),
+        type: "media",
+        mime: options.mime,
+        name: options.name,
+        uri: options.uri,
+        summary: options.summary,
+        preview: options.preview,
+      });
+      message.state = "complete";
       message.error = undefined;
     }
 
@@ -567,7 +664,7 @@ export class SessionStore {
     const time = now();
     const message = this.getOrCreateAssistantMessage(turnId, time);
     const [firstBlock] = message.content;
-    if (firstBlock) {
+    if (firstBlock && firstBlock.type === "text") {
       firstBlock.text = finalText;
     }
     message.state = "complete";
@@ -726,6 +823,34 @@ export class SessionStore {
       updatedAt,
     };
     this.snapshot.session.updatedAt = updatedAt;
+  }
+
+  trimResolvedApprovals(limit?: number): void {
+    const maxResolved = limit ?? this.snapshot.session.maxResolvedApprovals ?? 50;
+    const pending = this.snapshot.approvals.filter((item) => item.status === "pending");
+    const resolved = this.snapshot.approvals
+      .filter((item) => item.status !== "pending")
+      .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+    if (resolved.length <= maxResolved) {
+      return;
+    }
+    const toKeep = resolved.slice(0, maxResolved);
+    this.snapshot.approvals = [...toKeep, ...pending];
+    this.emitChange();
+  }
+
+  trimResolvedTasks(limit?: number): void {
+    const maxResolved = limit ?? this.snapshot.session.maxResolvedTasks ?? 50;
+    const running = this.snapshot.tasks.filter((item) => item.status === "running");
+    const resolved = this.snapshot.tasks
+      .filter((item) => item.status !== "running")
+      .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1));
+    if (resolved.length <= maxResolved) {
+      return;
+    }
+    const toKeep = resolved.slice(0, maxResolved);
+    this.snapshot.tasks = [...toKeep, ...running];
+    this.emitChange();
   }
 
   private emitChange(): void {

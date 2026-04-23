@@ -30,18 +30,36 @@ function toSnakeTurnProps(turn: TurnStateSnapshot) {
   };
 }
 
-function buildContentChildren(content: TranscriptContentBlock[]): Record<string, NodeDescriptor> {
+function buildContentChildren(
+  content: TranscriptContentBlock[],
+): Record<string, NodeDescriptor> {
   return Object.fromEntries(
-    content.map((block) => [
-      block.id,
-      {
-        type: "document",
-        props: {
-          mime: block.mime,
-          text: block.text,
-        },
-      } satisfies NodeDescriptor,
-    ]),
+    content.map((block) => {
+      if (block.type === "media") {
+        return [
+          block.id,
+          {
+            type: "media",
+            props: {
+              mime: block.mime,
+              uri: block.uri,
+              name: block.name,
+              summary: block.summary,
+            },
+          } satisfies NodeDescriptor,
+        ];
+      }
+      return [
+        block.id,
+        {
+          type: "document",
+          props: {
+            mime: block.mime,
+            text: block.text,
+          },
+        } satisfies NodeDescriptor,
+      ];
+    }),
   );
 }
 

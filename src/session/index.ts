@@ -21,8 +21,10 @@ export type {
   SessionTask,
   SessionTaskStatus,
   TranscriptContentBlock,
+  TranscriptMediaBlock,
   TranscriptMessage,
   TranscriptMessageRole,
   TranscriptMessageState,
+  TranscriptTextBlock,
   TurnStateSnapshot,
 } from "./types";

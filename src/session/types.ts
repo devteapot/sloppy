@@ -8,12 +8,24 @@ export type TranscriptMessageRole = "user" | "assistant" | "system";
 
 export type TranscriptMessageState = "complete" | "streaming" | "error";
 
-export type TranscriptContentBlock = {
+export type TranscriptTextBlock = {
   id: string;
   type: "text";
   mime: string;
   text: string;
 };
+
+export type TranscriptMediaBlock = {
+  id: string;
+  type: "media";
+  mime: string;
+  name?: string;
+  uri?: string;
+  summary?: string;
+  preview?: string;
+};
+
+export type TranscriptContentBlock = TranscriptTextBlock | TranscriptMediaBlock;
 
 export type TranscriptMessage = {
   id: string;
@@ -146,6 +158,8 @@ export type SessionMetadata = {
   title?: string;
   workspaceRoot?: string;
   lastError?: string;
+  maxResolvedApprovals?: number;
+  maxResolvedTasks?: number;
 };
 
 export type TurnStateSnapshot = {
