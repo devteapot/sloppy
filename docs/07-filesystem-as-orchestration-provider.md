@@ -51,9 +51,9 @@ The current filesystem provider is **data-centric** -- it manages workspace file
 - *Dependency enforcement* — `depends_on` is now load-bearing. A task's `start` affordance is hidden while any dependency is not `completed`, and an `unmet_dependencies` array is exposed on the task's props. Completing a dependency automatically unblocks downstream tasks via normal patch propagation.
 
 **Still missing:**
-- End-to-end real-LLM test of the `SubAgentRunner` happy path (requires an LLM stub).
-- Content references for large blobs in transcripts/tool results (prevents bloat on real workloads).
+- Transcript-level content refs (session provider still inlines assistant/tool-result text). Filesystem `read` is already ref-aware above `contentRefThresholdBytes`.
 - Automatic push on external filesystem edits (drift is detected on query; no `fs.watch`).
+- Orchestrator system prompt (Phase 4) — the plumbing is in place, but there is no curated prompt teaching an agent how to use it yet.
 - Scale controls (salience filtering, depth caps) once concurrent sub-agent counts warrant them.
 
 Both axes of the core architecture are load-bearing and audited.
@@ -235,7 +235,7 @@ For orchestration, we extend it to also expose:
     [context] session (agents=3, max=5, status="active")
 ```
 
-This is the key insight: **the orchestration state lives in the same filesystem provider the agent already observes**. No new providers, no new transport layers. The orchestrator subscribes to `/orchestration` in the filesystem provider. Subagents subscribe to their task directories.
+**Implementation note:** the shipped design keeps orchestration and filesystem as *separate* SLOP providers (`orchestration` and `filesystem`), both backed by the same workspace directory. The orchestration provider owns `.sloppy/orchestration/` and exposes `/orchestration`, `/tasks`, `/handoffs` as typed state with lifecycle-gated affordances. The filesystem provider still serves arbitrary file I/O on the rest of the workspace. Agents get the structured coordination surface without conflating it with general file browsing; both sit in the same `ConsumerHub` and agents subscribe to whichever they need.
 
 ### 5.2 Delegation Provider Evolution
 
@@ -351,21 +351,15 @@ Version + `expected_version` CAS live on every file node. Range reads (`start_li
 ### Phase 6: Approval Routing *(shipped)*
 `/agents/{id}.list_approvals` returns the child session provider's pending approvals (fallback); `.approve_child_approval(approval_id)` / `.reject_child_approval(approval_id, reason?)` forward to the child's session provider. For the state-first path, `DelegationProvider` subscribes to each registered child's `/approvals` and auto-mirrors pending entries into `/agents/{id}.pending_approvals` so the orchestrator sees them as patches without any explicit call.
 
-### Phase 4: Orchestrator Agent Prompt
+### Phase 4: Orchestrator Agent Prompt *(pending)*
 Write the orchestrator prompt that teaches the agent to:
 - Decompose tasks into file-based task definitions
 - Observe sub-agent progress via session-provider patches (live) and task-file patches (durable) — not polling
 - Synthesize results from file outputs
 - Handle handoffs between agents via the handoff directory
 
-### Phase 5: Handoff Protocol
-Implement cross-agent communication via the handoff directory. Agent A can request data from Agent B's output directory. Responses are written as separate files. Parent-owned index files (e.g. `handoffs/index.json`) use CAS from Phase 2.
-
-### Phase 6: Approval Routing Across Boundaries
-Forward `waiting_approval` states from a sub-agent's session provider up to the orchestrator's approvals collection, and propagate the decision back down. Preserve the approver identity and audit trail across the boundary.
-
-### Phase 7: Scale Controls
-Salience filtering and depth caps for orchestrators watching many sub-agents (see `spec/extensions/scaling.md`). Content references for large blobs (file contents, images, long transcripts) so subscriptions don't inline them.
+### Phase 7: Scale Controls *(partially shipped — content refs done, fan-out limits pending)*
+Filesystem `read` returns a preview + content ref above `contentRefThresholdBytes` so large files don't inline into tool results. Salience filtering, depth caps, and subscription fan-out throttling for orchestrators watching many sub-agents are still future work — not yet needed at current scale.
 
 ---
 
@@ -418,4 +412,4 @@ The filesystem-as-orchestration-provider concept is viable because:
 4. It extends naturally from the existing delegation provider and filesystem provider without requiring new protocols or transports
 5. It aligns perfectly with SLOP's state-first design philosophy
 
-Phases 1–6 have shipped and a correctness audit has been addressed (atomic CAS, guard-before-write for `complete`, persisted versions, status-gated affordances, dependency enforcement, auto-mirrored approvals). Remaining work, in order of leverage: a real-LLM happy-path test for `SubAgentRunner`, content references for large blobs in transcripts/tool results, `fs.watch` push on external edits, and scale controls (salience filtering, depth caps) once concurrent sub-agent counts warrant them.
+Phases 1–6 have shipped and multiple correctness audits have been addressed (atomic CAS, guard-before-write for `complete`, persisted versions, status-gated affordances, dependency enforcement, auto-mirrored approvals, append-only progress no longer bumps CAS versions). Content references for large filesystem reads have also shipped as part of Phase 7. Remaining work: the orchestrator system prompt (Phase 4), `fs.watch` push on external edits, transcript-level content refs (session provider), and the remaining Phase 7 scale controls (salience filtering, depth caps) once concurrent sub-agent counts warrant them.

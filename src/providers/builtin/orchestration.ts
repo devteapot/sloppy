@@ -352,7 +352,9 @@ export class OrchestrationProvider {
       join(this.taskDir(params.task_id), "progress.md"),
       `- [${timestamp}] ${params.message}`,
     );
-    const version = this.bumpVersion(this.taskVersions, params.task_id);
+    // progress.md is append-only; state.json is untouched so CAS versions
+    // stay consistent across restarts. Return the current version unchanged.
+    const version = this.taskVersion(params.task_id);
     this.server.refresh();
     return { version, bytes: params.message.length };
   }

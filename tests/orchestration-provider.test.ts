@@ -268,6 +268,54 @@ describe("OrchestrationProvider", () => {
     }
   });
 
+  test("append_progress does not bump version (CAS survives restart)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-orch-prog-"));
+    tempPaths.push(root);
+
+    const p1 = new OrchestrationProvider({ workspaceRoot: root, sessionId: "sess-p" });
+    const c1 = new SlopConsumer(new InProcessTransport(p1.server));
+    await c1.connect();
+    await c1.subscribe("/", 3);
+    await c1.invoke("/orchestration", "create_plan", { query: "x" });
+    const spawn = await c1.invoke("/orchestration", "create_task", { name: "t", goal: "g" });
+    const { id: taskId, version: v0 } = spawn.data as { id: string; version: number };
+    const start = await c1.invoke(`/tasks/${taskId}`, "start", { expected_version: v0 });
+    const v1 = (start.data as { version: number }).version;
+
+    await c1.invoke(`/tasks/${taskId}`, "append_progress", { message: "step 1" });
+    await c1.invoke(`/tasks/${taskId}`, "append_progress", { message: "step 2" });
+
+    c1.disconnect();
+    p1.stop();
+
+    // Restart provider; version should still be v1 (append didn't bump it).
+    const p2 = new OrchestrationProvider({ workspaceRoot: root, sessionId: "sess-p" });
+    const c2 = new SlopConsumer(new InProcessTransport(p2.server));
+    await c2.connect();
+    await c2.subscribe("/", 3);
+
+    try {
+      const task = await c2.query(`/tasks/${taskId}`, 1);
+      expect(task.properties?.version).toBe(v1);
+
+      // complete with v1 succeeds; v0 still rejected
+      const stale = await c2.invoke(`/tasks/${taskId}`, "complete", {
+        result: "stale",
+        expected_version: v0,
+      });
+      expect((stale.data as { error?: string }).error).toBe("version_conflict");
+
+      const fresh = await c2.invoke(`/tasks/${taskId}`, "complete", {
+        result: "done",
+        expected_version: v1,
+      });
+      expect(fresh.status).toBe("ok");
+    } finally {
+      c2.disconnect();
+      p2.stop();
+    }
+  });
+
   test("rehydrates task versions from disk after restart", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-orch-rehydrate-"));
     tempPaths.push(root);
