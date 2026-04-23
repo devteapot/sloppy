@@ -5,6 +5,7 @@ import type { RegisteredProvider } from "../providers/registry";
 import { AgentSessionProvider } from "../session/provider";
 import { type SessionAgentFactory, SessionRuntime } from "../session/runtime";
 import type { ConsumerHub } from "./consumer";
+import { debug } from "./debug";
 
 export type SubAgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -106,6 +107,13 @@ export class SubAgentRunner {
     const added = await this.parentHub.addProvider(registered);
     this.registered = added;
 
+    debug("sub-agent", "start", {
+      id: this.id,
+      name: this.name,
+      sessionProviderId: this.sessionProviderId,
+      registered: added,
+    });
+
     await this.createOrchestrationTask();
 
     this.unsubscribeStore = this.runtime.store.onChange(() => {
@@ -185,6 +193,13 @@ export class SubAgentRunner {
       return;
     }
 
+    debug("sub-agent", "sync_from_store", {
+      id: this.id,
+      turnState,
+      sawTurnInFlight: this.sawTurnInFlight,
+      status: this.status,
+    });
+
     if (turnState === "error") {
       this.errorMessage = snapshot.turn.lastError ?? "Sub-agent turn failed.";
       this.completedAt = new Date().toISOString();
@@ -237,10 +252,22 @@ export class SubAgentRunner {
         const data = result.data as { id?: string };
         if (data?.id) {
           this.orchestrationTaskId = data.id;
+          debug("sub-agent", "orchestration_task_created", {
+            id: this.id,
+            orchestrationTaskId: data.id,
+          });
         }
+      } else {
+        debug("sub-agent", "orchestration_task_create_failed", {
+          id: this.id,
+          status: result.status,
+        });
       }
-    } catch {
-      // orchestration is optional; failures shouldn't break the sub-agent
+    } catch (error) {
+      debug("sub-agent", "orchestration_task_create_error", {
+        id: this.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -253,8 +280,13 @@ export class SubAgentRunner {
         action,
         {},
       );
-    } catch {
-      // best-effort
+    } catch (error) {
+      debug("sub-agent", "record_task_transition_error", {
+        id: this.id,
+        action,
+        taskId: this.orchestrationTaskId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -267,8 +299,12 @@ export class SubAgentRunner {
         "complete",
         { result: resultText ?? "" },
       );
-    } catch {
-      // best-effort
+    } catch (error) {
+      debug("sub-agent", "record_task_completion_error", {
+        id: this.id,
+        taskId: this.orchestrationTaskId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -281,8 +317,12 @@ export class SubAgentRunner {
         "fail",
         { error },
       );
-    } catch {
-      // best-effort
+    } catch (err) {
+      debug("sub-agent", "record_task_failure_error", {
+        id: this.id,
+        taskId: this.orchestrationTaskId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -290,7 +330,9 @@ export class SubAgentRunner {
     if (this.status === next) {
       return;
     }
+    const from = this.status;
     this.status = next;
+    debug("sub-agent", "transition", { id: this.id, from, to: next });
     const event = this.snapshot();
     for (const listener of this.listeners) {
       listener(event);

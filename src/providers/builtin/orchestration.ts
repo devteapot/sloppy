@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { dirname, join, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
+import { debug } from "../../core/debug";
+
 type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 type TaskDefinition = {
@@ -101,6 +103,11 @@ export class OrchestrationProvider {
     mkdirSync(join(this.root, "handoffs"), { recursive: true });
 
     this.hydrateVersionsFromDisk();
+    debug("orchestration", "hydrate", {
+      plans: this.planVersions.size,
+      tasks: this.taskVersions.size,
+      handoffs: this.handoffVersions.size,
+    });
 
     this.server = createSlopServer({
       id: "orchestration",
@@ -236,6 +243,7 @@ export class OrchestrationProvider {
     };
     const version = this.bumpVersion(this.planVersions, "plan");
     writeJson(this.planPath(), { ...plan, version });
+    debug("orchestration", "create_plan", { session: this.sessionId, version });
     this.server.refresh();
     return { ...plan, version };
   }
@@ -248,11 +256,16 @@ export class OrchestrationProvider {
     if (!plan) throw new Error("No plan exists.");
     const current = this.planVersion();
     if (params.expected_version !== undefined && params.expected_version !== current) {
+      debug("orchestration", "complete_plan_conflict", {
+        expected: params.expected_version,
+        current,
+      });
       return { status: plan.status, version: current };
     }
     const version = this.bumpVersion(this.planVersions, "plan");
     const next: Plan = { ...plan, status: params.status, version };
     writeJson(this.planPath(), next);
+    debug("orchestration", "complete_plan", { status: params.status, version });
     this.server.refresh();
     return { status: next.status, version };
   }
@@ -277,6 +290,12 @@ export class OrchestrationProvider {
     const version = this.bumpVersion(this.taskVersions, id);
     writeJson(join(this.taskDir(id), "definition.json"), definition);
     writeJson(join(this.taskDir(id), "state.json"), { ...state, version });
+    debug("orchestration", "create_task", {
+      id,
+      name: params.name,
+      depends_on: definition.depends_on,
+      version,
+    });
     this.server.refresh();
     return { id, version };
   }
@@ -292,6 +311,11 @@ export class OrchestrationProvider {
     }
     const current = this.taskVersion(taskId);
     if (expectedVersion !== undefined && expectedVersion !== current) {
+      debug("orchestration", "task_version_conflict", {
+        taskId,
+        expected: expectedVersion,
+        current,
+      });
       return { error: "version_conflict", currentVersion: current };
     }
 
@@ -304,6 +328,12 @@ export class OrchestrationProvider {
       version,
     };
     writeJson(join(this.taskDir(taskId), "state.json"), next);
+    debug("orchestration", "update_task", {
+      taskId,
+      prev_status: state.status,
+      next_status: next.status,
+      version,
+    });
     this.server.refresh();
     return { version, state: next };
   }
@@ -439,6 +469,12 @@ export class OrchestrationProvider {
     };
     const version = this.bumpVersion(this.handoffVersions, id);
     writeJson(this.handoffPath(id), { ...handoff, version });
+    debug("orchestration", "create_handoff", {
+      id,
+      from: params.from_task,
+      to: params.to_task,
+      version,
+    });
     this.server.refresh();
     return { ...handoff, version };
   }
@@ -454,6 +490,11 @@ export class OrchestrationProvider {
     }
     const current = this.handoffVersions.get(params.handoff_id) ?? 0;
     if (params.expected_version !== undefined && params.expected_version !== current) {
+      debug("orchestration", "handoff_version_conflict", {
+        handoffId: params.handoff_id,
+        expected: params.expected_version,
+        current,
+      });
       return { error: "version_conflict", currentVersion: current };
     }
     if (handoff.status !== "pending") {
@@ -482,6 +523,11 @@ export class OrchestrationProvider {
     }
     const current = this.handoffVersions.get(params.handoff_id) ?? 0;
     if (params.expected_version !== undefined && params.expected_version !== current) {
+      debug("orchestration", "handoff_version_conflict", {
+        handoffId: params.handoff_id,
+        expected: params.expected_version,
+        current,
+      });
       return { error: "version_conflict", currentVersion: current };
     }
     if (handoff.status !== "pending") {

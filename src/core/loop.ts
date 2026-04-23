@@ -5,6 +5,7 @@ import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "..
 import { LlmAbortError } from "../llm/types";
 import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
+import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
 import type { RuntimeToolSet } from "./tools";
 
@@ -399,7 +400,7 @@ export async function runLoop(options: {
     resolvedToolResult: ToolResultContentBlock;
   };
 }): Promise<RunLoopResult> {
-  const system = buildSystemPrompt();
+  const system = buildSystemPrompt(options.config);
   let pendingResume = options.resume;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
@@ -453,6 +454,11 @@ export async function runLoop(options: {
     const toolCalls = response.content.filter(
       (block): block is ToolUseContentBlock => block.type === "tool_use",
     );
+    debug("loop", "turn", {
+      iteration,
+      stop_reason: response.stopReason,
+      tool_calls: toolCalls.length,
+    });
     if (toolCalls.length === 0 || response.stopReason !== "tool_use") {
       return {
         status: "completed",

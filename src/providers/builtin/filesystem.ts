@@ -2,6 +2,8 @@ import { readdirSync, statSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
+import { debug } from "../../core/debug";
+
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
 
@@ -126,6 +128,12 @@ export class FilesystemProvider {
       const next = existing + 1;
       this.fileVersions.set(absolutePath, next);
       this.cachedMtimes.set(absolutePath, mtimeMs);
+      debug("filesystem", "mtime_drift", {
+        path: relativePath(this.root, absolutePath),
+        cached_mtime: cachedMtime,
+        actual_mtime: mtimeMs,
+        version: next,
+      });
       return next;
     }
 
@@ -277,6 +285,11 @@ export class FilesystemProvider {
       const currentVersion = this.observeVersion(fullPath, preStat?.mtimeMs ?? null);
 
       if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+        debug("filesystem", "write_version_conflict", {
+          path: relativePath(this.root, fullPath),
+          expected: expectedVersion,
+          current: currentVersion,
+        });
         return {
           error: "version_conflict" as const,
           currentVersion,

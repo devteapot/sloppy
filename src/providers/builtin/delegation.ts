@@ -1,6 +1,7 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import type { ConsumerHub } from "../../core/consumer";
+import { debug } from "../../core/debug";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -176,8 +177,13 @@ export class DelegationProvider {
         providerId,
         pending: existing?.pending ?? [],
       });
-    } catch {
-      // best-effort: child may not expose /approvals
+      debug("delegation", "mirror_approvals_start", { agentId, providerId });
+    } catch (error) {
+      debug("delegation", "mirror_approvals_error", {
+        agentId,
+        providerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -190,6 +196,7 @@ export class DelegationProvider {
       // ignore
     }
     this.approvalMirrors.delete(agentId);
+    debug("delegation", "mirror_approvals_stop", { agentId });
   }
 
   private async listChildApprovals(agentId: string): Promise<{
@@ -278,6 +285,12 @@ export class DelegationProvider {
     const created_at = new Date().toISOString();
     const agent: DelegationAgent = { id, name, goal, status: "pending", model, created_at };
     this.agents.set(id, agent);
+    debug("delegation", "spawn_agent", {
+      id,
+      name,
+      goal_preview: goal.slice(0, 80),
+      model,
+    });
 
     const runner = this.runnerFactory(
       { id, name, goal, model },

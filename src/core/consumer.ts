@@ -8,6 +8,7 @@ import {
 
 import type { SloppyConfig } from "../config/schema";
 import type { RegisteredProvider } from "../providers/registry";
+import { debug, isDebugEnabled } from "./debug";
 import type { ProviderTreeView } from "./subscriptions";
 import { buildRuntimeToolSet, type RuntimeToolSet } from "./tools";
 
@@ -166,6 +167,7 @@ export class ConsumerHub {
           status: "connected",
         });
       }
+      debug("hub", "add_provider", { id: provider.id, kind: provider.kind });
       return true;
     } catch (error) {
       registeredProvider.stop?.();
@@ -178,14 +180,17 @@ export class ConsumerHub {
           lastError: error instanceof Error ? error.message : String(error),
         });
       }
-      console.warn(
-        `[sloppy] skipped provider ${registeredProvider.id}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      debug("hub", "add_provider_error", { id: registeredProvider.id, error: message });
+      if (!isDebugEnabled("hub")) {
+        console.warn(`[sloppy] skipped provider ${registeredProvider.id}: ${message}`);
+      }
       return false;
     }
   }
 
   removeProvider(providerId: string): void {
+    debug("hub", "remove_provider", { id: providerId });
     this.teardownProvider(providerId, { connectionAlive: true, removeExternalState: true });
   }
 
