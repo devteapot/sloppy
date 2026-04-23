@@ -158,7 +158,16 @@ export class FilesystemProvider {
 
   private async readTextFile(
     inputPath: string,
-  ): Promise<{ path: string; content: string; truncated: boolean; version: number }> {
+    range?: { startLine?: number; endLine?: number },
+  ): Promise<{
+    path: string;
+    content: string;
+    truncated: boolean;
+    version: number;
+    startLine?: number;
+    endLine?: number;
+    totalLines?: number;
+  }> {
     const fullPath = this.ensureWithinRoot(inputPath);
     const bytes = await Bun.file(fullPath).bytes();
     const stat = await Bun.file(fullPath)
@@ -172,6 +181,42 @@ export class FilesystemProvider {
         content: `[binary file ${displayNameForPath(inputPath)} omitted]`,
         truncated: false,
         version,
+      };
+    }
+
+    const hasRange =
+      range !== undefined && (range.startLine !== undefined || range.endLine !== undefined);
+
+    if (hasRange) {
+      const fullText = TEXT_DECODER.decode(bytes);
+      const lines = fullText.split("\n");
+      const totalLines = lines.length;
+      const startLine = Math.max(1, range?.startLine ?? 1);
+      const endLine = Math.min(totalLines, range?.endLine ?? totalLines);
+
+      if (startLine > endLine) {
+        throw new Error(
+          `Invalid range: start_line (${startLine}) is after end_line (${endLine}).`,
+        );
+      }
+
+      const sliced = lines.slice(startLine - 1, endLine).join("\n");
+      const truncated = sliced.length > this.readMaxBytes;
+      const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
+      this.recordRecent(
+        "read",
+        relativePath(this.root, fullPath),
+        `lines ${startLine}-${endLine}`,
+      );
+
+      return {
+        path: relativePath(this.root, fullPath),
+        content: text,
+        truncated,
+        version,
+        startLine,
+        endLine,
+        totalLines,
       };
     }
 
@@ -348,12 +393,31 @@ export class FilesystemProvider {
               }),
             }
           : {
-              read: action(async () => this.readTextFile(relativeToRoot), {
-                label: "Read File",
-                description: "Read this file as text.",
-                idempotent: true,
-                estimate: "fast",
-              }),
+              read: action(
+                {
+                  start_line: {
+                    type: "number",
+                    description:
+                      "Optional 1-based start line. Pair with end_line to read a slice instead of the whole file.",
+                  },
+                  end_line: {
+                    type: "number",
+                    description: "Optional 1-based end line (inclusive).",
+                  },
+                },
+                async ({ start_line, end_line }) =>
+                  this.readTextFile(relativeToRoot, {
+                    startLine: typeof start_line === "number" ? start_line : undefined,
+                    endLine: typeof end_line === "number" ? end_line : undefined,
+                  }),
+                {
+                  label: "Read File",
+                  description:
+                    "Read this file as text. Pass start_line/end_line to read just a slice.",
+                  idempotent: true,
+                  estimate: "fast",
+                },
+              ),
               write: action(
                 {
                   content: "string",
@@ -411,12 +475,32 @@ export class FilesystemProvider {
           idempotent: true,
           estimate: "instant",
         }),
-        read: action({ path: "string" }, async ({ path }) => this.readTextFile(path), {
-          label: "Read By Path",
-          description: "Read a text file relative to the workspace root.",
-          idempotent: true,
-          estimate: "fast",
-        }),
+        read: action(
+          {
+            path: "string",
+            start_line: {
+              type: "number",
+              description:
+                "Optional 1-based start line. Pair with end_line to read a slice instead of the whole file.",
+            },
+            end_line: {
+              type: "number",
+              description: "Optional 1-based end line (inclusive).",
+            },
+          },
+          async ({ path, start_line, end_line }) =>
+            this.readTextFile(path as string, {
+              startLine: typeof start_line === "number" ? start_line : undefined,
+              endLine: typeof end_line === "number" ? end_line : undefined,
+            }),
+          {
+            label: "Read By Path",
+            description:
+              "Read a text file relative to the workspace root. Pass start_line/end_line to read just a slice.",
+            idempotent: true,
+            estimate: "fast",
+          },
+        ),
         write: action(
           {
             path: "string",

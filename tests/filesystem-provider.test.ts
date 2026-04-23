@@ -112,6 +112,58 @@ describe("FilesystemProvider", () => {
     }
   });
 
+  test("reads a line range without returning the whole file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-range-"));
+    tempPaths.push(root);
+    const body = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`).join("\n");
+    await writeFile(join(root, "big.txt"), body, "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const slice = await consumer.invoke("/workspace", "read", {
+        path: "big.txt",
+        start_line: 5,
+        end_line: 7,
+      });
+      expect(slice.status).toBe("ok");
+      const data = slice.data as {
+        content: string;
+        startLine: number;
+        endLine: number;
+        totalLines: number;
+      };
+      expect(data.content).toBe("line-5\nline-6\nline-7");
+      expect(data.startLine).toBe(5);
+      expect(data.endLine).toBe(7);
+      expect(data.totalLines).toBe(20);
+
+      const full = await consumer.invoke("/workspace", "read", { path: "big.txt" });
+      expect((full.data as { content: string }).content).toBe(body);
+      expect((full.data as { startLine?: number }).startLine).toBeUndefined();
+
+      const rejected = await consumer.invoke("/workspace", "read", {
+        path: "big.txt",
+        start_line: 10,
+        end_line: 2,
+      });
+      expect(rejected.status).toBe("error");
+      expect(rejected.error?.message).toContain("Invalid range");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("bumps version on external mtime drift", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-drift-"));
     tempPaths.push(root);
