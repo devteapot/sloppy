@@ -10,6 +10,7 @@ import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
 import { MemoryProvider } from "./builtin/memory";
 import { MessagingProvider } from "./builtin/messaging";
+import { OrchestrationProvider } from "./builtin/orchestration";
 import { SkillsProvider } from "./builtin/skills";
 import { TerminalProvider } from "./builtin/terminal";
 import { VisionProvider } from "./builtin/vision";
@@ -217,6 +218,21 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
           };
         });
       },
+    });
+  }
+
+  if (config.providers.builtin.orchestration) {
+    const orchestration = new OrchestrationProvider({
+      workspaceRoot: config.providers.filesystem.root,
+      progressTailMaxChars: config.providers.orchestration.progressTailMaxChars,
+    });
+    providers.push({
+      id: "orchestration",
+      name: "Orchestration",
+      kind: "builtin",
+      transport: new InProcessTransport(orchestration.server),
+      transportLabel: "in-process",
+      stop: () => orchestration.stop(),
     });
   }
 

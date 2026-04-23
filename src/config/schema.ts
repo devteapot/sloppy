@@ -64,6 +64,7 @@ export const sloppyConfigSchema = z.object({
           cron: z.boolean().default(true),
           messaging: z.boolean().default(true),
           delegation: z.boolean().default(true),
+          orchestration: z.boolean().default(true),
           vision: z.boolean().default(true),
         })
         .default({
@@ -76,6 +77,7 @@ export const sloppyConfigSchema = z.object({
           cron: true,
           messaging: true,
           delegation: true,
+          orchestration: true,
           vision: true,
         }),
       discovery: z
@@ -167,6 +169,13 @@ export const sloppyConfigSchema = z.object({
         .default({
           maxAgents: 10,
         }),
+      orchestration: z
+        .object({
+          progressTailMaxChars: z.number().int().min(128).default(2048),
+        })
+        .default({
+          progressTailMaxChars: 2048,
+        }),
       vision: z
         .object({
           maxImages: z.number().int().min(1).default(50),
@@ -190,6 +199,7 @@ export const sloppyConfigSchema = z.object({
         cron: true,
         messaging: true,
         delegation: true,
+        orchestration: true,
         vision: true,
       },
       discovery: {
@@ -230,6 +240,9 @@ export const sloppyConfigSchema = z.object({
       },
       delegation: {
         maxAgents: 10,
+      },
+      orchestration: {
+        progressTailMaxChars: 2048,
       },
       vision: {
         maxImages: 50,

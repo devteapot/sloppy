@@ -1,0 +1,155 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SlopConsumer } from "@slop-ai/consumer/browser";
+
+import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { OrchestrationProvider } from "../src/providers/builtin/orchestration";
+
+const tempPaths: string[] = [];
+
+afterEach(async () => {
+  while (tempPaths.length > 0) {
+    const path = tempPaths.pop();
+    if (!path) continue;
+    await rm(path, { recursive: true, force: true });
+  }
+});
+
+async function harness() {
+  const root = await mkdtemp(join(tmpdir(), "sloppy-orch-"));
+  tempPaths.push(root);
+  const provider = new OrchestrationProvider({ workspaceRoot: root, sessionId: "sess-test" });
+  const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+  await consumer.connect();
+  await consumer.subscribe("/", 3);
+  return { root, provider, consumer };
+}
+
+describe("OrchestrationProvider", () => {
+  test("creates a plan and persists it under .sloppy/orchestration/", async () => {
+    const { root, provider, consumer } = await harness();
+
+    try {
+      const result = await consumer.invoke("/orchestration", "create_plan", {
+        query: "research competitors",
+        strategy: "parallel",
+        max_agents: 3,
+      });
+      expect(result.status).toBe("ok");
+
+      const tree = await consumer.query("/orchestration", 2);
+      expect(tree.properties).toMatchObject({
+        plan_status: "active",
+        plan_query: "research competitors",
+        plan_strategy: "parallel",
+        plan_max_agents: 3,
+      });
+
+      const planFile = join(root, ".sloppy", "orchestration", "plan.json");
+      expect(existsSync(planFile)).toBe(true);
+      const persisted = JSON.parse(readFileSync(planFile, "utf8"));
+      expect(persisted.query).toBe("research competitors");
+      expect(persisted.status).toBe("active");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects a second active plan", async () => {
+    const { provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "first" });
+      const second = await consumer.invoke("/orchestration", "create_plan", { query: "second" });
+      expect(second.status).toBe("error");
+      expect(second.error?.message).toContain("active plan already exists");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("walks a task through start, progress, complete", async () => {
+    const { root, provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "build feature" });
+      const spawn = await consumer.invoke("/orchestration", "create_task", {
+        name: "analyze",
+        goal: "analyze the requirements",
+      });
+      const { id: taskId, version: v0 } = spawn.data as { id: string; version: number };
+
+      const start = await consumer.invoke(`/tasks/${taskId}`, "start", {
+        expected_version: v0,
+      });
+      expect(start.status).toBe("ok");
+      const v1 = (start.data as { version: number }).version;
+      expect(v1).toBeGreaterThan(v0);
+
+      const progress = await consumer.invoke(`/tasks/${taskId}`, "append_progress", {
+        message: "read the spec",
+      });
+      expect(progress.status).toBe("ok");
+
+      const complete = await consumer.invoke(`/tasks/${taskId}`, "complete", {
+        result: "requirements analyzed: feature needs X and Y",
+      });
+      expect(complete.status).toBe("ok");
+
+      const tasks = await consumer.query("/tasks", 2);
+      expect(tasks.children?.[0]?.properties).toMatchObject({
+        id: taskId,
+        status: "completed",
+      });
+
+      const getResult = await consumer.invoke(`/tasks/${taskId}`, "get_result", {});
+      expect((getResult.data as { result: string }).result).toBe(
+        "requirements analyzed: feature needs X and Y",
+      );
+
+      const resultFile = join(root, ".sloppy", "orchestration", "tasks", taskId, "result.md");
+      expect(readFileSync(resultFile, "utf8")).toBe("requirements analyzed: feature needs X and Y");
+      const progressFile = join(root, ".sloppy", "orchestration", "tasks", taskId, "progress.md");
+      expect(readFileSync(progressFile, "utf8")).toContain("read the spec");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects task updates with stale expected_version (CAS)", async () => {
+    const { provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "q" });
+      const spawn = await consumer.invoke("/orchestration", "create_task", {
+        name: "t",
+        goal: "g",
+      });
+      const { id: taskId, version: v0 } = spawn.data as { id: string; version: number };
+
+      const first = await consumer.invoke(`/tasks/${taskId}`, "start", { expected_version: v0 });
+      expect(first.status).toBe("ok");
+      const v1 = (first.data as { version: number }).version;
+
+      const stale = await consumer.invoke(`/tasks/${taskId}`, "complete", {
+        result: "done",
+        expected_version: v0,
+      });
+      expect(stale.status).toBe("ok");
+      const staleData = stale.data as { error?: string; currentVersion?: number };
+      expect(staleData.error).toBe("version_conflict");
+      expect(staleData.currentVersion).toBe(v1);
+
+      const fresh = await consumer.invoke(`/tasks/${taskId}`, "complete", {
+        result: "done",
+        expected_version: v1,
+      });
+      expect(fresh.status).toBe("ok");
+    } finally {
+      provider.stop();
+    }
+  });
+});
