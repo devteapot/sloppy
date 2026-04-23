@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 
 import { defaultConfigPromise } from "../src/config/load";
 import { Agent } from "../src/core/agent";
+import { LlmProfileManager } from "../src/llm/profile-manager";
 
 const LIVE = process.env.SLOPPY_E2E_LLM === "1";
 
@@ -39,9 +40,35 @@ function dumpArtifacts(root: string, logPath: string, label: string): void {
 
 async function buildOrchestratorConfig(root: string) {
   const baseConfig = await defaultConfigPromise;
+  const provider = process.env.SLOPPY_LLM_PROVIDER;
+  const baseUrl = process.env.SLOPPY_LLM_BASE_URL;
+  const model = process.env.SLOPPY_MODEL;
+  if (!provider || !baseUrl || !model) {
+    throw new Error(
+      "Live e2e test requires SLOPPY_LLM_PROVIDER, SLOPPY_LLM_BASE_URL, and SLOPPY_MODEL to be set. Refusing to run against the user's managed profiles (Opus/OpenRouter etc.).",
+    );
+  }
+  const apiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV ?? "OPENAI_API_KEY";
+  if (!process.env[apiKeyEnv]) {
+    throw new Error(
+      `Live e2e test requires ${apiKeyEnv} to be set in env (or set SLOPPY_LLM_API_KEY_ENV to a different var).`,
+    );
+  }
   return {
     ...baseConfig,
     agent: { ...baseConfig.agent, orchestratorMode: true, maxIterations: 60 },
+    // Build the llm config from scratch from env vars so nothing from
+    // ~/.sloppy/config.yaml (managed profiles, apiKeyEnv, default profile id)
+    // can route the test to the user's cloud billing account.
+    llm: {
+      provider: provider as typeof baseConfig.llm.provider,
+      baseUrl,
+      model,
+      apiKeyEnv,
+      profiles: [],
+      defaultProfileId: undefined,
+      maxTokens: baseConfig.llm.maxTokens,
+    },
     providers: {
       ...baseConfig.providers,
       builtin: {
@@ -61,6 +88,27 @@ async function buildOrchestratorConfig(root: string) {
       filesystem: { ...baseConfig.providers.filesystem, root, focus: root },
     },
   };
+}
+
+async function assertLlmRoutedToEnv(
+  config: Awaited<ReturnType<typeof buildOrchestratorConfig>>,
+): Promise<void> {
+  const manager = new LlmProfileManager({ config });
+  const state = await manager.getState();
+  const active = state.profiles.find((p) => p.id === state.activeProfileId);
+  const expectedBase = process.env.SLOPPY_LLM_BASE_URL;
+  const expectedModel = process.env.SLOPPY_MODEL;
+  if (!active || active.baseUrl !== expectedBase || active.model !== expectedModel) {
+    throw new Error(
+      `E2E safeguard: active LLM profile does not match env overrides. ` +
+        `Expected baseUrl=${expectedBase} model=${expectedModel}, ` +
+        `got profile=${active?.id} baseUrl=${active?.baseUrl} model=${active?.model}. ` +
+        `Refusing to run to avoid billing the user's managed cloud profile.`,
+    );
+  }
+  process.stderr.write(
+    `[e2e] LLM routed to ${active.provider} ${active.model} @ ${active.baseUrl}\n`,
+  );
 }
 
 function redirectStderrTo(logPath: string): () => void {
@@ -122,6 +170,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
       const restoreStderr = redirectStderrTo(debugLog);
 
       const config = await buildOrchestratorConfig(root);
+      await assertLlmRoutedToEnv(config);
       const agent = new Agent({ config });
       let passed = false;
       try {
@@ -159,6 +208,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
       const restoreStderr = redirectStderrTo(debugLog);
 
       const config = await buildOrchestratorConfig(root);
+      await assertLlmRoutedToEnv(config);
       const agent = new Agent({ config });
       let passed = false;
       try {
