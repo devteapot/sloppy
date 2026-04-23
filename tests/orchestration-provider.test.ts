@@ -196,6 +196,49 @@ describe("OrchestrationProvider", () => {
     }
   });
 
+  test("start affordance is hidden until dependencies complete", async () => {
+    const { provider, consumer } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "q" });
+      const a = await consumer.invoke("/orchestration", "create_task", { name: "a", goal: "a" });
+      const aId = (a.data as { id: string; version: number }).id;
+      const aV0 = (a.data as { id: string; version: number }).version;
+
+      const b = await consumer.invoke("/orchestration", "create_task", {
+        name: "b",
+        goal: "b",
+        depends_on: [aId],
+      });
+      const bId = (b.data as { id: string }).id;
+
+      // b cannot start yet — dep a is still pending
+      const blocked = await consumer.query(`/tasks/${bId}`, 1);
+      expect(blocked.affordances?.map((x) => x.action)).not.toContain("start");
+      expect(blocked.properties?.unmet_dependencies).toEqual([aId]);
+
+      // Affordance is hidden so the router returns no handler.
+      const direct = await consumer.invoke(`/tasks/${bId}`, "start", {});
+      expect(direct.status).toBe("error");
+      expect(direct.error?.message).toContain("No handler");
+
+      // Complete a; b becomes startable
+      await consumer.invoke(`/tasks/${aId}`, "start", { expected_version: aV0 });
+      const aMid = await consumer.query(`/tasks/${aId}`, 1);
+      const aV1 = aMid.properties?.version as number;
+      await consumer.invoke(`/tasks/${aId}`, "complete", {
+        result: "done",
+        expected_version: aV1,
+      });
+
+      const unblocked = await consumer.query(`/tasks/${bId}`, 1);
+      expect(unblocked.affordances?.map((x) => x.action)).toContain("start");
+      expect(unblocked.properties?.unmet_dependencies).toEqual([]);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("terminal task status removes mutating affordances", async () => {
     const { provider, consumer } = await harness();
 

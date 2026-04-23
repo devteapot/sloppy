@@ -308,10 +308,29 @@ export class OrchestrationProvider {
     return { version, state: next };
   }
 
+  private unmetDependencies(taskId: string): string[] {
+    const def = this.loadTaskDefinition(taskId);
+    if (!def?.depends_on?.length) return [];
+    const unmet: string[] = [];
+    for (const depId of def.depends_on) {
+      const depState = this.loadTaskState(depId);
+      if (!depState || depState.status !== "completed") {
+        unmet.push(depId);
+      }
+    }
+    return unmet;
+  }
+
   private startTask(params: {
     task_id: string;
     expected_version?: number;
   }): { version: number; status: TaskStatus } | { error: string; currentVersion: number } {
+    const unmet = this.unmetDependencies(params.task_id);
+    if (unmet.length > 0) {
+      throw new Error(
+        `Cannot start task ${params.task_id}: unmet dependencies [${unmet.join(", ")}].`,
+      );
+    }
     const result = this.updateTaskState(
       params.task_id,
       { status: "running" },
@@ -704,7 +723,9 @@ export class OrchestrationProvider {
     const isRunning = status === "running";
     const isActive = isPending || isRunning;
 
-    if (isPending) {
+    const depsMet = this.unmetDependencies(id).length === 0;
+
+    if (isPending && depsMet) {
       actions.start = action(
         { expected_version: { type: "number" } },
         async ({ expected_version }) =>
@@ -812,6 +833,7 @@ export class OrchestrationProvider {
           completed_at: state?.completed_at,
           version,
           progress_preview: truncateText(progress, 400),
+          unmet_dependencies: this.unmetDependencies(id),
         },
         summary: def ? `${def.name}: ${def.goal}` : id,
         actions: this.buildTaskActions(id, state?.status),
