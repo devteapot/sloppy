@@ -125,6 +125,21 @@ describe("loadConfig", () => {
     expect(config.llm.baseUrl).toBe("http://127.0.0.1:11434/v1");
   });
 
+  test("expands ~ in skills.skillsDir to the user's home directory", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.skills.skillsDir).toBe(join(home, ".hermes/skills"));
+  });
+
   test("applies env override for max iterations", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

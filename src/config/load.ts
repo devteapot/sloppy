@@ -171,6 +171,10 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
         root: filesystemRoot,
         focus: filesystemFocus,
       },
+      skills: {
+        ...config.providers.skills,
+        skillsDir: resolve(expandHomePath(config.providers.skills.skillsDir)),
+      },
     },
   };
 }
