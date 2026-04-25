@@ -20,6 +20,24 @@ afterEach(async () => {
 });
 
 describe("FilesystemProvider", () => {
+  test("rejects a focus that resolves outside the workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-root-"));
+    tempPaths.push(root);
+    const outside = await mkdtemp(join(tmpdir(), "sloppy-fs-outside-"));
+    tempPaths.push(outside);
+    await writeFile(join(outside, "leak.txt"), "leak", "utf8");
+
+    expect(() =>
+      new FilesystemProvider({
+        root,
+        focus: outside,
+        recentLimit: 10,
+        searchLimit: 20,
+        readMaxBytes: 65536,
+      }),
+    ).toThrow(/focus must be inside workspace root/);
+  });
+
   test("writes files and exposes them back through state", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-"));
     tempPaths.push(root);

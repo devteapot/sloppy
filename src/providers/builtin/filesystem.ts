@@ -3,7 +3,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../core/debug";
-import { realpathOfPrefix, safeRealpath } from "./path-containment";
+import { isWithinRoot, realpathOfPrefix, safeRealpath } from "./path-containment";
 
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
@@ -183,7 +183,16 @@ export class FilesystemProvider {
     const rawRoot = resolve(options.root);
     this.root = safeRealpath(rawRoot) ?? rawRoot;
     const rawFocus = resolve(options.focus || options.root);
-    this.focusPath = safeRealpath(rawFocus) ?? rawFocus;
+    const candidateFocus = safeRealpath(rawFocus) ?? rawFocus;
+    // Reject any focus that resolves outside the workspace root. Without
+    // this, a misconfigured or malicious focus would leak listings (and
+    // potentially file contents) from outside the root through /workspace.
+    if (!isWithinRoot(this.root, candidateFocus)) {
+      throw new Error(
+        `Filesystem focus must be inside workspace root. focus=${candidateFocus} root=${this.root}`,
+      );
+    }
+    this.focusPath = candidateFocus;
     this.recentLimit = options.recentLimit;
     this.searchLimit = options.searchLimit;
     this.readMaxBytes = options.readMaxBytes;
