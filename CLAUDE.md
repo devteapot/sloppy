@@ -29,6 +29,7 @@ src/            — Source code (TypeScript)
 - Use `bun` for all package management and scripts, not npm/yarn
 - Built-in tools are implemented as SLOP providers (state tree + affordances), not special-cased
 - Keep the core small — capabilities come from providers
+- Files in `src/core/` over 400 lines need a top-of-file comment explaining why they aren't split. Capability-specific logic belongs in `src/providers/` or `src/runtime/`.
 - The SLOP SDK packages live in `~/dev/slop-slop-slop/packages/typescript/`
 
 ## Key docs
@@ -38,3 +39,6 @@ src/            — Source code (TypeScript)
 - `docs/03-mvp-plan.md` — Phased implementation plan
 - `docs/04-slop-protocol-reference.md` — Agent-relevant protocol summary
 - `docs/05-language-evaluation.md` — Why TypeScript
+- `docs/09-orchestration-state-machine.md` — Task status transitions, CAS, verification gate
+- `docs/10-phase-2-plan.md` — Phase 2 feature spec (transcript media, retention, cost)
+- `docs/ui-design-system.md` — UI design system ("Nocturnal Observer")
