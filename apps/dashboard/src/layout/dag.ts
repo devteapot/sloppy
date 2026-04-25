@@ -71,10 +71,13 @@ function wrap(text: string, width: number, maxLines: number): string[] {
     // If text still had more content, mark last line with ellipsis.
     const joined = lines.join(" ");
     if (joined.length < trimmed.length) {
-      const last = lines[lines.length - 1]!;
-      lines[lines.length - 1] = truncate(last, width);
-      if (!lines[lines.length - 1]?.endsWith("…")) {
-        lines[lines.length - 1] = `${lines[lines.length - 1]?.replace(/[\s.]*$/, "")}…`;
+      const lastIndex = lines.length - 1;
+      const last = lines[lastIndex];
+      if (last !== undefined) {
+        const truncated = truncate(last, width);
+        lines[lastIndex] = truncated.endsWith("…")
+          ? truncated
+          : `${truncated.replace(/[\s.]*$/, "")}…`;
       }
     }
   }
@@ -121,12 +124,13 @@ function groupByPlan(
   // When the server provides an explicit id, group by that id; otherwise the
   // primary plan's tasks are those without any planId (the "default" bucket).
   const primaryKey = primaryPlanId ?? "";
-  if (groups.has(primaryKey)) {
+  const primaryTasks = groups.get(primaryKey);
+  if (primaryTasks) {
     out.push({
       planId: primaryKey,
       primary: true,
       orphan: false,
-      tasks: groups.get(primaryKey)!,
+      tasks: primaryTasks,
     });
     groups.delete(primaryKey);
   }
@@ -157,7 +161,8 @@ function computeCriticalEdges(tasks: DashboardTask[]): Set<string> {
   const visited = new Set<string>();
   const stack = seeds.map((s) => s.id);
   while (stack.length) {
-    const id = stack.pop()!;
+    const id = stack.pop();
+    if (id === undefined) continue;
     if (visited.has(id)) continue;
     visited.add(id);
     const task = byId.get(id);
@@ -211,7 +216,10 @@ function layoutLane(
 
   const nodes: DagNode[] = tasks.map((task) => {
     const n = g.node(task.id);
-    const m = measured.get(task.id)!;
+    const m = measured.get(task.id);
+    if (!n || !m) {
+      throw new Error(`DAG layout failed to resolve measured node: ${task.id}`);
+    }
     return {
       id: task.id,
       planId,
@@ -266,10 +274,13 @@ function clipEndpoints(
   to?: DagNode,
 ): Array<{ x: number; y: number }> {
   if (points.length < 2) return points;
-  const first = from ? clipSegmentToRect(points[1]!, points[0]!, from) : points[0]!;
-  const last = to
-    ? clipSegmentToRect(points[points.length - 2]!, points[points.length - 1]!, to)
-    : points[points.length - 1]!;
+  const start = points[0];
+  const second = points[1];
+  const penultimate = points[points.length - 2];
+  const end = points[points.length - 1];
+  if (!start || !second || !penultimate || !end) return points;
+  const first = from ? clipSegmentToRect(second, start, from) : start;
+  const last = to ? clipSegmentToRect(penultimate, end, to) : end;
   return [first, ...points.slice(1, -1), last];
 }
 
