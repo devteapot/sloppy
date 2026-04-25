@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
@@ -66,6 +66,37 @@ function isProbablyBinary(content: Uint8Array): boolean {
 function relativePath(root: string, target: string): string {
   const rel = relative(root, target);
   return rel || ".";
+}
+
+function safeRealpath(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Realpath the longest existing prefix of an absolute path, then re-append
+ * the unresolved tail. Used by `ensureWithinRoot` so containment is enforced
+ * even when the target doesn't exist yet (write/mkdir/edit) and so symlinks
+ * along the path can't be used to escape the workspace root.
+ */
+function realpathOfPrefix(absolutePath: string): string {
+  let current = absolutePath;
+  const tail: string[] = [];
+  while (true) {
+    const resolved = safeRealpath(current);
+    if (resolved !== null) {
+      return tail.length === 0 ? resolved : resolve(resolved, ...tail.reverse());
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return absolutePath;
+    }
+    tail.push(basename(current));
+    current = parent;
+  }
 }
 
 function entryIdForPath(path: string): string {
@@ -176,8 +207,13 @@ export class FilesystemProvider {
     contentRefThresholdBytes?: number;
     previewBytes?: number;
   }) {
-    this.root = resolve(options.root);
-    this.focusPath = resolve(options.focus || options.root);
+    // Resolve the root through realpath so symlink-escape via a symlinked
+    // root component is also blocked. Falls back to plain `resolve` if the
+    // root does not exist yet (callers may create it on first use).
+    const rawRoot = resolve(options.root);
+    this.root = safeRealpath(rawRoot) ?? rawRoot;
+    const rawFocus = resolve(options.focus || options.root);
+    this.focusPath = safeRealpath(rawFocus) ?? rawFocus;
     this.recentLimit = options.recentLimit;
     this.searchLimit = options.searchLimit;
     this.readMaxBytes = options.readMaxBytes;
@@ -225,7 +261,12 @@ export class FilesystemProvider {
     }
 
     if (isAbsolute(trimmed)) {
-      const relativeToRoot = relative(this.root, trimmed);
+      // Compare via realpath so paths that go through symlinked prefixes
+      // (e.g. macOS `/var/folders/...` -> `/private/var/folders/...`) still
+      // normalize correctly when the canonical root differs from the user's
+      // input path.
+      const trimmedReal = realpathOfPrefix(trimmed);
+      const relativeToRoot = relative(this.root, trimmedReal);
       if (
         relativeToRoot === "" ||
         (!relativeToRoot.startsWith("..") && !isAbsolute(relativeToRoot))
@@ -251,7 +292,13 @@ export class FilesystemProvider {
   private ensureWithinRoot(inputPath: string): string {
     const normalizedPath = this.normalizeInputPath(inputPath);
     const resolved = resolve(this.root, normalizedPath);
-    if (resolved !== this.root && !resolved.startsWith(`${this.root}/`)) {
+    // Realpath the longest existing prefix so a symlink anywhere along the
+    // path (e.g. `${root}/escape -> /etc`) is rejected before any read or
+    // write. The unresolved tail is re-appended so write-on-nonexistent
+    // still works for first-creation paths.
+    const realResolved = realpathOfPrefix(resolved);
+    const escapes = realResolved !== this.root && !realResolved.startsWith(`${this.root}/`);
+    if (escapes) {
       throw invalidInput(
         `Path escapes filesystem root: ${inputPath}. Use a path relative to the workspace root.`,
       );

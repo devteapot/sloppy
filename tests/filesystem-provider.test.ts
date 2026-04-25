@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -828,6 +828,48 @@ describe("FilesystemProvider", () => {
       });
       const recreated = recreate.data as { version: number };
       expect(recreated.version).toBeGreaterThan(readData.version);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects writes through symlinks that escape the workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-symlink-"));
+    tempPaths.push(root);
+    const outside = await mkdtemp(join(tmpdir(), "sloppy-fs-escape-"));
+    tempPaths.push(outside);
+    // A symlink under the workspace root pointing at an unrelated temp dir.
+    await symlink(outside, join(root, "link"));
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const escaped = await consumer.invoke("/workspace", "write", {
+        path: "link/escaped.txt",
+        content: "should not exist",
+      });
+      expect(escaped.status).toBe("error");
+      expect(escaped.error?.message ?? "").toMatch(/escapes filesystem root/);
+
+      const escapedMkdir = await consumer.invoke("/workspace", "mkdir", {
+        path: "link/sub",
+      });
+      expect(escapedMkdir.status).toBe("error");
+
+      const escapedRead = await consumer.invoke("/workspace", "read", {
+        path: "link/anything",
+      });
+      expect(escapedRead.status).toBe("error");
     } finally {
       provider.stop();
     }
