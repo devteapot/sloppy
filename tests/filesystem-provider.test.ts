@@ -109,8 +109,9 @@ describe("FilesystemProvider", () => {
 
       const read = await consumer.invoke("/workspace", "read", {});
       expect(read.status).toBe("error");
-      expect(read.error?.code).toBe("invalid_input");
-      expect(read.error?.message).toContain("path must be a non-empty string");
+      // SLOP 0.2 SDK rejects missing required params before reaching the handler.
+      expect(read.error?.code).toBe("invalid_params");
+      expect(read.error?.message).toContain("path");
     } finally {
       provider.stop();
     }

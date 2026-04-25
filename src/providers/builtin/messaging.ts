@@ -192,6 +192,7 @@ export class MessagingProvider {
               limit: {
                 type: "number",
                 description: "Maximum number of recent messages to return. Omit for all.",
+                optional: true,
               },
             },
             async ({ limit }) => this.viewHistory(channel.id, limit),

@@ -1664,43 +1664,51 @@ export class OrchestrationProvider {
               description:
                 "Optional task kind: implementation, audit, repair, docs, or verification.",
               enum: ["implementation", "audit", "repair", "docs", "verification"],
+              optional: true,
             },
             client_ref: {
               type: "string",
               description:
                 "Optional local reference for this task, e.g. 'scaffold' or 'task-1'. Later dependencies may use this value.",
+              optional: true,
             },
             spec_refs: {
               type: "array",
               description:
                 "Optional spec requirement or decision refs this task is responsible for satisfying.",
               items: { type: "string" },
+              optional: true,
             },
             audit_of: {
               type: "string",
               description: "Optional task id this audit task evaluates.",
+              optional: true,
             },
             finding_refs: {
               type: "array",
               description: "Optional audit finding ids this repair task addresses.",
               items: { type: "string" },
+              optional: true,
             },
             depends_on: {
               type: "array",
               description:
                 "Optional list of dependency references. Prefer real task ids; existing task names, client_ref values, and aliases like task-1 are also accepted and normalized to ids.",
               items: { type: "string" },
+              optional: true,
             },
             acceptance_criteria: {
               type: "array",
               description:
                 "Optional concrete criteria that verification must cover before completion. Use short, checkable statements tied to this task's goal.",
               items: { type: "string" },
+              optional: true,
             },
             retry_of: {
               type: "string",
               description:
                 "Optional failed/cancelled/superseded task id this task replaces. When set, the old task is marked superseded_by the new one.",
+              optional: true,
             },
           },
           async ({
@@ -1750,38 +1758,45 @@ export class OrchestrationProvider {
                     description:
                       "Optional task kind: implementation, audit, repair, docs, or verification.",
                     enum: ["implementation", "audit", "repair", "docs", "verification"],
+                    optional: true,
                   },
                   client_ref: {
                     type: "string",
                     description:
                       "Optional local reference, e.g. 'scaffold' or 'ui'. Dependencies in this batch may refer to it.",
+                    optional: true,
                   },
                   spec_refs: {
                     type: "array",
                     description:
                       "Optional spec requirement or decision refs this task is responsible for satisfying.",
                     items: { type: "string" },
+                    optional: true,
                   },
                   audit_of: {
                     type: "string",
                     description: "Optional task id this audit task evaluates.",
+                    optional: true,
                   },
                   finding_refs: {
                     type: "array",
                     description: "Optional audit finding ids this repair task addresses.",
                     items: { type: "string" },
+                    optional: true,
                   },
                   depends_on: {
                     type: "array",
                     description:
                       "Optional dependency refs: ids, names, client_ref values, or aliases in this batch. Include only real blockers; implementation siblings that can agree on a stated interface should usually be parallel.",
                     items: { type: "string" },
+                    optional: true,
                   },
                   acceptance_criteria: {
                     type: "array",
                     description:
                       "Optional concrete criteria that must be verified before this task can complete.",
                     items: { type: "string" },
+                    optional: true,
                   },
                 },
                 required: ["name", "goal"],
@@ -1812,23 +1827,27 @@ export class OrchestrationProvider {
                 "decision_request",
                 "dependency_signal",
               ],
+              optional: true,
             },
             priority: {
               type: "string",
               description: "Optional handoff priority: low, normal, or high.",
               enum: ["low", "normal", "high"],
+              optional: true,
             },
             request: "string",
             spec_refs: {
               type: "array",
               description: "Optional spec refs this handoff is about.",
               items: { type: "string" },
+              optional: true,
             },
             evidence_refs: {
               type: "array",
               description:
                 "Optional files, commands, URLs, screenshots, or state paths that explain the request.",
               items: { type: "string" },
+              optional: true,
             },
             blocks_task: {
               type: "boolean",
@@ -1909,17 +1928,20 @@ export class OrchestrationProvider {
                       description:
                         "Optional spec decision refs this response establishes or cites.",
                       items: { type: "string" },
+                      optional: true,
                     },
                     evidence_refs: {
                       type: "array",
                       description:
                         "Optional files, commands, URLs, screenshots, or state paths that support the response.",
                       items: { type: "string" },
+                      optional: true,
                     },
                     unblock: {
                       type: "boolean",
                       description:
                         "True when this response is intended to unblock the receiving task.",
+                      optional: true,
                     },
                     expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
                   },
@@ -1993,6 +2015,7 @@ export class OrchestrationProvider {
                   reason: {
                     type: "string",
                     description: "Optional explanation for accepting this deviation from the spec.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>
@@ -2013,6 +2036,7 @@ export class OrchestrationProvider {
                   reason: {
                     type: "string",
                     description: "Optional explanation for dismissing this finding.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>
@@ -2032,6 +2056,7 @@ export class OrchestrationProvider {
                   reason: {
                     type: "string",
                     description: "Optional evidence summary for the fix.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>
@@ -2051,15 +2076,18 @@ export class OrchestrationProvider {
                   name: {
                     type: "string",
                     description: "Optional repair task name.",
+                    optional: true,
                   },
                   goal: {
                     type: "string",
                     description: "Optional repair task goal.",
+                    optional: true,
                   },
                   acceptance_criteria: {
                     type: "array",
                     description: "Optional acceptance criteria for the repair task.",
                     items: { type: "string" },
+                    optional: true,
                   },
                 },
                 async ({ name, goal, acceptance_criteria }) =>
@@ -2119,6 +2147,7 @@ export class OrchestrationProvider {
               type: "array",
               description: "Optional spec refs this finding relates to.",
               items: { type: "string" },
+              optional: true,
             },
             summary: "string",
             evidence_refs: {
@@ -2126,6 +2155,7 @@ export class OrchestrationProvider {
               description:
                 "Files, commands, URLs, screenshots, or state paths supporting this finding.",
               items: { type: "string" },
+              optional: true,
             },
             recommendation: {
               type: "string",
@@ -2211,6 +2241,7 @@ export class OrchestrationProvider {
             type: "string",
             description:
               "Optional verification kind, e.g. build, test, lint, format, compile, smoke, review, benchmark, or check.",
+            optional: true,
           },
           status: {
             type: "string",
@@ -2227,22 +2258,26 @@ export class OrchestrationProvider {
             description:
               "Optional acceptance criteria covered by this verification. Use criterion ids like ac-1/ac-2 from task state, or ['all'] only when the evidence truly covers every criterion.",
             items: { type: "string" },
+            optional: true,
           },
           command: {
             type: "string",
             description:
               "Optional command or procedure used, e.g. 'npm run build' or 'manual browser smoke test'.",
+            optional: true,
           },
           evidence: {
             type: "string",
             description:
               "Optional concise evidence: important output lines, observed result, or link/path to the artifact.",
+            optional: true,
           },
           evidence_refs: {
             type: "array",
             description:
               "Optional artifact references that support the verification, e.g. file paths, command names, URLs, screenshot ids, or state paths.",
             items: { type: "string" },
+            optional: true,
           },
         },
         async ({ kind, status, summary, criteria, command, evidence, evidence_refs }) =>

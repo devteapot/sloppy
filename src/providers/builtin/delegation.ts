@@ -424,11 +424,13 @@ export class DelegationProvider {
             model: {
               type: "string",
               description: "Optional model identifier to run the agent with.",
+              optional: true,
             },
             task_id: {
               type: "string",
               description:
                 "Optional orchestration task id (e.g. task-abcd1234) to attach to. If set, the sub-agent updates that task's lifecycle instead of creating a new one. Use this to execute a task you already planned via /orchestration.create_task.",
+              optional: true,
             },
           },
           async ({ name, goal, model, task_id }) =>
@@ -518,6 +520,7 @@ export class DelegationProvider {
                   reason: {
                     type: "string",
                     description: "Optional rejection explanation forwarded to the child.",
+                    optional: true,
                   },
                 },
                 async ({ approval_id, reason }) =>

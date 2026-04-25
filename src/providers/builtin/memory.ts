@@ -113,6 +113,7 @@ export class MemoryProvider {
             ttl: {
               type: "string",
               description: "Optional ISO timestamp after which this memory may be pruned.",
+              optional: true,
             },
           },
           async ({ content, tags, weight, ttl }) =>

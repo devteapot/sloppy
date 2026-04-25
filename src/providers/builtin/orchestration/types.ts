@@ -144,4 +144,5 @@ export const OPTIONAL_EXPECTED_VERSION_PARAM = {
   type: "number",
   description:
     "Optional CAS guard. If provided, the update is rejected when the task/handoff/plan version has moved on.",
+  optional: true,
 } as const;

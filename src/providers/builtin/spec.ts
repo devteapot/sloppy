@@ -460,6 +460,7 @@ export class SpecProvider {
                   reason: {
                     type: "string",
                     description: "Optional explanation for approving this spec change.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>
@@ -480,6 +481,7 @@ export class SpecProvider {
                   reason: {
                     type: "string",
                     description: "Optional explanation for rejecting this spec change.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>
@@ -550,11 +552,13 @@ export class SpecProvider {
               type: "string",
               description: "Priority for this requirement: must, should, or could.",
               enum: ["must", "should", "could"],
+              optional: true,
             },
             tags: {
               type: "array",
               description: "Optional tags for filtering requirements.",
               items: { type: "string" },
+              optional: true,
             },
           },
           async ({ text, priority, tags }) =>
@@ -576,11 +580,13 @@ export class SpecProvider {
             rationale: {
               type: "string",
               description: "Optional rationale or tradeoff behind the decision.",
+              optional: true,
             },
             requirement_refs: {
               type: "array",
               description: "Optional requirement ids this decision clarifies.",
               items: { type: "string" },
+              optional: true,
             },
           },
           async ({ summary, rationale, requirement_refs }) =>
@@ -604,6 +610,7 @@ export class SpecProvider {
               type: "array",
               description: "Optional requirement ids this proposal changes or clarifies.",
               items: { type: "string" },
+              optional: true,
             },
           },
           async ({ summary, details, requirement_refs }) =>
@@ -673,10 +680,12 @@ export class SpecProvider {
             body: {
               type: "string",
               description: "Optional initial spec.md body.",
+              optional: true,
             },
             make_active: {
               type: "boolean",
               description: "Whether to make this spec active immediately. Defaults to true.",
+              optional: true,
             },
           },
           async ({ title, body, make_active }) =>

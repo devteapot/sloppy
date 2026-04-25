@@ -326,11 +326,13 @@ export class TerminalProvider {
               type: "boolean",
               description:
                 "Optional. Run the command asynchronously and expose progress via the tasks collection.",
+              optional: true,
             },
             confirmed: {
               type: "boolean",
               description:
                 "Optional. Set true only after the user explicitly approved a destructive command.",
+              optional: true,
             },
           },
           async ({ command, background }) => {

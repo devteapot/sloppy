@@ -1,8 +1,8 @@
 diff --git a/src/state-mirror.ts b/src/state-mirror.ts
-index fe6abfb57f7ac48674be4352a9d864d1b453d9d4..97d9a618f3222ed6bb3a2b12e4fe7558bff95e52 100644
+index c509e14779796dde11758931362250db744fb369..a5869bdb3091dab795f795cb9bfe30ddbf1a135b 100644
 --- a/src/state-mirror.ts
 +++ b/src/state-mirror.ts
-@@ -85,19 +85,15 @@ export class StateMirror {
+@@ -164,19 +164,15 @@ export class StateMirror {
      if (target) target.parent[target.key] = value;
    }
  

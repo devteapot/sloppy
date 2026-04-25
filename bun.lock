@@ -8,9 +8,9 @@
         "@anthropic-ai/sdk": "0.82.0",
         "@dagrejs/dagre": "^3.0.0",
         "@google/genai": "1.48.0",
-        "@slop-ai/consumer": "0.1.0",
-        "@slop-ai/core": "0.1.0",
-        "@slop-ai/server": "0.1.0",
+        "@slop-ai/consumer": "0.2.0",
+        "@slop-ai/core": "0.2.0",
+        "@slop-ai/server": "0.2.0",
         "openai": "6.33.0",
         "solid-js": "^1.9.12",
         "yaml": "2.8.3",
@@ -27,7 +27,8 @@
     },
   },
   "patchedDependencies": {
-    "@slop-ai/consumer@0.1.0": "patches/@slop-ai%2Fconsumer@0.1.0.patch",
+    "@slop-ai/consumer@0.2.0": "patches/@slop-ai%2Fconsumer@0.2.0.patch",
+    "@slop-ai/core@0.2.0": "patches/@slop-ai%2Fcore@0.2.0.patch",
   },
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.82.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-xdHTjL1GlUlDugHq/I47qdOKp/ROPvuHl7ROJCgUQigbvPu7asf9KcAcU1EqdrP2LuVhEKaTs7Z+ShpZDRzHdQ=="],
@@ -186,11 +187,11 @@
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-rc.12", "", {}, "sha512-HHMwmarRKvoFsJorqYlFeFRzXZqCt2ETQlEDOb9aqssrnVBB1/+xgTGtuTrIk5vzLNX1MjMtTf7W9z3tsSbrxw=="],
 
-    "@slop-ai/consumer": ["@slop-ai/consumer@0.1.0", "", {}, "sha512-bIzuokbglUCjq6E1mDRQkDIeO+oLsFAbIcR8bjbyhG3xohVibJNm0ns3fJTyRS5dKtu5AwEwKXSPspd9rsPGPA=="],
+    "@slop-ai/consumer": ["@slop-ai/consumer@0.2.0", "", {}, "sha512-zyPiavxiG6C2Sw+1ygEmARYmiDEnhDld41+B8fuZVdbMZQOxGiodgM+lOWGnMzvn/R0hNn+YMGuM/rIa13hnKQ=="],
 
-    "@slop-ai/core": ["@slop-ai/core@0.1.0", "", {}, "sha512-Z6iH4KjkugB0VnJCvfAehpV+DO53u9cUEmJkhcj9NBFeMO3DpE7fw9KE1T/oJ3eLlBVAgSng6BEKB94nWnagAQ=="],
+    "@slop-ai/core": ["@slop-ai/core@0.2.0", "", {}, "sha512-4qWkBzS1AmpyorkEwvyurQkeLbi4uX5abA/TKNowMn/43IfHhd+k0Ccc0FDXfHpLMhzCOqsT4R36cTar54H7DQ=="],
 
-    "@slop-ai/server": ["@slop-ai/server@0.1.0", "", { "dependencies": { "@slop-ai/core": "^0.1.0" } }, "sha512-2z3iLKhrpMiQZPg5Z3pM49+o/q6MTW0/3lXO07pm8tTHaYy3WlXmhTjfqnR1NFXXnuwoR5QvMllJ/gIAd77O9w=="],
+    "@slop-ai/server": ["@slop-ai/server@0.2.0", "", { "dependencies": { "@slop-ai/core": "^0.2.0" } }, "sha512-Xnjqwy5kFkk4whJoKvZl5BuPvk1cOcvbqH3DoWQRaLcEfQh3O/dk5sKA81EDv38dbB0GZmY/wHCPhK6Ks5kOqw=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 

@@ -25,9 +25,9 @@
     "@anthropic-ai/sdk": "0.82.0",
     "@dagrejs/dagre": "^3.0.0",
     "@google/genai": "1.48.0",
-    "@slop-ai/consumer": "0.1.0",
-    "@slop-ai/core": "0.1.0",
-    "@slop-ai/server": "0.1.0",
+    "@slop-ai/consumer": "0.2.0",
+    "@slop-ai/core": "0.2.0",
+    "@slop-ai/server": "0.2.0",
     "openai": "6.33.0",
     "solid-js": "^1.9.12",
     "yaml": "2.8.3",
@@ -42,6 +42,7 @@
     "vitest": "4.1.2"
   },
   "patchedDependencies": {
-    "@slop-ai/consumer@0.1.0": "patches/@slop-ai%2Fconsumer@0.1.0.patch"
+    "@slop-ai/consumer@0.2.0": "patches/@slop-ai%2Fconsumer@0.2.0.patch",
+    "@slop-ai/core@0.2.0": "patches/@slop-ai%2Fcore@0.2.0.patch"
   }
 }

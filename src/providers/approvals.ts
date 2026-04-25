@@ -251,6 +251,7 @@ export class ProviderApprovalManager {
                 reason: {
                   type: "string",
                   description: "Optional explanation for the rejection.",
+                  optional: true,
                 },
               },
               async ({ reason }) =>
@@ -296,6 +297,7 @@ export class ProviderApprovalManager {
                   reason: {
                     type: "string",
                     description: "Optional explanation for the rejection.",
+                    optional: true,
                   },
                 },
                 async ({ reason }) =>

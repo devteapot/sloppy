@@ -1,0 +1,37 @@
+diff --git a/src/descriptor.ts b/src/descriptor.ts
+index ff9ab28f0e50bca743b6af43b2de0e5caeb14620..0950d789425e2b97adb78d9f2fe802b238d91536 100644
+--- a/src/descriptor.ts
++++ b/src/descriptor.ts
+@@ -170,6 +170,7 @@ function normalizeParams(params: Record<string, ParamDef>): JsonSchema {
+   for (const [key, def] of Object.entries(params)) {
+     if (typeof def === "string") {
+       properties[key] = { type: def };
++      required.push(key);
+     } else {
+       properties[key] = {
+         type: def.type,
+@@ -177,8 +178,8 @@ function normalizeParams(params: Record<string, ParamDef>): JsonSchema {
+         ...(def.enum && { enum: def.enum }),
+         ...(def.items && { items: def.items }),
+       };
++      if (!def.optional) required.push(key);
+     }
+-    required.push(key);
+   }
+ 
+   return { type: "object", properties, required };
+diff --git a/src/types.ts b/src/types.ts
+index 5e88c227adaaef6bb62daa85eefece2f692e45f8..a5ed23c32f80afbc6704af00bd1b2d1ae98901fa 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -61,7 +61,9 @@ export interface PatchOp {
+ 
+ export type ActionHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
+ 
+-export type ParamDef = string | { type: string; description?: string; enum?: readonly unknown[]; items?: JsonSchema };
++export type ParamDef =
++  | string
++  | { type: string; description?: string; enum?: readonly unknown[]; items?: JsonSchema; optional?: boolean };
+ 
+ export type Action =
+   | ActionHandler

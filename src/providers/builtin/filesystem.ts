@@ -818,10 +818,12 @@ export class FilesystemProvider {
                     type: "number",
                     description:
                       "Optional 1-based start line. Pair with end_line to read a slice instead of the whole file.",
+                    optional: true,
                   },
                   end_line: {
                     type: "number",
                     description: "Optional 1-based end line (inclusive).",
+                    optional: true,
                   },
                 },
                 async ({ start_line, end_line }) =>
@@ -844,6 +846,7 @@ export class FilesystemProvider {
                     type: "number",
                     description:
                       "Optional CAS guard. Pass the version returned by the last read to serialize concurrent writers. expected_version=0 succeeds only if the file does not exist yet (use it for atomic first-creation). expected_version=N (N>0) succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }.",
+                    optional: true,
                   },
                 },
                 async ({ content, expected_version }) =>
@@ -870,6 +873,7 @@ export class FilesystemProvider {
                     type: "number",
                     description:
                       "Optional CAS guard. Pass the version returned by the last read. expected_version=N succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }. Edit does not create files — use write with expected_version=0 for first creation.",
+                    optional: true,
                   },
                 },
                 async ({ edits, expected_version }) =>
@@ -941,10 +945,12 @@ export class FilesystemProvider {
               type: "number",
               description:
                 "Optional 1-based start line. Pair with end_line to read a slice instead of the whole file.",
+              optional: true,
             },
             end_line: {
               type: "number",
               description: "Optional 1-based end line (inclusive).",
+              optional: true,
             },
           },
           async ({ path, start_line, end_line }) =>
@@ -975,6 +981,7 @@ export class FilesystemProvider {
               type: "number",
               description:
                 "Optional CAS guard. Pass the version returned by the last read to serialize concurrent writers. expected_version=0 succeeds only if the file does not exist yet (use it for atomic first-creation). expected_version=N (N>0) succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }.",
+              optional: true,
             },
           },
           async ({ path, content, expected_version }) =>
@@ -995,6 +1002,7 @@ export class FilesystemProvider {
             path: {
               type: "string",
               description: WORKSPACE_FILE_PATH_DESCRIPTION,
+              optional: true,
             },
             edits: {
               type: "array",
@@ -1005,6 +1013,7 @@ export class FilesystemProvider {
               type: "number",
               description:
                 "Optional CAS guard. Pass the version returned by the last read. expected_version=N succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }. Edit does not create files — use write with expected_version=0 for first creation.",
+              optional: true,
             },
           },
           async ({ path, edits, expected_version }) => {
@@ -1043,6 +1052,7 @@ export class FilesystemProvider {
             path: {
               type: "string",
               description: "Optional directory relative to the workspace root.",
+              optional: true,
             },
           },
           async ({ pattern, path }) =>

@@ -185,10 +185,12 @@ export class VisionProvider {
             width: {
               type: "number",
               description: `Image width in pixels. Defaults to ${this.defaultWidth}.`,
+              optional: true,
             },
             height: {
               type: "number",
               description: `Image height in pixels. Defaults to ${this.defaultHeight}.`,
+              optional: true,
             },
           },
           async ({ prompt, width, height }) =>

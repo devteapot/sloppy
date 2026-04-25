@@ -241,6 +241,7 @@ export class BrowserProvider {
             tab_index: {
               type: "number",
               description: "Index of the tab to close. Defaults to the active tab.",
+              optional: true,
             },
           },
           async ({ tab_index }) => this.closeTab(tab_index),
