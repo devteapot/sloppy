@@ -32,7 +32,7 @@ const passthroughRunner: CronCommandRunner = {
       },
     };
   },
-  rejectApproval() {
+  cancelApproval() {
     // no policy in this runner, so nothing to cancel
   },
 };
@@ -339,7 +339,7 @@ describe("CronProvider", () => {
   });
 
   test("marks a job errored and cancels the queued approval when policy blocks", async () => {
-    const rejectedApprovals: Array<{ id: string; reason?: string }> = [];
+    const cancelledApprovals: Array<{ id: string; reason?: string }> = [];
     const policyBlockingRunner: CronCommandRunner = {
       async invoke() {
         return {
@@ -351,8 +351,8 @@ describe("CronProvider", () => {
           },
         };
       },
-      rejectApproval(id, reason) {
-        rejectedApprovals.push({ id, reason });
+      cancelApproval(id, reason) {
+        cancelledApprovals.push({ id, reason });
       },
     };
     const { provider, consumer } = createCronHarness({}, policyBlockingRunner);
@@ -376,9 +376,61 @@ describe("CronProvider", () => {
         return current.properties?.status === "errored" ? current : null;
       });
       expect(errored.properties?.error_preview).toContain("Blocked by policy");
-      expect(rejectedApprovals).toHaveLength(1);
-      expect(rejectedApprovals[0]?.id).toBe("appr-1");
-      expect(rejectedApprovals[0]?.reason).toContain("destructive");
+      expect(cancelledApprovals).toHaveLength(1);
+      expect(cancelledApprovals[0]?.id).toBe("appr-1");
+      expect(cancelledApprovals[0]?.reason).toContain("destructive");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("policy-blocked cron jobs do not accumulate rejected approvals in the hub queue", async () => {
+    // Repeat the same blocked job several times and assert the queue stays
+    // empty. The previous behaviour left a 'rejected' record per run, so a
+    // minutely-firing blocked job would grow the queue without bound.
+    let cancelCount = 0;
+    let nextApprovalId = 0;
+    const queue = new Set<string>();
+    const blockingRunner: CronCommandRunner = {
+      async invoke() {
+        const approvalId = `appr-${++nextApprovalId}`;
+        queue.add(approvalId);
+        return {
+          status: "error",
+          data: { approvalId, providerId: "terminal" },
+          error: { code: "approval_required", message: "blocked" },
+        };
+      },
+      cancelApproval(id) {
+        if (!queue.delete(id)) {
+          throw new Error(`Unknown approval: ${id}`);
+        }
+        cancelCount++;
+      },
+    };
+    const { provider, consumer } = createCronHarness({}, blockingRunner);
+
+    try {
+      await connect(consumer);
+      await consumer.invoke("/session", "add_job", {
+        name: "blocked",
+        schedule: "0 * * * *",
+        command: "rm -rf /tmp/sloppy-test",
+      });
+      const jobs = await consumer.query("/jobs", 2);
+      const jobId = jobs.children?.[0]?.id;
+      expect(typeof jobId).toBe("string");
+
+      for (let i = 0; i < 3; i++) {
+        await consumer.invoke(`/jobs/${jobId}`, "run_now", {});
+        await waitFor(async () => {
+          const current = await consumer.query(`/jobs/${jobId}`, 2);
+          return current.properties?.status === "errored" ? current : null;
+        });
+      }
+
+      expect(cancelCount).toBe(3);
+      expect(queue.size).toBe(0);
     } finally {
       provider.stop();
     }

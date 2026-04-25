@@ -15,12 +15,12 @@ export interface CronCommandRunner {
   }>;
   /**
    * Cancel an approval that was implicitly enqueued for a command this
-   * provider routed through `invoke`. Cron must reject (not leave) any
-   * approval the hub queued for a job it's already abandoned, otherwise
-   * the destructive command can be run later by anyone watching the
-   * approvals queue, with no surviving link to the cron job.
+   * provider routed through `invoke`. Removes the record entirely (rather
+   * than marking it 'rejected') because cron's cancellations are synthetic
+   * — a minutely-firing blocked job would otherwise grow the queue
+   * without bound. Human rejections continue to leave an audit record.
    */
-  rejectApproval(approvalId: string, reason?: string): void;
+  cancelApproval(approvalId: string, reason?: string): void;
 }
 
 type CronStatus = "idle" | "running" | "completed" | "errored" | "disabled";
@@ -196,7 +196,7 @@ export class CronProvider {
           const approvalId = (result.data as { approvalId?: string } | undefined)?.approvalId;
           if (approvalId) {
             try {
-              this.runner.rejectApproval(
+              this.runner.cancelApproval(
                 approvalId,
                 `Cron job "${job.name}" blocked by policy.`,
               );

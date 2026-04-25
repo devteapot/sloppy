@@ -102,6 +102,30 @@ export class ApprovalQueue {
     this.emit("rejected", id);
   }
 
+  /**
+   * Remove an approval from the queue entirely. Intended for synthetic /
+   * system-driven cancellations (e.g. cron blocking its own job) where
+   * keeping a 'rejected' audit record would let a frequently-firing trigger
+   * grow the queue without bound. Human-driven rejections should still use
+   * `reject` so the resolution stays visible to UI surfaces.
+   */
+  cancel(id: string, reason?: string): void {
+    const item = this.items.get(id);
+    if (!item) {
+      throw new Error(`Unknown approval: ${id}`);
+    }
+    if (item.status !== "pending") {
+      throw new Error(`Approval is already resolved: ${id}`);
+    }
+    this.items.delete(id);
+    try {
+      item.rejectCallback?.(reason);
+    } catch {
+      // best-effort
+    }
+    this.emit("rejected", id);
+  }
+
   on(event: ApprovalEvent, handler: (id: string) => void): () => void {
     let bucket = this.listeners.get(event);
     if (!bucket) {
