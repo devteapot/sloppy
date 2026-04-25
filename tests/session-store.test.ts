@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { SloppyConfig } from "../src/config/schema";
+import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
+import { LlmProfileManager } from "../src/llm/profile-manager";
 import { SessionService } from "../src/session/service";
 import { buildMirroredItemId, SessionStore } from "../src/session/store";
 import type {
@@ -1435,5 +1438,124 @@ describe("SessionService — multi-session support", () => {
     expect(remaining[0]?.sessionId).toBe("isolate-2");
 
     service2.stop();
+  });
+
+  test("SessionService.start runs runtime.start before opening the socket", async () => {
+    // Regression: previously SessionService.start() only opened the unix
+    // listener — runtime.start() (which refreshes LLM profile state) didn't
+    // run until the first sendMessage(). Clients connecting on first
+    // snapshot saw the pristine pre-refresh store (profiles: [],
+    // secureStoreKind: "none").
+    const config: SloppyConfig = {
+      llm: {
+        provider: "openai",
+        model: "gpt-5.4",
+        apiKeyEnv: "OPENAI_API_KEY",
+        defaultProfileId: "test-openai",
+        profiles: [
+          {
+            id: "test-openai",
+            label: "Test OpenAI",
+            provider: "openai",
+            model: "gpt-5.4",
+            apiKeyEnv: "OPENAI_API_KEY",
+          },
+        ],
+        maxTokens: 4096,
+      },
+      agent: {
+        maxIterations: 12,
+        contextBudgetTokens: 24000,
+        minSalience: 0.2,
+        overviewDepth: 2,
+        overviewMaxNodes: 200,
+        detailDepth: 4,
+        detailMaxNodes: 200,
+        historyTurns: 8,
+        toolResultMaxChars: 16000,
+      },
+      maxToolResultSize: 4096,
+      providers: {
+        builtin: {
+          terminal: false,
+          filesystem: false,
+          memory: false,
+          skills: false,
+          web: false,
+          browser: false,
+          cron: false,
+          messaging: false,
+          delegation: false,
+          orchestration: false,
+          spec: false,
+          vision: false,
+        },
+        discovery: { enabled: false, paths: [] },
+        terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
+        filesystem: {
+          root: ".",
+          focus: ".",
+          recentLimit: 10,
+          searchLimit: 20,
+          readMaxBytes: 65536,
+          contentRefThresholdBytes: 8192,
+          previewBytes: 2048,
+        },
+        memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
+        skills: { skillsDir: "~/.hermes/skills" },
+        web: { historyLimit: 10 },
+        browser: { viewportWidth: 1280, viewportHeight: 720 },
+        cron: { maxJobs: 16 },
+        messaging: { maxMessages: 100 },
+        delegation: { maxAgents: 4 },
+        orchestration: { progressTailMaxChars: 2000 },
+        vision: { maxImages: 16, defaultWidth: 512, defaultHeight: 512 },
+      },
+    } as unknown as SloppyConfig;
+
+    class StubCredentialStore implements CredentialStore {
+      readonly kind = "keychain" as const;
+      async getStatus(): Promise<CredentialStoreStatus> {
+        return "available";
+      }
+      async get(profileId: string): Promise<string | null> {
+        return profileId === "test-openai" ? "test-key" : null;
+      }
+      async set(): Promise<void> {}
+      async delete(): Promise<void> {}
+    }
+
+    const llmProfileManager = new LlmProfileManager({
+      config,
+      credentialStore: new StubCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+
+    const service = new SessionService({
+      sessionId: "service-start-test",
+      socketPath: `/tmp/slop/svc-start-${crypto.randomUUID()}.sock`,
+      config,
+      llmProfileManager,
+    });
+
+    try {
+      const before = service.runtime.store.getSnapshot();
+      expect(before.llm.profiles).toEqual([]);
+      expect(before.llm.secureStoreKind).toBe("none");
+
+      await service.start({ register: false });
+
+      const after = service.runtime.store.getSnapshot();
+      // runtime.start() ran refreshLlmState before the listener opened, so
+      // the snapshot reflects the injected profile manager (not the store's
+      // pre-refresh placeholder).
+      expect(after.llm.profiles).toHaveLength(1);
+      expect(after.llm.profiles[0]?.id).toBe("test-openai");
+      expect(after.llm.profiles[0]?.ready).toBe(true);
+      expect(after.llm.secureStoreKind).toBe("keychain");
+      expect(after.llm.status).toBe("ready");
+    } finally {
+      service.stop();
+    }
   });
 });

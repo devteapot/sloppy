@@ -233,14 +233,20 @@ export class TerminalProvider {
         existing.stdout = stdout;
         existing.stderr = stderr;
         existing.exitCode = exitCode;
-        existing.status = exitCode === 0 ? "done" : "failed";
-        existing.message = exitCode === 0 ? "Completed" : "Failed";
+        // Preserve a prior cancellation: cancelTask() flips status to
+        // "cancelled" and kills the process, but the killed process still
+        // resolves `exited` after, which would otherwise overwrite the
+        // status back to done/failed.
+        if (existing.status !== "cancelled") {
+          existing.status = exitCode === 0 ? "done" : "failed";
+          existing.message = exitCode === 0 ? "Completed" : "Failed";
+        }
 
         this.pushHistory({
           id: taskId,
           command,
           cwd: existing.cwd,
-          status: exitCode === 0 ? "ok" : "error",
+          status: existing.status === "cancelled" ? "cancelled" : exitCode === 0 ? "ok" : "error",
           exitCode,
           stdout,
           stderr,
@@ -255,9 +261,11 @@ export class TerminalProvider {
           return;
         }
 
-        existing.status = "failed";
-        existing.message = error instanceof Error ? error.message : String(error);
-        existing.stderr = existing.message;
+        if (existing.status !== "cancelled") {
+          existing.status = "failed";
+          existing.message = error instanceof Error ? error.message : String(error);
+        }
+        existing.stderr = error instanceof Error ? error.message : String(error);
         existing.exitCode = null;
         this.server.refresh();
       });

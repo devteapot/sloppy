@@ -478,4 +478,54 @@ describe("TerminalProvider", () => {
       provider.stop();
     }
   });
+
+  test("cancelling a background task preserves cancelled status after process exit", async () => {
+    // Regression: cancelTask() killed the process and set status to
+    // "cancelled", but the process completion handler later overwrote it
+    // with "done"/"failed" once `process.exited` resolved.
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 30000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 4);
+
+      const start = await consumer.invoke("/session", "execute", {
+        command: "sleep 30",
+        background: true,
+      });
+      expect(start.status).toBe("accepted");
+      const taskId = (start.data as { taskId: string }).taskId;
+
+      const cancel = await consumer.invoke(`/tasks/${taskId}`, "cancel", {});
+      expect(cancel.status).toBe("ok");
+      expect((cancel.data as { status: string }).status).toBe("cancelled");
+
+      // Wait for the killed process to fully exit and the completion handler
+      // to run. Polling avoids a fixed sleep — once status flips it's stable.
+      const deadline = Date.now() + 5000;
+      let finalStatus: string | undefined;
+      while (Date.now() < deadline) {
+        const tasks = await consumer.query("/tasks", 3);
+        const node = tasks.children?.find((child) => child.id === taskId);
+        finalStatus = node?.properties?.status as string | undefined;
+        // Cancel removed; only show_output remains. Once the process has
+        // exited, exit_code transitions away from null.
+        if (node && node.properties?.exit_code !== null) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(finalStatus).toBe("cancelled");
+    } finally {
+      provider.stop();
+    }
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createSlopServer } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../src/config/schema";
@@ -373,6 +373,64 @@ describe("ConsumerHub", () => {
       await hub.addProvider(provider);
 
       expect(hub.isDangerousAffordance(id, "/session/tasks/t1", "cancel")).toBe(true);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("focusState records dangerous affordances and bumps state revision", async () => {
+    // Regression: focusState() previously stored the focus snapshot but did
+    // not walk it for dangerous affordances or bump the state revision. A
+    // dangerous affordance newly visible in the focused subtree could slip
+    // past dangerousActionRule until a later patch caught it.
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    try {
+      await hub.connect();
+
+      const id = "focus-danger";
+      const server = createSlopServer({ id, name: "FocusDanger" });
+      server.register("session", () => ({
+        type: "collection",
+        props: {},
+        actions: {
+          destroy: {
+            label: "Destroy",
+            dangerous: true,
+            handler: async () => ({ ok: true }),
+          },
+        },
+      }));
+
+      const provider: RegisteredProvider = {
+        id,
+        name: "FocusDanger",
+        kind: "builtin",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process",
+      };
+      await hub.addProvider(provider);
+
+      // Spy on the (TS-private) recording method so we can prove focusState
+      // actually walks the focus snapshot. addProvider() seeds the same
+      // affordance via deep discovery, so isDangerousAffordance() alone
+      // can't distinguish the two code paths.
+      const spy = spyOn(
+        hub as unknown as { recordDangerousAffordances: (...args: unknown[]) => void },
+        "recordDangerousAffordances",
+      );
+      const before = hub.getStateRevision();
+      const detail = await hub.focusState({ providerId: id, path: "/session" });
+      const after = hub.getStateRevision();
+
+      expect(detail.id).toBe("session");
+      expect(after).toBeGreaterThan(before);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [providerArg, , rootPathArg] = spy.mock.calls[0] ?? [];
+      expect(providerArg).toBe(id);
+      expect(rootPathArg).toBe("/session");
+      // Sticky registry: the entry stays true after focusState runs.
+      expect(hub.isDangerousAffordance(id, "/session", "destroy")).toBe(true);
+      spy.mockRestore();
     } finally {
       hub.shutdown();
     }

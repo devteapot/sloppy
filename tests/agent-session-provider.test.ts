@@ -270,6 +270,124 @@ function createCancelableStreamingAgentFactory() {
   };
 }
 
+/**
+ * Variant of the approval harness whose `chat()` fires the
+ * `approval_requested` tool event but blocks resolution on a deferred gate.
+ * This lets a test observe the window where SessionRuntime.pendingApproval
+ * is set but agent.chat() has not yet unwound — the exact race the fast
+ * approval fix targets.
+ */
+function createGatedApprovalHarnessFactory() {
+  let callbacks: AgentCallbacks | null = null;
+  const chatGate = createDeferred<void>();
+  const approveCalls: string[] = [];
+  const resumeCalls: ResolvedApprovalToolResult[] = [];
+  let resumeResolved: () => void = () => undefined;
+  const resumeStarted = new Promise<void>((resolve) => {
+    resumeResolved = resolve;
+  });
+
+  const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
+    callbacks = agentCallbacks;
+    return {
+      start: async () => undefined,
+      chat: async () => {
+        callbacks?.onToolEvent?.({
+          kind: "started",
+          invocation: {
+            toolUseId: "tool-gated",
+            toolName: "terminal__execute",
+            kind: "affordance",
+            providerId: "terminal",
+            path: "/session",
+            action: "execute",
+            params: { command: "rm demo.txt", background: false },
+          },
+          summary: "terminal:execute /session",
+        });
+        callbacks?.onToolEvent?.({
+          kind: "approval_requested",
+          invocation: {
+            toolUseId: "tool-gated",
+            toolName: "terminal__execute",
+            kind: "affordance",
+            providerId: "terminal",
+            path: "/session",
+            action: "execute",
+            params: { command: "rm demo.txt", background: false },
+          },
+          summary: "terminal:execute /session",
+          errorCode: "approval_required",
+          errorMessage: "Approval required.",
+          approvalId: "approval-gated",
+        });
+        await chatGate.promise;
+        return {
+          status: "waiting_approval",
+          invocation: {
+            toolUseId: "tool-gated",
+            toolName: "terminal__execute",
+            kind: "affordance",
+            providerId: "terminal",
+            path: "/session",
+            action: "execute",
+            params: { command: "rm demo.txt", background: false },
+          },
+        };
+      },
+      resumeWithToolResult: async (resolved) => {
+        resumeCalls.push(resolved);
+        resumeResolved();
+        return { status: "completed", response: "approved result" };
+      },
+      invokeProvider: async () => ({ type: "result", id: "inv-gated", status: "ok" }),
+      resolveApprovalDirect: async (approvalId) => {
+        approveCalls.push(approvalId);
+        return { type: "result", id: "inv-gated", status: "ok", data: { ok: true } };
+      },
+      rejectApprovalDirect: () => undefined,
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    };
+  };
+
+  return {
+    factory,
+    approveCalls,
+    resumeCalls,
+    resumeStarted,
+    releaseChat() {
+      chatGate.resolve(undefined);
+    },
+    emitApprovalSnapshot() {
+      callbacks?.onProviderSnapshot?.({
+        providerId: "terminal",
+        path: "/approvals",
+        tree: {
+          id: "approvals",
+          type: "collection",
+          children: [
+            {
+              id: "approval-gated",
+              type: "item",
+              properties: {
+                status: "pending",
+                path: "/session",
+                action: "execute",
+                reason: "Approval required.",
+                created_at: new Date().toISOString(),
+                dangerous: true,
+              },
+              affordances: [{ action: "approve" }, { action: "reject" }],
+            },
+          ],
+        },
+      });
+    },
+  };
+}
+
 function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage }) {
   let callbacks: AgentCallbacks | null = null;
   const providerInvokes: Array<{
@@ -940,6 +1058,63 @@ describe("AgentSessionProvider", () => {
       expect(tasksAfterDisconnect.children ?? []).toHaveLength(0);
     } finally {
       provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("approveApproval waits for the suspended turn to unwind before resuming", async () => {
+    // Regression: the `approval_requested` tool event fires synchronously
+    // inside agent.chat(); a fast approver could call approveApproval()
+    // before chat() resolved, leaving activeRunAbortController set when
+    // resumeTurn started — surfacing as "Agent is already executing a model
+    // turn." The fix awaits activeTurnPromise (only when this approval is
+    // what the current turn is blocked on) before resolving the hub
+    // approval and starting the resume.
+    const harness = createGatedApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-fast-approve",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+
+    try {
+      await runtime.start();
+      await runtime.sendMessage("rm demo.txt");
+
+      // chat() has fired the approval_requested event (so pendingApproval
+      // is set) but is parked on the gate — agent.chat() has NOT unwound
+      // yet, mirroring the race window.
+      harness.emitApprovalSnapshot();
+      const snapshot = runtime.store.getSnapshot();
+      const pending = snapshot.approvals.find((item) => item.status === "pending");
+      expect(pending).toBeDefined();
+      const approvalId = pending?.id ?? "";
+
+      // Kick off approveApproval. It should block on activeTurnPromise
+      // rather than synchronously calling resolveApprovalDirect.
+      const approvePromise = runtime.approveApproval(approvalId);
+
+      // Yield a few microtasks; the gate is still closed, so the hub
+      // approval must NOT have been resolved yet.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.approveCalls).toEqual([]);
+
+      // Release chat() — it returns waiting_approval, the runTurn promise
+      // unwinds, then approveApproval proceeds.
+      harness.releaseChat();
+
+      const result = await approvePromise;
+      expect(result.status).toBe("ok");
+      expect(harness.approveCalls).toEqual(["approval-gated"]);
+
+      await harness.resumeStarted;
+      await runtime.waitForIdle();
+
+      expect(harness.resumeCalls).toHaveLength(1);
+      expect(harness.resumeCalls[0]?.status).toBe("ok");
+    } finally {
       runtime.shutdown();
     }
   });

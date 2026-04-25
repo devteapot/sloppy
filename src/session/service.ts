@@ -1,6 +1,7 @@
 import { listenUnix } from "@slop-ai/server/unix";
 
 import type { SloppyConfig } from "../config/schema";
+import type { LlmProfileManager } from "../llm/profile-manager";
 import { AgentSessionProvider } from "./provider";
 import { SessionRuntime } from "./runtime";
 
@@ -29,6 +30,7 @@ export class SessionService {
     providerId?: string;
     providerName?: string;
     socketPath?: string;
+    llmProfileManager?: LlmProfileManager;
   }) {
     const sessionId = options?.sessionId ?? crypto.randomUUID();
     const providerId = options?.providerId ?? `sloppy-session-${sessionId}`;
@@ -38,6 +40,7 @@ export class SessionService {
       sessionId,
       title: options?.title,
       ignoredProviderIds: [providerId],
+      llmProfileManager: options?.llmProfileManager,
     });
 
     this.providerId = providerId;
@@ -71,7 +74,13 @@ export class SessionService {
     return true;
   }
 
-  start(options?: { register?: boolean }): void {
+  async start(options?: { register?: boolean }): Promise<void> {
+    // Start the runtime before exposing the socket so /llm and /composer
+    // reflect the resolved profile state on the very first snapshot. Without
+    // this, clients connecting before the first sendMessage() see llm.status
+    // as "needs_credentials" even when env/stored credentials are ready, and
+    // composer.send_message stays absent.
+    await this.runtime.start();
     this.unixListener = listenUnix(this.provider.server, this.socketPath, {
       register: options?.register ?? true,
     });

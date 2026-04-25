@@ -553,6 +553,27 @@ export class SessionRuntime {
       throw new Error(`Approval is missing source identifier: ${approvalId}`);
     }
 
+    // If this approval is the one blocking the current model turn, wait for
+    // the suspended turn to finish unwinding before resolving the hub
+    // approval. The `approval_requested` event fires synchronously inside
+    // agent.chat(); a fast approver can race the original chat()'s finally
+    // block, leaving activeRunAbortController still set when resumeTurn()
+    // asks for a new run loop. Unrelated approvals (e.g. background tasks)
+    // must NOT wait — that would block them behind a long-running active turn.
+    if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
+      await this.activeTurnPromise;
+
+      // Re-check after the await: pendingApproval may have been cleared by a
+      // concurrent cancelTurn, or the approval may have been resolved already.
+      const current = this.store.getApproval(approvalId);
+      if (!current || current.status !== "pending") {
+        return {
+          approvalId,
+          status: current?.status ?? "unknown",
+        };
+      }
+    }
+
     // Resolve through the hub-owned approval queue directly so we get the raw
     // inner ResultMessage from the underlying invoke (status / task_id /
     // data). Going via `agent.invokeProvider("/approvals/{id}", "approve")`
@@ -601,6 +622,21 @@ export class SessionRuntime {
 
     if (!approval.sourceApprovalId) {
       throw new Error(`Approval is missing source identifier: ${approvalId}`);
+    }
+
+    // Mirror the approve path: only wait when this approval is what the
+    // current model turn is blocked on, so unrelated/background approvals
+    // don't queue behind a long-running active turn.
+    if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
+      await this.activeTurnPromise;
+
+      const current = this.store.getApproval(approvalId);
+      if (!current || current.status !== "pending") {
+        return {
+          approvalId,
+          status: current?.status ?? "unknown",
+        };
+      }
     }
 
     // Reject through the hub-owned queue directly to mirror the approve path.
