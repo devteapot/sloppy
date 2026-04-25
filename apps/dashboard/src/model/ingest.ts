@@ -107,7 +107,7 @@ export function ingestEvent(store: DashboardStore, event: FlowEvent): void {
         op,
         startedAt: ts,
         status: "running",
-        propagationFromAgent: isPropagation ? recent!.agentId : undefined,
+        propagationFromAgent: isPropagation ? recent?.agentId : undefined,
       });
     }
     if (event.providerId === "delegation" && event.action === "spawn_agent") {

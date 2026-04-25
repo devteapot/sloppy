@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSlopServer } from "@slop-ai/server";
-import { action } from "@slop-ai/server";
+import { action, createSlopServer } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
@@ -187,17 +186,16 @@ describe("policy metadata isolation", () => {
       });
 
       // Invoke without any metadata; should enqueue approval.
-      const first = await hub.invoke(
-        "delegation",
-        "/session",
-        "spawn_agent",
-        { name: "n", goal: "g", task_id: "t" },
-      );
+      const first = await hub.invoke("delegation", "/session", "spawn_agent", {
+        name: "n",
+        goal: "g",
+        task_id: "t",
+      });
       expect(first.status).toBe("error");
       expect(first.error?.code).toBe("approval_required");
       const pending = hub.approvals.list({ providerId: "delegation" });
       expect(pending).toHaveLength(1);
-      const approvalId = pending[0]!.id;
+      const approvalId = pending[0]?.id;
 
       await hub.approvals.approve(approvalId);
       expect(spawnCount()).toBe(1);

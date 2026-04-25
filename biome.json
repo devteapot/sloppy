@@ -12,6 +12,12 @@
       "recommended": true
     }
   },
+  "overrides": [
+    {
+      "includes": ["tests/**", "src/**/*.test.ts", "apps/dashboard/src/layout/dag.ts"],
+      "linter": { "rules": { "style": { "noNonNullAssertion": "off" } } }
+    }
+  ],
   "files": {
     "includes": [
       "src/**/*.ts",
@@ -19,8 +25,8 @@
       "apps/dashboard/**/*.ts",
       "*.json",
       "*.md",
-      "!.claude/**",
-      "!**/node_modules/**"
+      "!.claude",
+      "!**/node_modules"
     ]
   }
 }

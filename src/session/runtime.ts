@@ -12,6 +12,7 @@ import {
   type RoleProfile,
 } from "../core/agent";
 import type { ExternalProviderState } from "../core/consumer";
+import type { RoleRegistry } from "../core/role";
 import {
   LlmConfigurationError,
   LlmProfileManager,
@@ -19,7 +20,6 @@ import {
 } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
-import type { RoleRegistry } from "../core/role";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import { buildMirroredItemId, SessionStore } from "./store";
 import type {

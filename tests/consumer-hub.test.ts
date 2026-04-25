@@ -251,9 +251,9 @@ describe("ConsumerHub", () => {
       });
       hub.setPolicy(composite);
 
-      await expect(
-        hub.invoke("demo", "/workspace", "noop", {}),
-      ).rejects.toBeInstanceOf(PolicyDeniedError);
+      await expect(hub.invoke("demo", "/workspace", "noop", {})).rejects.toBeInstanceOf(
+        PolicyDeniedError,
+      );
 
       // Swap to a require_approval rule; should return an error result with
       // the approval_required code rather than throwing.
@@ -277,9 +277,9 @@ describe("ConsumerHub", () => {
       hub.addPolicyRule({
         evaluate: () => ({ kind: "deny", reason: "added via addPolicyRule" }),
       });
-      await expect(
-        hub.invoke("demo", "/workspace", "noop", {}),
-      ).rejects.toThrow("added via addPolicyRule");
+      await expect(hub.invoke("demo", "/workspace", "noop", {})).rejects.toThrow(
+        "added via addPolicyRule",
+      );
     } finally {
       hub.shutdown();
     }

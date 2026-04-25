@@ -5,6 +5,7 @@ import type { ConsumerHub } from "../core/consumer";
 import type { RuntimeContext } from "../core/role";
 import { attachSubAgentRunnerFactory } from "../runtime/delegation";
 import { attachOrchestrationRuntime } from "../runtime/orchestration/attach";
+import type { ProviderApprovalManager } from "./approvals";
 import { BrowserProvider } from "./builtin/browser";
 import { CronProvider } from "./builtin/cron";
 import { DelegationProvider } from "./builtin/delegation";
@@ -24,7 +25,6 @@ import {
   type ProviderTransportDescriptor,
 } from "./discovery";
 import { NodeSocketClientTransport } from "./node-socket";
-import type { ProviderApprovalManager } from "./approvals";
 
 export interface RegisteredProvider {
   id: string;

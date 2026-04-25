@@ -174,11 +174,7 @@ export function createOrchestrationTaskContext(
   const { hub, providerId, spawnName, spawnGoal, spawnId } = options;
   let taskId = options.taskId;
 
-  async function queryParentState(
-    pid: string,
-    path: string,
-    depth = 2,
-  ): Promise<SlopNode | null> {
+  async function queryParentState(pid: string, path: string, depth = 2): Promise<SlopNode | null> {
     try {
       return await hub.queryState({
         providerId: pid,

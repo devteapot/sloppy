@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { SlopConsumer } from "@slop-ai/consumer/browser";
 import type { ResultMessage } from "@slop-ai/consumer/browser";
+import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { AgentCallbacks, ResolvedApprovalToolResult } from "../src/core/agent";
@@ -270,9 +270,7 @@ function createCancelableStreamingAgentFactory() {
   };
 }
 
-function createApprovalHarnessFactory(options?: {
-  approveResult?: ResultMessage;
-}) {
+function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage }) {
   let callbacks: AgentCallbacks | null = null;
   const providerInvokes: Array<{
     providerId: string;

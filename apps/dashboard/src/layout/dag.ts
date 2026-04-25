@@ -73,8 +73,8 @@ function wrap(text: string, width: number, maxLines: number): string[] {
     if (joined.length < trimmed.length) {
       const last = lines[lines.length - 1]!;
       lines[lines.length - 1] = truncate(last, width);
-      if (!lines[lines.length - 1]!.endsWith("…")) {
-        lines[lines.length - 1] = `${lines[lines.length - 1]!.replace(/[\s.]*$/, "")}…`;
+      if (!lines[lines.length - 1]?.endsWith("…")) {
+        lines[lines.length - 1] = `${lines[lines.length - 1]?.replace(/[\s.]*$/, "")}…`;
       }
     }
   }

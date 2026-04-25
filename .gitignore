@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .sloppy-demo/
+.sloppy-debug/
+.claude/
+test-artifacts/
 .env
 *.log
 .DS_Store

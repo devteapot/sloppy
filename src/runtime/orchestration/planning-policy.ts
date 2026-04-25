@@ -115,18 +115,13 @@ export function isUiTask(task: PlanningTask): boolean {
  *   - When the batch does not look like a coding plan, the input edges are
  *     returned unchanged.
  */
-export function inferBatchDependencyRefs(
-  drafts: PlanningTaskWithDeps[],
-): Map<string, string[]> {
+export function inferBatchDependencyRefs(drafts: PlanningTaskWithDeps[]): Map<string, string[]> {
   const dependencies = new Map<string, string[]>();
   for (const draft of drafts) {
     dependencies.set(draft.id, [...(draft.depends_on ?? [])]);
   }
 
-  const addDependency = (
-    draft: PlanningTaskWithDeps,
-    dependency: PlanningTaskWithDeps,
-  ): void => {
+  const addDependency = (draft: PlanningTaskWithDeps, dependency: PlanningTaskWithDeps): void => {
     if (draft.id === dependency.id) return;
     const current = dependencies.get(draft.id) ?? [];
     current.push(dependency.id);

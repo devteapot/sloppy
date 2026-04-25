@@ -33,9 +33,7 @@ function asStringArray(value: unknown): string[] {
  * task's `depends_on` augmented by the inferred edges (referenced by
  * client_ref or name so the provider's batch resolver can match them).
  */
-function applyOrchestratorPlanningPolicy(
-  params: Record<string, unknown>,
-): Record<string, unknown> {
+function applyOrchestratorPlanningPolicy(params: Record<string, unknown>): Record<string, unknown> {
   const tasksRaw = params.tasks;
   if (!Array.isArray(tasksRaw) || tasksRaw.length === 0) {
     return params;

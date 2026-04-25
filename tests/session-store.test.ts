@@ -1377,7 +1377,7 @@ describe("SessionService — multi-session support", () => {
   });
 
   test("SessionService.stopSession stops and removes specific session", () => {
-    const service1 = new SessionService({
+    const _service1 = new SessionService({
       sessionId: "stop-sess-1",
       title: "Session 1",
     });
@@ -1404,7 +1404,7 @@ describe("SessionService — multi-session support", () => {
   });
 
   test("stopping one session doesn't affect others", () => {
-    const service1 = new SessionService({
+    const _service1 = new SessionService({
       sessionId: "isolate-1",
       title: "Session 1",
     });

@@ -106,16 +106,12 @@ export class TerminalProvider {
     if (rel.startsWith("..") || rel === "" || /^(\.\.[\\/])/.test(rel)) {
       // rel === "" means candidate === root (handled above); ".." prefix means escape.
       if (rel.startsWith("..")) {
-        throw new Error(
-          `Refusing to cd outside workspace root (${this.root}): ${original}`,
-        );
+        throw new Error(`Refusing to cd outside workspace root (${this.root}): ${original}`);
       }
     }
     // Absolute paths to elsewhere on the filesystem produce an absolute `rel`.
     if (/^([a-zA-Z]:)?[\\/]/.test(rel)) {
-      throw new Error(
-        `Refusing to cd outside workspace root (${this.root}): ${original}`,
-      );
+      throw new Error(`Refusing to cd outside workspace root (${this.root}): ${original}`);
     }
   }
 

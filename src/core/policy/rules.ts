@@ -1,7 +1,6 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
-
-import type { ProviderTreeView } from "../subscriptions";
 import type { InvokeContext, InvokePolicy, PolicyDecision } from "../policy";
+import type { ProviderTreeView } from "../subscriptions";
 
 const ALLOW: PolicyDecision = { kind: "allow" };
 
@@ -99,10 +98,7 @@ export const orchestratorRoleRule: InvokePolicy = {
       return ALLOW;
     }
 
-    if (
-      ctx.providerId === "filesystem" &&
-      ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS.has(ctx.action)
-    ) {
+    if (ctx.providerId === "filesystem" && ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS.has(ctx.action)) {
       return {
         kind: "deny",
         reason: `Orchestrator mode cannot call filesystem.${ctx.action} directly. Create or retry a delegated task with spawn_agent so a sub-agent performs file mutations.`,
@@ -117,8 +113,7 @@ export const orchestratorRoleRule: InvokePolicy = {
     }
 
     if (ctx.providerId === "terminal" && ctx.action === "execute") {
-      const command =
-        typeof ctx.params.command === "string" ? ctx.params.command.trim() : "";
+      const command = typeof ctx.params.command === "string" ? ctx.params.command.trim() : "";
       const safe = ORCHESTRATOR_SAFE_TERMINAL_COMMANDS.some((p) => p.test(command));
       if (!safe) {
         return {
@@ -138,9 +133,7 @@ export const orchestratorRoleRule: InvokePolicy = {
  * current provider tree views so the rule can look up the descriptor for the
  * (providerId, path, action) tuple at evaluation time.
  */
-export function dangerousActionRule(
-  getViews: () => ProviderTreeView[],
-): InvokePolicy {
+export function dangerousActionRule(getViews: () => ProviderTreeView[]): InvokePolicy {
   return {
     evaluate(ctx: InvokeContext): PolicyDecision {
       if (typeof ctx.params.confirmed === "boolean" && ctx.params.confirmed) {

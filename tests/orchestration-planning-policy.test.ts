@@ -94,7 +94,7 @@ describe("orchestrator role transformInvoke", () => {
     const role = createOrchestratorRole();
     expect(typeof role.transformInvoke).toBe("function");
 
-    const transformed = role.transformInvoke!(
+    const transformed = role.transformInvoke?.(
       {
         kind: "affordance",
         providerId: "orchestration",
@@ -112,7 +112,7 @@ describe("orchestrator role transformInvoke", () => {
       {} as never,
     );
 
-    const tasks = (transformed.tasks as Array<{ client_ref: string; depends_on?: string[] }>);
+    const tasks = transformed?.tasks as Array<{ client_ref: string; depends_on?: string[] }>;
     const ui = tasks.find((task) => task.client_ref === "ui");
     const verification = tasks.find((task) => task.client_ref === "verification");
     expect(ui?.depends_on).toEqual(["scaffold"]);
@@ -122,7 +122,7 @@ describe("orchestrator role transformInvoke", () => {
   test("leaves unrelated affordances untouched", () => {
     const role = createOrchestratorRole();
     const params = { foo: "bar", tasks: [{ name: "n", goal: "g" }] };
-    const transformed = role.transformInvoke!(
+    const transformed = role.transformInvoke?.(
       {
         kind: "affordance",
         providerId: "orchestration",

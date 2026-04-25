@@ -592,9 +592,7 @@ describe("runLoop tool execution", () => {
 
       expect(invokedCommands).toEqual([]);
       // Orchestrator deny short-circuits before any approval prompt is raised.
-      expect(events).not.toContainEqual(
-        expect.objectContaining({ kind: "approval_requested" }),
-      );
+      expect(events).not.toContainEqual(expect.objectContaining({ kind: "approval_requested" }));
       expect(events).toContainEqual(
         expect.objectContaining({
           kind: "completed",

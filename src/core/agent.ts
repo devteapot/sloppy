@@ -18,7 +18,6 @@ import {
 } from "../providers/registry";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
 import { buildSystemPrompt } from "./context";
-import { dangerousActionRule, terminalSafetyRule } from "./policy/rules";
 import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
@@ -28,9 +27,10 @@ import {
   type RunLoopResult,
   runLoop,
 } from "./loop";
+import { dangerousActionRule, terminalSafetyRule } from "./policy/rules";
 import {
-  defaultRole,
   type DelegationRuntimeHooks,
+  defaultRole,
   type RoleProfile,
   RoleRegistry,
   type RuntimeContext,

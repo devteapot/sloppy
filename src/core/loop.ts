@@ -376,13 +376,9 @@ async function executeToolCall(
 
     const finalInput = transformInvoke ? transformInvoke(resolution, rawInput, config) : rawInput;
     invocation.params = finalInput;
-    const result = await hub.invoke(
-      resolution.providerId,
-      path,
-      resolution.action,
-      finalInput,
-      { roleId },
-    );
+    const result = await hub.invoke(resolution.providerId, path, resolution.action, finalInput, {
+      roleId,
+    });
     if (result.status === "accepted") {
       await hub
         .focusState({
