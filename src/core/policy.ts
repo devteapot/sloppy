@@ -22,6 +22,22 @@ export interface InvokeContext {
   config: SloppyConfig;
 }
 
+/**
+ * Per-invocation metadata threaded through `ConsumerHub.invoke` and forwarded
+ * to policy rules via `InvokeContext`. Scoped per call (NOT hub-wide) so that
+ * background callers like the orchestration scheduler, approval re-invokes,
+ * or UI/dashboard calls do not inherit a previous caller's role/actor.
+ */
+export interface InvocationMetadata {
+  /** Optional id of the role driving this invocation (e.g. "orchestrator"). */
+  roleId?: string;
+  /**
+   * Optional free-form actor tag for telemetry (e.g. "scheduler", "ui").
+   * Not consulted by current rules; reserved for future use.
+   */
+  actor?: string;
+}
+
 export interface InvokePolicy {
   evaluate(ctx: InvokeContext): PolicyDecision | Promise<PolicyDecision>;
 }

@@ -356,6 +356,12 @@ export class OrchestrationScheduler {
           {
             expected_version: version,
           },
+          // Scheduler invocations must NOT inherit the orchestrator role —
+          // `orchestratorRoleRule` denies `delegation.spawn_agent`, which is
+          // exactly the path the scheduler exists to take on the orchestrator's
+          // behalf. Tag with `actor: "scheduler"` for telemetry; leave
+          // `roleId` unset so role-scoped rules see no role.
+          { actor: "scheduler" },
         );
         const scheduleData = asRecord(scheduleResult.data);
         if (scheduleResult.status === "error") {
@@ -392,6 +398,7 @@ export class OrchestrationScheduler {
           goal: task.goal,
           task_id: task.id,
         },
+        { actor: "scheduler" },
       );
       if (spawnResult.status === "error") {
         this.blockTask(

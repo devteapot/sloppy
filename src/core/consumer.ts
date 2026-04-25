@@ -13,6 +13,7 @@ import { debug, isDebugEnabled } from "./debug";
 import {
   allowAllPolicy,
   CompositePolicy,
+  type InvocationMetadata,
   type InvokeContext,
   type InvokePolicy,
   PolicyDeniedError,
@@ -82,13 +83,6 @@ export class ConsumerHub {
   private policy: InvokePolicy = allowAllPolicy;
   private policyRules: CompositePolicy | null = null;
   /**
-   * Optional contextual metadata an external orchestrator can attach to the
-   * hub so policy rules can scope themselves by role (e.g. "orchestrator").
-   * The run loop sets this before invoking; everything else (UI calls, tests)
-   * leaves it unset, which means rules see `roleId: undefined`.
-   */
-  private invocationMetadata: { roleId?: string } = {};
-  /**
    * Hub-owned approval queue. Single source of truth for any policy-mediated
    * `require_approval` decision; per-provider `/approvals` SLOP collections
    * are filtered views over this queue once their `ProviderApprovalManager`
@@ -131,8 +125,15 @@ export class ConsumerHub {
     this.policyRules.add(rule);
   }
 
-  setInvocationMetadata(metadata: { roleId?: string }): void {
-    this.invocationMetadata = { ...metadata };
+  /**
+   * @deprecated No-op shim. Role/actor metadata is now scoped per-invocation —
+   * pass `{ roleId, actor }` as the final argument to `hub.invoke(...)`. This
+   * method is retained only so legacy call sites compile while migrating; it
+   * intentionally does nothing because hub-wide metadata leaked across
+   * invocations (see policy-isolation.test.ts for the regression).
+   */
+  setInvocationMetadata(_metadata: { roleId?: string }): void {
+    // intentionally empty — see deprecation note above.
   }
 
   async connect(): Promise<void> {
@@ -453,6 +454,7 @@ export class ConsumerHub {
     path: string,
     action: string,
     params?: Record<string, unknown>,
+    metadata?: InvocationMetadata,
   ): Promise<ResultMessage> {
     const provider = this.requireProvider(providerId);
 
@@ -462,7 +464,7 @@ export class ConsumerHub {
         action,
         path,
         params: params ?? {},
-        roleId: this.invocationMetadata.roleId,
+        roleId: metadata?.roleId,
         config: this.config,
       };
       const decision = await this.policy.evaluate(ctx);
@@ -476,6 +478,12 @@ export class ConsumerHub {
         // `confirmed: true` so the rule short-circuits and the invocation
         // proceeds. Returning the SLOP `approval_required` error preserves
         // the existing run-loop / tooling contract.
+        //
+        // The original invocation's `metadata` is captured here and replayed
+        // on approve so policy rules see the same role/actor on the second
+        // pass. Without this, the re-invoke would inherit no metadata (or,
+        // pre-fix, a stale hub-wide value).
+        const capturedMetadata = metadata;
         const approvalId = this.approvals.enqueue({
           providerId,
           path,
@@ -484,7 +492,13 @@ export class ConsumerHub {
           paramsPreview: decision.paramsPreview,
           dangerous: decision.dangerous,
           execute: () =>
-            this.invoke(providerId, path, action, { ...(params ?? {}), confirmed: true }),
+            this.invoke(
+              providerId,
+              path,
+              action,
+              { ...(params ?? {}), confirmed: true },
+              capturedMetadata,
+            ),
         });
         return {
           status: "error",

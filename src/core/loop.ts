@@ -25,8 +25,9 @@ export interface RunLoopHooks {
   beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
   /**
    * Optional id of the role driving this loop iteration. When set, the loop
-   * tags each `hub.invoke` with this id via `setInvocationMetadata` so hub
-   * policy rules (e.g. `orchestratorRoleRule`) can scope themselves by role.
+   * passes this id as per-call metadata to `hub.invoke` so hub policy rules
+   * (e.g. `orchestratorRoleRule`) can scope themselves by role. The metadata
+   * is per-invocation; it does NOT leak to other callers (scheduler, UI).
    */
   roleId?: string;
 }
@@ -375,8 +376,13 @@ async function executeToolCall(
 
     const finalInput = transformInvoke ? transformInvoke(resolution, rawInput, config) : rawInput;
     invocation.params = finalInput;
-    hub.setInvocationMetadata({ roleId });
-    const result = await hub.invoke(resolution.providerId, path, resolution.action, finalInput);
+    const result = await hub.invoke(
+      resolution.providerId,
+      path,
+      resolution.action,
+      finalInput,
+      { roleId },
+    );
     if (result.status === "accepted") {
       await hub
         .focusState({
