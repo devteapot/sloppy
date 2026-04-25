@@ -42,7 +42,7 @@ export class GoalsCoordinator {
     this.refresh = deps.refresh;
   }
 
-  createGoal(params: { title: string; intent: string }): Goal {
+  createGoal(params: { title: string; intent: string; autonomous?: boolean }): Goal {
     const timestamp = new Date().toISOString();
     const id = `goal-${slugify(params.title)}-${crypto.randomUUID().slice(0, 6)}`;
     const goal: Goal = {
@@ -53,6 +53,7 @@ export class GoalsCoordinator {
       version: 1,
       created_at: timestamp,
       updated_at: timestamp,
+      autonomous: params.autonomous ? true : undefined,
     };
     this.repo.writeGoal(goal);
     this.repo.writeGoalRevision({

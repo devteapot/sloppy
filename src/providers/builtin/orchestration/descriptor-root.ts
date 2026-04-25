@@ -395,6 +395,19 @@ export function buildRootDescriptor(wiring: DescriptorWiring) {
                   enum: ["user", "policy"],
                   optional: true,
                 },
+                executor_binding: {
+                  type: "object",
+                  description:
+                    "Optional per-slice executor binding selecting which engine runs this slice. Shape: { kind: 'llm', profileId, modelOverride? } or { kind: 'acp', adapterId, timeoutMs? }.",
+                  optional: true,
+                  properties: {
+                    kind: { type: "string", enum: ["llm", "acp"] },
+                    profileId: { type: "string", optional: true },
+                    modelOverride: { type: "string", optional: true },
+                    adapterId: { type: "string", optional: true },
+                    timeoutMs: { type: "number", optional: true },
+                  },
+                },
               },
               required: ["name", "goal"],
               additionalProperties: false,

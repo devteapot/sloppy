@@ -1,6 +1,10 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import type { DelegationRuntimeHooks, TaskContextFactory } from "../../core/role";
+import type {
+  DelegationRuntimeHooks,
+  RoleRegistry,
+  TaskContextFactory,
+} from "../../core/role";
 import type { LlmProfileManager } from "../../llm/profile-manager";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";
@@ -13,6 +17,7 @@ export function attachSubAgentRunnerFactory(
   hub: ProviderRuntimeHub,
   config: SloppyConfig,
   llmProfileManager?: LlmProfileManager,
+  roleRegistry?: RoleRegistry,
 ): DelegationRuntimeHooks {
   delegation.setParentHub(hub);
 
@@ -72,6 +77,8 @@ export function attachSubAgentRunnerFactory(
       requiresLlmProfile,
       externalAgentState,
       taskContext,
+      roleId: spawn.roleId,
+      roleRegistry,
       disableBuiltinProviders: taskContext?.disableBuiltinProviders
         ? [...taskContext.disableBuiltinProviders]
         : undefined,

@@ -147,15 +147,18 @@ export function buildGoalsDescriptor(wiring: DescriptorWiring) {
         {
           title: "string",
           intent: "string",
+          autonomous: { type: "boolean", optional: true },
         },
-        async ({ title, intent }) =>
+        async ({ title, intent, autonomous }) =>
           goals.createGoal({
             title: title as string,
             intent: intent as string,
+            autonomous: autonomous === true,
           }),
         {
           label: "Create Goal",
-          description: "Create a versioned goal artifact.",
+          description:
+            "Create a versioned goal artifact. Set autonomous=true to spawn spec-agent / planner sub-agents through the goal's lifecycle gates.",
           estimate: "instant",
         },
       ),

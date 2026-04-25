@@ -1,3 +1,5 @@
+import type { ExecutorBinding } from "../../../runtime/delegation/executor-binding";
+
 export type TaskStatus =
   | "pending"
   | "scheduled"
@@ -36,6 +38,12 @@ export type Goal = {
   created_at: string;
   updated_at: string;
   accepted_at?: string;
+  /**
+   * When set, the orchestration runtime spawns spec-agent / planner
+   * sub-agents as the goal moves through its gates. Otherwise the artifact
+   * pipeline is human-driven via affordances.
+   */
+  autonomous?: boolean;
 };
 
 export type GateType =
@@ -787,6 +795,7 @@ export type TaskDefinition = {
   plan_version?: number;
   plan_revision_id?: string;
   spec_version?: number;
+  executor_binding?: ExecutorBinding;
   name: string;
   goal: string;
   kind?: TaskKind;
@@ -865,6 +874,7 @@ export type CreateTaskParams = {
   spec_version?: number;
   requires_slice_gate?: boolean;
   slice_gate_resolver?: GateResolver;
+  executor_binding?: ExecutorBinding;
 };
 
 export type TaskDraft = CreateTaskParams & {

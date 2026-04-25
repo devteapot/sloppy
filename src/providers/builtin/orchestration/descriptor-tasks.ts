@@ -448,6 +448,7 @@ export function buildTasksDescriptor(wiring: DescriptorWiring) {
         plan_version: def?.plan_version,
         plan_revision_id: def?.plan_revision_id,
         spec_version: def?.spec_version,
+        executor_binding: def?.executor_binding,
         name: def?.name,
         goal: def?.goal,
         kind: def?.kind,

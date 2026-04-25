@@ -1,6 +1,11 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import { orchestratorRoleRule } from "../../core/policy/rules";
+import {
+  executorRoleRule,
+  orchestratorRoleRule,
+  plannerRoleRule,
+  specAgentRoleRule,
+} from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
 import { createOrchestratorRole, executorRole, plannerRole, specAgentRole } from "./index";
 import { createOrchestrationTaskContext } from "./task-context";
@@ -35,6 +40,9 @@ export function attachOrchestrationRuntime(
   // legacy in-loop `RoleProfile.toolPolicy` enforcement; the rule activates
   // only when the run loop tags an invocation with `roleId === "orchestrator"`.
   hub.addPolicyRule(orchestratorRoleRule);
+  hub.addPolicyRule(executorRoleRule);
+  hub.addPolicyRule(specAgentRoleRule);
+  hub.addPolicyRule(plannerRoleRule);
 
   ctx.delegationHooks?.setTaskContextFactory((spawn) =>
     createOrchestrationTaskContext({

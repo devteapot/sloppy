@@ -224,6 +224,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
           hub,
           hubConfig,
           ctx?.llmProfileManager,
+          ctx?.roleRegistry,
         );
         ctx?.setDelegationHooks?.(hooks);
         return {

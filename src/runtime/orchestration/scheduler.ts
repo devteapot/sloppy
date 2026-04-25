@@ -19,6 +19,7 @@ type SchedulerTask = {
   status: SchedulerTaskStatus;
   unmetDependencies: string[];
   version?: number;
+  executorBinding?: Record<string, unknown>;
 };
 
 type SchedulerAgent = {
@@ -124,6 +125,10 @@ function parseTasks(tree: SlopNode | null): SchedulerTask[] {
       return [];
     }
 
+    const executorBinding =
+      typeof props.executor_binding === "object" && props.executor_binding !== null
+        ? (props.executor_binding as Record<string, unknown>)
+        : undefined;
     return [
       {
         id,
@@ -132,6 +137,7 @@ function parseTasks(tree: SlopNode | null): SchedulerTask[] {
         status,
         unmetDependencies: stringArrayProp(props, "unmet_dependencies"),
         version: numberProp(props, "version"),
+        executorBinding,
       },
     ];
   });
@@ -388,15 +394,20 @@ export class OrchestrationScheduler {
         });
       }
 
+      const spawnParams: Record<string, unknown> = {
+        name: task.name,
+        goal: task.goal,
+        task_id: task.id,
+        role: "executor",
+      };
+      if (task.executorBinding) {
+        spawnParams.executor = task.executorBinding;
+      }
       const spawnResult = await this.options.hub.invoke(
         delegationProviderId,
         "/session",
         "spawn_agent",
-        {
-          name: task.name,
-          goal: task.goal,
-          task_id: task.id,
-        },
+        spawnParams,
         { actor: "scheduler" },
       );
       if (spawnResult.status === "error") {

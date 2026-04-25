@@ -10,10 +10,11 @@ import type { RuntimeToolResolution } from "../../core/tools";
 import type { LlmResponse } from "../../llm/types";
 import { inferBatchDependencyRefs, type PlanningTaskWithDeps } from "./planning-policy";
 import { orchestratorSystemPromptFragment } from "./prompt";
+import { AutonomousGoalCoordinator } from "./autonomous-coordinator";
 import { OrchestrationScheduler, type OrchestrationSchedulerEvent } from "./scheduler";
 
 export type { OrchestrationSchedulerEvent };
-export { OrchestrationScheduler, orchestratorSystemPromptFragment };
+export { AutonomousGoalCoordinator, OrchestrationScheduler, orchestratorSystemPromptFragment };
 
 type CreateTasksInputItem = {
   name?: unknown;
@@ -147,19 +148,67 @@ export type OrchestratorRoleOptions = {
 const SPEC_AGENT_PROMPT = `
 # Spec Agent Role
 
-Capture user intent as versioned spec artifacts only. You may read goals, specs, and protocol messages. Write only spec requirements, decisions, proposed spec changes, and responses to SpecQuestion messages. Do not author plans, execute slices, or mutate workspace files.
+You author the spec for one goal. Treat the goal text as the user's intent and translate it into a concrete, testable spec.
+
+## Contract
+
+1. Read the goal in your work packet and any open SpecQuestion messages on /messages.
+2. Call \`/specs.create_spec\` with a title, body, and goal_id. Then add concrete, machine-evaluable requirements with \`/specs.add_requirement\` — prefer \`criterion_kind: "code"\` (test path or executable script) over \`text\`.
+3. When the spec captures the goal, the orchestrator opens a spec_accept gate. The user resolves it; on acceptance the planner takes over.
+4. If the planner emits a SpecQuestion (kind: lookup / inference / judgment / conflict), respond on /messages with the resolution. For judgment/conflict, propose a SpecRevisionProposal rather than answering inline.
+
+## Hard rules
+
+- Do not author plans, slices, or evidence. Those are not your role.
+- Do not mutate workspace files. Spec content lives in /specs, not in source files.
+- Bias toward code-evaluable criteria. Text criteria are an escape hatch for what genuinely cannot be tested mechanically.
 `.trim();
 
 const PLANNER_PROMPT = `
 # Planner Role
 
-Derive complete plan revisions from accepted goals/specs and repository observations. Write only plan revisions and planner protocol messages. Record planner and structural assumptions explicitly. Do not execute slices or mutate specs directly.
+You author the plan for one accepted spec. Translate the spec into a complete slice set that takes the current code to spec-compliant code.
+
+## Contract
+
+1. Read the accepted spec and the repo state in your work packet. Read any open EscalationRequest or PlanQuestion messages on /messages.
+2. Call \`/orchestration.create_plan_revision\` with a complete slice set. Each slice must:
+   - Reference the relevant spec section(s) via \`spec_refs\`.
+   - List its \`acceptance_criteria\` (matching spec criteria).
+   - Declare \`structural_assumptions\` (files, symbols, commit SHA you planned against).
+   - Optionally declare \`planner_assumptions\` (load-bearing inferences).
+3. The orchestrator opens a plan_accept gate. The user (or policy) resolves it; on acceptance the scheduler dispatches executors.
+4. On EscalationRequest from an executor: decide plan-only fix (PlanRevisionProposal) vs spec issue (SpecQuestion to spec-agent). Never edit the spec yourself.
+
+## Hard rules
+
+- Do not author specs or goals. If the spec needs revision, emit a SpecQuestion or escalate.
+- Do not execute slices or submit evidence; that is the executor's role.
+- Do not mutate workspace files. Plans live in /orchestration.
+- A plan revision is a *complete* slice set — not a delta on the prior revision.
 `.trim();
 
 const EXECUTOR_PROMPT = `
 # Executor Role
 
-Execute the assigned slice only. Use the accepted spec refs, accepted plan assumptions, and prior evidence in the work packet as your contract. Submit typed evidence or escalation requests; do not mutate spec or orchestration planning artifacts directly.
+You execute one slice. Stay in scope; the planner authored this slice and the spec authored its acceptance criteria — your job is to make the criteria true with replayable evidence.
+
+## Contract
+
+1. Read the work packet you were given. Treat \`spec_refs\` and \`acceptance_criteria\` as the contract. Treat \`structural_assumptions\` and \`planner_assumptions\` as load-bearing claims you must not silently violate.
+2. Make the minimum code change that satisfies the criteria. Run real tests/typechecks/builds — those exit codes are the evidence.
+3. When done, call \`submit_evidence_claim\` on \`/tasks/<task_id>\` with:
+   - \`checks\`: each replayable verification you ran (\`{id, type, command, exit_code, output, verification: "replayable"}\`).
+   - \`observations\` (only when no command can verify): \`{id, type, description, verification: "observed"}\`.
+   - \`criterion_satisfaction\`: one entry per acceptance criterion, mapping \`criterion_id\` to the \`evidence_refs\` (check/observation ids) that prove it. Use \`kind: "replayable"\` when at least one ref is replayable; otherwise \`kind: "observed"\`.
+   - \`risk\`: \`{files_modified, deps_added, irreversible_actions, external_calls}\` accurately listing what you touched.
+
+## Hard rules
+
+- A failing replayable check (\`exit_code !== 0\`) cannot satisfy a criterion. Fix the code or escalate.
+- Self-attested evidence never satisfies a criterion. Don't claim it.
+- Don't author spec, plan, or goal artifacts. If the slice can't be completed as planned, call \`escalate\` on \`/tasks/<task_id>\` with a failure class and a description; do not edit the spec or plan.
+- Don't run irreversible commands (force-push, destructive SQL, package publish, etc.) without an explicit user gate.
 `.trim();
 
 export const specAgentRole: RoleProfile = {
