@@ -26,6 +26,37 @@ export interface CredentialStore {
 const KEYCHAIN_SERVICE_NAME = "devteapot.sloppy.llm";
 const SECRET_SERVICE_APP_NAME = "sloppy";
 
+type KeytarModule = {
+  setPassword(service: string, account: string, password: string): Promise<void>;
+  getPassword(service: string, account: string): Promise<string | null>;
+  deletePassword(service: string, account: string): Promise<boolean>;
+};
+
+let keytarLookup: Promise<KeytarModule | null> | null = null;
+
+/**
+ * Returns the optional `keytar` native binding if installed. Used by the
+ * macOS keychain store to write secrets without passing them through argv
+ * (`security add-generic-password -w <secret>` exposes the value to other
+ * processes via `ps`). When `keytar` is not installed the keychain store
+ * falls back to the `security` CLI path.
+ */
+function loadKeytar(): Promise<KeytarModule | null> {
+  if (!keytarLookup) {
+    // Use a computed specifier to avoid a hard module-resolution error when
+    // `keytar` is not installed; the import is intentionally optional.
+    const specifier = "keytar";
+    keytarLookup = import(/* @vite-ignore */ specifier)
+      .then((mod) => (mod && typeof mod === "object" ? (mod as unknown as KeytarModule) : null))
+      .catch(() => null);
+  }
+  return keytarLookup;
+}
+
+export function __resetKeytarCacheForTests(value: Promise<KeytarModule | null> | null = null): void {
+  keytarLookup = value;
+}
+
 async function runSystemCommand(
   command: string,
   args: string[],
@@ -159,6 +190,16 @@ class KeychainCredentialStore extends BaseCredentialStore {
 
   async set(profileId: string, secret: string): Promise<void> {
     await this.ensureAvailable();
+    // Prefer keytar when installed: it writes via the native Keychain API,
+    // keeping the secret in process memory. Falling back to `security
+    // add-generic-password -w <secret>` works but exposes the secret in the
+    // child process's argv where any local user can see it via `ps`.
+    const keytar = await loadKeytar();
+    if (keytar) {
+      await keytar.setPassword(KEYCHAIN_SERVICE_NAME, profileId, secret);
+      return;
+    }
+
     const result = await this.runner("security", [
       "add-generic-password",
       "-U",
@@ -178,6 +219,12 @@ class KeychainCredentialStore extends BaseCredentialStore {
 
   async delete(profileId: string): Promise<void> {
     if ((await this.getStatus()) !== "available") {
+      return;
+    }
+
+    const keytar = await loadKeytar();
+    if (keytar) {
+      await keytar.deletePassword(KEYCHAIN_SERVICE_NAME, profileId);
       return;
     }
 
