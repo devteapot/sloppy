@@ -223,6 +223,40 @@ describe("TerminalProvider", () => {
     }
   });
 
+  test("rejects cd attempts that escape the workspace root", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const traversal = await consumer.invoke("/session", "cd", {
+        path: "../../../etc",
+      });
+      expect(traversal.status).toBe("error");
+      expect(traversal.error?.message ?? "").toContain("outside workspace root");
+
+      const absolute = await consumer.invoke("/session", "cd", {
+        path: "/etc",
+      });
+      expect(absolute.status).toBe("error");
+      expect(absolute.error?.message ?? "").toContain("outside workspace root");
+
+      const session = await consumer.query("/session", 1);
+      expect(session.properties?.cwd).toBe(cwd);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("allows stderr redirection to /dev/null without approval", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);

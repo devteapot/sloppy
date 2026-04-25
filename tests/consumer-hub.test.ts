@@ -231,6 +231,56 @@ describe("ConsumerHub", () => {
     }
   });
 
+  test("invoke consults the installed policy and surfaces deny/require_approval decisions", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+      await hub.addProvider(createProvider("demo", "Demo"));
+
+      const { CompositePolicy, PolicyDeniedError } = await import("../src/core/policy");
+
+      // Default behavior: allow-all, no policy installed.
+      // Install a deny rule and verify it throws.
+      const composite = new CompositePolicy();
+      composite.add({
+        evaluate: (ctx) =>
+          ctx.providerId === "demo"
+            ? { kind: "deny", reason: "demo provider blocked" }
+            : { kind: "allow" },
+      });
+      hub.setPolicy(composite);
+
+      await expect(
+        hub.invoke("demo", "/workspace", "noop", {}),
+      ).rejects.toBeInstanceOf(PolicyDeniedError);
+
+      // Swap to a require_approval rule; should return an error result with
+      // the approval_required code rather than throwing.
+      const approvalComposite = new CompositePolicy();
+      approvalComposite.add({
+        evaluate: () => ({ kind: "require_approval", reason: "needs blessing" }),
+      });
+      hub.setPolicy(approvalComposite);
+
+      const result = await hub.invoke("demo", "/workspace", "noop", {});
+      expect(result.status).toBe("error");
+      expect(result.error?.code).toBe("approval_required");
+      expect(result.error?.message).toBe("needs blessing");
+
+      // addPolicyRule on default hub should construct a composite lazily.
+      hub.setPolicy(null);
+      hub.addPolicyRule({
+        evaluate: () => ({ kind: "deny", reason: "added via addPolicyRule" }),
+      });
+      await expect(
+        hub.invoke("demo", "/workspace", "noop", {}),
+      ).rejects.toThrow("added via addPolicyRule");
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("skips malformed provider nodes without ids when building runtime tools", () => {
     const view: ProviderTreeView = {
       providerId: "demo",

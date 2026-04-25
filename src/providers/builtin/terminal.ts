@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename, relative, resolve } from "node:path";
 import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
@@ -113,6 +113,7 @@ export class TerminalProvider {
 
   private async changeDirectory(path: string): Promise<{ cwd: string }> {
     const next = this.resolveDirectoryInput(path);
+    this.assertWithinRoot(next, path);
     const info = await Bun.file(next)
       .stat()
       .catch(() => null);
@@ -126,6 +127,27 @@ export class TerminalProvider {
 
     this.cwd = next;
     return { cwd: this.cwd };
+  }
+
+  private assertWithinRoot(candidate: string, original: string): void {
+    if (candidate === this.root) {
+      return;
+    }
+    const rel = relative(this.root, candidate);
+    if (rel.startsWith("..") || rel === "" || /^(\.\.[\\/])/.test(rel)) {
+      // rel === "" means candidate === root (handled above); ".." prefix means escape.
+      if (rel.startsWith("..")) {
+        throw new Error(
+          `Refusing to cd outside workspace root (${this.root}): ${original}`,
+        );
+      }
+    }
+    // Absolute paths to elsewhere on the filesystem produce an absolute `rel`.
+    if (/^([a-zA-Z]:)?[\\/]/.test(rel)) {
+      throw new Error(
+        `Refusing to cd outside workspace root (${this.root}): ${original}`,
+      );
+    }
   }
 
   private resolveDirectoryInput(path: string): string {

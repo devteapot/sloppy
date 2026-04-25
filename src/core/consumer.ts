@@ -9,6 +9,13 @@ import {
 import type { SloppyConfig } from "../config/schema";
 import type { RegisteredProvider } from "../providers/registry";
 import { debug, isDebugEnabled } from "./debug";
+import {
+  allowAllPolicy,
+  CompositePolicy,
+  type InvokeContext,
+  type InvokePolicy,
+  PolicyDeniedError,
+} from "./policy";
 import type { ProviderTreeView } from "./subscriptions";
 import { buildRuntimeToolSet, type RuntimeToolSet } from "./tools";
 
@@ -71,10 +78,53 @@ export class ConsumerHub {
   private externalProviderStateListeners = new Set<(states: ExternalProviderState[]) => void>();
   private stateRevision = 0;
   private stateRevisionListeners = new Set<() => void>();
+  private policy: InvokePolicy = allowAllPolicy;
+  private policyRules: CompositePolicy | null = null;
+  /**
+   * Optional contextual metadata an external orchestrator can attach to the
+   * hub so policy rules can scope themselves by role (e.g. "orchestrator").
+   * The run loop sets this before invoking; everything else (UI calls, tests)
+   * leaves it unset, which means rules see `roleId: undefined`.
+   */
+  private invocationMetadata: { roleId?: string } = {};
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
     this.config = config;
+  }
+
+  /**
+   * Replace the hub-level invoke policy. The hub uses an `allow-all` policy
+   * by default so existing call sites and tests are unaffected. Application
+   * code can install a `CompositePolicy` to layer rules.
+   */
+  setPolicy(policy: InvokePolicy | null): void {
+    this.policy = policy ?? allowAllPolicy;
+    this.policyRules = policy instanceof CompositePolicy ? policy : null;
+  }
+
+  /**
+   * Append a rule to the hub-level composite policy, lazily constructing one
+   * if a non-composite (or default) policy is currently installed. Used by
+   * extensions (e.g. orchestration) to register role-scoped policies in
+   * `attachRuntime` without replacing whatever else is installed.
+   */
+  addPolicyRule(rule: InvokePolicy): void {
+    if (!this.policyRules) {
+      const composite = new CompositePolicy();
+      // If a non-default policy was set, preserve it as the first rule so we
+      // keep its semantics intact.
+      if (this.policy !== allowAllPolicy) {
+        composite.add(this.policy);
+      }
+      this.policy = composite;
+      this.policyRules = composite;
+    }
+    this.policyRules.add(rule);
+  }
+
+  setInvocationMetadata(metadata: { roleId?: string }): void {
+    this.invocationMetadata = { ...metadata };
   }
 
   async connect(): Promise<void> {
@@ -392,6 +442,37 @@ export class ConsumerHub {
     params?: Record<string, unknown>,
   ): Promise<ResultMessage> {
     const provider = this.requireProvider(providerId);
+
+    if (this.policy !== allowAllPolicy) {
+      const ctx: InvokeContext = {
+        providerId,
+        action,
+        path,
+        params: params ?? {},
+        roleId: this.invocationMetadata.roleId,
+        config: this.config,
+      };
+      const decision = await this.policy.evaluate(ctx);
+      if (decision.kind === "deny") {
+        throw new PolicyDeniedError(decision.reason);
+      }
+      if (decision.kind === "require_approval") {
+        // Return a SLOP-shaped error so existing tooling that already handles
+        // `approval_required` (the run loop, terminal provider tests) treats
+        // policy-mediated approvals identically to provider-native ones.
+        // NOTE: a future iteration will route this to a hub-owned ApprovalQueue
+        // so the user can approve via /approvals; today the rule simply blocks
+        // the invocation and surfaces the reason.
+        return {
+          status: "error",
+          error: {
+            code: "approval_required",
+            message: decision.reason,
+          },
+        } as ResultMessage;
+      }
+    }
+
     return provider.consumer.invoke(path, action, params);
   }
 
