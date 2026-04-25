@@ -1,7 +1,7 @@
 import type { ClientTransport } from "@slop-ai/consumer/browser";
 import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
-import type { ConsumerHub } from "../core/consumer";
+import type { ProviderRuntimeHub } from "../core/hub";
 import type { RuntimeContext } from "../core/role";
 import { attachSubAgentRunnerFactory } from "../runtime/delegation";
 import { attachOrchestrationRuntime } from "../runtime/orchestration/attach";
@@ -35,7 +35,7 @@ export interface RegisteredProvider {
   stop?: () => void;
   systemPromptFragment?: (config: SloppyConfig) => string | null;
   attachRuntime?: (
-    hub: ConsumerHub,
+    hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
   ) => { stop(): void } | undefined;

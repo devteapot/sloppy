@@ -1,5 +1,5 @@
 import type { SloppyConfig } from "../config/schema";
-import type { ConsumerHub } from "./consumer";
+import type { ProviderRuntimeHub } from "./hub";
 import type { RuntimeToolResolution } from "./tools";
 
 export type ToolPolicyDecision = null | { reject: string };
@@ -62,7 +62,7 @@ export type TaskContextFactory = (spawn: TaskContextSpawnInfo) => TaskContext | 
  * extension type.
  */
 export interface RuntimeContext {
-  hub: ConsumerHub;
+  hub: ProviderRuntimeHub;
   config: SloppyConfig;
   /** Publish a generic runtime event through the agent event bus. */
   publishEvent: (event: RuntimeEvent) => void;
@@ -93,9 +93,9 @@ export type RoleProfile = {
     params: Record<string, unknown>,
     config: SloppyConfig,
   ) => Record<string, unknown>;
-  beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
+  beforeNextTurn?: (hub: ProviderRuntimeHub, signal?: AbortSignal) => Promise<void>;
   attachRuntime?: (
-    hub: ConsumerHub,
+    hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
   ) => { stop(): void };

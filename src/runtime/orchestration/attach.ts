@@ -1,5 +1,5 @@
 import type { SloppyConfig } from "../../config/schema";
-import type { ConsumerHub } from "../../core/consumer";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import { orchestratorRoleRule } from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
 import { createOrchestratorRole } from "./index";
@@ -14,7 +14,7 @@ const ORCHESTRATION_PROVIDER_ID = "orchestration";
  * orchestration lifecycle behavior.
  */
 export function attachOrchestrationRuntime(
-  hub: ConsumerHub,
+  hub: ProviderRuntimeHub,
   _config: SloppyConfig,
   ctx?: RuntimeContext,
 ): { stop(): void } {

@@ -1,12 +1,12 @@
 import type { SloppyConfig } from "../../config/schema";
-import type { ConsumerHub } from "../../core/consumer";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import type { DelegationRuntimeHooks, TaskContextFactory } from "../../core/role";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import { SubAgentRunner } from "./sub-agent";
 
 export function attachSubAgentRunnerFactory(
   delegation: DelegationProvider,
-  hub: ConsumerHub,
+  hub: ProviderRuntimeHub,
   config: SloppyConfig,
 ): DelegationRuntimeHooks {
   delegation.setParentHub(hub);

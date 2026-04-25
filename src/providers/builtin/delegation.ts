@@ -1,7 +1,6 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
-
-import type { ConsumerHub } from "../../core/consumer";
 import { debug } from "../../core/debug";
+import type { ProviderRuntimeHub } from "../../core/hub";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -108,7 +107,7 @@ export class DelegationProvider {
   private maxAgents: number;
   private agents = new Map<string, DelegationAgent>();
   private runnerFactory: DelegationRunnerFactory;
-  private parentHub: ConsumerHub | null = null;
+  private parentHub: ProviderRuntimeHub | null = null;
   private approvalMirrors = new Map<
     string,
     { unsubscribe: () => void; providerId: string; pending: ChildApprovalSnapshot[] }
@@ -139,7 +138,7 @@ export class DelegationProvider {
     this.server.stop();
   }
 
-  setParentHub(hub: ConsumerHub): void {
+  setParentHub(hub: ProviderRuntimeHub): void {
     this.parentHub = hub;
   }
 

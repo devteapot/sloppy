@@ -1,7 +1,6 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
-
-import type { ConsumerHub } from "../../core/consumer";
 import { debug } from "../../core/debug";
+import type { ProviderRuntimeHub } from "../../core/hub";
 
 type SchedulerTaskStatus =
   | "pending"
@@ -174,7 +173,7 @@ export class OrchestrationScheduler {
 
   constructor(
     private options: {
-      hub: ConsumerHub;
+      hub: ProviderRuntimeHub;
       maxAgents: number;
       orchestrationProviderId?: string;
       delegationProviderId?: string;

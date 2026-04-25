@@ -3,10 +3,10 @@ import { formatTree } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
 import { LlmAbortError } from "../llm/types";
-import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
+import type { ProviderRuntimeHub } from "./hub";
 import { PolicyDeniedError } from "./policy";
 import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
@@ -22,7 +22,7 @@ export interface RunLoopHooks {
     params: Record<string, unknown>,
     config: SloppyConfig,
   ) => Record<string, unknown>;
-  beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
+  beforeNextTurn?: (hub: ProviderRuntimeHub, signal?: AbortSignal) => Promise<void>;
   /**
    * Optional id of the role driving this loop iteration. When set, the loop
    * passes this id as per-call metadata to `hub.invoke` so hub policy rules
@@ -222,7 +222,7 @@ function invalidToolArgumentsResult(
 async function executeToolCall(
   toolUse: ToolUseContentBlock,
   toolSet: RuntimeToolSet,
-  hub: ConsumerHub,
+  hub: ProviderRuntimeHub,
   config: SloppyConfig,
   onToolEvent?: (event: AgentToolEvent) => void,
   toolPolicy?: RunLoopHooks["toolPolicy"],
@@ -478,7 +478,7 @@ async function executeToolCalls(options: {
   toolResults: ToolResultContentBlock[];
   iteration: number;
   toolSet: RuntimeToolSet;
-  hub: ConsumerHub;
+  hub: ProviderRuntimeHub;
   config: SloppyConfig;
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
@@ -556,7 +556,7 @@ async function executeToolCalls(options: {
 
 export async function runLoop(options: {
   config: SloppyConfig;
-  hub: ConsumerHub;
+  hub: ProviderRuntimeHub;
   history: ConversationHistory;
   llm: LlmAdapter;
   signal?: AbortSignal;

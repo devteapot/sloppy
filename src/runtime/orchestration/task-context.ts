@@ -1,7 +1,6 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
-
-import type { ConsumerHub } from "../../core/consumer";
 import { debug } from "../../core/debug";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import type { TaskContext } from "../../core/role";
 
 type TaskInfo = {
@@ -160,7 +159,7 @@ function kindGuidance(kind: string | undefined): string {
 }
 
 export interface OrchestrationTaskContextOptions {
-  hub: ConsumerHub;
+  hub: ProviderRuntimeHub;
   providerId: string;
   taskId: string | undefined;
   spawnName: string;

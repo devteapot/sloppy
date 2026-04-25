@@ -3,7 +3,7 @@
 // `src/providers/builtin/orchestration/`.
 
 import type { SloppyConfig } from "../../config/schema";
-import type { ConsumerHub } from "../../core/consumer";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import type { RoleProfile } from "../../core/role";
 import type { RuntimeToolResolution } from "../../core/tools";
 import { inferBatchDependencyRefs, type PlanningTaskWithDeps } from "./planning-policy";
@@ -115,7 +115,7 @@ export function createOrchestratorRole(options: OrchestratorRoleOptions = {}): R
     // Role-scoped enforcement now lives at the hub layer
     // (`orchestratorRoleRule`, installed by `attachOrchestrationRuntime`).
     transformInvoke: orchestratorTransformInvoke,
-    attachRuntime: (hub: ConsumerHub, config: SloppyConfig) => {
+    attachRuntime: (hub: ProviderRuntimeHub, config: SloppyConfig) => {
       if (!config.providers.builtin.orchestration || !config.providers.builtin.delegation) {
         return { stop() {} };
       }

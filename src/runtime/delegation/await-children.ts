@@ -1,7 +1,6 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
-
-import type { ConsumerHub } from "../../core/consumer";
 import { debug } from "../../core/debug";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import type { ProviderTreeView } from "../../core/subscriptions";
 import { LlmAbortError } from "../../llm/types";
 
@@ -69,7 +68,10 @@ function hasSuspensibleDelegatedWork(
 
 export function createAwaitChildrenHook(options: { delegationProviderId?: string } = {}) {
   const delegationProviderId = options.delegationProviderId ?? "delegation";
-  return async function awaitChildren(hub: ConsumerHub, signal?: AbortSignal): Promise<void> {
+  return async function awaitChildren(
+    hub: ProviderRuntimeHub,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const startedAt = Date.now();
     let logged = false;
 

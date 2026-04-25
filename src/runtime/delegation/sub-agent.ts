@@ -1,6 +1,6 @@
 import type { SloppyConfig } from "../../config/schema";
-import type { ConsumerHub } from "../../core/consumer";
 import { debug } from "../../core/debug";
+import type { ProviderRuntimeHub } from "../../core/hub";
 import type { TaskContext } from "../../core/role";
 import type { LlmProfileManager } from "../../llm/profile-manager";
 import { InProcessTransport } from "../../providers/builtin/in-process";
@@ -25,7 +25,7 @@ export interface SubAgentRunnerOptions {
   name: string;
   goal: string;
   model?: string;
-  parentHub: ConsumerHub;
+  parentHub: ProviderRuntimeHub;
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
   llmProfileManager?: LlmProfileManager;
@@ -47,7 +47,7 @@ export class SubAgentRunner {
   readonly model?: string;
   readonly sessionProviderId: string;
 
-  private parentHub: ConsumerHub;
+  private parentHub: ProviderRuntimeHub;
   private runtime: SessionRuntime;
   private provider: AgentSessionProvider;
   private status: SubAgentStatus = "pending";
