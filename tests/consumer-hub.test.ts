@@ -285,6 +285,49 @@ describe("ConsumerHub", () => {
     }
   });
 
+  test("records dangerous affordances into the registry as trees are observed", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    try {
+      await hub.connect();
+
+      const id = "danger-demo";
+      const server = createSlopServer({ id, name: "Danger" });
+      server.register("session", () => ({
+        type: "collection",
+        props: {},
+        actions: {
+          wipe: {
+            label: "Wipe",
+            dangerous: true,
+            handler: async () => ({ ok: true }),
+          },
+          ping: {
+            label: "Ping",
+            handler: async () => ({ ok: true }),
+          },
+        },
+      }));
+
+      const provider: RegisteredProvider = {
+        id,
+        name: "Danger",
+        kind: "builtin",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process",
+      };
+      await hub.addProvider(provider);
+
+      // The registry records dangerous affordances regardless of whether the
+      // node is currently in a focused detail subtree.
+      expect(hub.isDangerousAffordance(id, "/session", "wipe")).toBe(true);
+      // Non-dangerous affordances and unknown lookups stay false.
+      expect(hub.isDangerousAffordance(id, "/session", "ping")).toBe(false);
+      expect(hub.isDangerousAffordance(id, "/nonexistent", "wipe")).toBe(false);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("skips malformed provider nodes without ids when building runtime tools", () => {
     const view: ProviderTreeView = {
       providerId: "demo",

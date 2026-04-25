@@ -208,7 +208,11 @@ export class Agent {
     // checks. The safety rules run only when the role layer allows the
     // invocation through.
     hub.addPolicyRule(terminalSafetyRule);
-    hub.addPolicyRule(dangerousActionRule(() => hub.getProviderViews()));
+    hub.addPolicyRule(
+      dangerousActionRule((providerId, path, action) =>
+        hub.isDangerousAffordance(providerId, path, action),
+      ),
+    );
     const roleFragment = this.role.systemPromptFragment?.(this.config);
     if (roleFragment) {
       this.systemPromptFragments.push(roleFragment);

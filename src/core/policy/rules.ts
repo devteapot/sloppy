@@ -1,6 +1,4 @@
-import type { SlopNode } from "@slop-ai/consumer/browser";
 import type { InvokeContext, InvokePolicy, PolicyDecision } from "../policy";
-import type { ProviderTreeView } from "../subscriptions";
 
 const ALLOW: PolicyDecision = { kind: "allow" };
 
@@ -151,31 +149,29 @@ export const orchestratorRoleRule: InvokePolicy = {
 
 /**
  * Auto-elevates any affordance whose action descriptor is marked
- * `dangerous: true` to require_approval. Requires a callback that returns the
- * current provider tree views so the rule can look up the descriptor for the
- * (providerId, path, action) tuple at evaluation time.
+ * `dangerous: true` to require_approval. Consults a hub-owned registry that
+ * accumulates `dangerous` flags from every subscribed tree the hub has ever
+ * seen — so unfocused / deep affordances are still policed, not just those
+ * that happen to be in the currently-focused subtree at the moment of
+ * invocation.
  */
-export function dangerousActionRule(getViews: () => ProviderTreeView[]): InvokePolicy {
+export function dangerousActionRule(
+  isDangerous: (providerId: string, path: string, action: string) => boolean,
+): InvokePolicy {
   return {
     evaluate(ctx: InvokeContext): PolicyDecision {
       if (ctx.preApproved) {
         return ALLOW;
       }
-      const views = getViews();
-      const view = views.find((v) => v.providerId === ctx.providerId);
-      if (!view) {
+      if (!isDangerous(ctx.providerId, ctx.path, ctx.action)) {
         return ALLOW;
       }
-      const descriptor = findActionDescriptor(view, ctx.path, ctx.action);
-      if (descriptor?.dangerous) {
-        return {
-          kind: "require_approval",
-          reason: `Action ${ctx.providerId}:${ctx.action} on ${ctx.path} is marked dangerous.`,
-          dangerous: true,
-          paramsPreview: safePreview(ctx.params),
-        };
-      }
-      return ALLOW;
+      return {
+        kind: "require_approval",
+        reason: `Action ${ctx.providerId}:${ctx.action} on ${ctx.path} is marked dangerous.`,
+        dangerous: true,
+        paramsPreview: safePreview(ctx.params),
+      };
     },
   };
 }
@@ -186,57 +182,4 @@ function safePreview(params: Record<string, unknown>): string {
   } catch {
     return "[unserializable params]";
   }
-}
-
-function findActionDescriptor(
-  view: ProviderTreeView,
-  path: string,
-  action: string,
-): { dangerous?: boolean } | null {
-  const node = locateNode(view, path);
-  if (!node) {
-    return null;
-  }
-  const affordances = node.affordances;
-  if (!Array.isArray(affordances)) {
-    return null;
-  }
-  const found = affordances.find((aff) => aff.action === action);
-  return found ? { dangerous: found.dangerous } : null;
-}
-
-function locateNode(view: ProviderTreeView, path: string): SlopNode | null {
-  // Try the focused detail tree first, since it's typically deeper and the
-  // most likely to carry the affordance descriptor for the path being
-  // invoked. Fall back to the overview tree.
-  const segments = path.replace(/^\//, "").split("/").filter(Boolean);
-  if (view.detailTree && view.detailPath) {
-    const detailSegments = view.detailPath.replace(/^\//, "").split("/").filter(Boolean);
-    if (
-      segments.length >= detailSegments.length &&
-      detailSegments.every((seg, idx) => segments[idx] === seg)
-    ) {
-      const remainder = segments.slice(detailSegments.length);
-      const node = walkSegments(view.detailTree, remainder);
-      if (node) {
-        return node;
-      }
-    }
-  }
-  return walkSegments(view.overviewTree, segments);
-}
-
-function walkSegments(root: SlopNode, segments: string[]): SlopNode | null {
-  let node: SlopNode | null = root;
-  for (const segment of segments) {
-    if (!node?.children) {
-      return null;
-    }
-    const next: SlopNode | undefined = node.children.find((child) => child.id === segment);
-    if (!next) {
-      return null;
-    }
-    node = next;
-  }
-  return node;
 }
