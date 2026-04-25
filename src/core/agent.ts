@@ -16,6 +16,7 @@ import {
   describeProviderTransport,
   type RegisteredProvider,
 } from "../providers/registry";
+import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
 import { buildSystemPrompt } from "./context";
@@ -569,51 +570,25 @@ export class Agent {
   }
 
   private async registerProviderMirrors(providerId: string): Promise<void> {
-    if (
-      !this.hub ||
-      this.providerWatchStops.has(providerId) ||
-      this.mirrorProviderPaths.length === 0
-    ) {
+    if (!this.hub) {
       return;
     }
-
-    const hub = this.hub;
-    const stops = await Promise.all(
-      this.mirrorProviderPaths.map((path) =>
-        hub.watchPath(
-          providerId,
-          path,
-          (tree) => {
-            this.callbacks.onProviderSnapshot?.({
-              providerId,
-              path,
-              tree,
-            });
-          },
-          { depth: 2 },
-        ),
-      ),
-    );
-    this.providerWatchStops.set(providerId, stops);
+    await registerProviderMirrors({
+      hub: this.hub,
+      providerId,
+      paths: this.mirrorProviderPaths,
+      watchStops: this.providerWatchStops,
+      onSnapshot: (snapshot) => this.callbacks.onProviderSnapshot?.(snapshot),
+    });
   }
 
   private unregisterProviderMirrors(providerId: string): void {
-    const stops = this.providerWatchStops.get(providerId);
-    if (!stops) {
-      return;
-    }
-
-    for (const stop of stops) {
-      stop();
-    }
-    this.providerWatchStops.delete(providerId);
-    for (const path of this.mirrorProviderPaths) {
-      this.callbacks.onProviderSnapshot?.({
-        providerId,
-        path,
-        tree: null,
-      });
-    }
+    unregisterProviderMirrors({
+      providerId,
+      paths: this.mirrorProviderPaths,
+      watchStops: this.providerWatchStops,
+      onSnapshot: (snapshot) => this.callbacks.onProviderSnapshot?.(snapshot),
+    });
   }
 
   private async applyDiscoveryUpdate(update: ProviderDiscoveryUpdate): Promise<void> {
