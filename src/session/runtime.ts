@@ -180,6 +180,8 @@ export interface SessionAgent {
     action: string,
     params?: Record<string, unknown>,
   ): Promise<ResultMessage>;
+  resolveApprovalDirect(approvalId: string): Promise<ResultMessage>;
+  rejectApprovalDirect(approvalId: string, reason?: string): void;
   cancelActiveTurn(): boolean;
   clearPendingApproval(): void;
   updateConfig?(config: SloppyConfig): void;
@@ -484,11 +486,17 @@ export class SessionRuntime {
       throw new Error(`Approval cannot be approved: ${approvalId}`);
     }
 
-    const result = await this.agent.invokeProvider(
-      approval.provider,
-      approval.sourcePath,
-      "approve",
-    );
+    if (!approval.sourceApprovalId) {
+      throw new Error(`Approval is missing source identifier: ${approvalId}`);
+    }
+
+    // Resolve through the hub-owned approval queue directly so we get the raw
+    // inner ResultMessage from the underlying invoke (status / task_id /
+    // data). Going via `agent.invokeProvider("/approvals/{id}", "approve")`
+    // would let the SLOP server wrap that inner result a second time, hiding
+    // `accepted` + task identity for async-approved actions. The provider
+    // action stays in place as the public surface for UI/model callers.
+    const result = await this.agent.resolveApprovalDirect(approval.sourceApprovalId);
     if (this.shouldResumePendingApproval(approval)) {
       const toolUseId = this.pendingToolUseId(approval);
       this.pendingApproval = null;
@@ -528,9 +536,14 @@ export class SessionRuntime {
       throw new Error(`Approval cannot be rejected: ${approvalId}`);
     }
 
-    await this.agent.invokeProvider(approval.provider, approval.sourcePath, "reject", {
-      reason,
-    });
+    if (!approval.sourceApprovalId) {
+      throw new Error(`Approval is missing source identifier: ${approvalId}`);
+    }
+
+    // Reject through the hub-owned queue directly to mirror the approve path.
+    // The provider action `/approvals/{id}.reject` remains the public surface
+    // for UI/model callers.
+    this.agent.rejectApprovalDirect(approval.sourceApprovalId, reason);
     if (this.shouldResumePendingApproval(approval)) {
       const toolUseId = this.pendingToolUseId(approval);
       this.pendingApproval = null;
@@ -597,11 +610,9 @@ export class SessionRuntime {
       const approval = approvalId ? this.store.getApproval(approvalId) : undefined;
       let approvalStatus: "rejected" | undefined;
 
-      if (approval?.canReject && approval.sourcePath) {
+      if (approval?.canReject && approval.sourceApprovalId) {
         try {
-          await this.agent.invokeProvider(approval.provider, approval.sourcePath, "reject", {
-            reason: message,
-          });
+          this.agent.rejectApprovalDirect(approval.sourceApprovalId, message);
           approvalStatus = "rejected";
         } catch {
           // Best-effort provider cleanup should not block ending the local turn.

@@ -138,6 +138,10 @@ describe("kernel boundary: sub-agent runs without orchestration provider", () =>
           async invokeProvider(): Promise<never> {
             throw new Error("not used");
           },
+          async resolveApprovalDirect(): Promise<never> {
+            throw new Error("not used");
+          },
+          rejectApprovalDirect() {},
           cancelActiveTurn() {
             return false;
           },

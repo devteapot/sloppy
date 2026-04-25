@@ -465,6 +465,10 @@ describe("Agent orchestration (sub-agent federation)", () => {
           async invokeProvider(): Promise<never> {
             throw new Error("not used in happy-path test");
           },
+          async resolveApprovalDirect(): Promise<never> {
+            throw new Error("not used in happy-path test");
+          },
+          rejectApprovalDirect() {},
           cancelActiveTurn() {
             return false;
           },
@@ -634,6 +638,10 @@ describe("Agent orchestration (sub-agent federation)", () => {
             async invokeProvider(): Promise<never> {
               throw new Error("not used in work-packet test");
             },
+            async resolveApprovalDirect(): Promise<never> {
+              throw new Error("not used in work-packet test");
+            },
+            rejectApprovalDirect() {},
             cancelActiveTurn() {
               return false;
             },

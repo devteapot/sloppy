@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
+import type { ResultMessage } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
-import type { AgentCallbacks } from "../src/core/agent";
+import type { AgentCallbacks, ResolvedApprovalToolResult } from "../src/core/agent";
 import type { ExternalProviderState } from "../src/core/consumer";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
@@ -204,6 +205,8 @@ function createStreamingAgentFactory(): SessionAgentFactory {
     },
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    resolveApprovalDirect: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    rejectApprovalDirect: () => undefined,
     cancelActiveTurn: () => false,
     clearPendingApproval: () => undefined,
     shutdown: () => undefined,
@@ -219,6 +222,8 @@ function createBlockingAgentFactory(gate: Deferred<string>): SessionAgentFactory
     }),
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    resolveApprovalDirect: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    rejectApprovalDirect: () => undefined,
     cancelActiveTurn: () => false,
     clearPendingApproval: () => undefined,
     shutdown: () => undefined,
@@ -240,6 +245,8 @@ function createCancelableStreamingAgentFactory() {
     },
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-cancel", status: "ok" }),
+    resolveApprovalDirect: async () => ({ type: "result", id: "inv-cancel", status: "ok" }),
+    rejectApprovalDirect: () => undefined,
     cancelActiveTurn: () => {
       if (cancelled) {
         return false;
@@ -263,7 +270,9 @@ function createCancelableStreamingAgentFactory() {
   };
 }
 
-function createApprovalHarnessFactory() {
+function createApprovalHarnessFactory(options?: {
+  approveResult?: ResultMessage;
+}) {
   let callbacks: AgentCallbacks | null = null;
   const providerInvokes: Array<{
     providerId: string;
@@ -271,6 +280,15 @@ function createApprovalHarnessFactory() {
     action: string;
     params?: Record<string, unknown>;
   }> = [];
+  const approveCalls: string[] = [];
+  const rejectCalls: Array<{ id: string; reason?: string }> = [];
+  const resumeCalls: ResolvedApprovalToolResult[] = [];
+  const approveResult: ResultMessage = options?.approveResult ?? {
+    type: "result",
+    id: "inv-approval",
+    status: "ok",
+    data: { ok: true },
+  };
 
   const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
     callbacks = agentCallbacks;
@@ -318,7 +336,8 @@ function createApprovalHarnessFactory() {
           },
         };
       },
-      resumeWithToolResult: async () => {
+      resumeWithToolResult: async (resolved) => {
+        resumeCalls.push(resolved);
         callbacks?.onToolEvent?.({
           kind: "completed",
           invocation: {
@@ -331,7 +350,8 @@ function createApprovalHarnessFactory() {
             params: { command: "rm demo.txt", background: false },
           },
           summary: "terminal:execute /session",
-          status: "ok",
+          status: resolved.status,
+          taskId: resolved.taskId,
         });
         return {
           status: "completed",
@@ -342,6 +362,13 @@ function createApprovalHarnessFactory() {
         providerInvokes.push({ providerId, path, action, params });
         return { type: "result", id: "inv-approval", status: "ok", data: { ok: true } };
       },
+      resolveApprovalDirect: async (approvalId) => {
+        approveCalls.push(approvalId);
+        return approveResult;
+      },
+      rejectApprovalDirect: (approvalId, reason) => {
+        rejectCalls.push({ id: approvalId, reason });
+      },
       cancelActiveTurn: () => false,
       clearPendingApproval: () => undefined,
       shutdown: () => undefined,
@@ -350,6 +377,9 @@ function createApprovalHarnessFactory() {
 
   return {
     factory,
+    approveCalls,
+    rejectCalls,
+    resumeCalls,
     emitApprovalSnapshot() {
       callbacks?.onProviderSnapshot?.({
         providerId: "terminal",
@@ -422,6 +452,8 @@ function createTaskMirrorHarnessFactory() {
       },
       resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
       invokeProvider: async () => ({ type: "result", id: "inv-task", status: "ok" }),
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv-task", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
       cancelActiveTurn: () => false,
       clearPendingApproval: () => undefined,
       shutdown: () => undefined,
@@ -470,6 +502,8 @@ function createAppMirrorHarnessFactory() {
       }),
       resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
       invokeProvider: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
       cancelActiveTurn: () => false,
       clearPendingApproval: () => undefined,
       shutdown: () => undefined,
@@ -695,17 +729,80 @@ describe("AgentSessionProvider", () => {
 
       await runtime.waitForIdle();
 
-      expect(harness.providerInvokes).toEqual([
-        {
-          providerId: "terminal",
-          path: "/approvals/approval-1",
-          action: "approve",
-          params: undefined,
-        },
-      ]);
+      // Session resume now resolves approvals through the hub-owned queue
+      // directly (Agent.resolveApprovalDirect) rather than re-invoking the
+      // provider's `/approvals/{id}.approve` action. This avoids
+      // double-wrapping the inner ResultMessage.
+      expect(harness.approveCalls).toEqual(["approval-1"]);
 
       const turn = await consumer.query("/turn", 1);
       expect(turn.properties?.state).toBe("idle");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("async-approved action surfaces task_id to the resumed turn", async () => {
+    // Regression: previously the session resume path went through
+    // `agent.invokeProvider("/approvals/{id}", "approve")`. The provider
+    // action returned the queue's inner ResultMessage, which the SLOP server
+    // then wrapped a second time as `data` of an outer `{status:"ok"}`
+    // ResultMessage. The runtime read `result.status` and `result.data.taskId`
+    // off the outer wrapper, so an async-approved action with
+    // `{status:"accepted", data:{taskId:"task-123"}}` was visible to the
+    // session as `status:"ok"` with no task identity, breaking task mirroring.
+    //
+    // The fix routes session resume through `Agent.resolveApprovalDirect`
+    // (i.e. `hub.approvals.approve(id)`) so the inner ResultMessage is passed
+    // through unchanged.
+    const harness = createApprovalHarnessFactory({
+      approveResult: {
+        type: "result",
+        id: "inv-approval-async",
+        status: "accepted",
+        data: { taskId: "task-123" },
+      },
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-approval-async",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-approval-async",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/composer", "send_message", {
+        text: "kick off a long job",
+      });
+      harness.emitApprovalSnapshot();
+
+      const approvals = await consumer.query("/approvals", 3);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+
+      const approveResult = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approveResult.status).toBe("ok");
+
+      await runtime.waitForIdle();
+
+      // Direct queue path was used (not the per-provider /approvals action).
+      expect(harness.approveCalls).toEqual(["approval-1"]);
+
+      // The inner ResultMessage flows through to the resumed turn; the
+      // session sees the underlying `accepted` status and the `task_id`.
+      expect(harness.resumeCalls.length).toBe(1);
+      const resumed = harness.resumeCalls[0]!;
+      expect(resumed.status).toBe("accepted");
+      expect(resumed.taskId).toBe("task-123");
     } finally {
       provider.stop();
       runtime.shutdown();
@@ -745,15 +842,8 @@ describe("AgentSessionProvider", () => {
       const approvals = await consumer.query("/approvals", 3);
       expect(approvals.children?.[0]?.properties?.status).toBe("rejected");
 
-      expect(harness.providerInvokes).toEqual([
-        {
-          providerId: "terminal",
-          path: "/approvals/approval-1",
-          action: "reject",
-          params: {
-            reason: "Turn cancelled by user.",
-          },
-        },
+      expect(harness.rejectCalls).toEqual([
+        { id: "approval-1", reason: "Turn cancelled by user." },
       ]);
     } finally {
       provider.stop();

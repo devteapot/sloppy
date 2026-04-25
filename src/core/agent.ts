@@ -348,6 +348,33 @@ export class Agent {
     return this.hub.invoke(providerId, path, action, params);
   }
 
+  /**
+   * Resolve an approval directly through the hub-owned queue, returning the
+   * raw underlying invoke `ResultMessage`. Bypasses the per-provider
+   * `/approvals/{id}.approve` action so the result is not double-wrapped by
+   * the SLOP server. The provider action remains the public surface for
+   * UI/model callers; runtime paths that need the inner shape (status,
+   * task_id, etc.) should use this method.
+   */
+  async resolveApprovalDirect(approvalId: string): Promise<ResultMessage> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+    const result = (await this.hub.approvals.approve(approvalId)) as ResultMessage;
+    return result;
+  }
+
+  /**
+   * Reject an approval directly through the hub-owned queue. Mirrors
+   * `resolveApprovalDirect` for the rejection path.
+   */
+  rejectApprovalDirect(approvalId: string, reason?: string): void {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+    this.hub.approvals.reject(approvalId, reason);
+  }
+
   listConnectedProviders(): { id: string; name: string }[] {
     if (!this.hub) {
       return [];
