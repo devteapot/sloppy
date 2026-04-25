@@ -328,6 +328,56 @@ describe("ConsumerHub", () => {
     }
   });
 
+  test("seeds the dangerous-affordance registry from a deep, unfiltered query", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    try {
+      await hub.connect();
+
+      // Build a provider with a dangerous affordance several levels deeper
+      // than the overview subscription's depth (overviewDepth: 2 in
+      // TEST_CONFIG). Without the addProvider-time deep query, the registry
+      // would miss it until the user happened to focus that subtree.
+      const id = "deep-danger";
+      const server = createSlopServer({ id, name: "Deep" });
+      server.register("session", () => ({
+        type: "collection",
+        props: {},
+        children: {
+          tasks: {
+            type: "collection",
+            props: {},
+            items: [
+              {
+                id: "t1",
+                props: {},
+                actions: {
+                  cancel: {
+                    label: "Cancel",
+                    dangerous: true,
+                    handler: async () => ({ ok: true }),
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }));
+
+      const provider: RegisteredProvider = {
+        id,
+        name: "Deep",
+        kind: "builtin",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process",
+      };
+      await hub.addProvider(provider);
+
+      expect(hub.isDangerousAffordance(id, "/session/tasks/t1", "cancel")).toBe(true);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("skips malformed provider nodes without ids when building runtime tools", () => {
     const view: ProviderTreeView = {
       providerId: "demo",
