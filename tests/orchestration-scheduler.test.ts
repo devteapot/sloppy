@@ -99,7 +99,7 @@ async function harness() {
   const spawnedTaskIds: string[] = [];
   const runnerFactory: DelegationRunnerFactory = (spawn, callbacks) => ({
     async start() {
-      const taskId = spawn.orchestrationTaskId;
+      const taskId = spawn.externalTaskId;
       if (taskId) {
         spawnedTaskIds.push(taskId);
         await hub.invoke("orchestration", `/tasks/${taskId}`, "start", {});

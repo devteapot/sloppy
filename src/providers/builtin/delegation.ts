@@ -10,7 +10,12 @@ export type DelegationAgentSpawn = {
   name: string;
   goal: string;
   model?: string;
-  orchestrationTaskId?: string;
+  /**
+   * Opaque external task id supplied by whoever requested the spawn (e.g. an
+   * orchestrator). The delegation provider passes it through unchanged; only
+   * extensions that recognize it (via a TaskContext factory) interpret it.
+   */
+  externalTaskId?: string;
 };
 
 export type DelegationAgentUpdate = {
@@ -39,7 +44,7 @@ type DelegationAgent = {
   goal: string;
   status: AgentStatus;
   model?: string;
-  orchestrationTaskId?: string;
+  externalTaskId?: string;
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -274,7 +279,7 @@ export class DelegationProvider {
     name: string,
     goal: string,
     model?: string,
-    orchestrationTaskId?: string,
+    externalTaskId?: string,
   ): { id: string; status: AgentStatus; created_at: string; session_provider_id?: string } {
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
@@ -292,7 +297,7 @@ export class DelegationProvider {
       goal,
       status: "pending",
       model,
-      orchestrationTaskId,
+      externalTaskId,
       created_at,
     };
     this.agents.set(id, agent);
@@ -304,7 +309,7 @@ export class DelegationProvider {
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, model, orchestrationTaskId },
+      { id, name, goal, model, externalTaskId },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -456,7 +461,7 @@ export class DelegationProvider {
         goal: agent.goal,
         status: agent.status,
         model: agent.model,
-        orchestration_task_id: agent.orchestrationTaskId,
+        orchestration_task_id: agent.externalTaskId,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
@@ -465,7 +470,7 @@ export class DelegationProvider {
         pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
       },
       actions: {
-        ...(agent.status === "completed" && !agent.orchestrationTaskId
+        ...(agent.status === "completed" && !agent.externalTaskId
           ? {
               get_result: action(async () => this.getResult(agent.id), {
                 label: "Get Result",

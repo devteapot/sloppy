@@ -3,14 +3,24 @@ import { dirname } from "node:path";
 
 import type { AgentCallbacks, AgentToolEvent, AgentToolInvocation } from "../core/agent";
 import type { ExternalProviderState } from "../core/consumer";
-import type { OrchestrationSchedulerEvent } from "../runtime/orchestration";
 
 export type AgentEventActor = {
   id: string;
   name?: string;
-  kind: "orchestrator" | "agent";
+  kind: string;
   parentId?: string;
   taskId?: string;
+};
+
+/**
+ * Generic event payload published by extensions through `AgentEventBus.publish`.
+ * Carries an arbitrary discriminator and any additional fields the extension
+ * needs; the bus simply tags it with `ts` + `actor` and forwards it to the
+ * log sink.
+ */
+export type RuntimeEventPayload = {
+  kind: string;
+  [key: string]: unknown;
 };
 
 type BaseEvent = {
@@ -80,19 +90,16 @@ export type AgentEvent = BaseEvent &
         kind: "providers";
         states: Array<{ id: string; status: string; message?: string }>;
       }
-    | (OrchestrationSchedulerEvent & {
-        kind:
-          | "task_unblocked"
-          | "task_scheduled"
-          | "task_started"
-          | "scheduler_idle"
-          | "scheduler_blocked";
-      })
+    | (BaseEvent & RuntimeEventPayload)
   );
 
 export interface AgentEventBus {
   callbacks: AgentCallbacks;
-  onSchedulerEvent: (event: OrchestrationSchedulerEvent) => void;
+  /**
+   * Generic publish entry point. Extensions forward their domain events
+   * here without the bus needing to know about specific event shapes.
+   */
+  publish: (event: RuntimeEventPayload) => void;
   emit(event: AgentEvent): void;
   stop(): void;
 }
@@ -295,17 +302,17 @@ export function createAgentEventBus(options: {
     },
   };
 
-  const onSchedulerEvent = (event: OrchestrationSchedulerEvent) => {
+  const publish = (event: RuntimeEventPayload) => {
     write({
       ts: new Date().toISOString(),
       actor: options.actor,
       ...event,
-    });
+    } as AgentEvent);
   };
 
   return {
     callbacks,
-    onSchedulerEvent,
+    publish,
     emit: write,
     stop() {
       stopped = true;

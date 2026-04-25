@@ -196,13 +196,23 @@ describe("Agent orchestration (sub-agent federation)", () => {
         stop: () => orchestration.stop(),
       });
 
+      const { createOrchestrationTaskContext } = await import(
+        "../src/runtime/orchestration/task-context"
+      );
       const runner = new SubAgentRunner({
         id: "abc123",
         name: "analyze",
         goal: "analyze the spec",
         parentHub: hub,
         parentConfig: TEST_CONFIG,
-        orchestrationProviderId: "orchestration",
+        taskContext: createOrchestrationTaskContext({
+          hub,
+          providerId: "orchestration",
+          taskId: undefined,
+          spawnId: "abc123",
+          spawnName: "analyze",
+          spawnGoal: "analyze the spec",
+        }),
       });
 
       // Without a valid LLM profile, the runtime will fail on sendMessage.
@@ -425,13 +435,23 @@ describe("Agent orchestration (sub-agent federation)", () => {
       // Custom agentFactory bypasses real Agent/LLM — returns a canned response.
       const cannedResponse = "Analyzed requirements: needs X, Y, Z. All complete.";
 
+      const { createOrchestrationTaskContext: makeTaskContextHappy } = await import(
+        "../src/runtime/orchestration/task-context"
+      );
       const runner = new SubAgentRunner({
         id: "happy1",
         name: "analyzer",
         goal: "analyze requirements",
         parentHub: hub,
         parentConfig: TEST_CONFIG,
-        orchestrationProviderId: "orchestration",
+        taskContext: makeTaskContextHappy({
+          hub,
+          providerId: "orchestration",
+          taskId: undefined,
+          spawnId: "happy1",
+          spawnName: "analyzer",
+          spawnGoal: "analyze requirements",
+        }),
         llmProfileManager: stubLlmProfileManager,
         agentFactory: (callbacks) => ({
           async start() {},
@@ -583,14 +603,23 @@ describe("Agent orchestration (sub-agent federation)", () => {
       let capturedMessage = "";
       let runner: InstanceType<typeof SubAgentRunner> | null = null;
       try {
+        const { createOrchestrationTaskContext: makeTaskContextPacket } = await import(
+          "../src/runtime/orchestration/task-context"
+        );
         runner = new SubAgentRunner({
           id: "packet1",
           name: "ui-worker",
           goal: "Build the task board UI.",
           parentHub: hub,
           parentConfig: TEST_CONFIG,
-          orchestrationProviderId: "orchestration",
-          orchestrationTaskId: taskId,
+          taskContext: makeTaskContextPacket({
+            hub,
+            providerId: "orchestration",
+            taskId,
+            spawnId: "packet1",
+            spawnName: "ui-worker",
+            spawnGoal: "Build the task board UI.",
+          }),
           llmProfileManager: stubLlmProfileManager,
           agentFactory: (callbacks) => ({
             async start() {},

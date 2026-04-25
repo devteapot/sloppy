@@ -1,5 +1,6 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ConsumerHub } from "../../core/consumer";
+import type { DelegationRuntimeHooks, TaskContextFactory } from "../../core/role";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import { SubAgentRunner } from "./sub-agent";
 
@@ -7,13 +8,18 @@ export function attachSubAgentRunnerFactory(
   delegation: DelegationProvider,
   hub: ConsumerHub,
   config: SloppyConfig,
-): void {
+): DelegationRuntimeHooks {
   delegation.setParentHub(hub);
-  const orchestrationProviderId = config.providers.builtin.orchestration
-    ? "orchestration"
-    : undefined;
+
+  let taskContextFactory: TaskContextFactory | null = null;
 
   delegation.setRunnerFactory((spawn, callbacks) => {
+    const taskContext = taskContextFactory?.({
+      id: spawn.id,
+      name: spawn.name,
+      goal: spawn.goal,
+      externalTaskId: spawn.externalTaskId,
+    });
     const runner = new SubAgentRunner({
       id: spawn.id,
       name: spawn.name,
@@ -21,8 +27,10 @@ export function attachSubAgentRunnerFactory(
       model: spawn.model,
       parentHub: hub,
       parentConfig: config,
-      orchestrationProviderId,
-      orchestrationTaskId: spawn.orchestrationTaskId,
+      taskContext,
+      disableBuiltinProviders: taskContext?.disableBuiltinProviders
+        ? [...taskContext.disableBuiltinProviders]
+        : undefined,
     });
     const unsubscribe = runner.onChange((event) => {
       callbacks.onUpdate({
@@ -49,4 +57,10 @@ export function attachSubAgentRunnerFactory(
       },
     };
   });
+
+  return {
+    setTaskContextFactory(factory) {
+      taskContextFactory = factory;
+    },
+  };
 }

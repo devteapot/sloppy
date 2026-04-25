@@ -2,7 +2,9 @@ import type { ClientTransport } from "@slop-ai/consumer/browser";
 import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type { ConsumerHub } from "../core/consumer";
+import type { RuntimeContext } from "../core/role";
 import { attachSubAgentRunnerFactory } from "../runtime/delegation";
+import { attachOrchestrationRuntime } from "../runtime/orchestration/attach";
 import { BrowserProvider } from "./builtin/browser";
 import { CronProvider } from "./builtin/cron";
 import { DelegationProvider } from "./builtin/delegation";
@@ -31,7 +33,11 @@ export interface RegisteredProvider {
   transportLabel: string;
   stop?: () => void;
   systemPromptFragment?: (config: SloppyConfig) => string | null;
-  attachRuntime?: (hub: ConsumerHub, config: SloppyConfig) => { stop(): void } | undefined;
+  attachRuntime?: (
+    hub: ConsumerHub,
+    config: SloppyConfig,
+    ctx?: RuntimeContext,
+  ) => { stop(): void } | undefined;
 }
 
 export function describeProviderTransport(transport: ProviderTransportDescriptor): string {
@@ -186,9 +192,14 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(delegation.server),
       transportLabel: "in-process",
       stop: () => delegation.stop(),
-      attachRuntime: (hub, hubConfig) => {
-        attachSubAgentRunnerFactory(delegation, hub, hubConfig);
-        return undefined;
+      attachRuntime: (hub, hubConfig, ctx) => {
+        const hooks = attachSubAgentRunnerFactory(delegation, hub, hubConfig);
+        ctx?.setDelegationHooks?.(hooks);
+        return {
+          stop() {
+            ctx?.setDelegationHooks?.(null);
+          },
+        };
       },
     });
   }
@@ -205,6 +216,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(orchestration.server),
       transportLabel: "in-process",
       stop: () => orchestration.stop(),
+      attachRuntime: (hub, hubConfig, ctx) => attachOrchestrationRuntime(hub, hubConfig, ctx),
     });
   }
 

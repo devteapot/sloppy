@@ -27,7 +27,14 @@ import {
   type RunLoopResult,
   runLoop,
 } from "./loop";
-import { defaultRole, type RoleProfile } from "./role";
+import {
+  defaultRole,
+  type DelegationRuntimeHooks,
+  type RoleProfile,
+  RoleRegistry,
+  type RuntimeContext,
+  type RuntimeEvent,
+} from "./role";
 
 export type { AgentToolEvent, AgentToolInvocation } from "./loop";
 export type { RoleProfile } from "./role";
@@ -82,6 +89,10 @@ export class Agent {
   private pendingApproval: PendingApprovalContinuation | null = null;
   private activeRunAbortController: AbortController | null = null;
   private role: RoleProfile;
+  private roleId?: string;
+  private roleRegistry: RoleRegistry;
+  private publishEventCallback?: (event: RuntimeEvent) => void;
+  private delegationHooks: DelegationRuntimeHooks | null = null;
   private mirrorProviderPaths: string[];
   private runtimeStops: Array<{ stop(): void }> = [];
   private systemPromptFragments: string[] = [];
@@ -92,6 +103,9 @@ export class Agent {
       llmProfileManager?: LlmProfileManager;
       ignoredProviderIds?: string[];
       role?: RoleProfile;
+      roleId?: string;
+      roleRegistry?: RoleRegistry;
+      publishEvent?: (event: RuntimeEvent) => void;
       mirrorProviderPaths?: string[];
     } & AgentCallbacks,
   ) {
@@ -106,6 +120,9 @@ export class Agent {
     };
     this.ignoredProviderIds = new Set(options?.ignoredProviderIds ?? []);
     this.role = options?.role ?? defaultRole;
+    this.roleId = options?.roleId;
+    this.roleRegistry = options?.roleRegistry ?? new RoleRegistry();
+    this.publishEventCallback = options?.publishEvent;
     this.mirrorProviderPaths = options?.mirrorProviderPaths ?? [];
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
@@ -144,8 +161,22 @@ export class Agent {
     this.hub = hub;
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
+    const self = this;
+    const runtimeCtx: RuntimeContext = {
+      hub,
+      config: this.config,
+      publishEvent: (event) => self.publishEventCallback?.(event),
+      roleRegistry: this.roleRegistry,
+      get delegationHooks() {
+        return self.delegationHooks ?? undefined;
+      },
+      setDelegationHooks: (hooks) => {
+        self.delegationHooks = hooks;
+      },
+    };
+
     for (const provider of providers) {
-      const runtimeStop = provider.attachRuntime?.(hub, this.config);
+      const runtimeStop = provider.attachRuntime?.(hub, this.config, runtimeCtx);
       if (runtimeStop) {
         this.runtimeStops.push(runtimeStop);
       }
@@ -155,7 +186,17 @@ export class Agent {
       }
     }
 
-    const roleRuntime = this.role.attachRuntime?.(hub, this.config);
+    // Resolve role lazily so that providers' attachRuntime hooks have a
+    // chance to register role factories before resolution. If a RoleProfile
+    // was supplied directly, prefer it over registry lookup.
+    if (this.roleId && this.role.id === defaultRole.id) {
+      const resolved = this.roleRegistry.resolve(this.roleId, runtimeCtx);
+      if (resolved) {
+        this.role = resolved;
+      }
+    }
+
+    const roleRuntime = this.role.attachRuntime?.(hub, this.config, runtimeCtx);
     if (roleRuntime) {
       this.runtimeStops.push(roleRuntime);
     }

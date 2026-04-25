@@ -19,7 +19,7 @@ import {
 } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
-import { createOrchestratorRole } from "../runtime/orchestration";
+import type { RoleRegistry } from "../core/role";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import { buildMirroredItemId, SessionStore } from "./store";
 import type {
@@ -236,12 +236,20 @@ function createDefaultSessionAgent(
   llmProfileManager: LlmProfileManager,
   ignoredProviderIds: string[] = [],
   role?: RoleProfile,
+  extras?: {
+    roleId?: string;
+    roleRegistry?: RoleRegistry;
+    publishEvent?: (event: Record<string, unknown> & { kind: string }) => void;
+  },
 ): SessionAgent {
   return new Agent({
     config,
     llmProfileManager,
     ignoredProviderIds,
     role,
+    roleId: extras?.roleId,
+    roleRegistry: extras?.roleRegistry,
+    publishEvent: extras?.publishEvent,
     mirrorProviderPaths: ["/approvals", "/tasks"],
     ...callbacks,
   });
@@ -274,6 +282,11 @@ export class SessionRuntime {
     parentActorId?: string;
     taskId?: string;
     role?: RoleProfile;
+    roleId?: string;
+    roleRegistry?: RoleRegistry;
+    actorKind?: string;
+    actorName?: string;
+    actorId?: string;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.llmProfileManager =
@@ -343,16 +356,14 @@ export class SessionRuntime {
       },
     };
 
-    const isOrchestrator = options?.role?.id === "orchestrator";
-
     const eventLogPath = process.env.SLOPPY_EVENT_LOG;
     if (eventLogPath) {
       this.eventBus = createAgentEventBus({
         logPath: eventLogPath,
         actor: {
-          id: isOrchestrator ? "orchestrator" : (options?.sessionId ?? "agent"),
-          name: isOrchestrator ? "Orchestrator" : options?.title,
-          kind: isOrchestrator ? "orchestrator" : "agent",
+          id: options?.actorId ?? options?.sessionId ?? "agent",
+          name: options?.actorName ?? options?.title,
+          kind: options?.actorKind ?? "agent",
           parentId: options?.parentActorId,
           taskId: options?.taskId,
         },
@@ -363,10 +374,9 @@ export class SessionRuntime {
       ? mergeCallbacks(callbacks, this.eventBus.callbacks)
       : callbacks;
 
-    const role = options?.role
-      ? options.role.id === "orchestrator" && this.eventBus
-        ? createOrchestratorRole({ onSchedulerEvent: this.eventBus.onSchedulerEvent })
-        : options.role
+    const eventBus = this.eventBus;
+    const publishEvent = eventBus
+      ? (event: Record<string, unknown> & { kind: string }) => eventBus.publish(event)
       : undefined;
 
     const agentFactory =
@@ -377,7 +387,12 @@ export class SessionRuntime {
           config,
           llmProfileManager,
           options?.ignoredProviderIds,
-          role,
+          options?.role,
+          {
+            roleId: options?.roleId,
+            roleRegistry: options?.roleRegistry,
+            publishEvent,
+          },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
   }

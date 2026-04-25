@@ -124,7 +124,7 @@ describe("createAgentEventBus", () => {
       actor: { id: "orchestrator", name: "Orchestrator", kind: "orchestrator" },
     });
 
-    eventBus.onSchedulerEvent({
+    eventBus.publish({
       kind: "task_scheduled",
       taskId: "task-12345678",
       taskName: "build",
