@@ -5,11 +5,17 @@ import type { TaskContext } from "../../core/role";
 
 type TaskInfo = {
   id: string;
+  sliceId?: string;
   name?: string;
   kind?: string;
   goal?: string;
   dependsOn: string[];
   specRefs: string[];
+  planVersion?: number;
+  specVersion?: number;
+  plannerAssumptions: string[];
+  structuralAssumptions: string[];
+  requiresSliceGate?: boolean;
   auditOf?: string;
   findingRefs: string[];
   acceptanceCriteria: Array<{ id?: string; text?: string }>;
@@ -53,6 +59,16 @@ function stringArrayProp(record: Record<string, unknown>, key: string): string[]
     : [];
 }
 
+function numberProp(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanProp(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function acceptanceCriteriaProp(
   record: Record<string, unknown>,
 ): Array<{ id?: string; text?: string }> {
@@ -74,11 +90,17 @@ function parseTaskInfo(node: SlopNode | null): TaskInfo | null {
   if (!id) return null;
   return {
     id,
+    sliceId: stringProp(props, "slice_id"),
     name: stringProp(props, "name"),
     kind: stringProp(props, "kind"),
     goal: stringProp(props, "goal"),
     dependsOn: stringArrayProp(props, "depends_on"),
     specRefs: stringArrayProp(props, "spec_refs"),
+    planVersion: numberProp(props, "plan_version"),
+    specVersion: numberProp(props, "spec_version"),
+    plannerAssumptions: stringArrayProp(props, "planner_assumptions"),
+    structuralAssumptions: stringArrayProp(props, "structural_assumptions"),
+    requiresSliceGate: booleanProp(props, "requires_slice_gate"),
     auditOf: stringProp(props, "audit_of"),
     findingRefs: stringArrayProp(props, "finding_refs"),
     acceptanceCriteria: acceptanceCriteriaProp(props),
@@ -245,6 +267,9 @@ export function createOrchestrationTaskContext(
       "",
       "## Task",
       formatTaskLine(task),
+      task.sliceId ? `- slice_id: ${task.sliceId}` : undefined,
+      task.planVersion !== undefined ? `- plan_version: ${task.planVersion}` : undefined,
+      task.specVersion !== undefined ? `- spec_version: ${task.specVersion}` : undefined,
       `- spec_refs: ${formatList(task.specRefs)}`,
       `- depends_on: ${formatList(task.dependsOn)}`,
       task.auditOf ? `- audit_of: ${task.auditOf}` : undefined,
@@ -256,6 +281,19 @@ export function createOrchestrationTaskContext(
             (criterion) => `- ${criterion.id ? `${criterion.id}: ` : ""}${criterion.text ?? ""}`,
           )
         : ["- none provided; use the task goal and relevant spec refs as the contract."]),
+      "",
+      "## Accepted Plan Context",
+      ...(task.plannerAssumptions.length > 0
+        ? task.plannerAssumptions.map((assumption) => `- planner: ${assumption}`)
+        : ["- planner: none recorded"]),
+      ...(task.structuralAssumptions.length > 0
+        ? task.structuralAssumptions.map((assumption) => `- structure: ${assumption}`)
+        : ["- structure: none recorded"]),
+      "",
+      "## Gate Rules",
+      task.requiresSliceGate
+        ? "- Submit typed evidence for every acceptance criterion. A user-resolved slice_gate is required before completion."
+        : "- Legacy task completion uses verification records.",
       "",
       kindGuidance(task.kind),
     ];

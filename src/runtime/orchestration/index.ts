@@ -3,9 +3,11 @@
 // `src/providers/builtin/orchestration/`.
 
 import type { SloppyConfig } from "../../config/schema";
+import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
 import type { RoleProfile } from "../../core/role";
 import type { RuntimeToolResolution } from "../../core/tools";
+import type { LlmResponse } from "../../llm/types";
 import { inferBatchDependencyRefs, type PlanningTaskWithDeps } from "./planning-policy";
 import { orchestratorSystemPromptFragment } from "./prompt";
 import { OrchestrationScheduler, type OrchestrationSchedulerEvent } from "./scheduler";
@@ -104,8 +106,75 @@ function orchestratorTransformInvoke(
 
 export { orchestratorTransformInvoke };
 
+async function recordOrchestratorModelBudgetUsage(
+  response: LlmResponse,
+  hub: ProviderRuntimeHub,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    return;
+  }
+  const inputTokens = response.usage.inputTokens;
+  const outputTokens = response.usage.outputTokens;
+  if (inputTokens + outputTokens <= 0) {
+    return;
+  }
+
+  try {
+    const result = await hub.invoke("orchestration", "/orchestration", "record_budget_usage", {
+      source: "llm",
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens,
+    });
+    if (result.status === "error" && result.error?.code !== "no_active_plan") {
+      debug("orchestration", "record_model_budget_usage_failed", {
+        code: result.error?.code,
+        message: result.error?.message,
+      });
+    }
+  } catch (error) {
+    debug("orchestration", "record_model_budget_usage_error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export type OrchestratorRoleOptions = {
   onSchedulerEvent?: (event: OrchestrationSchedulerEvent) => void;
+};
+
+const SPEC_AGENT_PROMPT = `
+# Spec Agent Role
+
+Capture user intent as versioned spec artifacts only. You may read goals, specs, and protocol messages. Write only spec requirements, decisions, proposed spec changes, and responses to SpecQuestion messages. Do not author plans, execute slices, or mutate workspace files.
+`.trim();
+
+const PLANNER_PROMPT = `
+# Planner Role
+
+Derive complete plan revisions from accepted goals/specs and repository observations. Write only plan revisions and planner protocol messages. Record planner and structural assumptions explicitly. Do not execute slices or mutate specs directly.
+`.trim();
+
+const EXECUTOR_PROMPT = `
+# Executor Role
+
+Execute the assigned slice only. Use the accepted spec refs, accepted plan assumptions, and prior evidence in the work packet as your contract. Submit typed evidence or escalation requests; do not mutate spec or orchestration planning artifacts directly.
+`.trim();
+
+export const specAgentRole: RoleProfile = {
+  id: "spec-agent",
+  systemPromptFragment: () => SPEC_AGENT_PROMPT,
+};
+
+export const plannerRole: RoleProfile = {
+  id: "planner",
+  systemPromptFragment: () => PLANNER_PROMPT,
+};
+
+export const executorRole: RoleProfile = {
+  id: "executor",
+  systemPromptFragment: () => EXECUTOR_PROMPT,
 };
 
 export function createOrchestratorRole(options: OrchestratorRoleOptions = {}): RoleProfile {
@@ -115,6 +184,7 @@ export function createOrchestratorRole(options: OrchestratorRoleOptions = {}): R
     // Role-scoped enforcement now lives at the hub layer
     // (`orchestratorRoleRule`, installed by `attachOrchestrationRuntime`).
     transformInvoke: orchestratorTransformInvoke,
+    onModelResponse: recordOrchestratorModelBudgetUsage,
     attachRuntime: (hub: ProviderRuntimeHub, config: SloppyConfig) => {
       if (!config.providers.builtin.orchestration || !config.providers.builtin.delegation) {
         return { stop() {} };

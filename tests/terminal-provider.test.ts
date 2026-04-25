@@ -7,7 +7,7 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
-import { terminalSafetyRule } from "../src/core/policy/rules";
+import { isOrchestratorSafeTerminalCommand, terminalSafetyRule } from "../src/core/policy/rules";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { TerminalProvider } from "../src/providers/builtin/terminal";
 
@@ -59,7 +59,7 @@ const HUB_CONFIG: SloppyConfig = {
     cron: { maxJobs: 16 },
     messaging: { maxMessages: 100 },
     delegation: { maxAgents: 4 },
-    orchestration: { progressTailMaxChars: 2000 },
+    orchestration: { progressTailMaxChars: 2000, finalAuditCommandTimeoutMs: 30000 },
     vision: { maxImages: 16, defaultWidth: 1024, defaultHeight: 768 },
   },
 } as unknown as SloppyConfig;
@@ -99,6 +99,13 @@ afterEach(async () => {
 });
 
 describe("TerminalProvider", () => {
+  test("orchestrator verification allowlist is shared with final audit replay", () => {
+    expect(isOrchestratorSafeTerminalCommand("bun test tests/example.test.ts")).toBe(true);
+    expect(isOrchestratorSafeTerminalCommand("bun run typecheck")).toBe(true);
+    expect(isOrchestratorSafeTerminalCommand("echo ok")).toBe(false);
+    expect(isOrchestratorSafeTerminalCommand("bun add left-pad")).toBe(false);
+  });
+
   test("executes a synchronous command and records it in history", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);

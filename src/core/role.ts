@@ -1,5 +1,6 @@
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
+import type { LlmResponse } from "../llm/types";
 import type { ProviderRuntimeHub } from "./hub";
 import type { RuntimeToolResolution } from "./tools";
 
@@ -101,6 +102,11 @@ export type RoleProfile = {
     config: SloppyConfig,
   ) => Record<string, unknown>;
   beforeNextTurn?: (hub: ProviderRuntimeHub, signal?: AbortSignal) => Promise<void>;
+  onModelResponse?: (
+    response: LlmResponse,
+    hub: ProviderRuntimeHub,
+    signal?: AbortSignal,
+  ) => Promise<void> | void;
   attachRuntime?: (
     hub: ProviderRuntimeHub,
     config: SloppyConfig,

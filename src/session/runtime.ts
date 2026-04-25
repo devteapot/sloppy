@@ -26,6 +26,10 @@ import type {
   ApprovalItem,
   ExternalAppSnapshot,
   LlmStateSnapshot,
+  SessionDigestAction,
+  SessionOrchestrationGate,
+  SessionOrchestrationGateStatus,
+  SessionOrchestrationSummary,
   SessionTask,
   SessionTaskStatus,
 } from "./types";
@@ -34,7 +38,62 @@ function hasAffordance(node: SlopNode, action: string): boolean {
   return (node.affordances ?? []).some((affordance) => affordance.action === action);
 }
 
+function stringProperty(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberProperty(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function recordProperty(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringListProperty(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
+function booleanProperty(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function objectListProperty(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === "object" && item !== null && !Array.isArray(item),
+      )
+    : [];
+}
+
+function requireOkData(result: ResultMessage, context: string): Record<string, unknown> {
+  if (result.status === "error") {
+    throw new Error(`${context} failed: ${result.error?.message ?? result.error?.code ?? "error"}`);
+  }
+  if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) {
+    throw new Error(`${context} did not return an object result.`);
+  }
+  return result.data as Record<string, unknown>;
+}
+
+function normalizeGateStatus(value: unknown): SessionOrchestrationGateStatus {
+  switch (value) {
+    case "accepted":
+    case "rejected":
+    case "cancelled":
+      return value;
+    default:
+      return "open";
+  }
+}
+
 const DEFAULT_CONFIG = await defaultConfigPromise;
+const MAX_PENDING_ORCHESTRATION_GATES = 5;
 
 function normalizeTaskStatus(status: unknown): SessionTaskStatus {
   switch (status) {
@@ -173,6 +232,167 @@ function parseTasksTree(providerId: string, tree: SlopNode | null): SessionTask[
   });
 }
 
+function parseOrchestrationRootTree(
+  providerId: string,
+  tree: SlopNode | null,
+): Partial<SessionOrchestrationSummary> {
+  const properties = tree?.properties ?? {};
+  const taskCounts = recordProperty(properties.task_counts) ?? {};
+  const messageCounts = recordProperty(properties.message_counts) ?? {};
+  const driftMetrics = recordProperty(properties.drift_metrics) ?? {};
+  const progressMetrics = recordProperty(driftMetrics.progress) ?? {};
+  const coherenceMetrics = recordProperty(driftMetrics.coherence) ?? {};
+  const intentMetrics = recordProperty(driftMetrics.intent) ?? {};
+  const scheduled = numberProperty(taskCounts.scheduled) ?? 0;
+  const running = numberProperty(taskCounts.running) ?? 0;
+  const verifying = numberProperty(taskCounts.verifying) ?? 0;
+  return {
+    available: true,
+    provider: providerId,
+    planId: stringProperty(properties.plan_id),
+    planStatus: stringProperty(properties.plan_status) ?? "none",
+    planVersion: numberProperty(properties.plan_version),
+    activeSliceCount: scheduled + running + verifying,
+    completedSliceCount: numberProperty(taskCounts.completed) ?? 0,
+    failedSliceCount: numberProperty(taskCounts.failed) ?? 0,
+    precedentResolvedCount: numberProperty(messageCounts.precedent_resolved),
+    semanticPrecedentResolvedCount: numberProperty(messageCounts.semantic_precedent_resolved),
+    precedentEscalatedCount: numberProperty(messageCounts.precedent_escalated),
+    openDriftEventCount: numberProperty(properties.open_drift_event_count),
+    blockingDriftEventCount: numberProperty(properties.blocking_drift_event_count),
+    progressCriteriaTotal: numberProperty(progressMetrics.criteria_total),
+    progressCriteriaSatisfied: numberProperty(progressMetrics.criteria_satisfied),
+    progressCriteriaUnknown: numberProperty(progressMetrics.criteria_unknown),
+    progressPriorDistance: numberProperty(progressMetrics.prior_distance),
+    progressCurrentDistance: numberProperty(progressMetrics.current_distance),
+    progressVelocity: numberProperty(progressMetrics.velocity),
+    goalRevisionPressure: numberProperty(intentMetrics.goal_revision_pressure),
+    latestGoalRevisionMagnitude: stringProperty(intentMetrics.latest_goal_revision_magnitude),
+    coherenceBreaches: stringListProperty(coherenceMetrics.breaches),
+    coherenceThresholds: recordProperty(coherenceMetrics.thresholds),
+  };
+}
+
+function parseOrchestrationGatesTree(
+  providerId: string,
+  tree: SlopNode | null,
+): Partial<SessionOrchestrationSummary> {
+  const gates = tree?.children ?? [];
+  const openGates = gates
+    .filter((node) => node.properties?.status === "open")
+    .sort((left, right) => {
+      const leftCreated = stringProperty(left.properties?.created_at) ?? "";
+      const rightCreated = stringProperty(right.properties?.created_at) ?? "";
+      return leftCreated.localeCompare(rightCreated);
+    });
+  const pendingGates: SessionOrchestrationGate[] = openGates
+    .slice(0, MAX_PENDING_ORCHESTRATION_GATES)
+    .map((node) => {
+      const properties = node.properties ?? {};
+      const summary =
+        stringProperty(properties.summary) ??
+        stringProperty((node as { summary?: unknown }).summary) ??
+        "Orchestration gate pending.";
+      const canResolve = hasAffordance(node, "resolve_gate");
+      return {
+        id: buildMirroredItemId("gate", providerId, node.id),
+        sourceGateId: node.id,
+        gateType: stringProperty(properties.gate_type),
+        status: normalizeGateStatus(properties.status),
+        subjectRef: stringProperty(properties.subject_ref),
+        summary,
+        evidenceRefs: stringListProperty(properties.evidence_refs),
+        createdAt: stringProperty(properties.created_at) ?? new Date().toISOString(),
+        version: numberProperty(properties.version),
+        canAccept: canResolve,
+        canReject: canResolve,
+      };
+    });
+  const latest = openGates.at(-1);
+  return {
+    available: true,
+    provider: providerId,
+    pendingGateCount: openGates.length,
+    pendingGates,
+    latestBlockingGateId: latest?.id,
+    latestBlockingGateType: stringProperty(latest?.properties?.gate_type),
+    latestBlockingGateSummary:
+      stringProperty(latest?.properties?.summary) ??
+      stringProperty((latest as { summary?: unknown } | undefined)?.summary),
+  };
+}
+
+function parseOrchestrationAuditTree(
+  providerId: string,
+  tree: SlopNode | null,
+): Partial<SessionOrchestrationSummary> {
+  const audits = tree?.children ?? [];
+  const latest = audits.at(-1);
+  const status = latest?.properties?.status;
+  return {
+    available: true,
+    provider: providerId,
+    finalAuditId: latest?.id,
+    finalAuditStatus: status === "passed" || status === "failed" ? status : "none",
+  };
+}
+
+function parseDigestAction(value: unknown): SessionDigestAction | null {
+  const record = recordProperty(value);
+  if (!record) {
+    return null;
+  }
+  const id = stringProperty(record.id);
+  const actionPath = stringProperty(record.action_path);
+  const actionName = stringProperty(record.action_name);
+  if (!id || !actionPath || !actionName) {
+    return null;
+  }
+  return {
+    id,
+    kind: stringProperty(record.kind),
+    label: stringProperty(record.label) ?? actionName,
+    targetRef: stringProperty(record.target_ref),
+    actionPath,
+    actionName,
+    params: recordProperty(record.params) ?? {},
+    urgency:
+      record.urgency === "low" || record.urgency === "normal" || record.urgency === "high"
+        ? record.urgency
+        : undefined,
+  };
+}
+
+function parseOrchestrationDigestsTree(
+  providerId: string,
+  tree: SlopNode | null,
+): Partial<SessionOrchestrationSummary> {
+  const properties = tree?.properties ?? {};
+  const latestDigestId = stringProperty(properties.latest_digest_id);
+  const latest =
+    latestDigestId && tree?.children
+      ? tree.children.find((node) => node.id === latestDigestId)
+      : tree?.children?.at(-1);
+  const latestProps = latest?.properties ?? {};
+  const rawActions = Array.isArray(latestProps.actions) ? latestProps.actions : [];
+  const pendingDeliveries = objectListProperty(properties.pending_deliveries);
+  const latestDeliveryError = pendingDeliveries
+    .map((delivery) => stringProperty(delivery.last_error))
+    .filter((error): error is string => error !== undefined)
+    .at(-1);
+  return {
+    available: true,
+    provider: providerId,
+    latestDigestId,
+    latestDigestStatus: stringProperty(properties.latest_status),
+    pendingDigestDeliveryCount: numberProperty(properties.pending_delivery_count),
+    latestDigestDeliveryError: latestDeliveryError,
+    latestDigestActions: rawActions
+      .map((actionValue) => parseDigestAction(actionValue))
+      .filter((action): action is SessionDigestAction => action !== null),
+  };
+}
+
 export interface SessionAgent {
   start(): Promise<void>;
   chat(userMessage: string): Promise<AgentRunResult>;
@@ -297,7 +517,7 @@ function createDefaultSessionAgent(
     roleId: extras?.roleId,
     roleRegistry: extras?.roleRegistry,
     publishEvent: extras?.publishEvent,
-    mirrorProviderPaths: ["/approvals", "/tasks"],
+    mirrorProviderPaths: ["/approvals", "/tasks", "/orchestration", "/gates", "/audit", "/digests"],
     ...callbacks,
   });
 }
@@ -401,6 +621,38 @@ export class SessionRuntime {
             this.pendingApproval.sessionApprovalId = matchedApproval.id;
           }
           this.store.syncProviderApprovals(update.providerId, approvals);
+          return;
+        }
+
+        if (update.path === "/orchestration") {
+          this.store.syncOrchestrationSummary(
+            parseOrchestrationRootTree(update.providerId, update.tree),
+          );
+          return;
+        }
+
+        if (update.path === "/gates") {
+          this.store.syncOrchestrationSummary(
+            parseOrchestrationGatesTree(update.providerId, update.tree),
+          );
+          return;
+        }
+
+        if (update.path === "/audit") {
+          this.store.syncOrchestrationSummary(
+            parseOrchestrationAuditTree(update.providerId, update.tree),
+          );
+          return;
+        }
+
+        if (update.path === "/digests") {
+          this.store.syncOrchestrationSummary(
+            parseOrchestrationDigestsTree(update.providerId, update.tree),
+          );
+          return;
+        }
+
+        if (update.path !== "/tasks") {
           return;
         }
 
@@ -691,6 +943,270 @@ export class SessionRuntime {
     };
   }
 
+  async acceptOrchestrationGate(
+    gateId: string,
+    resolution?: string,
+  ): Promise<{ gateId: string; sourceGateId: string; status: string }> {
+    return this.resolveOrchestrationGate(gateId, "accepted", resolution);
+  }
+
+  async rejectOrchestrationGate(
+    gateId: string,
+    resolution?: string,
+  ): Promise<{ gateId: string; sourceGateId: string; status: string }> {
+    return this.resolveOrchestrationGate(gateId, "rejected", resolution);
+  }
+
+  async startSpecDrivenGoal(params: Record<string, unknown>): Promise<{
+    goal_id: string;
+    goal_version: number;
+    spec_id: string;
+    spec_version: number;
+    spec_gate_id: string;
+    plan_revision_id?: string;
+    plan_gate_id?: string;
+    task_ids?: string[];
+    pending_gate_ids: string[];
+    message_ids: string[];
+  }> {
+    await this.start();
+
+    const intent = stringProperty(params.intent);
+    if (!intent) {
+      throw new Error("start_spec_driven_goal requires intent.");
+    }
+    const title = stringProperty(params.title) ?? "Spec-driven goal";
+    const requirements = objectListProperty(params.requirements);
+    const slices = objectListProperty(params.slices);
+    const autoAcceptSpec = booleanProperty(params.auto_accept_spec) ?? false;
+    const autoAcceptPlan = booleanProperty(params.auto_accept_plan) ?? false;
+
+    const goal = requireOkData(
+      await this.agent.invokeProvider("orchestration", "/goals", "create_goal", {
+        title,
+        intent,
+      }),
+      "create_goal",
+    );
+    const goalId = stringProperty(goal.id);
+    const goalVersion = numberProperty(goal.version);
+    if (!goalId || goalVersion === undefined) {
+      throw new Error("create_goal returned incomplete goal refs.");
+    }
+
+    const specBody =
+      stringProperty(params.spec_body) ?? [`# ${title}`, "", "## Intent", intent, ""].join("\n");
+    const spec = requireOkData(
+      await this.agent.invokeProvider("spec", "/specs", "create_spec", {
+        title: `${title} spec`,
+        body: specBody,
+        goal_id: goalId,
+        goal_version: goalVersion,
+      }),
+      "create_spec",
+    );
+    const specId = stringProperty(spec.id);
+    const draftSpecVersion = numberProperty(spec.version);
+    if (!specId || draftSpecVersion === undefined) {
+      throw new Error("create_spec returned incomplete spec refs.");
+    }
+
+    const messageIds: string[] = [];
+    const specMessage = requireOkData(
+      await this.agent.invokeProvider(
+        "orchestration",
+        "/orchestration",
+        "submit_protocol_message",
+        {
+          kind: "SpecRevisionProposal",
+          from_role: "spec-agent",
+          to_role: "user",
+          summary: `Spec agent drafted ${specId} for goal ${goalId}.`,
+          artifact_refs: [`goal:${goalId}:v${goalVersion}`, `spec:${specId}:v${draftSpecVersion}`],
+        },
+      ),
+      "submit spec proposal message",
+    );
+    const specMessageId = stringProperty(specMessage.id);
+    if (specMessageId) {
+      messageIds.push(specMessageId);
+    }
+
+    let currentSpecVersion = draftSpecVersion;
+    for (const requirement of requirements) {
+      const text = stringProperty(requirement.text);
+      if (!text) {
+        continue;
+      }
+      const requirementParams: Record<string, unknown> = { text };
+      const priority = stringProperty(requirement.priority);
+      const tags = stringListProperty(requirement.tags);
+      const criterionKind = stringProperty(requirement.criterion_kind);
+      const verificationHint = stringProperty(requirement.verification_hint);
+      if (priority) requirementParams.priority = priority;
+      if (tags.length > 0) requirementParams.tags = tags;
+      if (criterionKind) requirementParams.criterion_kind = criterionKind;
+      if (verificationHint) requirementParams.verification_hint = verificationHint;
+      requireOkData(
+        await this.agent.invokeProvider(
+          "spec",
+          `/specs/${specId}`,
+          "add_requirement",
+          requirementParams,
+        ),
+        "add_requirement",
+      );
+      currentSpecVersion += 1;
+    }
+
+    const specGate = requireOkData(
+      await this.agent.invokeProvider("orchestration", "/gates", "open_gate", {
+        gate_type: "spec_accept",
+        subject_ref: `spec:${specId}:v${currentSpecVersion}`,
+        summary: `Accept ${specId} v${currentSpecVersion} for goal ${goalId}.`,
+        evidence_refs: [`goal:${goalId}:v${goalVersion}`, `spec:${specId}:v${currentSpecVersion}`],
+      }),
+      "open spec_accept gate",
+    );
+    const specGateId = stringProperty(specGate.id);
+    if (!specGateId) {
+      throw new Error("open_gate returned no spec gate id.");
+    }
+
+    let acceptedSpecVersion = currentSpecVersion;
+    const pendingGateIds: string[] = [specGateId];
+    if (autoAcceptSpec) {
+      await this.agent.invokeProvider("orchestration", `/gates/${specGateId}`, "resolve_gate", {
+        status: "accepted",
+        resolution: "Accepted by start_spec_driven_goal.",
+      });
+      const acceptedSpec = requireOkData(
+        await this.agent.invokeProvider("spec", `/specs/${specId}`, "accept_spec", {
+          gate_id: specGateId,
+        }),
+        "accept_spec",
+      );
+      acceptedSpecVersion = numberProperty(acceptedSpec.version) ?? currentSpecVersion;
+      const index = pendingGateIds.indexOf(specGateId);
+      if (index >= 0) {
+        pendingGateIds.splice(index, 1);
+      }
+    }
+
+    let planRevisionId: string | undefined;
+    let planGateId: string | undefined;
+    let taskIds: string[] | undefined;
+    if (autoAcceptSpec && slices.length > 0) {
+      const planMessage = requireOkData(
+        await this.agent.invokeProvider(
+          "orchestration",
+          "/orchestration",
+          "submit_protocol_message",
+          {
+            kind: "PlanRevisionProposal",
+            from_role: "planner",
+            to_role: "user",
+            summary: `Planner proposed ${slices.length} slice(s) for ${specId}.`,
+            artifact_refs: [
+              `goal:${goalId}:v${goalVersion}`,
+              `spec:${specId}:v${acceptedSpecVersion}`,
+            ],
+          },
+        ),
+        "submit plan proposal message",
+      );
+      const planMessageId = stringProperty(planMessage.id);
+      if (planMessageId) {
+        messageIds.push(planMessageId);
+      }
+
+      const revision = requireOkData(
+        await this.agent.invokeProvider("orchestration", "/orchestration", "create_plan_revision", {
+          query: title,
+          strategy: stringProperty(params.strategy),
+          max_agents: numberProperty(params.max_agents),
+          goal_id: goalId,
+          goal_version: goalVersion,
+          spec_id: specId,
+          spec_version: acceptedSpecVersion,
+          planned_commit: stringProperty(params.planned_commit),
+          slice_gate_resolver: stringProperty(params.slice_gate_resolver),
+          budget: recordProperty(params.budget),
+          slices,
+        }),
+        "create_plan_revision",
+      );
+      planRevisionId = stringProperty(revision.id);
+      planGateId = stringProperty(revision.gate_id);
+      if (planGateId) {
+        pendingGateIds.push(planGateId);
+      }
+
+      if (autoAcceptPlan && planRevisionId && planGateId) {
+        await this.agent.invokeProvider("orchestration", `/gates/${planGateId}`, "resolve_gate", {
+          status: "accepted",
+          resolution: "Accepted by start_spec_driven_goal.",
+        });
+        const acceptedPlan = requireOkData(
+          await this.agent.invokeProvider(
+            "orchestration",
+            "/orchestration",
+            "accept_plan_revision",
+            {
+              revision_id: planRevisionId,
+              gate_id: planGateId,
+            },
+          ),
+          "accept_plan_revision",
+        );
+        taskIds = stringListProperty(acceptedPlan.task_ids);
+        const index = pendingGateIds.indexOf(planGateId);
+        if (index >= 0) {
+          pendingGateIds.splice(index, 1);
+        }
+      }
+    }
+
+    return {
+      goal_id: goalId,
+      goal_version: goalVersion,
+      spec_id: specId,
+      spec_version: acceptedSpecVersion,
+      spec_gate_id: specGateId,
+      plan_revision_id: planRevisionId,
+      plan_gate_id: planGateId,
+      task_ids: taskIds,
+      pending_gate_ids: pendingGateIds,
+      message_ids: messageIds,
+    };
+  }
+
+  async runDigestAction(actionId: string): Promise<{
+    actionId: string;
+    status: string;
+  }> {
+    const action = this.store
+      .getSnapshot()
+      .orchestration.latestDigestActions.find((candidate) => candidate.id === actionId);
+    if (!action) {
+      throw new Error(`Unknown digest action: ${actionId}`);
+    }
+    const providerId = this.store.getSnapshot().orchestration.provider;
+    if (!providerId) {
+      throw new Error(`Digest action is missing downstream provider: ${actionId}`);
+    }
+    const result = await this.agent.invokeProvider(
+      providerId,
+      action.actionPath,
+      action.actionName,
+      action.params,
+    );
+    return {
+      actionId,
+      status: result.status,
+    };
+  }
+
   canCancelTurn(): boolean {
     const snapshot = this.store.getSnapshot();
     if (!this.currentTurnId) {
@@ -702,6 +1218,55 @@ export class SessionRuntime {
     }
 
     return snapshot.turn.state === "running" && snapshot.turn.waitingOn === "model";
+  }
+
+  private async resolveOrchestrationGate(
+    gateId: string,
+    status: "accepted" | "rejected",
+    resolution?: string,
+  ): Promise<{ gateId: string; sourceGateId: string; status: string }> {
+    const gate = this.store.getOrchestrationGate(gateId);
+    if (!gate) {
+      throw new Error(`Unknown or non-open orchestration gate: ${gateId}`);
+    }
+
+    if (gate.status !== "open") {
+      throw new Error(`Orchestration gate is no longer open: ${gateId}`);
+    }
+
+    const providerId = this.store.getSnapshot().orchestration.provider;
+    if (!providerId) {
+      throw new Error(`Orchestration gate is missing downstream provider: ${gateId}`);
+    }
+
+    if (!gate.sourceGateId) {
+      throw new Error(`Orchestration gate is missing source identifier: ${gateId}`);
+    }
+
+    const canResolve = status === "accepted" ? gate.canAccept : gate.canReject;
+    if (!canResolve) {
+      throw new Error(`Orchestration gate cannot be ${status}: ${gateId}`);
+    }
+
+    const params: Record<string, unknown> = { status };
+    if (resolution !== undefined) {
+      params.resolution = resolution;
+    }
+    if (gate.version !== undefined) {
+      params.expected_version = gate.version;
+    }
+
+    const result = await this.agent.invokeProvider(
+      providerId,
+      `/gates/${gate.sourceGateId}`,
+      "resolve_gate",
+      params,
+    );
+    return {
+      gateId,
+      sourceGateId: gate.sourceGateId,
+      status: result.status,
+    };
   }
 
   async cancelTurn(): Promise<{ status: string; turnId: string }> {

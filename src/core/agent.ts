@@ -277,7 +277,10 @@ export class Agent {
 
     this.history.addUserText(userMessage);
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter(this.llmProfileId, this.llmModelOverride);
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -323,7 +326,10 @@ export class Agent {
     });
 
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter(this.llmProfileId, this.llmModelOverride);
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -355,6 +361,7 @@ export class Agent {
       toolPolicy: this.role.toolPolicy,
       transformInvoke: this.role.transformInvoke,
       beforeNextTurn: this.role.beforeNextTurn,
+      onModelResponse: this.role.onModelResponse,
       roleId: this.roleId ?? this.role.id,
     };
   }

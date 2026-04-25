@@ -100,6 +100,11 @@ const ORCHESTRATOR_SAFE_TERMINAL_COMMANDS = [
   /^vite build$/,
 ];
 
+export function isOrchestratorSafeTerminalCommand(command: string): boolean {
+  const normalized = command.trim();
+  return ORCHESTRATOR_SAFE_TERMINAL_COMMANDS.some((p) => p.test(normalized));
+}
+
 /**
  * Hub-layer mirror of `orchestratorToolPolicy` (in
  * `src/runtime/orchestration/tool-policy.ts`). Activated only when the run
@@ -134,8 +139,7 @@ export const orchestratorRoleRule: InvokePolicy = {
 
     if (ctx.providerId === "terminal" && ctx.action === "execute") {
       const command = typeof ctx.params.command === "string" ? ctx.params.command.trim() : "";
-      const safe = ORCHESTRATOR_SAFE_TERMINAL_COMMANDS.some((p) => p.test(command));
-      if (!safe) {
+      if (!isOrchestratorSafeTerminalCommand(command)) {
         return {
           kind: "deny",
           reason: `Orchestrator mode can only run simple verification commands directly (build, lint, test, typecheck). Delegate setup, install, repair, and shell-composed commands to a sub-agent.`,

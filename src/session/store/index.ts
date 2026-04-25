@@ -4,6 +4,8 @@ import type {
   ApprovalItem,
   ExternalAppSnapshot,
   LlmStateSnapshot,
+  SessionOrchestrationGate,
+  SessionOrchestrationSummary,
   SessionStoreChangeListener,
   SessionStoreGranularListener,
   SessionTask,
@@ -46,6 +48,11 @@ export class SessionStore {
   getTask(taskId: string): SessionTask | undefined {
     const task = this.state.snapshot.tasks.find((item) => item.id === taskId);
     return task ? { ...task } : undefined;
+  }
+
+  getOrchestrationGate(gateId: string): SessionOrchestrationGate | undefined {
+    const gate = this.state.snapshot.orchestration.pendingGates.find((item) => item.id === gateId);
+    return gate ? { ...gate, evidenceRefs: [...gate.evidenceRefs] } : undefined;
   }
 
   registerClient(clientId: string): void {
@@ -100,6 +107,10 @@ export class SessionStore {
 
   onAppsChange(fn: SessionStoreGranularListener): () => void {
     return this.registry.subscribeGranular("apps", fn);
+  }
+
+  onOrchestrationChange(fn: SessionStoreGranularListener): () => void {
+    return this.registry.subscribeGranular("orchestration", fn);
   }
 
   onLlmChange(fn: SessionStoreGranularListener): () => void {
@@ -212,6 +223,11 @@ export class SessionStore {
 
   syncProviderTasks(providerId: string, tasks: SessionTask[]): void {
     mirrors.syncProviderTasks(this.state, providerId, tasks);
+    this.emit();
+  }
+
+  syncOrchestrationSummary(summary: Partial<SessionOrchestrationSummary>): void {
+    mirrors.syncOrchestrationSummary(this.state, summary);
     this.emit();
   }
 

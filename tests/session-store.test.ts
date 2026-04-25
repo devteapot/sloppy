@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
@@ -1508,7 +1510,7 @@ describe("SessionService — multi-session support", () => {
         cron: { maxJobs: 16 },
         messaging: { maxMessages: 100 },
         delegation: { maxAgents: 4 },
-        orchestration: { progressTailMaxChars: 2000 },
+        orchestration: { progressTailMaxChars: 2000, finalAuditCommandTimeoutMs: 30000 },
         vision: { maxImages: 16, defaultWidth: 512, defaultHeight: 512 },
       },
     } as unknown as SloppyConfig;
@@ -1533,7 +1535,7 @@ describe("SessionService — multi-session support", () => {
 
     const service = new SessionService({
       sessionId: "service-start-test",
-      socketPath: `/tmp/slop/svc-start-${crypto.randomUUID()}.sock`,
+      socketPath: join(tmpdir(), `svc-start-${crypto.randomUUID()}.sock`),
       config,
       llmProfileManager,
     });
@@ -1543,7 +1545,7 @@ describe("SessionService — multi-session support", () => {
       expect(before.llm.profiles).toEqual([]);
       expect(before.llm.secureStoreKind).toBe("none");
 
-      await service.start({ register: false });
+      await service.start({ register: false, listen: false });
 
       const after = service.runtime.store.getSnapshot();
       // runtime.start() ran refreshLlmState before the listener opened, so

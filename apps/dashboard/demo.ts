@@ -10,7 +10,9 @@ const outFlag = Bun.argv.indexOf("--out");
 const outDir = resolve(outFlag >= 0 ? (Bun.argv[outFlag + 1] ?? ".sloppy-demo") : ".sloppy-demo");
 const orchestrationDir = join(outDir, ".sloppy/orchestration");
 const tasksDir = join(orchestrationDir, "tasks");
+const digestsDir = join(orchestrationDir, "digests");
 mkdirSync(tasksDir, { recursive: true });
+mkdirSync(digestsDir, { recursive: true });
 
 const now = Date.now();
 const iso = (offsetMs = 0) => new Date(now + offsetMs).toISOString();
@@ -98,6 +100,128 @@ for (const [idx, t] of tasks.entries()) {
     t.status === "pending" ? "" : `Progress for ${t.name}\n- step 1 done\n- step 2 in flight`,
   );
 }
+
+writeFileSync(
+  join(digestsDir, "digest-demo.json"),
+  JSON.stringify(
+    {
+      id: "digest-demo",
+      cadence: "manual",
+      status: "blocked",
+      session_id: "demo",
+      plan_id: "demo-plan",
+      headline: [
+        "Plan is blocked on one spec acceptance gate.",
+        "1/4 slices complete; 2 active; 0 failed.",
+        "Criteria coverage: 2/6 satisfied; 4 unknown.",
+      ],
+      sections: {
+        escalations: [
+          {
+            gate_id: "gate-demo",
+            gate_type: "spec_accept",
+            status: "open",
+            subject_ref: "spec:demo",
+            summary: "Review and accept the current demo spec before scheduling docs.",
+            evidence_refs: ["spec:demo@1"],
+            created_at: iso(-10_000),
+          },
+        ],
+        auto_resolutions: { count: 1, high_confidence_count: 1, entries: [] },
+        near_misses: [
+          {
+            kind: "failed_slice",
+            ref: "slice:frontend",
+            summary: "Frontend slice retried after a CAS conflict.",
+            created_at: iso(-4_000),
+          },
+        ],
+        drift_dashboard: {
+          progress: {
+            criteria_total: 6,
+            criteria_satisfied: 2,
+            criteria_unknown: 4,
+            prior_distance: 5,
+            current_distance: 4,
+            velocity: 1,
+          },
+          coherence: {
+            replan_count: 1,
+            spec_revision_count: 1,
+            question_density: 1,
+            failure_count: 0,
+            thresholds: {},
+            breaches: [],
+          },
+          intent: {
+            coverage_gap_count: 1,
+            off_plan_slice_count: 0,
+            goal_revision_pressure: 0,
+            minor_goal_revision_count: 0,
+            material_goal_revision_count: 0,
+          },
+          recent_events: [
+            {
+              id: "drift-demo",
+              kind: "coverage_gap",
+              severity: "warning",
+              status: "open",
+              subject_ref: "slice:frontend",
+              summary: "UI files changed before a criterion was mapped.",
+              created_at: iso(-8_000),
+            },
+          ],
+        },
+        budget: {
+          configured: true,
+          exceeded: false,
+          exceeded_limits: [],
+          message: "Within configured budget.",
+        },
+        whats_next: {
+          pending_gate_count: 1,
+          next_ready_slices: ["docs"],
+          running_slices: ["backend", "frontend"],
+          final_audit_status: "none",
+        },
+        what_changed: {
+          slices: {
+            total: 4,
+            pending: 1,
+            scheduled: 0,
+            running: 2,
+            verifying: 0,
+            completed: 1,
+            failed: 0,
+            cancelled: 0,
+            superseded: 0,
+          },
+          plan_revisions: { total: 1, proposed: 0, accepted: 1, rejected: 0, superseded: 0 },
+          audits: { total: 0, passed: 0, failed: 0, latest_status: "none" },
+          protocol_messages: { total: 1, open: 1 },
+        },
+      },
+      actions: [
+        {
+          id: "action-gate-demo-accept",
+          kind: "accept_gate",
+          label: "Accept spec_accept",
+          target_ref: "gate:gate-demo",
+          action_path: "/gates/gate-demo",
+          action_name: "resolve_gate",
+          params: { status: "accepted" },
+          source_refs: ["gate:gate-demo"],
+          urgency: "high",
+        },
+      ],
+      delivery: { pull_ref: "digest:digest-demo", push_required: false, push_reasons: [] },
+      source_refs: ["plan:demo-plan", "gate:gate-demo", "drift:drift-demo", "slice:frontend"],
+      created_at: iso(-2_000),
+    },
+    null,
+    2,
+  ),
+);
 
 // Events stream
 const events: string[] = [];

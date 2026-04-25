@@ -1,5 +1,14 @@
+export { buildAuditDescriptor } from "./descriptor-audit";
+export { buildBlobsDescriptor } from "./descriptor-blobs";
+export { buildBudgetDescriptor } from "./descriptor-budget";
+export { buildDigestsDescriptor } from "./descriptor-digests";
+export { buildDriftDescriptor } from "./descriptor-drift";
 export { buildFindingsDescriptor } from "./descriptor-findings";
+export { buildGatesDescriptor } from "./descriptor-gates";
+export { buildGoalsDescriptor } from "./descriptor-goals";
 export { buildHandoffsDescriptor } from "./descriptor-handoffs";
+export { buildMessagesDescriptor } from "./descriptor-messages";
+export { buildPrecedentsDescriptor } from "./descriptor-precedents";
 export { buildRootDescriptor } from "./descriptor-root";
 export { buildTasksDescriptor } from "./descriptor-tasks";
 export type { DescriptorWiring } from "./descriptor-wiring";

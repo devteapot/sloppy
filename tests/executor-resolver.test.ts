@@ -64,9 +64,9 @@ describe("ExecutorResolver", () => {
 
   test("llm binding with unknown profileId throws", () => {
     const resolver = new ExecutorResolver({ config: buildConfig() });
-    expect(() =>
-      resolver.resolve({ kind: "llm", profileId: "missing" }),
-    ).toThrow(LlmConfigurationError);
+    expect(() => resolver.resolve({ kind: "llm", profileId: "missing" })).toThrow(
+      LlmConfigurationError,
+    );
   });
 
   test("acp binding resolves to adapter when enabled", () => {

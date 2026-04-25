@@ -27,6 +27,37 @@ const acpDelegationConfigSchema = z.object({
     .default({}),
 });
 
+const gateResolverSchema = z.enum(["user", "policy"]);
+const gatePolicyGateSchema = z
+  .object({
+    goalAccept: gateResolverSchema.optional(),
+    specAccept: gateResolverSchema.optional(),
+    planAccept: gateResolverSchema.optional(),
+    sliceGate: gateResolverSchema.optional(),
+    irreversibleAction: gateResolverSchema.optional(),
+    budgetExceeded: gateResolverSchema.optional(),
+    driftEscalation: gateResolverSchema.optional(),
+  })
+  .default({});
+const gatePolicyScopeSchema = z.object({
+  defaultResolver: gateResolverSchema.optional(),
+  gates: gatePolicyGateSchema,
+});
+const gatePolicySchema = gatePolicyScopeSchema.extend({
+  goals: z.record(z.string().min(1), gatePolicyScopeSchema).default({}),
+  specs: z.record(z.string().min(1), gatePolicyScopeSchema).default({}),
+  slices: z.record(z.string().min(1), gatePolicyScopeSchema).default({}),
+});
+
+const digestCadenceSchema = z.enum([
+  "manual",
+  "on_milestone",
+  "on_escalation",
+  "daily",
+  "continuous",
+  "final",
+]);
+
 export const sloppyConfigSchema = z.object({
   llm: z
     .object({
@@ -195,9 +226,101 @@ export const sloppyConfigSchema = z.object({
       orchestration: z
         .object({
           progressTailMaxChars: z.number().int().min(128).default(2048),
+          finalAuditCommandTimeoutMs: z.number().int().min(100).default(30000),
+          budget: z
+            .object({
+              wallTimeMs: z.number().int().min(1).optional(),
+              retriesPerSlice: z.number().int().min(0).optional(),
+              tokenLimit: z.number().int().min(1).optional(),
+              costUsd: z.number().min(0).optional(),
+            })
+            .default({}),
+          policy: gatePolicySchema.default({
+            gates: {},
+            goals: {},
+            specs: {},
+            slices: {},
+          }),
+          guardrails: z
+            .object({
+              repeatedFailureLimit: z.number().int().min(1).optional(),
+              progressStallLimit: z.number().int().min(1).optional(),
+              progressProjectionRequiresBudget: z.boolean().optional(),
+              coherenceReplanRateLimit: z.number().int().min(1).optional(),
+              coherenceQuestionDensityLimit: z.number().int().min(1).optional(),
+              blastRadius: z
+                .object({
+                  maxFilesModified: z.number().int().min(0).optional(),
+                  maxDepsAdded: z.number().int().min(0).optional(),
+                  maxExternalCalls: z.number().int().min(0).optional(),
+                  publicSurfaceDeltaRequiresGate: z.boolean().optional(),
+                })
+                .default({}),
+            })
+            .default({
+              blastRadius: {},
+            }),
+          digest: z
+            .object({
+              cadence: digestCadenceSchema.default("manual"),
+            })
+            .default({
+              cadence: "manual",
+            }),
+          delivery: z
+            .object({
+              channel: z.string().min(1).optional(),
+              slack: z
+                .object({
+                  webhookUrl: z.string().url().optional(),
+                  webhookUrlEnv: z.string().min(1).optional(),
+                  username: z.string().min(1).optional(),
+                  iconEmoji: z.string().min(1).optional(),
+                })
+                .default({}),
+              email: z
+                .object({
+                  endpointUrl: z.string().url().optional(),
+                  endpointUrlEnv: z.string().min(1).optional(),
+                  apiKeyEnv: z.string().min(1).optional(),
+                  from: z.string().min(1).optional(),
+                  to: z.array(z.string().min(1)).default([]),
+                  subjectPrefix: z.string().min(1).optional(),
+                  headers: z.record(z.string(), z.string()).default({}),
+                })
+                .default({
+                  to: [],
+                  headers: {},
+                }),
+            })
+            .default({
+              slack: {},
+              email: { to: [], headers: {} },
+            }),
         })
         .default({
           progressTailMaxChars: 2048,
+          finalAuditCommandTimeoutMs: 30000,
+          budget: {},
+          policy: {
+            gates: {},
+            goals: {},
+            specs: {},
+            slices: {},
+          },
+          guardrails: {
+            blastRadius: {},
+          },
+          digest: {
+            cadence: "manual",
+          },
+          delivery: {
+            slack: {},
+            email: {
+              to: [],
+              headers: {},
+            },
+          },
         }),
       vision: z
         .object({
@@ -269,6 +392,27 @@ export const sloppyConfigSchema = z.object({
       },
       orchestration: {
         progressTailMaxChars: 2048,
+        finalAuditCommandTimeoutMs: 30000,
+        budget: {},
+        policy: {
+          gates: {},
+          goals: {},
+          specs: {},
+          slices: {},
+        },
+        guardrails: {
+          blastRadius: {},
+        },
+        digest: {
+          cadence: "manual",
+        },
+        delivery: {
+          slack: {},
+          email: {
+            to: [],
+            headers: {},
+          },
+        },
       },
       vision: {
         maxImages: 50,
@@ -279,6 +423,7 @@ export const sloppyConfigSchema = z.object({
 });
 
 type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
+type ProviderConfigBase = SloppyConfigBase["providers"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 
@@ -301,8 +446,20 @@ export interface LlmConfig {
   maxTokens: number;
 }
 
-export interface SloppyConfig extends Omit<SloppyConfigBase, "llm"> {
+export interface SloppyConfig extends Omit<SloppyConfigBase, "llm" | "providers"> {
   llm: LlmConfig;
+  providers: Omit<ProviderConfigBase, "orchestration"> & {
+    orchestration: Omit<
+      ProviderConfigBase["orchestration"],
+      "budget" | "policy" | "guardrails" | "digest" | "delivery"
+    > & {
+      budget?: ProviderConfigBase["orchestration"]["budget"];
+      policy?: ProviderConfigBase["orchestration"]["policy"];
+      guardrails?: ProviderConfigBase["orchestration"]["guardrails"];
+      digest?: ProviderConfigBase["orchestration"]["digest"];
+      delivery?: ProviderConfigBase["orchestration"]["delivery"];
+    };
+  };
 }
 
 export type RawSloppyConfig = SloppyConfigBase;

@@ -11,6 +11,7 @@ import type {
   ActivityItem,
   ExternalAppSnapshot,
   LlmProfileSnapshot,
+  SessionOrchestrationGate,
   TranscriptContentBlock,
   TranscriptMessage,
   TurnStateSnapshot,
@@ -144,6 +145,22 @@ function buildAppItem(app: ExternalAppSnapshot): ItemDescriptor {
   };
 }
 
+function toSnakeGateProps(gate: SessionOrchestrationGate): Record<string, unknown> {
+  return {
+    id: gate.id,
+    source_gate_id: gate.sourceGateId,
+    gate_type: gate.gateType,
+    status: gate.status,
+    subject_ref: gate.subjectRef,
+    summary: gate.summary,
+    evidence_refs: gate.evidenceRefs,
+    created_at: gate.createdAt,
+    version: gate.version,
+    can_accept: gate.canAccept,
+    can_reject: gate.canReject,
+  };
+}
+
 export class AgentSessionProvider {
   readonly server: SlopServer;
 
@@ -171,6 +188,7 @@ export class AgentSessionProvider {
     this.server.register("approvals", () => this.buildApprovalsDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
     this.server.register("apps", () => this.buildAppsDescriptor());
+    this.server.register("orchestration", () => this.buildOrchestrationDescriptor());
 
     this.unsubscribeStore = this.runtime.store.onChange(() => {
       this.server.refresh();
@@ -467,6 +485,261 @@ export class AgentSessionProvider {
             }
           : undefined,
       })),
+    };
+  }
+
+  private buildOrchestrationDescriptor(): NodeDescriptor {
+    const summary = this.runtime.store.getSnapshot().orchestration;
+    return {
+      type: "status",
+      props: {
+        available: summary.available,
+        provider: summary.provider,
+        plan_id: summary.planId,
+        plan_status: summary.planStatus,
+        plan_version: summary.planVersion,
+        final_audit_id: summary.finalAuditId,
+        final_audit_status: summary.finalAuditStatus ?? "none",
+        latest_digest_id: summary.latestDigestId,
+        latest_digest_status: summary.latestDigestStatus,
+        pending_digest_delivery_count: summary.pendingDigestDeliveryCount,
+        latest_digest_delivery_error: summary.latestDigestDeliveryError,
+        latest_digest_actions: summary.latestDigestActions.map((digestAction) => ({
+          id: digestAction.id,
+          kind: digestAction.kind,
+          label: digestAction.label,
+          target_ref: digestAction.targetRef,
+          action_path: digestAction.actionPath,
+          action_name: digestAction.actionName,
+          params: digestAction.params,
+          urgency: digestAction.urgency,
+        })),
+        pending_gate_count: summary.pendingGateCount,
+        latest_blocking_gate_id: summary.latestBlockingGateId,
+        latest_blocking_gate_type: summary.latestBlockingGateType,
+        latest_blocking_gate_summary: summary.latestBlockingGateSummary,
+        pending_gates: summary.pendingGates.map((gate) => toSnakeGateProps(gate)),
+        active_slice_count: summary.activeSliceCount,
+        completed_slice_count: summary.completedSliceCount,
+        failed_slice_count: summary.failedSliceCount,
+        precedent_resolved_count: summary.precedentResolvedCount,
+        semantic_precedent_resolved_count: summary.semanticPrecedentResolvedCount,
+        precedent_escalated_count: summary.precedentEscalatedCount,
+        open_drift_event_count: summary.openDriftEventCount,
+        blocking_drift_event_count: summary.blockingDriftEventCount,
+        progress_criteria_total: summary.progressCriteriaTotal,
+        progress_criteria_satisfied: summary.progressCriteriaSatisfied,
+        progress_criteria_unknown: summary.progressCriteriaUnknown,
+        progress_prior_distance: summary.progressPriorDistance,
+        progress_current_distance: summary.progressCurrentDistance,
+        progress_velocity: summary.progressVelocity,
+        goal_revision_pressure: summary.goalRevisionPressure,
+        latest_goal_revision_magnitude: summary.latestGoalRevisionMagnitude,
+        coherence_breaches: summary.coherenceBreaches ?? [],
+        coherence_thresholds: summary.coherenceThresholds ?? {},
+        updated_at: summary.updatedAt,
+      },
+      summary: summary.available
+        ? `Orchestration plan ${summary.planStatus ?? "none"}; ${summary.pendingGateCount} gate(s) pending.`
+        : "No orchestration provider state mirrored for this session.",
+      meta: {
+        salience:
+          summary.pendingGateCount > 0 ||
+          summary.finalAuditStatus === "failed" ||
+          (summary.blockingDriftEventCount ?? 0) > 0 ||
+          summary.latestDigestDeliveryError
+            ? 0.9
+            : 0.45,
+        urgency:
+          summary.pendingGateCount > 0 ||
+          summary.finalAuditStatus === "failed" ||
+          (summary.blockingDriftEventCount ?? 0) > 0 ||
+          summary.latestDigestDeliveryError
+            ? "high"
+            : "low",
+      },
+      actions: {
+        start_spec_driven_goal: action(
+          {
+            intent: "string",
+            title: {
+              type: "string",
+              description: "Optional goal title. Defaults to Spec-driven goal.",
+              optional: true,
+            },
+            spec_body: {
+              type: "string",
+              description: "Optional initial spec body drafted by the spec agent.",
+              optional: true,
+            },
+            requirements: {
+              type: "array",
+              description:
+                "Optional spec requirements: { text, priority?, tags?, criterion_kind?, verification_hint? }.",
+              items: {
+                type: "object",
+                properties: {
+                  text: { type: "string" },
+                  priority: {
+                    type: "string",
+                    enum: ["must", "should", "could"],
+                    optional: true,
+                  },
+                  tags: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  criterion_kind: {
+                    type: "string",
+                    enum: ["code", "text"],
+                    optional: true,
+                  },
+                  verification_hint: { type: "string", optional: true },
+                },
+                required: ["text"],
+                additionalProperties: false,
+              },
+              optional: true,
+            },
+            slices: {
+              type: "array",
+              description:
+                "Optional planner slice set. When auto_accept_spec is true, this creates a plan revision.",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  goal: { type: "string" },
+                  kind: {
+                    type: "string",
+                    enum: ["implementation", "audit", "repair", "docs", "verification"],
+                    optional: true,
+                  },
+                  client_ref: { type: "string", optional: true },
+                  depends_on: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  spec_refs: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  acceptance_criteria: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  planner_assumptions: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  structural_assumptions: {
+                    type: "array",
+                    items: { type: "string" },
+                    optional: true,
+                  },
+                  slice_gate_resolver: {
+                    type: "string",
+                    enum: ["user", "policy"],
+                    optional: true,
+                  },
+                },
+                required: ["name", "goal"],
+                additionalProperties: false,
+              },
+              optional: true,
+            },
+            auto_accept_spec: {
+              type: "boolean",
+              description: "Resolve the spec_accept gate and freeze the draft spec immediately.",
+              optional: true,
+            },
+            auto_accept_plan: {
+              type: "boolean",
+              description:
+                "Resolve the plan_accept gate and create schedulable slices immediately. Requires auto_accept_spec.",
+              optional: true,
+            },
+            strategy: { type: "string", optional: true },
+            max_agents: { type: "number", optional: true },
+            planned_commit: { type: "string", optional: true },
+            slice_gate_resolver: {
+              type: "string",
+              enum: ["user", "policy"],
+              optional: true,
+            },
+            budget: {
+              type: "object",
+              description:
+                "Optional plan-scoped budget. Supports wall_time_ms, retries_per_slice, token_limit, and cost_usd.",
+              optional: true,
+            },
+          },
+          async (params) => this.runtime.startSpecDrivenGoal(params),
+          {
+            label: "Start Spec Goal",
+            description:
+              "Start the docs/12 goal -> spec -> plan pipeline through the session runtime.",
+            estimate: "fast",
+          },
+        ),
+        accept_gate: action(
+          {
+            gate_id: "string",
+            resolution: {
+              type: "string",
+              description: "Optional rationale for accepting the gate.",
+              optional: true,
+            },
+          },
+          async ({ gate_id, resolution }) =>
+            this.runtime.acceptOrchestrationGate(
+              String(gate_id),
+              typeof resolution === "string" ? resolution : undefined,
+            ),
+          {
+            label: "Accept Gate",
+            description: "Accept a pending orchestration gate through the downstream provider.",
+            estimate: "instant",
+          },
+        ),
+        reject_gate: action(
+          {
+            gate_id: "string",
+            resolution: {
+              type: "string",
+              description: "Optional rationale for rejecting the gate.",
+              optional: true,
+            },
+          },
+          async ({ gate_id, resolution }) =>
+            this.runtime.rejectOrchestrationGate(
+              String(gate_id),
+              typeof resolution === "string" ? resolution : undefined,
+            ),
+          {
+            label: "Reject Gate",
+            description: "Reject a pending orchestration gate through the downstream provider.",
+            estimate: "instant",
+          },
+        ),
+        run_digest_action: action(
+          {
+            action_id: "string",
+          },
+          async ({ action_id }) => this.runtime.runDigestAction(String(action_id)),
+          {
+            label: "Run Digest Action",
+            description: "Invoke one of the latest digest's typed control actions.",
+            dangerous: true,
+            estimate: "instant",
+          },
+        ),
+      },
     };
   }
 

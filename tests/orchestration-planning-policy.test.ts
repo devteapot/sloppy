@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import type { SloppyConfig } from "../src/config/schema";
+import type { ProviderRuntimeHub } from "../src/core/hub";
+import { RoleRegistry, type RuntimeContext } from "../src/core/role";
 import { createOrchestratorRole } from "../src/runtime/orchestration";
+import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 import { inferBatchDependencyRefs } from "../src/runtime/orchestration/planning-policy";
 
 describe("planning-policy.inferBatchDependencyRefs", () => {
@@ -134,5 +138,35 @@ describe("orchestrator role transformInvoke", () => {
       {} as never,
     );
     expect(transformed).toBe(params);
+  });
+});
+
+describe("orchestration runtime roles", () => {
+  test("registers orchestrator, spec-agent, planner, and executor role factories", () => {
+    const registry = new RoleRegistry();
+    const hub = {
+      addPolicyRule: () => undefined,
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+    };
+
+    const attached = attachOrchestrationRuntime(hub, {} as SloppyConfig, ctx);
+    try {
+      expect(registry.resolve("orchestrator", ctx)?.id).toBe("orchestrator");
+      expect(registry.resolve("spec-agent", ctx)?.id).toBe("spec-agent");
+      expect(registry.resolve("planner", ctx)?.id).toBe("planner");
+      expect(registry.resolve("executor", ctx)?.id).toBe("executor");
+    } finally {
+      attached.stop();
+    }
+
+    expect(registry.has("orchestrator")).toBe(false);
+    expect(registry.has("spec-agent")).toBe(false);
+    expect(registry.has("planner")).toBe(false);
+    expect(registry.has("executor")).toBe(false);
   });
 });

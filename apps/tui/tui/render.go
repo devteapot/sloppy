@@ -76,6 +76,40 @@ func renderApprovalEntry(entry session.ApprovalEntry, selected bool, width int) 
 	return renderListItem(selected, width, lines)
 }
 
+func renderOrchestrationGateEntry(entry session.OrchestrationGateEntry, selected bool, width int) string {
+	status := statusStyle(entry.Status).Render(strings.ToUpper(strings.ReplaceAll(entry.Status, "_", " ")))
+	title := entry.Type
+	if title == "" {
+		title = "gate"
+	}
+	detail := joinNonEmpty(" | ", entry.Summary, entry.SubjectRef)
+	if detail == "" {
+		detail = entry.ID
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), warningStyle.Render("GATE "+title), status),
+		"  " + truncate(compact(detail), width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
+func renderDigestActionEntry(entry session.DigestActionEntry, selected bool, width int) string {
+	urgency := statusStyle(entry.Urgency).Render(strings.ToUpper(strings.ReplaceAll(entry.Urgency, "_", " ")))
+	title := entry.Label
+	if title == "" {
+		title = entry.Kind
+	}
+	detail := joinNonEmpty(" | ", entry.TargetRef, joinNonEmpty(" ", entry.ActionPath, entry.ActionName))
+	if detail == "" {
+		detail = entry.ID
+	}
+	lines := []string{
+		fmt.Sprintf("%s %s  %s", listPrefix(selected), labelStyle.Render("ACTION "+title), urgency),
+		"  " + truncate(compact(detail), width-4),
+	}
+	return renderListItem(selected, width, lines)
+}
+
 func renderTaskEntry(entry session.TaskEntry, selected bool, width int) string {
 	status := statusStyle(entry.Status).Render(strings.ToUpper(entry.Status))
 	title := entry.Provider
@@ -177,9 +211,9 @@ func statusStyle(status string) lipgloss.Style {
 	switch status {
 	case "active", "complete", "completed", "approved", "ok", "idle":
 		return successStyle
-	case "running", "streaming", "accepted", "pending", "waiting_approval":
+	case "running", "streaming", "accepted", "pending", "waiting_approval", "normal", "on_track":
 		return keyStyle
-	case "failed", "error", "rejected", "expired", "cancelled":
+	case "failed", "error", "rejected", "expired", "cancelled", "high", "blocked", "halted", "at_risk":
 		return dangerStyle
 	default:
 		return mutedStyle
@@ -275,6 +309,8 @@ func (a App) sessionHelp() string {
 		switch a.focus {
 		case paneApprovals:
 			return styledHelp("a", "approve", "r", "reject", "p", "profiles", "s", "settings", "t", "cancel turn", "q", "quit")
+		case paneOrchestration:
+			return styledHelp("a", "accept gate", "r", "reject gate", "d", "run digest", "p", "profiles", "s", "settings", "q", "quit")
 		case paneTasks:
 			return styledHelp("c", "cancel task", "p", "profiles", "s", "settings", "t", "cancel turn", "q", "quit")
 		default:
@@ -287,6 +323,8 @@ func (a App) sessionHelp() string {
 		return styledHelp("shift+arrows", "panes", "tab", "cycle", "enter", "send", a.tuiSettings.Keybinds.Leader, "actions", "esc", "back", "ctrl+c", "quit")
 	case paneApprovals:
 		return styledHelp("arrows", "move", "shift+arrows", "panes", "enter", "approve", a.tuiSettings.Keybinds.Leader, "actions", "esc", "back")
+	case paneOrchestration:
+		return styledHelp("arrows", "move", "shift+arrows", "panes", "enter", "act", a.tuiSettings.Keybinds.Leader, "actions", "esc", "back")
 	case paneTasks:
 		return styledHelp("arrows", "move", "shift+arrows", "panes", "enter", "cancel task", a.tuiSettings.Keybinds.Leader, "actions", "esc", "back")
 	default:

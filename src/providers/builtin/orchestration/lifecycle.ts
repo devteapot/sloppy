@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 
 import { debug } from "../../../core/debug";
 import { buildAcceptanceCriteria, uniqueStrings } from "./classifiers";
+import type { DriftCoordinator } from "./drift";
+import type { GatesCoordinator } from "./gates";
 import { normalizeReference } from "./normalization";
 import type { OrchestrationRepository } from "./repository";
 import { appendText, codedError } from "./storage";
@@ -27,15 +29,21 @@ export type StateTransitionResult =
 
 export interface LifecycleDeps {
   repo: OrchestrationRepository;
+  gates?: GatesCoordinator;
+  drift?: DriftCoordinator;
   refresh: () => void;
 }
 
 export class TaskLifecycle {
   private readonly repo: OrchestrationRepository;
+  private readonly gates: GatesCoordinator | undefined;
+  private readonly drift: DriftCoordinator | undefined;
   private readonly refresh: () => void;
 
   constructor(deps: LifecycleDeps) {
     this.repo = deps.repo;
+    this.gates = deps.gates;
+    this.drift = deps.drift;
     this.refresh = deps.refresh;
   }
 
@@ -84,6 +92,13 @@ export class TaskLifecycle {
   } {
     const plan = this.repo.requireActivePlan();
     const retrySource = params.retry_of ? this.validateRetryOf(params.retry_of, plan) : undefined;
+    const attemptCount = retrySource ? this.nextRetryAttemptCount(params.retry_of as string) : 0;
+    this.assertRetryBudget({
+      plan,
+      retryOf: params.retry_of,
+      attemptCount,
+      retrySource,
+    });
     const auditOf = this.repo.resolveOptionalTaskReference(params.audit_of, "audit_of");
     for (const findingId of params.finding_refs ?? []) {
       if (!this.repo.loadFinding(findingId)) {
@@ -104,21 +119,33 @@ export class TaskLifecycle {
       labels,
     );
     const ordinal = this.repo.listTaskIdsForPlan(plan).length + 1;
-    const acceptanceCriteria = buildAcceptanceCriteria(params.goal, params.acceptance_criteria);
+    const acceptanceCriteria = retrySource?.definition.acceptance_criteria?.length
+      ? retrySource.definition.acceptance_criteria
+      : buildAcceptanceCriteria(params.goal, params.acceptance_criteria);
+    const sourceDef = retrySource?.definition;
     const definition: TaskDefinition = {
       id,
       ...(plan.id ? { plan_id: plan.id } : {}),
+      slice_id: id,
+      plan_version: params.plan_version ?? sourceDef?.plan_version,
+      plan_revision_id: params.plan_revision_id ?? sourceDef?.plan_revision_id,
+      spec_version: params.spec_version ?? sourceDef?.spec_version,
       name: params.name,
       goal: params.goal,
       kind: params.kind,
       depends_on: dependsOn,
-      spec_refs: params.spec_refs,
+      spec_refs: params.spec_refs ?? sourceDef?.spec_refs,
       audit_of: auditOf,
       finding_refs: params.finding_refs,
       acceptance_criteria: acceptanceCriteria,
       aliases: this.aliasesForNewTask(params, ordinal),
       client_ref: params.client_ref,
       retry_of: params.retry_of,
+      planner_assumptions: params.planner_assumptions ?? sourceDef?.planner_assumptions,
+      structural_assumptions: params.structural_assumptions ?? sourceDef?.structural_assumptions,
+      attempt_count: attemptCount,
+      requires_slice_gate: params.requires_slice_gate ?? sourceDef?.requires_slice_gate,
+      slice_gate_resolver: params.slice_gate_resolver ?? sourceDef?.slice_gate_resolver,
       created_at: new Date().toISOString(),
     };
     const state: TaskState = {
@@ -162,6 +189,39 @@ export class TaskLifecycle {
       depends_on: dependsOn,
       retry_of: params.retry_of,
     };
+  }
+
+  private nextRetryAttemptCount(taskId: string): number {
+    return this.repo.retryAttemptCount(taskId) + 1;
+  }
+
+  private assertRetryBudget(params: {
+    plan: Plan;
+    retryOf?: string;
+    attemptCount: number;
+    retrySource?: { definition: TaskDefinition; state: TaskState };
+  }): void {
+    if (!params.retryOf || !params.retrySource) {
+      return;
+    }
+    const limit = params.plan.budget?.retries_per_slice;
+    if (limit === undefined || params.attemptCount <= limit) {
+      return;
+    }
+
+    const rootTaskId = this.repo.retryRootTaskId(params.retryOf);
+    const planRef = params.plan.id ?? "plan";
+    const gate = this.gates?.openGate({
+      scope: params.plan.goal_id ? `goal:${params.plan.goal_id}` : "session",
+      gate_type: "budget_exceeded",
+      subject_ref: `plan:${planRef}:slice:${rootTaskId}:budget:retries_per_slice`,
+      summary: `Slice ${rootTaskId} exceeded its retry budget (${params.attemptCount} > ${limit}).`,
+      evidence_refs: [`plan:${planRef}`, `slice:${rootTaskId}`, `slice:${params.retryOf}`],
+    });
+    throw codedError(
+      "retry_budget_exceeded",
+      `Retry budget exceeded for slice ${rootTaskId}: ${params.attemptCount} retries requested, limit is ${limit}.${gate ? ` Gate ${gate.id} opened.` : ""}`,
+    );
   }
 
   createTasks(params: { tasks: CreateTaskParams[] }): {
@@ -259,6 +319,10 @@ export class TaskLifecycle {
       const definition: TaskDefinition = {
         id: draft.id,
         ...(plan.id ? { plan_id: plan.id } : {}),
+        slice_id: draft.id,
+        plan_version: draft.plan_version,
+        plan_revision_id: draft.plan_revision_id,
+        spec_version: draft.spec_version,
         name: draft.name,
         goal: draft.goal,
         kind: draft.kind,
@@ -269,6 +333,11 @@ export class TaskLifecycle {
         acceptance_criteria: acceptanceCriteria,
         aliases: draft.aliases,
         client_ref: draft.client_ref,
+        planner_assumptions: draft.planner_assumptions,
+        structural_assumptions: draft.structural_assumptions,
+        attempt_count: 0,
+        requires_slice_gate: draft.requires_slice_gate,
+        slice_gate_resolver: draft.slice_gate_resolver,
         created_at: now,
       };
       const state: TaskState = {
@@ -341,6 +410,16 @@ export class TaskLifecycle {
     return { version, state: next };
   }
 
+  private assertPlanNotHalted(planId: string | undefined): void {
+    if (!planId || !this.drift) return;
+    if (this.drift.hasOpenPlanHaltGate(planId)) {
+      throw codedError(
+        "plan_halted",
+        `Plan ${planId} is halted by an open drift_escalation gate. Resolve the gate before dispatching new tasks.`,
+      );
+    }
+  }
+
   isDependencySatisfied(taskId: string): boolean {
     const state = this.repo.loadTaskState(taskId);
     if (!state) return false;
@@ -372,6 +451,9 @@ export class TaskLifecycle {
         `Task ${params.task_id} can only start from pending or scheduled (current status: ${state.status}).`,
       );
     }
+    const plan = this.repo.requireActivePlan();
+    this.repo.assertPlanSpecFresh(plan);
+    this.assertPlanNotHalted(plan.id);
     const unmet = this.unmetDependencies(params.task_id);
     if (unmet.length > 0) {
       throw new Error(
@@ -398,6 +480,9 @@ export class TaskLifecycle {
         `Task ${params.task_id} can only be scheduled from pending (current status: ${state.status}).`,
       );
     }
+    const plan = this.repo.requireActivePlan();
+    this.repo.assertPlanSpecFresh(plan);
+    this.assertPlanNotHalted(plan.id);
     const unmet = this.unmetDependencies(params.task_id);
     if (unmet.length > 0) {
       throw new Error(
@@ -420,14 +505,29 @@ export class TaskLifecycle {
   failTask(params: {
     task_id: string;
     error: string;
+    context_health?: "ok" | "degraded";
     expected_version?: number;
   }): StateTransitionResult {
-    const result = this.updateTaskState(
-      params.task_id,
-      { status: "failed", error: params.error, completed_at: new Date().toISOString() },
-      params.expected_version,
-    );
+    const driftResult = this.drift?.recordTaskFailure({
+      task_id: params.task_id,
+      error: params.error,
+      context_health: params.context_health,
+    });
+    const update: Partial<TaskState> = {
+      status: "failed",
+      error: params.error,
+      completed_at: new Date().toISOString(),
+    };
+    if (driftResult) {
+      update.last_failure_class = driftResult.failure_class;
+      update.last_failure_decision = driftResult.decision;
+      update.consecutive_failure_count = driftResult.consecutive_failures;
+    }
+    const result = this.updateTaskState(params.task_id, update, params.expected_version);
     if ("error" in result) return result;
+    // Plan-level drift evaluation runs after the state write so coherence metrics see
+    // the current failure (cluster sizes, failure_count, etc.).
+    this.drift?.evaluatePlanDrift();
     return { version: result.version, status: result.state.status };
   }
 
@@ -464,6 +564,7 @@ export class TaskLifecycle {
     expected_version?: number;
     hasCompletionVerification: (taskId: string) => boolean;
     missingAcceptanceCriteria: (taskId: string) => string[];
+    hasAcceptedSliceGate: (taskId: string) => boolean;
   }): StateTransitionResult {
     const state = this.repo.loadTaskState(params.task_id);
     if (!state) {
@@ -484,6 +585,12 @@ export class TaskLifecycle {
       throw codedError(
         "verification_required",
         `Task ${params.task_id} needs passed or not_required verification coverage before completion.${detail}`,
+      );
+    }
+    if (!params.hasAcceptedSliceGate(params.task_id)) {
+      throw codedError(
+        "slice_gate_required",
+        `Task ${params.task_id} needs an accepted slice_gate before completion.`,
       );
     }
     const result = this.updateTaskState(
