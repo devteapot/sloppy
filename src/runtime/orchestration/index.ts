@@ -1,3 +1,7 @@
+// Runtime-side orchestration: scheduler, task context, planning policy, and
+// attach. State persistence (durable task records, descriptor trees) lives in
+// `src/providers/builtin/orchestration/`.
+
 import type { SloppyConfig } from "../../config/schema";
 import type { ConsumerHub } from "../../core/consumer";
 import type { RoleProfile } from "../../core/role";

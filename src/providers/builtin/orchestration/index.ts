@@ -1,3 +1,7 @@
+// Persisted SLOP provider surface for orchestration: state tree, descriptors,
+// and durable task records. Runtime behavior (claim flow, scheduling,
+// delegation policy) lives in `src/runtime/orchestration/`.
+
 import { createSlopServer, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../../core/debug";
