@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.sloppy-demo/
 .env
 *.log
 .DS_Store
