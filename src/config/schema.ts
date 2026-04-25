@@ -11,6 +11,22 @@ export const llmProfileSchema = z.object({
   baseUrl: z.string().optional(),
 });
 
+const acpDelegationConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  defaultTimeoutMs: z.number().int().min(1000).optional(),
+  adapters: z
+    .record(
+      z.string().min(1),
+      z.object({
+        command: z.array(z.string().min(1)).min(1),
+        cwd: z.string().optional(),
+        env: z.record(z.string(), z.string()).optional(),
+        timeoutMs: z.number().int().min(1000).optional(),
+      }),
+    )
+    .default({}),
+});
+
 export const sloppyConfigSchema = z.object({
   llm: z
     .object({
@@ -171,6 +187,7 @@ export const sloppyConfigSchema = z.object({
       delegation: z
         .object({
           maxAgents: z.number().int().min(1).default(10),
+          acp: acpDelegationConfigSchema.optional(),
         })
         .default({
           maxAgents: 10,

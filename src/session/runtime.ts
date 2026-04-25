@@ -197,6 +197,14 @@ export type SessionAgentFactory = (
   llmProfileManager: LlmProfileManager,
 ) => SessionAgent;
 
+export type ExternalSessionAgentState = {
+  provider: string;
+  model: string;
+  profileId?: string;
+  label?: string;
+  message?: string;
+};
+
 function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnapshot {
   return {
     status: state.status,
@@ -222,6 +230,36 @@ function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnapshot {
       canDeleteProfile: profile.canDeleteProfile,
       canDeleteApiKey: profile.canDeleteApiKey,
     })),
+  };
+}
+
+function toExternalAgentLlmState(agent: ExternalSessionAgentState): LlmStateSnapshot {
+  const profileId = agent.profileId ?? `external-${agent.provider}`;
+  const label = agent.label ?? `${agent.provider} ${agent.model}`;
+  return {
+    status: "ready",
+    message: agent.message ?? `Ready to chat with ${label}.`,
+    activeProfileId: profileId,
+    selectedProvider: agent.provider,
+    selectedModel: agent.model,
+    secureStoreKind: "none",
+    secureStoreStatus: "unsupported",
+    profiles: [
+      {
+        id: profileId,
+        label,
+        provider: agent.provider,
+        model: agent.model,
+        isDefault: true,
+        hasKey: false,
+        keySource: "not_required",
+        ready: true,
+        managed: false,
+        origin: "fallback",
+        canDeleteProfile: false,
+        canDeleteApiKey: false,
+      },
+    ],
   };
 }
 
@@ -267,6 +305,8 @@ export class SessionRuntime {
   private agent: SessionAgent;
   private llmProfileManager: LlmProfileManager;
   private eventBus: AgentEventBus | null = null;
+  private requiresLlmProfile = true;
+  private externalAgentState?: ExternalSessionAgentState;
   private started = false;
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
@@ -295,8 +335,12 @@ export class SessionRuntime {
     actorKind?: string;
     actorName?: string;
     actorId?: string;
+    requiresLlmProfile?: boolean;
+    externalAgentState?: ExternalSessionAgentState;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
+    this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
+    this.externalAgentState = options?.externalAgentState;
     this.llmProfileManager =
       options?.llmProfileManager ??
       new LlmProfileManager({
@@ -311,6 +355,17 @@ export class SessionRuntime {
         title: options?.title,
         workspaceRoot: this.config.providers.filesystem.root,
       });
+
+    if (!this.requiresLlmProfile) {
+      this.store.syncLlmState(
+        toExternalAgentLlmState(
+          this.externalAgentState ?? {
+            provider: "external",
+            model: "agent",
+          },
+        ),
+      );
+    }
 
     const callbacks: AgentCallbacks = {
       onText: (chunk) => {
@@ -426,7 +481,9 @@ export class SessionRuntime {
     }
 
     await this.start();
-    await this.refreshLlmState({ requireReady: true });
+    if (this.requiresLlmProfile) {
+      await this.refreshLlmState({ requireReady: true });
+    }
     const turnId = this.store.beginTurn(trimmed);
     this.currentTurnId = turnId;
     this.activeTurnPromise = this.runTurn(turnId, trimmed);
@@ -805,6 +862,18 @@ export class SessionRuntime {
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {
+    if (!this.requiresLlmProfile) {
+      this.store.syncLlmState(
+        toExternalAgentLlmState(
+          this.externalAgentState ?? {
+            provider: "external",
+            model: "agent",
+          },
+        ),
+      );
+      return;
+    }
+
     try {
       const state = options?.requireReady
         ? await this.llmProfileManager.ensureReady()

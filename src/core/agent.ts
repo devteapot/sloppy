@@ -1,3 +1,11 @@
+// `Agent` is over the 400-line core guideline. It's the public surface
+// (constructor, start/stop, chat, resumeWithToolResult, approveAndResume,
+// rejectAndResume, listApprovals, …) plus the hub bootstrap that wires
+// providers, role, runtime extensions, and discovery together. Splitting
+// further would just be moving public methods into helper classes; the
+// non-public concerns (mirror plumbing, discovery state) already live
+// under `src/core/agent/`.
+
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
@@ -6,16 +14,11 @@ import { LlmProfileManager } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import {
   discoverProviderDescriptors,
-  type ProviderDescriptor,
   type ProviderDiscoveryUpdate,
   watchProviderDescriptors,
 } from "../providers/discovery";
-import {
-  createBuiltinProviders,
-  createRegisteredProviderFromDescriptor,
-  describeProviderTransport,
-  type RegisteredProvider,
-} from "../providers/registry";
+import { createBuiltinProviders } from "../providers/registry";
+import { ProviderDiscoveryCoordinator } from "./agent/discovery";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
@@ -79,15 +82,13 @@ export interface AgentCallbacks {
 export class Agent {
   private config: SloppyConfig;
   private hub: ConsumerHub | null = null;
-  private builtinProviderIds = new Set<string>();
+  private discovery: ProviderDiscoveryCoordinator;
   private discoveryStop: (() => void) | null = null;
   private discoverySync: Promise<void> = Promise.resolve();
   private history: ConversationHistory;
   private llmProfileManager: LlmProfileManager;
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
-  private externalProviderErrors = new Map<string, ExternalProviderState>();
-  private ignoredProviderIds: Set<string>;
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
   private pendingApprovalSourceId: string | null = null;
@@ -128,7 +129,10 @@ export class Agent {
       onExternalProviderStates: options?.onExternalProviderStates,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
-    this.ignoredProviderIds = new Set(options?.ignoredProviderIds ?? []);
+    this.discovery = new ProviderDiscoveryCoordinator({
+      ignoredProviderIds: options?.ignoredProviderIds,
+      notifyStateChange: () => this.emitExternalProviderStates(),
+    });
     this.role = options?.role ?? defaultRole;
     this.roleId = options?.roleId;
     this.roleRegistry = options?.roleRegistry ?? new RoleRegistry();
@@ -151,14 +155,14 @@ export class Agent {
     }
 
     const builtins = createBuiltinProviders(this.config);
-    this.builtinProviderIds = new Set(builtins.map((provider) => provider.id));
-    this.externalProviderErrors.clear();
+    this.discovery.setBuiltinProviderIds(builtins.map((provider) => provider.id));
+    this.discovery.resetErrors();
 
     const discoveredDescriptors = this.config.providers.discovery.enabled
       ? await discoverProviderDescriptors(this.config.providers.discovery.paths)
       : [];
     const discoveredProviders = discoveredDescriptors.flatMap((descriptor) => {
-      const provider = this.resolveExternalProviderDescriptor(descriptor);
+      const provider = this.discovery.resolveDescriptor(descriptor);
       return provider ? [provider] : [];
     });
     const providers = [...builtins, ...discoveredProviders];
@@ -530,8 +534,8 @@ export class Agent {
     hub?.shutdown();
 
     this.pendingApproval = null;
-    this.builtinProviderIds.clear();
-    this.externalProviderErrors.clear();
+    this.discovery.setBuiltinProviderIds([]);
+    this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
   }
 
@@ -593,92 +597,18 @@ export class Agent {
 
   private async applyDiscoveryUpdate(update: ProviderDiscoveryUpdate): Promise<void> {
     const hub = this.hub;
-    if (!hub) {
-      return;
-    }
-
-    for (const descriptor of update.removed) {
-      if (this.builtinProviderIds.has(descriptor.id)) {
-        this.externalProviderErrors.delete(descriptor.id);
-        this.emitExternalProviderStates();
-        continue;
-      }
-
-      this.externalProviderErrors.delete(descriptor.id);
-      this.unregisterProviderMirrors(descriptor.id);
-      hub.removeProvider(descriptor.id);
-      this.emitExternalProviderStates();
-    }
-
-    for (const descriptor of update.updated) {
-      if (this.builtinProviderIds.has(descriptor.id)) {
-        this.externalProviderErrors.delete(descriptor.id);
-        this.emitExternalProviderStates();
-        continue;
-      }
-
-      this.externalProviderErrors.delete(descriptor.id);
-      this.unregisterProviderMirrors(descriptor.id);
-      hub.removeProvider(descriptor.id);
-      this.emitExternalProviderStates();
-    }
-
-    for (const descriptor of [...update.updated, ...update.added]) {
-      const provider = this.resolveExternalProviderDescriptor(descriptor);
-      if (!provider) {
-        continue;
-      }
-
-      const added = await hub.addProvider(provider);
-      if (added) {
-        await this.registerProviderMirrors(provider.id);
-      }
-    }
-  }
-
-  private resolveExternalProviderDescriptor(
-    descriptor: ProviderDescriptor,
-  ): RegisteredProvider | null {
-    if (this.ignoredProviderIds.has(descriptor.id)) {
-      this.externalProviderErrors.delete(descriptor.id);
-      this.emitExternalProviderStates();
-      return null;
-    }
-
-    if (this.builtinProviderIds.has(descriptor.id)) {
-      this.externalProviderErrors.set(descriptor.id, {
-        id: descriptor.id,
-        name: descriptor.name,
-        transport: describeProviderTransport(descriptor.transport),
-        status: "error",
-        lastError: `Descriptor id conflicts with built-in provider '${descriptor.id}'.`,
-      });
-      this.emitExternalProviderStates();
-      return null;
-    }
-
-    const provider = createRegisteredProviderFromDescriptor(descriptor);
-    if (!provider) {
-      this.externalProviderErrors.set(descriptor.id, {
-        id: descriptor.id,
-        name: descriptor.name,
-        transport: describeProviderTransport(descriptor.transport),
-        status: "error",
-        lastError: `Unsupported transport: ${descriptor.transport.type}`,
-      });
-      this.emitExternalProviderStates();
-      return null;
-    }
-
-    if (this.externalProviderErrors.delete(descriptor.id)) {
-      this.emitExternalProviderStates();
-    }
-    return provider;
+    if (!hub) return;
+    await this.discovery.applyUpdate({
+      hub,
+      update,
+      registerMirrors: (providerId) => this.registerProviderMirrors(providerId),
+      unregisterMirrors: (providerId) => this.unregisterProviderMirrors(providerId),
+    });
   }
 
   private emitExternalProviderStates(hubStates?: ExternalProviderState[]): void {
     const merged = new Map<string, ExternalProviderState>();
-    for (const state of this.externalProviderErrors.values()) {
+    for (const state of this.discovery.errorStates()) {
       merged.set(state.id, state);
     }
     for (const state of hubStates ?? this.hub?.getExternalProviderStates() ?? []) {
