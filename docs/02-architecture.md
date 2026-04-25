@@ -75,10 +75,14 @@ Responsibilities:
 - maintain one `SlopConsumer` per provider
 - keep a shallow overview subscription per provider
 - optionally keep one deeper focused subscription per provider
-- route `query` and `invoke` calls
+- route `query` and `invoke` calls through a hub-level `InvokePolicy` (see §8)
+- own a single `ApprovalQueue` (`approvals`) that backs every per-provider
+  `/approvals` collection
 - expose the merged visible state to the rest of the runtime
 
 This is the architectural center of Sloppy. It replaces the plugin/tool registry layer that dominates MCP-first runtimes.
+
+Each `invoke` call flows through `policy.evaluate({ providerId, action, path, params, roleId, config })` before reaching the provider. A `deny` decision raises `PolicyDeniedError`; a `require_approval` decision enqueues the call into `hub.approvals` and returns the SLOP `approval_required` error. Approving the queued entry re-invokes the action with `confirmed: true`. The default policy is `allowAllPolicy`, so call sites and tests that do not install rules see no behavior change.
 
 ### 3. Runtime tool set
 
@@ -164,6 +168,67 @@ Responsibilities:
 This boundary is the intended long-term interface surface for Sloppy. The current CLI REPL is a development shell, not the final public integration model.
 
 The concrete session tree and affordance contract are defined in `docs/06-agent-session-provider.md`.
+
+### 8. Policy, roles, and runtime extensions
+
+A small set of seams in the core let provider/role behavior layer onto the
+generic kernel without the kernel knowing about any specific extension.
+
+**`InvokePolicy` (`src/core/policy.ts`).** A pluggable boundary on
+`ConsumerHub.invoke`. A policy returns `allow`, `deny`, or `require_approval`
+for an `InvokeContext` carrying the provider id, action, path, params, the
+optional `roleId` for the current run, and the live config. `CompositePolicy`
+chains rules and short-circuits on the first non-allow decision.
+`PolicyDeniedError` is the stable error type. Built-in rules in
+`src/core/policy/rules.ts`:
+
+- `terminalSafetyRule` — elevates destructive shell commands and file
+  output redirection to `require_approval` (replaces the inline
+  `looksDestructive` check that used to live in the terminal provider).
+- `orchestratorRoleRule` — denies file mutations, direct delegation spawns,
+  and non-whitelisted shell commands when `roleId === "orchestrator"`.
+- `dangerousActionRule` — auto-elevates any affordance whose action descriptor
+  is marked `dangerous: true` to `require_approval`.
+
+The terminal provider's old `cd` traversal escape was tightened during this
+move: `cd` now rejects paths that resolve outside the workspace root.
+
+**`ApprovalQueue` (`src/core/approvals.ts`).** Single source of truth for
+every approval request the system surfaces. `ConsumerHub.approvals` is the
+hub-owned instance; per-provider `/approvals` SLOP collections (built by
+`ProviderApprovalManager` in `src/providers/approvals.ts`) are filtered views
+backed by the shared queue once attached. The external SLOP shape is
+unchanged: `/approvals/{id}` with `approve`/`reject` actions on each provider.
+
+**`RoleProfile` and `RoleRegistry` (`src/core/role.ts`).** Roles are
+`{ id, systemPromptFragment?, transformInvoke?, attachRuntime?, ... }`.
+`transformInvoke` rewrites tool params before dispatch (used by the
+orchestrator role to inject planning-policy edges). `RoleRegistry` holds role
+factories registered by extensions in `attachRuntime`; the agent resolves a
+role by id at start time so the kernel never names specific roles.
+
+**`attachRuntime` extension pattern.** Both providers and roles can implement
+`attachRuntime(hub, config, ctx)`. The agent calls these on start and passes a
+`RuntimeContext` containing `hub`, `config`, a generic `publishEvent` on the
+event bus, the `roleRegistry`, and `delegationHooks` (a `setTaskContextFactory`
+seam exposed by the delegation runtime). This is how the orchestration
+extension wires its role, hub policy rule, scheduler-event forwarding, and
+TaskContext factory in without the kernel knowing about orchestration.
+
+**`TaskContext` (`src/runtime/orchestration/task-context.ts`).** The opaque
+contract a sub-agent runner receives from whichever extension owns a task.
+The runner calls `ensureTask`, `buildInitialPrompt`, `recordTransition`,
+`recordCompletion`, and `recordFailure`, and consults
+`disableBuiltinProviders` to strip planning-layer providers from child runtimes
+— it never references orchestration directly. (Confirmed: `src/session/*` and
+`src/runtime/delegation/sub-agent.ts` carry zero orchestration references.)
+
+**Coding-domain planning policy (`src/runtime/orchestration/planning-policy.ts`).**
+The classifiers (`isScaffoldTask`, `isUiTask`, `isDataModelTask`,
+`isDocumentationTask`, `isVerificationTask`) and `inferBatchDependencyRefs`
+live in the role layer, not the orchestration provider. The orchestrator
+role's `transformInvoke` injects inferred edges into `create_tasks` params
+before dispatch; the provider only validates explicit `depends_on`.
 
 ---
 
@@ -282,7 +347,28 @@ Long-running commands are represented as async task nodes under `tasks`.
 ### Orchestration provider
 
 The orchestration provider is a durable planning and verification surface backed
-by `.sloppy/orchestration/`.
+by `.sloppy/orchestration/`. It is implemented as a directory of focused
+modules under `src/providers/builtin/orchestration/` (`types.ts`, `storage.ts`,
+`normalization.ts`, `classifiers.ts`, `dag.ts`, `index.ts` for the class
+facade) rather than a single file.
+
+The provider itself is generic: it validates explicit `depends_on` references,
+rejects dependency cycles, enforces verification/finding gates, and persists
+state. It does not classify tasks or invent dependency edges. Coding-domain
+planning policy (scaffold/UI/data/docs/verification heuristics and inferred
+parallel-friendly edges) lives in `src/runtime/orchestration/planning-policy.ts`
+and is applied by the orchestrator role through `RoleProfile.transformInvoke`
+on `create_tasks` invocations — see §8.
+
+The orchestration runtime is not special-cased by the kernel. It registers
+itself via the `attachRuntime` extension hook (see §8). On attach, it:
+
+- registers the `orchestrator` role on the agent's `RoleRegistry`,
+- installs `orchestratorRoleRule` on the hub policy,
+- exposes a `TaskContext` factory through `DelegationRuntimeHooks` so
+  scheduled sub-agents inherit task lifecycle behavior, and
+- forwards scheduler events through the runtime event bus' generic
+  `publishEvent` channel.
 
 It exposes:
 
@@ -317,9 +403,15 @@ include refs, and file-like refs are validated against the workspace before the
 verification record is accepted. Plan completion is also blocked while a
 blocking audit finding remains open; findings can be repaired through linked
 tasks, accepted as intentional deviations, dismissed, or marked fixed after
-re-audit. In orchestrator mode, the loop rejects direct file mutations and
-setup/repair shell commands before provider invocation; the orchestrator may run
-simple verification commands, but repairs must be delegated through tasks.
+re-audit. In orchestrator mode, file mutations, direct delegation spawns, and
+non-whitelisted shell commands are rejected at the hub policy boundary by the
+`orchestratorRoleRule` (`src/core/policy/rules.ts`), which the orchestration
+extension installs through `hub.addPolicyRule(...)` on attach. The rule
+activates only when the run loop tags an invocation with
+`roleId === "orchestrator"` via `hub.setInvocationMetadata({ roleId })`. The
+orchestrator may still run a small whitelist of verification commands
+(`build`, `lint`, `test`, `typecheck`); repairs must be delegated through
+tasks.
 
 Sub-agent context is scoped at the task boundary. When a scheduled task starts,
 `SubAgentRunner` builds a work packet from the task definition, acceptance

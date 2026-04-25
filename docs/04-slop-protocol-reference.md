@@ -113,14 +113,22 @@ Nodes beyond the depth limit become **stubs** — lightweight placeholders with 
 
 ### Local Approval Convention
 
-Sloppy currently uses a provider-native approval pattern on top of the base SLOP messages:
+Sloppy uses an approval pattern on top of the base SLOP messages:
 
-1. a provider blocks the original invoke and returns `error.code = "approval_required"`
-2. the provider exposes the pending request under `/approvals/{approvalId}`
+1. an invoke is blocked and returns `error.code = "approval_required"`
+2. the pending request appears under `/approvals/{approvalId}` on the
+   relevant provider
 3. that approval item exposes `approve` and `reject`
-4. the session provider mirrors those approval items and forwards approval actions back downstream
+4. the session provider mirrors those approval items and forwards approval
+   actions back downstream
 
-This keeps approval ownership with the downstream provider while still surfacing shared approval state to attached UIs.
+The external SLOP shape is unchanged. Internally, the queue moved up: the
+single source of truth is `ConsumerHub.approvals` (an `ApprovalQueue` —
+`src/core/approvals.ts`), which holds every entry whether it was raised by a
+hub-level `InvokePolicy` rule or by a provider directly. Per-provider
+`/approvals` collections (built by `ProviderApprovalManager` in
+`src/providers/approvals.ts`) are filtered views into that shared queue. UIs
+attached through the session provider observe the same items either way.
 
 ---
 

@@ -27,7 +27,7 @@ The orchestrator doesn't know or care whether the child is a subprocess or a nat
 
 ## 2. Architectural Fit
 
-The seam already exists. `SessionRuntime` takes an `agentFactory` option (see `src/session/runtime.ts:257`) that returns something matching the `SessionAgent` interface (`src/session/runtime.ts:168`):
+The seam already exists. `SessionRuntime` takes an `agentFactory` option (see `src/session/runtime.ts:279`) that returns something matching the `SessionAgent` interface (`src/session/runtime.ts:173`):
 
 ```ts
 export interface SessionAgent {

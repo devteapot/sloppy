@@ -29,7 +29,7 @@ Implemented now:
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
 - built-in `terminal`, `filesystem`, `orchestration`, `spec`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
 - durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, dependency normalization plus parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and acceptance-criteria-gated verification with cited evidence refs
-- orchestrator-mode guardrails that block direct file mutations, setup/repair shell commands, and direct delegation spawns so fixes stay delegated through scheduled tasks
+- orchestrator-mode guardrails enforced as hub `InvokePolicy` rules (`orchestratorRoleRule`, `terminalSafetyRule`, `dangerousActionRule`) that block direct file mutations, non-whitelisted shell commands, and direct delegation spawns when `roleId === "orchestrator"` so fixes stay delegated through scheduled tasks
 - in-process transport for built-in providers
 - live-watched provider descriptor discovery for Unix socket and WebSocket providers
 - consumer hub with overview and detail subscriptions
@@ -89,10 +89,16 @@ src/
 │   └── schema.ts
 ├── core/
 │   ├── agent.ts
+│   ├── approvals.ts
 │   ├── consumer.ts
 │   ├── context.ts
+│   ├── debug.ts
 │   ├── history.ts
 │   ├── loop.ts
+│   ├── policy.ts
+│   ├── policy/
+│   │   └── rules.ts
+│   ├── role.ts
 │   ├── subscriptions.ts
 │   └── tools.ts
 ├── llm/
@@ -103,24 +109,67 @@ src/
 │   ├── openai-compatible.ts
 │   ├── profile-manager.ts
 │   ├── provider-defaults.ts
+│   ├── runtime-config.ts
 │   └── types.ts
-└── providers/
-    ├── discovery.ts
-    ├── node-socket.ts
-    ├── registry.ts
-    └── builtin/
-        ├── browser.ts
-        ├── cron.ts
-        ├── delegation.ts
-        ├── filesystem.ts
-        ├── in-process.ts
-        ├── memory.ts
-        ├── messaging.ts
-        ├── spec.ts
-        ├── skills.ts
-        ├── terminal.ts
-        ├── vision.ts
-        └── web.ts
+├── providers/
+│   ├── approvals.ts
+│   ├── descriptor-validation.ts
+│   ├── discovery.ts
+│   ├── node-socket.ts
+│   ├── registry.ts
+│   └── builtin/
+│       ├── browser.ts
+│       ├── cron.ts
+│       ├── delegation.ts
+│       ├── filesystem.ts
+│       ├── in-process.ts
+│       ├── memory.ts
+│       ├── messaging.ts
+│       ├── orchestration/
+│       │   ├── classifiers.ts
+│       │   ├── dag.ts
+│       │   ├── index.ts
+│       │   ├── normalization.ts
+│       │   ├── storage.ts
+│       │   └── types.ts
+│       ├── skills.ts
+│       ├── spec.ts
+│       ├── terminal.ts
+│       ├── vision.ts
+│       └── web.ts
+├── runtime/
+│   ├── delegation/
+│   │   ├── await-children.ts
+│   │   ├── index.ts
+│   │   ├── runner-factory.ts
+│   │   └── sub-agent.ts
+│   └── orchestration/
+│       ├── attach.ts
+│       ├── index.ts
+│       ├── planning-policy.ts
+│       ├── prompt.ts
+│       ├── scheduler.ts
+│       └── task-context.ts
+└── session/
+    ├── event-bus.ts
+    ├── index.ts
+    ├── provider.ts
+    ├── runtime.ts
+    ├── server.ts
+    ├── service.ts
+    ├── store.ts
+    ├── store/
+    │   ├── activity.ts
+    │   ├── apps.ts
+    │   ├── helpers.ts
+    │   ├── index.ts
+    │   ├── listeners.ts
+    │   ├── llm.ts
+    │   ├── mirrors.ts
+    │   ├── state.ts
+    │   ├── transcript.ts
+    │   └── turn.ts
+    └── types.ts
 ```
 
 ### Checked-in interface layout
