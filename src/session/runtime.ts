@@ -76,7 +76,7 @@ function parseApprovalsTree(
   pendingApproval: {
     turnId: string;
     invocation: AgentToolInvocation;
-    sessionApprovalId?: string;
+    sourceApprovalId: string;
   } | null,
 ): ApprovalItem[] {
   if (!tree?.children) {
@@ -112,12 +112,15 @@ function parseApprovalsTree(
       canReject: hasAffordance(node, "reject"),
     };
 
+    // Strict id-match. Tuple-matching (provider/path/action) was racy when
+    // multiple approvals exist for the same affordance — could resume the
+    // wrong turn. The approval id is now plumbed through `AgentToolEvent`
+    // synchronously, so this match is unambiguous.
     if (
       pendingApproval &&
       item.status === "pending" &&
       item.provider === pendingApproval.invocation.providerId &&
-      item.action === pendingApproval.invocation.action &&
-      item.path === pendingApproval.invocation.path
+      item.sourceApprovalId === pendingApproval.sourceApprovalId
     ) {
       item.turnId = pendingApproval.turnId;
     }
@@ -270,6 +273,9 @@ export class SessionRuntime {
   private pendingApproval: {
     turnId: string;
     invocation: AgentToolInvocation;
+    /** Hub approval id, known synchronously when the event fires. */
+    sourceApprovalId: string;
+    /** Mirrored session-scoped approval id; populated when /approvals syncs. */
     sessionApprovalId?: string;
   } | null = null;
 
@@ -606,17 +612,17 @@ export class SessionRuntime {
     const message = "Turn cancelled by user.";
     if (this.pendingApproval) {
       const pendingApproval = this.pendingApproval;
-      const approvalId = pendingApproval.sessionApprovalId;
-      const approval = approvalId ? this.store.getApproval(approvalId) : undefined;
+      // Reject the underlying hub approval directly using the synchronously
+      // known sourceApprovalId. The previous `if (sessionApprovalId)` guard
+      // left a window where a quick cancel before the /approvals mirror
+      // populated would skip rejection — leaving a live approval whose
+      // execute callback could later run without a model resume.
       let approvalStatus: "rejected" | undefined;
-
-      if (approval?.canReject && approval.sourceApprovalId) {
-        try {
-          this.agent.rejectApprovalDirect(approval.sourceApprovalId, message);
-          approvalStatus = "rejected";
-        } catch {
-          // Best-effort provider cleanup should not block ending the local turn.
-        }
+      try {
+        this.agent.rejectApprovalDirect(pendingApproval.sourceApprovalId, message);
+        approvalStatus = "rejected";
+      } catch {
+        // Best-effort provider cleanup should not block ending the local turn.
       }
 
       this.agent.clearPendingApproval();
@@ -626,7 +632,7 @@ export class SessionRuntime {
       this.store.cancelTurn(turnId, {
         message,
         toolUseId: pendingApproval.invocation.toolUseId,
-        approvalId,
+        approvalId: pendingApproval.sessionApprovalId,
         approvalStatus,
       });
       return {
@@ -684,9 +690,18 @@ export class SessionRuntime {
         break;
       }
       case "approval_requested": {
+        if (!event.approvalId) {
+          // Defensive: the hub always populates this on the
+          // `approval_required` ResultMessage. Fail loudly rather than
+          // silently fall back to tuple-matching.
+          throw new Error(
+            `approval_requested event missing approvalId for ${event.invocation.providerId}:${event.invocation.action}`,
+          );
+        }
         this.pendingApproval = {
           turnId,
           invocation: event.invocation,
+          sourceApprovalId: event.approvalId,
         };
         this.store.recordApprovalRequested(turnId, {
           toolUseId: event.invocation.toolUseId,
@@ -706,15 +721,12 @@ export class SessionRuntime {
       return false;
     }
 
-    if (this.pendingApproval.sessionApprovalId) {
-      return this.pendingApproval.sessionApprovalId === approval.id;
-    }
-
-    return (
-      approval.provider === this.pendingApproval.invocation.providerId &&
-      approval.path === this.pendingApproval.invocation.path &&
-      approval.action === this.pendingApproval.invocation.action
-    );
+    // Match strictly on the hub-owned approval id. Tuple-matching is unsafe
+    // when multiple approvals share (provider, path, action) — the model can
+    // emit two of the same destructive call in one turn, and the user's
+    // approve/reject would otherwise be applied to whichever happens to come
+    // first in the mirrored tree.
+    return approval.sourceApprovalId === this.pendingApproval.sourceApprovalId;
   }
 
   private pendingToolUseId(approval: ApprovalItem): string {
@@ -755,10 +767,16 @@ export class SessionRuntime {
 
   private handleAgentResult(turnId: string, result: AgentRunResult): void {
     if (result.status === "waiting_approval") {
-      this.pendingApproval = this.pendingApproval ?? {
-        turnId,
-        invocation: result.invocation,
-      };
+      // `pendingApproval` is set synchronously by the `approval_requested`
+      // tool event fired earlier in the same loop iteration (which carries
+      // the hub-owned approvalId). If it's somehow missing here, fail loudly
+      // rather than silently fall back to a half-populated record without a
+      // sourceApprovalId.
+      if (!this.pendingApproval) {
+        throw new Error(
+          `Agent reported waiting_approval without a pending approval record (turn ${turnId}).`,
+        );
+      }
       return;
     }
 

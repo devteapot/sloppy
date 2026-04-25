@@ -68,6 +68,12 @@ export type AgentToolEvent =
       summary: string;
       errorCode: string;
       errorMessage: string;
+      /**
+       * Hub-owned approval id (e.g. `approval-…`). Plumbed through directly
+       * so the session runtime can resolve / cancel / resume strictly by id
+       * instead of tuple-matching the mirrored `/approvals` tree.
+       */
+      approvalId?: string;
     };
 
 export type PendingApprovalContinuation = {
@@ -104,6 +110,12 @@ type ExecuteToolCallResult =
       summary: string;
       errorCode: string;
       errorMessage: string;
+      /**
+       * Hub-owned approval id (e.g. `approval-…`). Plumbed through directly
+       * so the session runtime can resolve / cancel / resume strictly by id
+       * instead of tuple-matching the mirrored `/approvals` tree.
+       */
+      approvalId?: string;
     };
 
 function stringifyResult(value: unknown): string {
@@ -391,12 +403,20 @@ async function executeToolCall(
     }
 
     if (result.status === "error" && result.error?.code === "approval_required") {
+      const approvalId =
+        result.data &&
+        typeof result.data === "object" &&
+        !Array.isArray(result.data) &&
+        typeof (result.data as { approvalId?: unknown }).approvalId === "string"
+          ? (result.data as { approvalId: string }).approvalId
+          : undefined;
       return {
         kind: "approval_requested",
         invocation,
         summary,
         errorCode: result.error.code,
         errorMessage: result.error.message,
+        approvalId,
       };
     }
 
@@ -499,6 +519,7 @@ async function executeToolCalls(options: {
         summary: result.summary,
         errorCode: result.errorCode,
         errorMessage: result.errorMessage,
+        approvalId: result.approvalId,
       });
       return {
         status: "waiting_approval",

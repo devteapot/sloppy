@@ -509,6 +509,11 @@ export class ConsumerHub {
         });
         return {
           status: "error",
+          // Surface the hub-owned approval id in `data` so callers (run loop /
+          // session runtime) can match approvals strictly by id rather than
+          // by re-parsing the human-readable message or tuple-matching the
+          // mirrored `/approvals` tree.
+          data: { approvalId, providerId, path, action },
           error: {
             code: "approval_required",
             message: `${decision.reason} Resolve via /approvals/${approvalId} on provider ${providerId}.`,

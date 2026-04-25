@@ -320,6 +320,7 @@ function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage 
           summary: "terminal:execute /session",
           errorCode: "approval_required",
           errorMessage: "Approval required.",
+          approvalId: "approval-1",
         });
         return {
           status: "waiting_approval",
