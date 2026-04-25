@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -130,6 +131,7 @@ describe("TerminalProvider", () => {
     tempPaths.push(cwd);
     await mkdir(join(cwd, "sprint-board"));
     await writeFile(join(cwd, "sprint-board", ".keep"), "hello", "utf8");
+    const realCwd = realpathSync(cwd);
 
     const provider = new TerminalProvider({
       cwd,
@@ -146,13 +148,13 @@ describe("TerminalProvider", () => {
         path: `${basename(cwd)}/sprint-board`,
       });
       expect(result.status).toBe("ok");
-      expect((result.data as { cwd: string }).cwd).toBe(join(cwd, "sprint-board"));
+      expect((result.data as { cwd: string }).cwd).toBe(join(realCwd, "sprint-board"));
 
       const repeat = await consumer.invoke("/session", "cd", {
         path: `${basename(cwd)}/sprint-board`,
       });
       expect(repeat.status).toBe("ok");
-      expect((repeat.data as { cwd: string }).cwd).toBe(join(cwd, "sprint-board"));
+      expect((repeat.data as { cwd: string }).cwd).toBe(join(realCwd, "sprint-board"));
     } finally {
       provider.stop();
     }
@@ -409,7 +411,39 @@ describe("TerminalProvider", () => {
       expect(absolute.error?.message ?? "").toContain("outside workspace root");
 
       const session = await consumer.query("/session", 1);
-      expect(session.properties?.cwd).toBe(cwd);
+      expect(session.properties?.cwd).toBe(realpathSync(cwd));
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects cd into a symlink that points outside the workspace root", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+    const outside = await mkdtemp(join(tmpdir(), "sloppy-terminal-outside-"));
+    tempPaths.push(outside);
+    await writeFile(join(outside, "secret.txt"), "secret", "utf8");
+    await symlink(outside, join(cwd, "escape"));
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const escape = await consumer.invoke("/session", "cd", {
+        path: "escape",
+      });
+      expect(escape.status).toBe("error");
+      expect(escape.error?.message ?? "").toContain("outside workspace root");
+
+      const session = await consumer.query("/session", 1);
+      expect(session.properties?.cwd).toBe(realpathSync(cwd));
     } finally {
       provider.stop();
     }

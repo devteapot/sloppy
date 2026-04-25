@@ -1,8 +1,9 @@
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../core/debug";
+import { realpathOfPrefix, safeRealpath } from "./path-containment";
 
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
@@ -66,37 +67,6 @@ function isProbablyBinary(content: Uint8Array): boolean {
 function relativePath(root: string, target: string): string {
   const rel = relative(root, target);
   return rel || ".";
-}
-
-function safeRealpath(p: string): string | null {
-  try {
-    return realpathSync(p);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Realpath the longest existing prefix of an absolute path, then re-append
- * the unresolved tail. Used by `ensureWithinRoot` so containment is enforced
- * even when the target doesn't exist yet (write/mkdir/edit) and so symlinks
- * along the path can't be used to escape the workspace root.
- */
-function realpathOfPrefix(absolutePath: string): string {
-  let current = absolutePath;
-  const tail: string[] = [];
-  while (true) {
-    const resolved = safeRealpath(current);
-    if (resolved !== null) {
-      return tail.length === 0 ? resolved : resolve(resolved, ...tail.reverse());
-    }
-    const parent = dirname(current);
-    if (parent === current) {
-      return absolutePath;
-    }
-    tail.push(basename(current));
-    current = parent;
-  }
 }
 
 function entryIdForPath(path: string): string {

@@ -1,8 +1,9 @@
-import { basename, relative, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { ProviderApprovalManager } from "../approvals";
+import { isWithinRoot, safeRealpath } from "./path-containment";
 
 type CommandRecord = {
   id: string;
@@ -51,7 +52,8 @@ export class TerminalProvider {
   private tasks = new Map<string, RunningTask>();
 
   constructor(options: { cwd: string; historyLimit: number; syncTimeoutMs: number }) {
-    this.root = resolve(options.cwd);
+    const rawRoot = resolve(options.cwd);
+    this.root = safeRealpath(rawRoot) ?? rawRoot;
     this.cwd = this.root;
     this.historyLimit = options.historyLimit;
     this.syncTimeoutMs = options.syncTimeoutMs;
@@ -99,18 +101,10 @@ export class TerminalProvider {
   }
 
   private assertWithinRoot(candidate: string, original: string): void {
-    if (candidate === this.root) {
-      return;
-    }
-    const rel = relative(this.root, candidate);
-    if (rel.startsWith("..") || rel === "" || /^(\.\.[\\/])/.test(rel)) {
-      // rel === "" means candidate === root (handled above); ".." prefix means escape.
-      if (rel.startsWith("..")) {
-        throw new Error(`Refusing to cd outside workspace root (${this.root}): ${original}`);
-      }
-    }
-    // Absolute paths to elsewhere on the filesystem produce an absolute `rel`.
-    if (/^([a-zA-Z]:)?[\\/]/.test(rel)) {
+    // Resolve symlinks along the path so a symlink inside the workspace
+    // pointing outside (e.g. `${root}/escape -> /tmp/elsewhere`) can't be
+    // used to cd out of the root.
+    if (!isWithinRoot(this.root, candidate)) {
       throw new Error(`Refusing to cd outside workspace root (${this.root}): ${original}`);
     }
   }
