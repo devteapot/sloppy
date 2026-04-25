@@ -347,7 +347,10 @@ describe("CronProvider", () => {
           data: { approvalId: "appr-1", providerId: "terminal" },
           error: {
             code: "approval_required",
-            message: "matches destructive shell command pattern.",
+            // Mirror the hub's wire format from src/core/consumer.ts so the
+            // suffix-stripping logic is actually exercised.
+            message:
+              "matches destructive shell command pattern. Resolve via /approvals/appr-1 on provider terminal.",
           },
         };
       },
@@ -376,6 +379,10 @@ describe("CronProvider", () => {
         return current.properties?.status === "errored" ? current : null;
       });
       expect(errored.properties?.error_preview).toContain("Blocked by policy");
+      // The hub's "Resolve via /approvals/<id>" suffix points at an approval
+      // we just cancelled, so cron strips it from the recorded job error.
+      expect(errored.properties?.error_preview).not.toContain("Resolve via");
+      expect(errored.properties?.error_preview).not.toContain("/approvals/");
       expect(cancelledApprovals).toHaveLength(1);
       expect(cancelledApprovals[0]?.id).toBe("appr-1");
       expect(cancelledApprovals[0]?.reason).toContain("destructive");

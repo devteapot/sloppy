@@ -204,9 +204,15 @@ export class CronProvider {
               // best-effort cancellation; the approval may already be resolved
             }
           }
-          job.error = truncatePreview(
-            `Blocked by policy: ${result.error.message ?? "approval required"}`,
-          );
+          // The hub's approval_required message ends with
+          // "Resolve via /approvals/<id> on provider <name>." We just
+          // cancelled that approval, so strip the dead pointer to avoid
+          // sending users to a path that no longer exists.
+          const rawMessage = result.error.message ?? "approval required";
+          const policyReason = rawMessage
+            .replace(/\s*Resolve via \/approvals\/[^\s]+ on provider [^.]+\.\s*$/, "")
+            .trim();
+          job.error = truncatePreview(`Blocked by policy: ${policyReason || "approval required"}`);
         } else {
           job.error = truncatePreview(
             result.error?.message ?? `Execution failed (code ${result.error?.code ?? "unknown"})`,
