@@ -2,6 +2,19 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 
 import { ProviderApprovalManager } from "../approvals";
 
+export interface CronCommandRunner {
+  invoke(
+    providerId: string,
+    path: string,
+    action: string,
+    params?: Record<string, unknown>,
+  ): Promise<{
+    status: string;
+    data?: unknown;
+    error?: { code?: string; message?: string };
+  }>;
+}
+
 type CronStatus = "idle" | "running" | "completed" | "errored" | "disabled";
 
 type CronJob = {
@@ -78,22 +91,13 @@ function truncatePreview(text: string, maxChars = 200): string {
   return `${text.slice(0, maxChars - 14)}\n...[truncated]`;
 }
 
-function spawnCommand(command: string) {
-  return Bun.spawn({
-    cmd: [Bun.env.SHELL ?? "/bin/sh", "-lc", command],
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "ignore",
-    env: Bun.env,
-  });
-}
-
 export class CronProvider {
   readonly server: SlopServer;
   private maxJobs: number;
   readonly approvals: ProviderApprovalManager;
   private jobs = new Map<string, CronJob>();
   private ticker: ReturnType<typeof setInterval>;
+  private runner: CronCommandRunner | null = null;
 
   constructor(options: { maxJobs?: number } = {}) {
     this.maxJobs = options.maxJobs ?? 50;
@@ -114,6 +118,17 @@ export class CronProvider {
   stop(): void {
     clearInterval(this.ticker);
     this.server.stop();
+  }
+
+  /**
+   * Wire the provider to a command runner (typically a `ConsumerHub`) so jobs
+   * execute through the hub's policy boundary. Until set, jobs cannot run —
+   * any tick or `run_now` will mark the job as errored. This makes cron a
+   * strict consumer of the same `terminalSafetyRule` / `dangerousActionRule`
+   * stack that protects interactive shell use.
+   */
+  setRunner(runner: CronCommandRunner | null): void {
+    this.runner = runner;
   }
 
   private tick(): void {
@@ -146,22 +161,56 @@ export class CronProvider {
     job.last_run = new Date().toISOString();
     this.server.refresh();
 
+    if (!this.runner) {
+      job.status = "errored";
+      job.error =
+        "Cron is not wired to a command runner; refusing to spawn shells outside the hub policy boundary.";
+      job.last_output = undefined;
+      job.next_run = parseCronNext(job.schedule);
+      this.server.refresh();
+      return;
+    }
+
     try {
-      const proc = spawnCommand(job.command);
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
+      const result = await this.runner.invoke("terminal", "/session", "execute", {
+        command: job.command,
+        background: false,
+      });
 
-      const output = stdout || stderr;
-      job.last_output = output;
-      job.status = exitCode === 0 ? "completed" : "errored";
-
-      if (exitCode !== 0) {
-        job.error = truncatePreview(stderr || `Exited with code ${exitCode}`);
+      if (result.status !== "ok") {
+        job.status = "errored";
+        if (result.error?.code === "approval_required") {
+          // Cron should not silently queue dangerous commands for human
+          // approval — that would let scheduled jobs accumulate pending
+          // dangerous work indefinitely. Surface the block clearly instead.
+          job.error = truncatePreview(
+            `Blocked by policy: ${result.error.message ?? "approval required"}`,
+          );
+        } else {
+          job.error = truncatePreview(
+            result.error?.message ?? `Execution failed (code ${result.error?.code ?? "unknown"})`,
+          );
+        }
+        job.last_output = undefined;
       } else {
-        job.error = undefined;
+        const data = (result.data ?? {}) as {
+          stdout?: string;
+          stderr?: string;
+          exitCode?: number | null;
+          status?: string;
+        };
+        const stdout = data.stdout ?? "";
+        const stderr = data.stderr ?? "";
+        const exitCode = data.exitCode ?? null;
+        job.last_output = stdout || stderr;
+
+        if (data.status === "ok" && (exitCode === 0 || exitCode === null)) {
+          job.status = "completed";
+          job.error = undefined;
+        } else {
+          job.status = "errored";
+          job.error = truncatePreview(stderr || `Exited with code ${exitCode}`);
+        }
       }
     } catch (error) {
       job.status = "errored";

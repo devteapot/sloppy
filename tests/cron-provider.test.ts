@@ -1,14 +1,50 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { CronProvider } from "../src/providers/builtin/cron";
+import { CronProvider, type CronCommandRunner } from "../src/providers/builtin/cron";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 
-function createCronHarness(options: ConstructorParameters<typeof CronProvider>[0] = {}) {
+// Default test runner: spawns the command directly. Equivalent to what
+// TerminalProvider's `execute` action would return when invoked through the
+// hub with no policy rules installed. Tests that exercise the policy boundary
+// install their own runner.
+const passthroughRunner: CronCommandRunner = {
+  async invoke(_providerId, _path, _action, params) {
+    const command = (params as { command: string }).command;
+    const proc = Bun.spawn({
+      cmd: [Bun.env.SHELL ?? "/bin/sh", "-lc", command],
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return {
+      status: "ok",
+      data: {
+        stdout,
+        stderr,
+        exitCode,
+        status: exitCode === 0 ? "ok" : "error",
+      },
+    };
+  },
+};
+
+function createCronHarness(
+  options: ConstructorParameters<typeof CronProvider>[0] = {},
+  runner: CronCommandRunner | null = passthroughRunner,
+) {
   const provider = new CronProvider({
     maxJobs: 10,
     ...options,
   });
+  if (runner) {
+    provider.setRunner(runner);
+  }
   const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
   return { provider, consumer };
@@ -294,6 +330,72 @@ describe("CronProvider", () => {
 
       const approvals = await consumer.query("/approvals", 2);
       expect(approvals.properties?.count).toBe(0);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("marks a job errored when policy blocks the underlying command", async () => {
+    const policyBlockingRunner: CronCommandRunner = {
+      async invoke() {
+        return {
+          status: "error",
+          data: { approvalId: "appr-1", providerId: "terminal" },
+          error: {
+            code: "approval_required",
+            message: "matches destructive shell command pattern.",
+          },
+        };
+      },
+    };
+    const { provider, consumer } = createCronHarness({}, policyBlockingRunner);
+
+    try {
+      await connect(consumer);
+
+      await consumer.invoke("/session", "add_job", {
+        name: "destructive",
+        schedule: "0 * * * *",
+        command: "rm -rf /tmp/sloppy-test",
+      });
+      const jobs = await consumer.query("/jobs", 2);
+      const jobId = jobs.children?.[0]?.id;
+      expect(typeof jobId).toBe("string");
+
+      await consumer.invoke(`/jobs/${jobId}`, "run_now", {});
+
+      const errored = await waitFor(async () => {
+        const current = await consumer.query(`/jobs/${jobId}`, 2);
+        return current.properties?.status === "errored" ? current : null;
+      });
+      expect(errored.properties?.error_preview).toContain("Blocked by policy");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("refuses to spawn shells when no runner is wired", async () => {
+    const { provider, consumer } = createCronHarness({}, null);
+
+    try {
+      await connect(consumer);
+
+      await consumer.invoke("/session", "add_job", {
+        name: "unwired",
+        schedule: "0 * * * *",
+        command: "printf hi",
+      });
+      const jobs = await consumer.query("/jobs", 2);
+      const jobId = jobs.children?.[0]?.id;
+      expect(typeof jobId).toBe("string");
+
+      await consumer.invoke(`/jobs/${jobId}`, "run_now", {});
+
+      const errored = await waitFor(async () => {
+        const current = await consumer.query(`/jobs/${jobId}`, 2);
+        return current.properties?.status === "errored" ? current : null;
+      });
+      expect(errored.properties?.error_preview).toContain("not wired to a command runner");
     } finally {
       provider.stop();
     }

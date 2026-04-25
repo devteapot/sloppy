@@ -185,6 +185,26 @@ Use this for testing.
 
   test("CronProvider adds jobs, runs them, and exposes output", async () => {
     const provider = new CronProvider({ maxJobs: 5 });
+    provider.setRunner({
+      async invoke(_p, _path, _action, params) {
+        const command = (params as { command: string }).command;
+        const proc = Bun.spawn({
+          cmd: [Bun.env.SHELL ?? "/bin/sh", "-lc", command],
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        return {
+          status: "ok",
+          data: { stdout, stderr, exitCode, status: exitCode === 0 ? "ok" : "error" },
+        };
+      },
+    });
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {

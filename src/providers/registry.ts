@@ -176,6 +176,14 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => cron.stop(),
       approvals: cron.approvals,
+      attachRuntime: (hub) => {
+        cron.setRunner(hub);
+        return {
+          stop() {
+            cron.setRunner(null);
+          },
+        };
+      },
     });
   }
 
