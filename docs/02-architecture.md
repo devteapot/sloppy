@@ -151,6 +151,33 @@ The current implementation supports:
 - external Unix socket providers
 - external WebSocket providers
 
+The orchestration provider now exposes the docs/12 HITL artifact layer
+additively beside the legacy task state machine: `/goals`, `/gates`,
+`/messages`, `/audit`, `/blobs`, and `/digests`, plus plan-revision and typed-evidence
+affordances on `/orchestration` and `/tasks`. Legacy `create_plan`,
+`create_task`, `create_tasks`, `record_verification`, and task completion stay
+available without docs/12 gates. Accepted plan revisions opt into HITL gating:
+their slices require typed evidence, an accepted `slice_gate`, a fresh referenced
+spec version, and a passing final audit before plan completion. Final audit
+replays allowlisted replayable evidence commands against the current workspace
+and stores command output as orchestration blobs.
+As a first policy-resolver increment, plan revisions may set
+`slice_gate_resolver: "policy"` so evidence-complete slice gates are accepted
+deterministically with policy and evidence refs recorded on the gate.
+Digests are generated on demand as immutable typed records summarizing headline
+state, escalations, policy auto-resolutions, near-misses, drift metrics,
+configured wall-time/retry budget burn, and next slices for dashboard or terminal
+renderers. When a plan exceeds its configured wall-time budget, digest
+generation opens a `budget_exceeded` gate for the resolver. When a retry would
+exceed the configured retry-per-slice cap, the replacement is rejected and a
+`budget_exceeded` gate is opened for that logical slice.
+
+The spec provider owns spec artifacts and now persists immutable version
+snapshots under `.sloppy/specs/`, with optional `goal_id`/`goal_version` refs and
+criterion metadata on requirements. Spec acceptance is gated through an accepted
+orchestration `spec_accept` gate, while the orchestration provider remains the
+coordination owner for gates and plan execution.
+
 ### 7. Agent session provider
 
 Checked-in location: `src/session/`.

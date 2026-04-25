@@ -4,6 +4,26 @@ This document captures the design for Sloppy's spec-driven orchestration model: 
 
 It is a design doc, not a state-of-the-code doc. It supersedes earlier informal sketches and is the reference the implementation should be measured against. The orchestration state machine in `docs/09-orchestration-state-machine.md` is the lower-level execution substrate this design sits on top of.
 
+## Current implementation status
+
+The checked-in implementation has the first HITL substrate in place, additively:
+
+- `/goals`, `/gates`, `/messages`, `/audit`, and `/blobs` are orchestration provider surfaces.
+- The public session provider mirrors a bounded pending-gate summary on `/orchestration` and can resolve those HITL gates through `accept_gate` / `reject_gate`.
+- `create_plan_revision` writes a proposed complete slice set and opens a `plan_accept` gate; accepting the gate activates the revision and creates schedulable `/tasks` slices.
+- Docs/12 slices keep the public task API but expose `slice_id`, upstream plan/spec version refs, assumptions, attempt metadata, typed evidence claims, and slice-gate state.
+- Legacy `create_plan`, `create_task`, `create_tasks`, `record_verification`, and `complete` remain valid without docs/12 gates.
+- Plan execution rejects scheduling/starting when the referenced spec version is stale.
+- `submit_evidence_claim` stores typed checks/observations and opens a `slice_gate` once criteria are covered by replayable or observed evidence; self-attested evidence is retained but cannot satisfy criteria.
+- Plan revisions can opt slice gates into the first deterministic policy resolver: `slice_gate_resolver: "policy"` auto-accepts a slice gate only after typed evidence covers every criterion and records the policy/evidence refs on the gate.
+- `record_verification` is still a compatibility affordance and writes a minimal legacy `EvidenceClaim`.
+- `run_final_audit` replays allowlisted replayable evidence commands against the current workspace, stores audit output as blobs, and HITL plan completion requires a passing final audit.
+- Plan and plan-revision creation can carry configured wall-time and retry-per-slice budgets, including provider-level defaults from config. Digest generation reports budget burn and opens a `budget_exceeded` gate when a plan exceeds its wall-time cap; over-budget `retry_of` replacements are rejected and open a `budget_exceeded` gate for the logical slice.
+- `generate_digest` on `/digests` writes immutable typed digest payloads summarizing headline state, slice changes, escalations, policy auto-resolutions, near-misses, drift metrics, configured wall-time/retry budget state, and next slices.
+- The spec provider persists goal-version refs, accepted specs, immutable spec version snapshots, and criterion metadata on requirements.
+
+Full scoped policy trees, token/cost budgets, precedents, push delivery for digests, and automated spec/planner runners remain future work.
+
 ## Engagement levels
 
 This machinery is **opt-in and additive**, not mandatory. Architecturally, every component below is implemented as a SLOP provider stack — state tree + affordances — consistent with the project principle that the core stays small and capabilities come from providers (see `CLAUDE.md`). The core agent loop (observe state, invoke affordance) does not know orchestration exists. Mount no orchestration provider, get a bare agent.
@@ -126,6 +146,8 @@ Inner scopes override outer. A session may default to autonomous; a high-stakes 
 | Budget exceeded | always escalate |
 
 "HITL preset" sets all gates to escalate. "Autonomous preset" sets the auto-resolvable ones to auto. Users can hand-tune per scope.
+
+Current implementation note: the only policy resolver implemented so far is the deterministic slice-gate evidence-complete rule. It records `resolved_by=policy`, `resolution_policy_ref`, and `resolution_evidence_refs` on the gate. All spec, plan, goal, irreversible-action, and generic open gates still require explicit resolution unless future policy layers add narrower rules.
 
 ### SpecQuestion classification
 

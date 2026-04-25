@@ -29,6 +29,8 @@ Implemented now:
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
 - built-in `terminal`, `filesystem`, `orchestration`, `spec`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
 - durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, dependency normalization plus parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and acceptance-criteria-gated verification with cited evidence refs
+- additive docs/12 HITL orchestration foundations: versioned goal artifacts, generic gates, typed protocol messages, accepted plan revisions that create gated slices, typed evidence claims with blob storage, deterministic policy-resolved slice gates, stale-spec execution rejection, allowlisted final-audit replay, configured wall-time and retry-per-slice budget gates, typed digest generation, and drift metrics exposed in provider state
+- spec provider goal-version refs, accepted specs, immutable version snapshots, and optional criterion metadata (`criterion_kind`, `verification_hint`) on requirements
 - orchestrator-mode guardrails enforced as hub `InvokePolicy` rules (`orchestratorRoleRule`, `terminalSafetyRule`, `dangerousActionRule`) that block direct file mutations, non-whitelisted shell commands, and direct delegation spawns when `roleId === "orchestrator"` so fixes stay delegated through scheduled tasks
 - in-process transport for built-in providers
 - live-watched provider descriptor discovery for Unix socket and WebSocket providers
