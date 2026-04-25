@@ -266,6 +266,94 @@ describe("TerminalProvider", () => {
     }
   });
 
+  test("requires approval for append redirection (>>)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const { hub, consumer } = await attachTerminalToHub(provider);
+
+    try {
+      const result = await hub.invoke("terminal", "/session", "execute", {
+        command: "echo more >> out.txt",
+        background: false,
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.error?.code).toBe("approval_required");
+
+      const approvals = await consumer.query("/approvals", 2);
+      expect(approvals.children?.[0]?.properties?.reason).toContain("file output redirection");
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("requires approval for combined-redirection forms (&>, &>>, > x 2>&1)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const { hub } = await attachTerminalToHub(provider);
+
+    try {
+      for (const command of [
+        "printf x &> combined.txt",
+        "printf x &>> combined.txt",
+        "printf x > combined.txt 2>&1",
+      ]) {
+        const result = await hub.invoke("terminal", "/session", "execute", {
+          command,
+          background: false,
+        });
+        expect(result.status).toBe("error");
+        expect(result.error?.code).toBe("approval_required");
+      }
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("requires approval for `tee` to a non-/dev/null target", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const { hub } = await attachTerminalToHub(provider);
+
+    try {
+      for (const command of ["tee tee-out.txt", "printf hi | tee out.txt", "tee -a log.txt"]) {
+        const result = await hub.invoke("terminal", "/session", "execute", {
+          command,
+          background: false,
+        });
+        expect(result.status).toBe("error");
+        expect(result.error?.code).toBe("approval_required");
+      }
+
+      // tee /dev/null is harmless and should be allowed.
+      const okResult = await hub.invoke("terminal", "/session", "execute", {
+        command: "printf hi | tee /dev/null",
+        background: false,
+      });
+      expect(okResult.status).toBe("ok");
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("allows harmless file descriptor redirection without approval", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);

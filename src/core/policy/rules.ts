@@ -12,18 +12,33 @@ const ALLOW: PolicyDecision = { kind: "allow" };
  */
 const DESTRUCTIVE_COMMAND_RE =
   /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|git\s+(?:reset|clean|checkout)\s|sed\s+-i|truncate\s|dd\s|shred\s)/;
-const FILE_OUTPUT_REDIRECT_RE = /(^|[^>])(?:\d?>|&>)(?![>&])\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g;
+// File-clobbering redirects: `>`, `>>`, `2>`, `2>>`, `&>`, `&>>`. The leading
+// `(?:^|[^>&])` ensures we don't double-count the second `>` in `>>` and that
+// we don't misread `2>&1` (where the target is a file descriptor, not a file).
+// The target excludes `>` so a stray `>>` operator can't itself match as one.
+const FILE_OUTPUT_REDIRECT_RE = /(?:^|[^>&])(?:\d?>{1,2}|&>{1,2})\s*("[^"]+"|'[^']+'|[^\s;&|>]+)/g;
+// `tee` (with or without flags) writes to one or more files; treat any target
+// other than `/dev/null` as a write that needs approval.
+const TEE_WRITE_RE = /(?:^|[\s;&|])tee\b(?:\s+-[a-zA-Z]+)*\s+("[^"]+"|'[^']+'|[^\s;&|]+)/g;
 
-function usesFileOutputRedirection(command: string): boolean {
-  FILE_OUTPUT_REDIRECT_RE.lastIndex = 0;
-  for (const match of command.matchAll(FILE_OUTPUT_REDIRECT_RE)) {
-    const rawTarget = match[2]?.trim() ?? "";
+function writesToNonNullTarget(command: string, regex: RegExp): boolean {
+  regex.lastIndex = 0;
+  for (const match of command.matchAll(regex)) {
+    const rawTarget = match[1]?.trim() ?? "";
     const target = rawTarget.replace(/^["']|["']$/g, "");
     if (target !== "/dev/null") {
       return true;
     }
   }
   return false;
+}
+
+function usesFileOutputRedirection(command: string): boolean {
+  return writesToNonNullTarget(command, FILE_OUTPUT_REDIRECT_RE);
+}
+
+function usesTeeWrite(command: string): boolean {
+  return writesToNonNullTarget(command, TEE_WRITE_RE);
 }
 
 function describeTerminalReason(command: string): string {
@@ -33,6 +48,9 @@ function describeTerminalReason(command: string): string {
   }
   if (usesFileOutputRedirection(command)) {
     reasons.push("uses file output redirection");
+  }
+  if (usesTeeWrite(command)) {
+    reasons.push("pipes to `tee` writing a file");
   }
   return `Shell command requires approval because it ${reasons.join(" and ")}.`;
 }
@@ -46,7 +64,11 @@ export const terminalSafetyRule: InvokePolicy = {
     if (ctx.preApproved) {
       return ALLOW;
     }
-    if (!DESTRUCTIVE_COMMAND_RE.test(command) && !usesFileOutputRedirection(command)) {
+    if (
+      !DESTRUCTIVE_COMMAND_RE.test(command) &&
+      !usesFileOutputRedirection(command) &&
+      !usesTeeWrite(command)
+    ) {
       return ALLOW;
     }
     return {
