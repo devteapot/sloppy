@@ -2,7 +2,7 @@ import type { ClientTransport } from "@slop-ai/consumer/browser";
 import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type { ConsumerHub } from "../core/consumer";
-import { SubAgentRunner } from "../core/sub-agent";
+import { attachSubAgentRunnerFactory } from "../runtime/delegation";
 import { BrowserProvider } from "./builtin/browser";
 import { CronProvider } from "./builtin/cron";
 import { DelegationProvider } from "./builtin/delegation";
@@ -30,7 +30,8 @@ export interface RegisteredProvider {
   transport: ClientTransport;
   transportLabel: string;
   stop?: () => void;
-  onHubReady?: (hub: ConsumerHub, config: SloppyConfig) => void;
+  systemPromptFragment?: (config: SloppyConfig) => string | null;
+  attachRuntime?: (hub: ConsumerHub, config: SloppyConfig) => { stop(): void } | undefined;
 }
 
 export function describeProviderTransport(transport: ProviderTransportDescriptor): string {
@@ -185,47 +186,9 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(delegation.server),
       transportLabel: "in-process",
       stop: () => delegation.stop(),
-      onHubReady: (hub, hubConfig) => {
-        delegation.setParentHub(hub);
-        const orchestrationProviderId = hubConfig.providers.builtin.orchestration
-          ? "orchestration"
-          : undefined;
-        delegation.setRunnerFactory((spawn, callbacks) => {
-          const runner = new SubAgentRunner({
-            id: spawn.id,
-            name: spawn.name,
-            goal: spawn.goal,
-            model: spawn.model,
-            parentHub: hub,
-            parentConfig: hubConfig,
-            orchestrationProviderId,
-            orchestrationTaskId: spawn.orchestrationTaskId,
-          });
-          const unsubscribe = runner.onChange((event) => {
-            callbacks.onUpdate({
-              status: event.status,
-              result: event.resultPreview,
-              error: event.error,
-              session_provider_id: runner.sessionProviderId,
-              completed_at: event.completedAt,
-            });
-            if (
-              event.status === "completed" ||
-              event.status === "failed" ||
-              event.status === "cancelled"
-            ) {
-              unsubscribe();
-            }
-          });
-          return {
-            async start() {
-              await runner.start();
-            },
-            async cancel() {
-              await runner.cancel();
-            },
-          };
-        });
+      attachRuntime: (hub, hubConfig) => {
+        attachSubAgentRunnerFactory(delegation, hub, hubConfig);
+        return undefined;
       },
     });
   }

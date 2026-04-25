@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { defaultConfigPromise } from "../src/config/load";
 import { buildSystemPrompt } from "../src/core/context";
+import { orchestratorSystemPromptFragment } from "../src/runtime/orchestration";
 
 const BASE_CONFIG = await defaultConfigPromise;
 
@@ -12,18 +13,15 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("Orchestrator mode");
   });
 
-  test("returns base prompt when orchestratorMode is disabled", () => {
+  test("returns base prompt when no fragments are provided", () => {
     const prompt = buildSystemPrompt(BASE_CONFIG);
     expect(prompt).toContain("You are Sloppy");
     expect(prompt).not.toContain("Orchestrator mode");
   });
 
-  test("appends orchestrator section when orchestratorMode is enabled", () => {
-    const config = {
-      ...BASE_CONFIG,
-      agent: { ...BASE_CONFIG.agent, orchestratorMode: true },
-    };
-    const prompt = buildSystemPrompt(config);
+  test("appends fragments when provided", () => {
+    const fragment = orchestratorSystemPromptFragment();
+    const prompt = buildSystemPrompt(BASE_CONFIG, [fragment]);
     expect(prompt).toContain("You are Sloppy");
     expect(prompt).toContain("Orchestrator mode");
     expect(prompt).toContain("create_plan");

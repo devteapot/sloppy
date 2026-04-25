@@ -1,4 +1,4 @@
-import { formatTree, type SlopNode } from "@slop-ai/consumer/browser";
+import { formatTree } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
@@ -7,8 +7,17 @@ import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
-import type { ProviderTreeView } from "./subscriptions";
+import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
+
+export interface RunLoopHooks {
+  toolPolicy?: (
+    resolution: RuntimeToolResolution,
+    params: Record<string, unknown>,
+    config: SloppyConfig,
+  ) => ToolPolicyDecision;
+  beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
+}
 
 type ToolResult = {
   block: ToolResultContentBlock;
@@ -84,67 +93,12 @@ type ExecuteToolCallResult =
       errorMessage: string;
     };
 
-const DELEGATED_WORK_SUSPEND_TIMEOUT_MS = 5 * 60_000;
-const STATE_CHANGE_WAIT_SLICE_MS = 30_000;
-const ACTIVE_AGENT_STATUSES = new Set(["pending", "running"]);
-const ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS = new Set([
-  "write",
-  "edit",
-  "mkdir",
-  "delete",
-  "remove",
-  "move",
-  "copy",
-]);
-
-const ORCHESTRATOR_SAFE_TERMINAL_COMMANDS = [
-  /^npm run (build|lint|test|typecheck)$/,
-  /^npm test$/,
-  /^bun run (build|lint|test|typecheck)$/,
-  /^bun test(?: .*)?$/,
-  /^tsc(?: -b| --noEmit)?$/,
-  /^vite build$/,
-];
-
 function stringifyResult(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
 
   return JSON.stringify(value, null, 2);
-}
-
-function orchestratorToolPolicyViolation(
-  config: SloppyConfig,
-  resolution: RuntimeToolResolution,
-  params: Record<string, unknown>,
-): string | null {
-  if (!config.agent.orchestratorMode || resolution.kind !== "affordance") {
-    return null;
-  }
-
-  if (
-    resolution.providerId === "filesystem" &&
-    ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS.has(resolution.action)
-  ) {
-    return `Orchestrator mode cannot call filesystem.${resolution.action} directly. Create or retry a delegated task with spawn_agent so a sub-agent performs file mutations.`;
-  }
-
-  if (resolution.providerId === "delegation" && resolution.action === "spawn_agent") {
-    return `Orchestrator mode does not spawn delegation agents directly. Create or retry orchestration tasks; the runtime scheduler starts ready tasks when dependencies and capacity allow.`;
-  }
-
-  if (resolution.providerId === "terminal" && resolution.action === "execute") {
-    const command = typeof params.command === "string" ? params.command.trim() : "";
-    const isSafeVerification = ORCHESTRATOR_SAFE_TERMINAL_COMMANDS.some((pattern) =>
-      pattern.test(command),
-    );
-    if (!isSafeVerification) {
-      return `Orchestrator mode can only run simple verification commands directly (build, lint, test, typecheck). Delegate setup, install, repair, and shell-composed commands to a sub-agent.`;
-    }
-  }
-
-  return null;
 }
 
 function toolErrorCode(error: unknown): string | undefined {
@@ -157,94 +111,6 @@ function toolErrorCode(error: unknown): string | undefined {
     return typeof candidate.code === "string" ? candidate.code : undefined;
   }
   return undefined;
-}
-
-function getNodeProperties(node: SlopNode): Record<string, unknown> {
-  const properties = node.properties;
-  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
-    return {};
-  }
-  return properties as Record<string, unknown>;
-}
-
-function walkTree(node: SlopNode, visit: (node: SlopNode) => void): void {
-  visit(node);
-  for (const child of node.children ?? []) {
-    walkTree(child, visit);
-  }
-}
-
-function hasPendingChildApproval(view: ProviderTreeView): boolean {
-  let found = false;
-  walkTree(view.overviewTree, (node) => {
-    const properties = getNodeProperties(node);
-    const pendingApprovals = properties.pending_approvals;
-    if (Array.isArray(pendingApprovals) && pendingApprovals.length > 0) {
-      found = true;
-    }
-    if (properties.state === "waiting_approval") {
-      found = true;
-    }
-  });
-  if (view.detailTree) {
-    walkTree(view.detailTree, (node) => {
-      const properties = getNodeProperties(node);
-      if (properties.state === "waiting_approval") {
-        found = true;
-      }
-    });
-  }
-  return found;
-}
-
-function hasSuspensibleDelegatedWork(views: ProviderTreeView[]): boolean {
-  const delegationView = views.find((view) => view.providerId === "delegation");
-  if (!delegationView || hasPendingChildApproval(delegationView)) {
-    return false;
-  }
-
-  let activeAgent = false;
-  walkTree(delegationView.overviewTree, (node) => {
-    const properties = getNodeProperties(node);
-    if (typeof properties.status === "string" && ACTIVE_AGENT_STATUSES.has(properties.status)) {
-      activeAgent = true;
-    }
-  });
-
-  return activeAgent;
-}
-
-async function suspendForDelegatedWork(hub: ConsumerHub, signal?: AbortSignal): Promise<void> {
-  const startedAt = Date.now();
-  let logged = false;
-
-  while (hasSuspensibleDelegatedWork(hub.getProviderViews())) {
-    if (signal?.aborted) {
-      throw new LlmAbortError();
-    }
-
-    const elapsed = Date.now() - startedAt;
-    const remaining = DELEGATED_WORK_SUSPEND_TIMEOUT_MS - elapsed;
-    if (remaining <= 0) {
-      debug("loop", "delegated_work_suspend_timeout", {
-        timeout_ms: DELEGATED_WORK_SUSPEND_TIMEOUT_MS,
-      });
-      return;
-    }
-
-    if (!logged) {
-      debug("loop", "delegated_work_suspend", {
-        timeout_ms: DELEGATED_WORK_SUSPEND_TIMEOUT_MS,
-      });
-      logged = true;
-    }
-
-    const revision = hub.getStateRevision();
-    await hub.waitForStateChange(revision, {
-      timeoutMs: Math.min(STATE_CHANGE_WAIT_SLICE_MS, remaining),
-      signal,
-    });
-  }
 }
 
 export function truncateToolResult(result: unknown, maxSize: number): string {
@@ -334,6 +200,7 @@ async function executeToolCall(
   hub: ConsumerHub,
   config: SloppyConfig,
   onToolEvent?: (event: AgentToolEvent) => void,
+  toolPolicy?: RunLoopHooks["toolPolicy"],
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
@@ -467,8 +334,8 @@ async function executeToolCall(
       summary,
     });
 
-    const policyViolation = orchestratorToolPolicyViolation(config, resolution, rawInput);
-    if (policyViolation) {
+    const policyDecision = toolPolicy?.(resolution, rawInput, config) ?? null;
+    if (policyDecision) {
       return {
         kind: "completed",
         invocation,
@@ -477,13 +344,13 @@ async function executeToolCall(
             type: "tool_result",
             toolUseId: toolUse.id,
             isError: true,
-            content: policyViolation,
+            content: policyDecision.reject,
           },
           summary,
         },
         status: "error",
-        errorCode: "orchestrator_tool_restricted",
-        errorMessage: policyViolation,
+        errorCode: "tool_policy_rejected",
+        errorMessage: policyDecision.reject,
       };
     }
 
@@ -566,6 +433,7 @@ async function executeToolCalls(options: {
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
+  toolPolicy?: RunLoopHooks["toolPolicy"];
 }): Promise<
   | {
       status: "completed";
@@ -587,6 +455,7 @@ async function executeToolCalls(options: {
       options.hub,
       options.config,
       options.onToolEvent,
+      options.toolPolicy,
     );
 
     if (result.kind === "approval_requested") {
@@ -644,9 +513,13 @@ export async function runLoop(options: {
     continuation: PendingApprovalContinuation;
     resolvedToolResult: ToolResultContentBlock;
   };
+  systemPrompt?: string;
+  hooks?: RunLoopHooks;
 }): Promise<RunLoopResult> {
-  const system = buildSystemPrompt(options.config);
+  const system = options.systemPrompt ?? buildSystemPrompt(options.config);
   let pendingResume = options.resume;
+  const toolPolicy = options.hooks?.toolPolicy;
+  const beforeNextTurn = options.hooks?.beforeNextTurn;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
     if (options.signal?.aborted) {
@@ -669,6 +542,7 @@ export async function runLoop(options: {
         onToolCall: options.onToolCall,
         onToolResult: options.onToolResult,
         onToolEvent: options.onToolEvent,
+        toolPolicy,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -680,7 +554,9 @@ export async function runLoop(options: {
 
       options.history.addToolResults(resumedExecution.toolResults);
       pendingResume = undefined;
-      await suspendForDelegatedWork(options.hub, options.signal);
+      if (beforeNextTurn) {
+        await beforeNextTurn(options.hub, options.signal);
+      }
       continue;
     }
 
@@ -723,6 +599,7 @@ export async function runLoop(options: {
       onToolCall: options.onToolCall,
       onToolResult: options.onToolResult,
       onToolEvent: options.onToolEvent,
+      toolPolicy,
     });
     if (execution.status === "waiting_approval") {
       return {
@@ -732,7 +609,9 @@ export async function runLoop(options: {
     }
 
     options.history.addToolResults(execution.toolResults);
-    await suspendForDelegatedWork(options.hub, options.signal);
+    if (beforeNextTurn) {
+      await beforeNextTurn(options.hub, options.signal);
+    }
   }
 
   throw new Error(

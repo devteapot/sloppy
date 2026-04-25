@@ -23,7 +23,6 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -177,7 +176,7 @@ describe("Agent orchestration (sub-agent federation)", () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { SubAgentRunner } = await import("../src/runtime/delegation");
     const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
 
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-orch-fed-"));
@@ -364,7 +363,7 @@ describe("Agent orchestration (sub-agent federation)", () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { SubAgentRunner } = await import("../src/runtime/delegation");
     const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
 
     const readyState = {
@@ -493,7 +492,7 @@ describe("Agent orchestration (sub-agent federation)", () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { SubAgentRunner } = await import("../src/runtime/delegation");
     const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
     const { SpecProvider } = await import("../src/providers/builtin/spec");
 

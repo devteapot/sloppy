@@ -7,15 +7,15 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import {
-  OrchestrationScheduler,
-  type OrchestrationSchedulerEvent,
-} from "../src/core/orchestration-scheduler";
-import {
   DelegationProvider,
   type DelegationRunnerFactory,
 } from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { OrchestrationProvider } from "../src/providers/builtin/orchestration";
+import {
+  OrchestrationScheduler,
+  type OrchestrationSchedulerEvent,
+} from "../src/runtime/orchestration";
 
 const tempPaths: string[] = [];
 
@@ -31,7 +31,6 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-    orchestratorMode: true,
   },
   maxToolResultSize: 4096,
   providers: {

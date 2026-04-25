@@ -1,13 +1,13 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
 
-import type { SloppyConfig } from "../config/schema";
-import type { LlmProfileManager } from "../llm/profile-manager";
-import { InProcessTransport } from "../providers/builtin/in-process";
-import type { RegisteredProvider } from "../providers/registry";
-import { AgentSessionProvider } from "../session/provider";
-import { type SessionAgentFactory, SessionRuntime } from "../session/runtime";
-import type { ConsumerHub } from "./consumer";
-import { debug } from "./debug";
+import type { SloppyConfig } from "../../config/schema";
+import type { ConsumerHub } from "../../core/consumer";
+import { debug } from "../../core/debug";
+import type { LlmProfileManager } from "../../llm/profile-manager";
+import { InProcessTransport } from "../../providers/builtin/in-process";
+import type { RegisteredProvider } from "../../providers/registry";
+import { AgentSessionProvider } from "../../session/provider";
+import { type SessionAgentFactory, SessionRuntime } from "../../session/runtime";
 
 export type SubAgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -206,13 +206,14 @@ export class SubAgentRunner {
     this.orchestrationTaskId = options.orchestrationTaskId;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
-    // Sub-agents do leaf work. Strip orchestrator-mode and the orchestration/
-    // delegation providers so they can't re-enter planning mode and recurse.
-    // The parent hub still federates the child's session tree back to the
-    // orchestrator via AgentSessionProvider.
+    // Sub-agents do leaf work. Strip the orchestration/delegation providers so
+    // they can't re-enter planning mode and recurse. The child runtime is
+    // constructed with the default role (no orchestrator role profile), so the
+    // orchestrator system prompt and tool policy do not apply. The parent hub
+    // still federates the child's session tree back to the orchestrator via
+    // AgentSessionProvider.
     const childConfig = {
       ...options.parentConfig,
-      agent: { ...options.parentConfig.agent, orchestratorMode: false },
       providers: {
         ...options.parentConfig.providers,
         builtin: {

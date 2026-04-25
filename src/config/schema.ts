@@ -38,7 +38,6 @@ export const sloppyConfigSchema = z.object({
       detailMaxNodes: z.number().int().min(10).default(200),
       historyTurns: z.number().int().min(1).default(8),
       toolResultMaxChars: z.number().int().min(512).default(16000),
-      orchestratorMode: z.boolean().default(false),
     })
     .default({
       maxIterations: 32,
@@ -50,7 +49,6 @@ export const sloppyConfigSchema = z.object({
       detailMaxNodes: 200,
       historyTurns: 8,
       toolResultMaxChars: 16000,
-      orchestratorMode: false,
     }),
   maxToolResultSize: z.number().int().min(100).default(4096),
   providers: z

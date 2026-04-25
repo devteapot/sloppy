@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 
 import type { AgentCallbacks, AgentToolEvent, AgentToolInvocation } from "../core/agent";
 import type { ExternalProviderState } from "../core/consumer";
-import type { OrchestrationSchedulerEvent } from "../core/orchestration-scheduler";
+import type { OrchestrationSchedulerEvent } from "../runtime/orchestration";
 
 export type AgentEventActor = {
   id: string;
@@ -92,6 +92,7 @@ export type AgentEvent = BaseEvent &
 
 export interface AgentEventBus {
   callbacks: AgentCallbacks;
+  onSchedulerEvent: (event: OrchestrationSchedulerEvent) => void;
   emit(event: AgentEvent): void;
   stop(): void;
 }
@@ -292,17 +293,19 @@ export function createAgentEventBus(options: {
         states: states.map((s) => ({ id: s.id, status: s.status, message: s.lastError })),
       });
     },
-    onSchedulerEvent: (event: OrchestrationSchedulerEvent) => {
-      write({
-        ts: new Date().toISOString(),
-        actor: options.actor,
-        ...event,
-      });
-    },
+  };
+
+  const onSchedulerEvent = (event: OrchestrationSchedulerEvent) => {
+    write({
+      ts: new Date().toISOString(),
+      actor: options.actor,
+      ...event,
+    });
   };
 
   return {
     callbacks,
+    onSchedulerEvent,
     emit: write,
     stop() {
       stopped = true;
@@ -317,7 +320,6 @@ export function mergeCallbacks(a: AgentCallbacks, b: AgentCallbacks): AgentCallb
     onToolResult: chain(a.onToolResult, b.onToolResult),
     onToolEvent: chain(a.onToolEvent, b.onToolEvent),
     onExternalProviderStates: chain(a.onExternalProviderStates, b.onExternalProviderStates),
-    onSchedulerEvent: chain(a.onSchedulerEvent, b.onSchedulerEvent),
     onProviderSnapshot: chain(a.onProviderSnapshot, b.onProviderSnapshot),
   };
 }

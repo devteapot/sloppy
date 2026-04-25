@@ -1,29 +1,20 @@
-export type DebugScope =
-  | "sub-agent"
-  | "orchestration"
-  | "filesystem"
-  | "delegation"
-  | "hub"
-  | "loop";
+export type DebugScope = string;
 
-const ALL_SCOPES: ReadonlySet<DebugScope> = new Set([
-  "sub-agent",
-  "orchestration",
-  "filesystem",
-  "delegation",
-  "hub",
-  "loop",
-]);
+let allEnabled = false;
 
 function parseEnabled(): Set<DebugScope> {
   const raw = (process.env.SLOPPY_DEBUG ?? "").trim();
+  allEnabled = false;
   if (!raw) return new Set();
-  if (raw === "1" || raw === "all" || raw === "*") return new Set(ALL_SCOPES);
+  if (raw === "1" || raw === "all" || raw === "*") {
+    allEnabled = true;
+    return new Set();
+  }
   const out = new Set<DebugScope>();
   for (const part of raw.split(",")) {
     const token = part.trim();
-    if (ALL_SCOPES.has(token as DebugScope)) {
-      out.add(token as DebugScope);
+    if (token.length > 0) {
+      out.add(token);
     }
   }
   return out;
@@ -36,11 +27,11 @@ export function reloadDebugFromEnv(): void {
 }
 
 export function isDebugEnabled(scope: DebugScope): boolean {
-  return enabled.has(scope);
+  return allEnabled || enabled.has(scope);
 }
 
 export function debug(scope: DebugScope, event: string, data?: Record<string, unknown>): void {
-  if (!enabled.has(scope)) return;
+  if (!allEnabled && !enabled.has(scope)) return;
   const line = JSON.stringify({
     ts: new Date().toISOString(),
     scope,

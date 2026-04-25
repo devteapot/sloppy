@@ -17,20 +17,20 @@ import {
   type RegisteredProvider,
 } from "../providers/registry";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
+import { buildSystemPrompt } from "./context";
 import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
   type PendingApprovalContinuation,
+  type RunLoopHooks,
   type RunLoopResult,
   runLoop,
 } from "./loop";
-import {
-  OrchestrationScheduler,
-  type OrchestrationSchedulerEvent,
-} from "./orchestration-scheduler";
+import { defaultRole, type RoleProfile } from "./role";
 
 export type { AgentToolEvent, AgentToolInvocation } from "./loop";
+export type { RoleProfile } from "./role";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 
@@ -59,10 +59,9 @@ export interface AgentCallbacks {
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onExternalProviderStates?: (states: ExternalProviderState[]) => void;
-  onSchedulerEvent?: (event: OrchestrationSchedulerEvent) => void;
   onProviderSnapshot?: (update: {
     providerId: string;
-    path: "/approvals" | "/tasks";
+    path: string;
     tree: SlopNode | null;
   }) => void;
 }
@@ -82,13 +81,18 @@ export class Agent {
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
   private activeRunAbortController: AbortController | null = null;
-  private orchestrationScheduler: OrchestrationScheduler | null = null;
+  private role: RoleProfile;
+  private mirrorProviderPaths: string[];
+  private runtimeStops: Array<{ stop(): void }> = [];
+  private systemPromptFragments: string[] = [];
 
   constructor(
     options?: {
       config?: SloppyConfig;
       llmProfileManager?: LlmProfileManager;
       ignoredProviderIds?: string[];
+      role?: RoleProfile;
+      mirrorProviderPaths?: string[];
     } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
@@ -98,10 +102,11 @@ export class Agent {
       onToolResult: options?.onToolResult,
       onToolEvent: options?.onToolEvent,
       onExternalProviderStates: options?.onExternalProviderStates,
-      onSchedulerEvent: options?.onSchedulerEvent,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
     this.ignoredProviderIds = new Set(options?.ignoredProviderIds ?? []);
+    this.role = options?.role ?? defaultRole;
+    this.mirrorProviderPaths = options?.mirrorProviderPaths ?? [];
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
@@ -140,24 +145,29 @@ export class Agent {
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     for (const provider of providers) {
-      provider.onHubReady?.(hub, this.config);
+      const runtimeStop = provider.attachRuntime?.(hub, this.config);
+      if (runtimeStop) {
+        this.runtimeStops.push(runtimeStop);
+      }
+      const fragment = provider.systemPromptFragment?.(this.config);
+      if (fragment) {
+        this.systemPromptFragments.push(fragment);
+      }
     }
 
-    for (const view of hub.getProviderViews()) {
-      await this.registerProviderMirrors(view.providerId);
+    const roleRuntime = this.role.attachRuntime?.(hub, this.config);
+    if (roleRuntime) {
+      this.runtimeStops.push(roleRuntime);
+    }
+    const roleFragment = this.role.systemPromptFragment?.(this.config);
+    if (roleFragment) {
+      this.systemPromptFragments.push(roleFragment);
     }
 
-    if (
-      this.config.agent.orchestratorMode &&
-      this.config.providers.builtin.orchestration &&
-      this.config.providers.builtin.delegation
-    ) {
-      this.orchestrationScheduler = new OrchestrationScheduler({
-        hub,
-        maxAgents: this.config.providers.delegation.maxAgents,
-        onEvent: this.callbacks.onSchedulerEvent,
-      });
-      await this.orchestrationScheduler.start();
+    if (this.mirrorProviderPaths.length > 0) {
+      for (const view of hub.getProviderViews()) {
+        await this.registerProviderMirrors(view.providerId);
+      }
     }
 
     if (this.config.providers.discovery.enabled) {
@@ -205,6 +215,8 @@ export class Agent {
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
+          systemPrompt: this.buildSystemPrompt(),
+          hooks: this.buildHooks(),
         }),
       );
     });
@@ -253,9 +265,22 @@ export class Agent {
             continuation: pendingApproval,
             resolvedToolResult: result.block,
           },
+          systemPrompt: this.buildSystemPrompt(),
+          hooks: this.buildHooks(),
         }),
       );
     });
+  }
+
+  private buildSystemPrompt(): string {
+    return buildSystemPrompt(this.config, this.systemPromptFragments);
+  }
+
+  private buildHooks(): RunLoopHooks {
+    return {
+      toolPolicy: this.role.toolPolicy,
+      beforeNextTurn: this.role.beforeNextTurn,
+    };
   }
 
   async invokeProvider(
@@ -304,8 +329,15 @@ export class Agent {
   }
 
   shutdown(): void {
-    this.orchestrationScheduler?.stop();
-    this.orchestrationScheduler = null;
+    for (const runtimeStop of this.runtimeStops) {
+      try {
+        runtimeStop.stop();
+      } catch {
+        // best-effort teardown
+      }
+    }
+    this.runtimeStops = [];
+    this.systemPromptFragments = [];
 
     this.discoveryStop?.();
     this.discoveryStop = null;
@@ -364,40 +396,31 @@ export class Agent {
   }
 
   private async registerProviderMirrors(providerId: string): Promise<void> {
-    if (!this.hub || this.providerWatchStops.has(providerId)) {
+    if (
+      !this.hub ||
+      this.providerWatchStops.has(providerId) ||
+      this.mirrorProviderPaths.length === 0
+    ) {
       return;
     }
 
-    const stops = await Promise.all([
-      this.hub.watchPath(
-        providerId,
-        "/approvals",
-        (tree) => {
-          this.callbacks.onProviderSnapshot?.({
-            providerId,
-            path: "/approvals",
-            tree,
-          });
-        },
-        {
-          depth: 2,
-        },
+    const hub = this.hub;
+    const stops = await Promise.all(
+      this.mirrorProviderPaths.map((path) =>
+        hub.watchPath(
+          providerId,
+          path,
+          (tree) => {
+            this.callbacks.onProviderSnapshot?.({
+              providerId,
+              path,
+              tree,
+            });
+          },
+          { depth: 2 },
+        ),
       ),
-      this.hub.watchPath(
-        providerId,
-        "/tasks",
-        (tree) => {
-          this.callbacks.onProviderSnapshot?.({
-            providerId,
-            path: "/tasks",
-            tree,
-          });
-        },
-        {
-          depth: 2,
-        },
-      ),
-    ]);
+    );
     this.providerWatchStops.set(providerId, stops);
   }
 
@@ -411,16 +434,13 @@ export class Agent {
       stop();
     }
     this.providerWatchStops.delete(providerId);
-    this.callbacks.onProviderSnapshot?.({
-      providerId,
-      path: "/approvals",
-      tree: null,
-    });
-    this.callbacks.onProviderSnapshot?.({
-      providerId,
-      path: "/tasks",
-      tree: null,
-    });
+    for (const path of this.mirrorProviderPaths) {
+      this.callbacks.onProviderSnapshot?.({
+        providerId,
+        path,
+        tree: null,
+      });
+    }
   }
 
   private async applyDiscoveryUpdate(update: ProviderDiscoveryUpdate): Promise<void> {

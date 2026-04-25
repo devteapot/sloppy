@@ -8,6 +8,7 @@ import { defaultConfigPromise } from "../src/config/load";
 import { Agent } from "../src/core/agent";
 import { LlmProfileManager } from "../src/llm/profile-manager";
 import { buildRuntimeLlmConfig } from "../src/llm/runtime-config";
+import { orchestratorRole } from "../src/runtime/orchestration";
 
 const LIVE = process.env.SLOPPY_E2E_LLM === "1";
 
@@ -73,7 +74,7 @@ async function buildOrchestratorConfig(root: string) {
   }
   return {
     ...baseConfig,
-    agent: { ...baseConfig.agent, orchestratorMode: true, maxIterations: 60 },
+    agent: { ...baseConfig.agent, maxIterations: 60 },
     // Build the llm config from the process env and discard managed profiles
     // so the live test cannot route to a stored cloud credential by mistake.
     llm: buildRuntimeLlmConfig(baseConfig.llm, {
@@ -259,7 +260,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
       const config = await buildOrchestratorConfig(root);
       await assertLlmRoutedToEnv(config);
-      const agent = new Agent({ config });
+      const agent = new Agent({ config, role: orchestratorRole });
       let passed = false;
       try {
         await agent.start();
@@ -297,7 +298,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
       const config = await buildOrchestratorConfig(root);
       await assertLlmRoutedToEnv(config);
-      const agent = new Agent({ config });
+      const agent = new Agent({ config, role: orchestratorRole });
       let passed = false;
       try {
         await agent.start();
@@ -352,7 +353,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
       const config = await buildOrchestratorConfig(root);
       await assertLlmRoutedToEnv(config);
-      const agent = new Agent({ config });
+      const agent = new Agent({ config, role: orchestratorRole });
       let passed = false;
       try {
         await agent.start();
@@ -406,7 +407,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
       const config = await buildOrchestratorConfig(root);
       await assertLlmRoutedToEnv(config);
-      const agent = new Agent({ config });
+      const agent = new Agent({ config, role: orchestratorRole });
       let passed = false;
       try {
         await agent.start();
@@ -473,7 +474,7 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
       const config = await buildOrchestratorConfig(root);
       await assertLlmRoutedToEnv(config);
-      const agent = new Agent({ config });
+      const agent = new Agent({ config, role: orchestratorRole });
       let passed = false;
       try {
         await agent.start();

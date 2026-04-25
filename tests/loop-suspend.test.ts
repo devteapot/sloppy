@@ -7,6 +7,7 @@ import { runLoop } from "../src/core/loop";
 import type { LlmAdapter, LlmChatOptions, LlmResponse } from "../src/llm/types";
 import { DelegationProvider } from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { createAwaitChildrenHook } from "../src/runtime/delegation";
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -25,7 +26,6 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -191,6 +191,7 @@ describe("runLoop delegated work suspension", () => {
         hub,
         history,
         llm,
+        hooks: { beforeNextTurn: createAwaitChildrenHook() },
       });
 
       expect(result.status).toBe("completed");

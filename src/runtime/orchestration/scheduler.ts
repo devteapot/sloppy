@@ -1,7 +1,7 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
 
-import type { ConsumerHub } from "./consumer";
-import { debug } from "./debug";
+import type { ConsumerHub } from "../../core/consumer";
+import { debug } from "../../core/debug";
 
 type SchedulerTaskStatus =
   | "pending"

@@ -14,8 +14,9 @@ export type {
   SloppyConfig,
 } from "./config/schema";
 export { sloppyConfigSchema } from "./config/schema";
-export { withOrchestratorBuiltins } from "./config/with-orchestrator-builtins";
 export { Agent } from "./core/agent";
+export type { RoleProfile } from "./core/role";
+export { defaultRole } from "./core/role";
 export { LlmConfigurationError, LlmProfileManager } from "./llm/profile-manager";
 export { BrowserProvider } from "./providers/builtin/browser";
 export { CronProvider } from "./providers/builtin/cron";
@@ -39,5 +40,19 @@ export {
   createRegisteredProviders,
   describeProviderTransport,
 } from "./providers/registry";
+export {
+  attachSubAgentRunnerFactory,
+  createAwaitChildrenHook,
+  SubAgentRunner,
+} from "./runtime/delegation";
+export type { OrchestrationSchedulerEvent } from "./runtime/orchestration";
+export {
+  createOrchestratorRole,
+  OrchestrationScheduler,
+  orchestratorRole,
+  orchestratorSystemPromptFragment,
+  orchestratorToolPolicy,
+  withOrchestratorBuiltins,
+} from "./runtime/orchestration";
 export type { AgentSessionSnapshot } from "./session";
 export { AgentSessionProvider, SessionRuntime, SessionService, SessionStore } from "./session";

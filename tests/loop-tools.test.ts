@@ -7,6 +7,7 @@ import { ConversationHistory } from "../src/core/history";
 import { type AgentToolEvent, runLoop, truncateToolResult } from "../src/core/loop";
 import type { LlmAdapter, LlmChatOptions, LlmResponse } from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { orchestratorToolPolicy } from "../src/runtime/orchestration";
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -25,7 +26,6 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -174,7 +174,6 @@ function orchestratorConfig(): SloppyConfig {
     ...TEST_CONFIG,
     agent: {
       ...TEST_CONFIG.agent,
-      orchestratorMode: true,
     },
   };
 }
@@ -343,6 +342,7 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
+        hooks: { toolPolicy: orchestratorToolPolicy },
       });
 
       expect(result.status).toBe("completed");
@@ -352,7 +352,7 @@ describe("runLoop tool execution", () => {
         expect.objectContaining({
           kind: "completed",
           status: "error",
-          errorCode: "orchestrator_tool_restricted",
+          errorCode: "tool_policy_rejected",
         }),
       );
     } finally {
@@ -415,6 +415,7 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
+        hooks: { toolPolicy: orchestratorToolPolicy },
       });
 
       expect(invokedCommands).toEqual([]);
@@ -422,7 +423,7 @@ describe("runLoop tool execution", () => {
         expect.objectContaining({
           kind: "completed",
           status: "error",
-          errorCode: "orchestrator_tool_restricted",
+          errorCode: "tool_policy_rejected",
         }),
       );
 
@@ -441,6 +442,7 @@ describe("runLoop tool execution", () => {
         hub,
         history: safeHistory,
         llm: safeLlm,
+        hooks: { toolPolicy: orchestratorToolPolicy },
       });
       expect(invokedCommands).toEqual(["npm run build"]);
     } finally {
@@ -503,6 +505,7 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
+        hooks: { toolPolicy: orchestratorToolPolicy },
       });
 
       expect(providerInvocations).toBe(0);
@@ -513,7 +516,7 @@ describe("runLoop tool execution", () => {
         expect.objectContaining({
           kind: "completed",
           status: "error",
-          errorCode: "orchestrator_tool_restricted",
+          errorCode: "tool_policy_rejected",
         }),
       );
     } finally {
