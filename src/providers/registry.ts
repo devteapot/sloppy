@@ -177,7 +177,10 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       stop: () => cron.stop(),
       approvals: cron.approvals,
       attachRuntime: (hub) => {
-        cron.setRunner(hub);
+        cron.setRunner({
+          invoke: hub.invoke.bind(hub),
+          rejectApproval: (id, reason) => hub.approvals.reject(id, reason),
+        });
         return {
           stop() {
             cron.setRunner(null);

@@ -32,6 +32,9 @@ const passthroughRunner: CronCommandRunner = {
       },
     };
   },
+  rejectApproval() {
+    // no policy in this runner, so nothing to cancel
+  },
 };
 
 function createCronHarness(
@@ -335,7 +338,8 @@ describe("CronProvider", () => {
     }
   });
 
-  test("marks a job errored when policy blocks the underlying command", async () => {
+  test("marks a job errored and cancels the queued approval when policy blocks", async () => {
+    const rejectedApprovals: Array<{ id: string; reason?: string }> = [];
     const policyBlockingRunner: CronCommandRunner = {
       async invoke() {
         return {
@@ -346,6 +350,9 @@ describe("CronProvider", () => {
             message: "matches destructive shell command pattern.",
           },
         };
+      },
+      rejectApproval(id, reason) {
+        rejectedApprovals.push({ id, reason });
       },
     };
     const { provider, consumer } = createCronHarness({}, policyBlockingRunner);
@@ -369,6 +376,9 @@ describe("CronProvider", () => {
         return current.properties?.status === "errored" ? current : null;
       });
       expect(errored.properties?.error_preview).toContain("Blocked by policy");
+      expect(rejectedApprovals).toHaveLength(1);
+      expect(rejectedApprovals[0]?.id).toBe("appr-1");
+      expect(rejectedApprovals[0]?.reason).toContain("destructive");
     } finally {
       provider.stop();
     }

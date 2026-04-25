@@ -13,6 +13,14 @@ export interface CronCommandRunner {
     data?: unknown;
     error?: { code?: string; message?: string };
   }>;
+  /**
+   * Cancel an approval that was implicitly enqueued for a command this
+   * provider routed through `invoke`. Cron must reject (not leave) any
+   * approval the hub queued for a job it's already abandoned, otherwise
+   * the destructive command can be run later by anyone watching the
+   * approvals queue, with no surviving link to the cron job.
+   */
+  rejectApproval(approvalId: string, reason?: string): void;
 }
 
 type CronStatus = "idle" | "running" | "completed" | "errored" | "disabled";
@@ -182,7 +190,20 @@ export class CronProvider {
         if (result.error?.code === "approval_required") {
           // Cron should not silently queue dangerous commands for human
           // approval — that would let scheduled jobs accumulate pending
-          // dangerous work indefinitely. Surface the block clearly instead.
+          // dangerous work indefinitely AND leave a hub-level approval that
+          // a human could later approve, executing the destructive command
+          // outside any cron job lifecycle. Cancel the queued approval.
+          const approvalId = (result.data as { approvalId?: string } | undefined)?.approvalId;
+          if (approvalId) {
+            try {
+              this.runner.rejectApproval(
+                approvalId,
+                `Cron job "${job.name}" blocked by policy.`,
+              );
+            } catch {
+              // best-effort cancellation; the approval may already be resolved
+            }
+          }
           job.error = truncatePreview(
             `Blocked by policy: ${result.error.message ?? "approval required"}`,
           );

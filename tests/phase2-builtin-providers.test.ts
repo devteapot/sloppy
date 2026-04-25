@@ -204,6 +204,7 @@ Use this for testing.
           data: { stdout, stderr, exitCode, status: exitCode === 0 ? "ok" : "error" },
         };
       },
+      rejectApproval() {},
     });
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
