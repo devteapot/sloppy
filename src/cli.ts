@@ -19,6 +19,12 @@ function writeStderr(text: string): void {
   stderr.write(text);
 }
 
+function writeProviderNotice(agent: Agent): void {
+  const providers = agent.listConnectedProviders();
+  const ids = providers.map((p) => p.id).join(", ");
+  writeStderr(`[sloppy] providers: ${ids} (${providers.length})\n`);
+}
+
 async function runSingleShot(prompt: string): Promise<number> {
   let streamed = false;
   const agent = new Agent({
@@ -37,6 +43,7 @@ async function runSingleShot(prompt: string): Promise<number> {
 
   try {
     await agent.start();
+    writeProviderNotice(agent);
     const response = await agent.chat(prompt);
     if (response.status === "completed") {
       if (!streamed && response.response) {
@@ -71,6 +78,7 @@ async function runRepl(): Promise<number> {
 
   try {
     await agent.start();
+    writeProviderNotice(agent);
     while (true) {
       const line = prompt("sloppy> ");
       if (line == null) {

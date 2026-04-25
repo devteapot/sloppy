@@ -271,6 +271,16 @@ export class Agent {
     return this.hub.invoke(providerId, path, action, params);
   }
 
+  listConnectedProviders(): { id: string; name: string }[] {
+    if (!this.hub) {
+      return [];
+    }
+    return this.hub.getProviderViews().map((view) => ({
+      id: view.providerId,
+      name: view.providerName,
+    }));
+  }
+
   getPendingApprovalInvocation(): AgentToolInvocation | null {
     return this.pendingApproval?.blockedInvocation ?? null;
   }

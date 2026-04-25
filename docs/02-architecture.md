@@ -389,6 +389,8 @@ This keeps directory listings and search results visible as state, rather than f
 
 ### Phase 2 built-in providers
 
+These are opt-in; defaults are lean. Only `terminal`, `filesystem`, `memory`, and `skills` are enabled by default — the rest are flipped on via `providers.builtin.<name>: true` in config (or via `withOrchestratorBuiltins(config)` for the orchestrator-role bundle).
+
 The provider surface now extends beyond the initial terminal/filesystem pair.
 
 Additional built-ins currently checked in:

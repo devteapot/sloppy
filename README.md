@@ -276,6 +276,22 @@ tui:
     leader: ctrl+x
 ```
 
+Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `orchestration`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
+
+```yaml
+providers:
+  builtin:
+    web: true
+    browser: true
+    vision: true
+    # orchestrator role bundle:
+    delegation: true
+    orchestration: true
+    spec: true
+```
+
+When using the orchestrator role programmatically, the `withOrchestratorBuiltins(config)` helper flips `delegation`, `orchestration`, and `spec` on for you.
+
 Provider defaults:
 
 - `anthropic` -> `ANTHROPIC_API_KEY`

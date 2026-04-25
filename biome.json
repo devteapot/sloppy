@@ -13,6 +13,14 @@
     }
   },
   "files": {
-    "includes": ["src/**/*.ts", "tests/**/*.ts", "apps/dashboard/**/*.ts", "*.json", "*.md"]
+    "includes": [
+      "src/**/*.ts",
+      "tests/**/*.ts",
+      "apps/dashboard/**/*.ts",
+      "*.json",
+      "*.md",
+      "!.claude/**",
+      "!**/node_modules/**"
+    ]
   }
 }

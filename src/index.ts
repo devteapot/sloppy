@@ -14,6 +14,7 @@ export type {
   SloppyConfig,
 } from "./config/schema";
 export { sloppyConfigSchema } from "./config/schema";
+export { withOrchestratorBuiltins } from "./config/with-orchestrator-builtins";
 export { Agent } from "./core/agent";
 export { LlmConfigurationError, LlmProfileManager } from "./llm/profile-manager";
 export { BrowserProvider } from "./providers/builtin/browser";
