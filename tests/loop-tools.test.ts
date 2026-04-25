@@ -5,9 +5,9 @@ import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { ConversationHistory } from "../src/core/history";
 import { type AgentToolEvent, runLoop, truncateToolResult } from "../src/core/loop";
+import { orchestratorRoleRule } from "../src/core/policy/rules";
 import type { LlmAdapter, LlmChatOptions, LlmResponse } from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { orchestratorToolPolicy } from "../src/runtime/orchestration";
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -319,6 +319,7 @@ describe("runLoop tool execution", () => {
       ],
       config,
     );
+    hub.addPolicyRule(orchestratorRoleRule);
     const history = new ConversationHistory({
       historyTurns: config.agent.historyTurns,
       toolResultMaxChars: config.agent.toolResultMaxChars,
@@ -342,7 +343,7 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
-        hooks: { toolPolicy: orchestratorToolPolicy },
+        hooks: { roleId: "orchestrator" },
       });
 
       expect(result.status).toBe("completed");
@@ -395,6 +396,7 @@ describe("runLoop tool execution", () => {
       ],
       config,
     );
+    hub.addPolicyRule(orchestratorRoleRule);
     const history = new ConversationHistory({
       historyTurns: config.agent.historyTurns,
       toolResultMaxChars: config.agent.toolResultMaxChars,
@@ -415,7 +417,7 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
-        hooks: { toolPolicy: orchestratorToolPolicy },
+        hooks: { roleId: "orchestrator" },
       });
 
       expect(invokedCommands).toEqual([]);
@@ -442,7 +444,7 @@ describe("runLoop tool execution", () => {
         hub,
         history: safeHistory,
         llm: safeLlm,
-        hooks: { toolPolicy: orchestratorToolPolicy },
+        hooks: { roleId: "orchestrator" },
       });
       expect(invokedCommands).toEqual(["npm run build"]);
     } finally {
@@ -485,6 +487,7 @@ describe("runLoop tool execution", () => {
       ],
       config,
     );
+    hub.addPolicyRule(orchestratorRoleRule);
     const history = new ConversationHistory({
       historyTurns: config.agent.historyTurns,
       toolResultMaxChars: config.agent.toolResultMaxChars,
@@ -505,12 +508,92 @@ describe("runLoop tool execution", () => {
         history,
         llm,
         onToolEvent: (event) => events.push(event),
-        hooks: { toolPolicy: orchestratorToolPolicy },
+        hooks: { roleId: "orchestrator" },
       });
 
       expect(providerInvocations).toBe(0);
       expect(llm.observedSecondRequest).toContain(
         "Orchestrator mode does not spawn delegation agents directly",
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "completed",
+          status: "error",
+          errorCode: "tool_policy_rejected",
+        }),
+      );
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("orchestrator role rule denies destructive terminal commands without prompting for approval", async () => {
+    const invokedCommands: string[] = [];
+    const server = createSlopServer({ id: "terminal", name: "Terminal" });
+    server.register("session", () => ({
+      type: "context",
+      actions: {
+        execute: action(
+          { command: "string" },
+          async ({ command }) => {
+            invokedCommands.push(command as string);
+            return { exitCode: 0, stdout: "ok" };
+          },
+          {
+            label: "Execute",
+            description: "Run a shell command.",
+            estimate: "fast",
+          },
+        ),
+      },
+    }));
+
+    const config = orchestratorConfig();
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "terminal",
+          name: "Terminal",
+          kind: "builtin",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      config,
+    );
+    // Composite-policy ordering: orchestratorRoleRule must be evaluated before
+    // any approval-shaped rule (e.g. terminalSafetyRule) so the orchestrator
+    // gets a hard `deny` for non-verification commands rather than an
+    // approval prompt. See `CompositePolicy`: first non-allow wins.
+    hub.addPolicyRule(orchestratorRoleRule);
+    const history = new ConversationHistory({
+      historyTurns: config.agent.historyTurns,
+      toolResultMaxChars: config.agent.toolResultMaxChars,
+    });
+    const llm = new SingleToolCallLlm({
+      id: "rm",
+      name: "terminal__session__execute",
+      input: { command: "rm important.txt" },
+    });
+    const events: AgentToolEvent[] = [];
+    history.addUserText("delete the file");
+
+    try {
+      await hub.connect();
+      await runLoop({
+        config,
+        hub,
+        history,
+        llm,
+        onToolEvent: (event) => events.push(event),
+        hooks: { roleId: "orchestrator" },
+      });
+
+      expect(invokedCommands).toEqual([]);
+      // Orchestrator deny short-circuits before any approval prompt is raised.
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ kind: "approval_requested" }),
       );
       expect(events).toContainEqual(
         expect.objectContaining({

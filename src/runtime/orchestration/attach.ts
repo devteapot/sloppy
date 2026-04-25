@@ -1,5 +1,6 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ConsumerHub } from "../../core/consumer";
+import { orchestratorRoleRule } from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
 import { createOrchestratorRole } from "./index";
 import { createOrchestrationTaskContext } from "./task-context";
@@ -26,6 +27,11 @@ export function attachOrchestrationRuntime(
       onSchedulerEvent: (event) => factoryCtx.publishEvent(event),
     }),
   );
+
+  // Install the role-scoped policy at the hub layer. This replaces the
+  // legacy in-loop `RoleProfile.toolPolicy` enforcement; the rule activates
+  // only when the run loop tags an invocation with `roleId === "orchestrator"`.
+  hub.addPolicyRule(orchestratorRoleRule);
 
   ctx.delegationHooks?.setTaskContextFactory((spawn) =>
     createOrchestrationTaskContext({

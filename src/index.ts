@@ -51,7 +51,6 @@ export {
   OrchestrationScheduler,
   orchestratorRole,
   orchestratorSystemPromptFragment,
-  orchestratorToolPolicy,
   withOrchestratorBuiltins,
 } from "./runtime/orchestration";
 export type { AgentSessionSnapshot } from "./session";

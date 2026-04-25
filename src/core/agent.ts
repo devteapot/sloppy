@@ -322,6 +322,7 @@ export class Agent {
       toolPolicy: this.role.toolPolicy,
       transformInvoke: this.role.transformInvoke,
       beforeNextTurn: this.role.beforeNextTurn,
+      roleId: this.roleId ?? this.role.id,
     };
   }
 

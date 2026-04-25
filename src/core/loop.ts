@@ -7,6 +7,7 @@ import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
+import { PolicyDeniedError } from "./policy";
 import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
 
@@ -22,6 +23,12 @@ export interface RunLoopHooks {
     config: SloppyConfig,
   ) => Record<string, unknown>;
   beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Optional id of the role driving this loop iteration. When set, the loop
+   * tags each `hub.invoke` with this id via `setInvocationMetadata` so hub
+   * policy rules (e.g. `orchestratorRoleRule`) can scope themselves by role.
+   */
+  roleId?: string;
 }
 
 type ToolResult = {
@@ -207,6 +214,7 @@ async function executeToolCall(
   onToolEvent?: (event: AgentToolEvent) => void,
   toolPolicy?: RunLoopHooks["toolPolicy"],
   transformInvoke?: RunLoopHooks["transformInvoke"],
+  roleId?: string,
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
@@ -229,6 +237,9 @@ async function executeToolCall(
   if (toolUse.inputError) {
     return invalidToolArgumentsResult(toolUse, resolution, onToolEvent);
   }
+
+  let activeInvocation: AgentToolInvocation | undefined;
+  let activeSummary: string | undefined;
 
   try {
     if (resolution.kind === "observation") {
@@ -334,6 +345,8 @@ async function executeToolCall(
       params: rawInput,
     };
     const summary = `${resolution.providerId}:${resolution.action} ${path}`;
+    activeInvocation = invocation;
+    activeSummary = summary;
     onToolEvent?.({
       kind: "started",
       invocation,
@@ -362,6 +375,7 @@ async function executeToolCall(
 
     const finalInput = transformInvoke ? transformInvoke(resolution, rawInput, config) : rawInput;
     invocation.params = finalInput;
+    hub.setInvocationMetadata({ roleId });
     const result = await hub.invoke(resolution.providerId, path, resolution.action, finalInput);
     if (result.status === "accepted") {
       await hub
@@ -412,8 +426,14 @@ async function executeToolCall(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Hub policy `deny` decisions surface as PolicyDeniedError. Map them to
+    // the same `tool_policy_rejected` code the legacy in-loop `toolPolicy`
+    // hook used so user-visible behavior is unchanged after the migration.
+    const errorCode =
+      error instanceof PolicyDeniedError ? "tool_policy_rejected" : toolErrorCode(error);
     return {
       kind: "completed",
+      invocation: activeInvocation,
       result: {
         block: {
           type: "tool_result",
@@ -421,10 +441,10 @@ async function executeToolCall(
           isError: true,
           content: message,
         },
-        summary: `error ${toolUse.name}`,
+        summary: activeSummary ?? `error ${toolUse.name}`,
       },
       status: "error",
-      errorCode: toolErrorCode(error),
+      errorCode,
       errorMessage: message,
     };
   }
@@ -443,6 +463,7 @@ async function executeToolCalls(options: {
   onToolEvent?: (event: AgentToolEvent) => void;
   toolPolicy?: RunLoopHooks["toolPolicy"];
   transformInvoke?: RunLoopHooks["transformInvoke"];
+  roleId?: string;
 }): Promise<
   | {
       status: "completed";
@@ -466,6 +487,7 @@ async function executeToolCalls(options: {
       options.onToolEvent,
       options.toolPolicy,
       options.transformInvoke,
+      options.roleId,
     );
 
     if (result.kind === "approval_requested") {
@@ -531,6 +553,7 @@ export async function runLoop(options: {
   const toolPolicy = options.hooks?.toolPolicy;
   const transformInvoke = options.hooks?.transformInvoke;
   const beforeNextTurn = options.hooks?.beforeNextTurn;
+  const roleId = options.hooks?.roleId;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
     if (options.signal?.aborted) {
@@ -555,6 +578,7 @@ export async function runLoop(options: {
         onToolEvent: options.onToolEvent,
         toolPolicy,
         transformInvoke,
+        roleId,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -613,6 +637,7 @@ export async function runLoop(options: {
       onToolEvent: options.onToolEvent,
       toolPolicy,
       transformInvoke,
+      roleId,
     });
     if (execution.status === "waiting_approval") {
       return {

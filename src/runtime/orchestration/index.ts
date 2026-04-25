@@ -5,10 +5,9 @@ import type { RuntimeToolResolution } from "../../core/tools";
 import { inferBatchDependencyRefs, type PlanningTaskWithDeps } from "./planning-policy";
 import { orchestratorSystemPromptFragment } from "./prompt";
 import { OrchestrationScheduler, type OrchestrationSchedulerEvent } from "./scheduler";
-import { orchestratorToolPolicy } from "./tool-policy";
 
 export type { OrchestrationSchedulerEvent };
-export { OrchestrationScheduler, orchestratorSystemPromptFragment, orchestratorToolPolicy };
+export { OrchestrationScheduler, orchestratorSystemPromptFragment };
 
 type CreateTasksInputItem = {
   name?: unknown;
@@ -111,7 +110,8 @@ export function createOrchestratorRole(options: OrchestratorRoleOptions = {}): R
   return {
     id: "orchestrator",
     systemPromptFragment: () => orchestratorSystemPromptFragment(),
-    toolPolicy: orchestratorToolPolicy,
+    // Role-scoped enforcement now lives at the hub layer
+    // (`orchestratorRoleRule`, installed by `attachOrchestrationRuntime`).
     transformInvoke: orchestratorTransformInvoke,
     attachRuntime: (hub: ConsumerHub, config: SloppyConfig) => {
       if (!config.providers.builtin.orchestration || !config.providers.builtin.delegation) {
