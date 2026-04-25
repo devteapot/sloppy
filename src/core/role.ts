@@ -1,4 +1,5 @@
 import type { SloppyConfig } from "../config/schema";
+import type { LlmProfileManager } from "../llm/profile-manager";
 import type { ProviderRuntimeHub } from "./hub";
 import type { RuntimeToolResolution } from "./tools";
 
@@ -72,6 +73,12 @@ export interface RuntimeContext {
   delegationHooks?: DelegationRuntimeHooks;
   /** Setter delegation runtime uses to expose its hooks. */
   setDelegationHooks?: (hooks: DelegationRuntimeHooks | null) => void;
+  /**
+   * The agent's LlmProfileManager. Exposed so providers (e.g. delegation) can
+   * construct executor resolvers and spawn sub-agents bound to a specific
+   * profile without wiring a second manager instance.
+   */
+  llmProfileManager?: LlmProfileManager;
 }
 
 export type RoleProfile = {

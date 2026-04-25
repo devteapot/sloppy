@@ -319,6 +319,8 @@ What each agent reads from persona:
 
 Persona contents are read-only at every level except the identity curator (which can `propose_persona_revision`). Voice constants are loaded as prompt-template constants per §6.4, so they cannot be changed through data affordances. They remain prompt instructions, not a security boundary; behavioral enforcement still depends on capability masks, gates, audit, and drift observation.
 
+Persona threading is **executor-agnostic**. The voice block is injected into every agent regardless of which LLM profile or ACP adapter runs it (`docs/15 §7`). An ACP-backed specialist receives the persona block in its initialization payload; an adapter that strips or rewrites it is treated as untrusted and the session is tainted (`docs/13 §2.4.1`). Identity itself is unbound: the curator runs on the session-default executor and has no per-role binding, so persona drift cannot be attributed to or confounded by an executor swap.
+
 ### 5.4 Read matrix across the stack
 
 Full read access by agent type:
@@ -603,6 +605,7 @@ Notably **not** on the roadmap: identity authoring goals, identity reading refle
 - `docs/11-memory-tiers.md` — earlier sketch of tiered memory. This doc supersedes its "general" tier (user/project/self facts); `docs/13 §2.11` supersedes its "role" tier (specialist craft). The two stores are now mechanically disjoint.
 - `docs/12-orchestration-design.md` — artifact lifecycle (Spec analog used for Persona), precedents, cases.
 - `docs/13-meta-runtime.md` — overlays, specialists, reflection, runtime manager. Identity proposes through the manager and reuses the §2.10 prompt template registry plus `/roles/<role>/variants` as the variant store for skills.
+- `docs/15-executor-routing.md` — per-agent executor binding. Persona threads through every executor kind (§5.3, §6.4); identity is unbound from executors so drift detection has no swap-confounder.
 
 ### External — load-bearing references
 

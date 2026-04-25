@@ -283,11 +283,15 @@ function createDefaultSessionAgent(
     roleId?: string;
     roleRegistry?: RoleRegistry;
     publishEvent?: (event: Record<string, unknown> & { kind: string }) => void;
+    llmProfileId?: string;
+    llmModelOverride?: string;
   },
 ): SessionAgent {
   return new Agent({
     config,
     llmProfileManager,
+    llmProfileId: extras?.llmProfileId,
+    llmModelOverride: extras?.llmModelOverride,
     ignoredProviderIds,
     role,
     roleId: extras?.roleId,
@@ -337,6 +341,8 @@ export class SessionRuntime {
     actorId?: string;
     requiresLlmProfile?: boolean;
     externalAgentState?: ExternalSessionAgentState;
+    llmProfileId?: string;
+    llmModelOverride?: string;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
@@ -455,6 +461,8 @@ export class SessionRuntime {
             roleId: options?.roleId,
             roleRegistry: options?.roleRegistry,
             publishEvent,
+            llmProfileId: options?.llmProfileId,
+            llmModelOverride: options?.llmModelOverride,
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);

@@ -217,7 +217,12 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => delegation.stop(),
       attachRuntime: (hub, hubConfig, ctx) => {
-        const hooks = attachSubAgentRunnerFactory(delegation, hub, hubConfig);
+        const hooks = attachSubAgentRunnerFactory(
+          delegation,
+          hub,
+          hubConfig,
+          ctx?.llmProfileManager,
+        );
         ctx?.setDelegationHooks?.(hooks);
         return {
           stop() {

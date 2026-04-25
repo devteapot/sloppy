@@ -1,60 +1,57 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
 import type { DelegationRuntimeHooks, TaskContextFactory } from "../../core/role";
+import type { LlmProfileManager } from "../../llm/profile-manager";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";
 import { AcpSessionAgent } from "../acp";
+import { ExecutorResolver } from "./executor-resolver";
 import { SubAgentRunner } from "./sub-agent";
-
-function parseAcpExecutionMode(mode: string | undefined): string | null {
-  if (!mode || mode === "native") {
-    return null;
-  }
-  if (!mode.startsWith("acp:")) {
-    throw new Error(
-      `Unsupported delegation execution_mode '${mode}'. Use 'native' or 'acp:<adapterId>'.`,
-    );
-  }
-  const adapterId = mode.slice("acp:".length).trim();
-  if (!adapterId) {
-    throw new Error("ACP delegation execution_mode must include an adapter id.");
-  }
-  return adapterId;
-}
 
 export function attachSubAgentRunnerFactory(
   delegation: DelegationProvider,
   hub: ProviderRuntimeHub,
   config: SloppyConfig,
+  llmProfileManager?: LlmProfileManager,
 ): DelegationRuntimeHooks {
   delegation.setParentHub(hub);
 
+  const resolver = new ExecutorResolver({ config });
   let taskContextFactory: TaskContextFactory | null = null;
 
   delegation.setRunnerFactory((spawn, callbacks) => {
-    const executionMode = spawn.executionMode ?? "native";
-    const acpAdapterId = parseAcpExecutionMode(executionMode);
-    const acpConfig = config.providers.delegation.acp;
-    const acpAdapter = acpAdapterId ? acpConfig?.adapters[acpAdapterId] : undefined;
-    if (acpAdapterId && !acpConfig?.enabled) {
-      throw new Error(
-        `ACP delegation adapter '${acpAdapterId}' requested but providers.delegation.acp.enabled is false.`,
-      );
+    const executor = resolver.resolve(spawn.executor);
+
+    let agentFactory: SessionAgentFactory | undefined;
+    let requiresLlmProfile: boolean | undefined;
+    let externalAgentState: ConstructorParameters<typeof SubAgentRunner>[0]["externalAgentState"];
+    let llmProfileId: string | undefined;
+    let llmModelOverride: string | undefined;
+
+    if (executor.kind === "acp") {
+      const adapter = executor.adapter;
+      const adapterId = executor.adapterId;
+      const adapterTimeoutMs = executor.timeoutMs ?? executor.defaultTimeoutMs;
+      agentFactory = (agentCallbacks) =>
+        new AcpSessionAgent({
+          adapterId,
+          adapter,
+          callbacks: agentCallbacks,
+          workspaceRoot: config.providers.filesystem.root,
+          defaultTimeoutMs: adapterTimeoutMs,
+        });
+      requiresLlmProfile = false;
+      externalAgentState = {
+        provider: "acp",
+        model: adapterId,
+        profileId: `acp-${adapterId}`,
+        label: `ACP ${adapterId}`,
+        message: `Ready to chat with ACP adapter ${adapterId}.`,
+      };
+    } else {
+      llmProfileId = executor.profileId;
+      llmModelOverride = executor.modelOverride;
     }
-    if (acpAdapterId && !acpAdapter) {
-      throw new Error(`ACP delegation adapter '${acpAdapterId}' is not configured.`);
-    }
-    const agentFactory: SessionAgentFactory | undefined =
-      acpAdapterId && acpAdapter
-        ? (agentCallbacks) =>
-            new AcpSessionAgent({
-              adapterId: acpAdapterId,
-              adapter: acpAdapter,
-              callbacks: agentCallbacks,
-              workspaceRoot: config.providers.filesystem.root,
-              defaultTimeoutMs: acpConfig?.defaultTimeoutMs,
-            })
-        : undefined;
 
     const taskContext = taskContextFactory?.({
       id: spawn.id,
@@ -66,20 +63,14 @@ export function attachSubAgentRunnerFactory(
       id: spawn.id,
       name: spawn.name,
       goal: spawn.goal,
-      model: spawn.model,
       parentHub: hub,
       parentConfig: config,
       agentFactory,
-      requiresLlmProfile: acpAdapterId ? false : undefined,
-      externalAgentState: acpAdapterId
-        ? {
-            provider: "acp",
-            model: acpAdapterId,
-            profileId: `acp-${acpAdapterId}`,
-            label: `ACP ${acpAdapterId}`,
-            message: `Ready to chat with ACP adapter ${acpAdapterId}.`,
-          }
-        : undefined,
+      llmProfileManager,
+      llmProfileId,
+      llmModelOverride,
+      requiresLlmProfile,
+      externalAgentState,
       taskContext,
       disableBuiltinProviders: taskContext?.disableBuiltinProviders
         ? [...taskContext.disableBuiltinProviders]

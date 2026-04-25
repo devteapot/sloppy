@@ -48,9 +48,13 @@ async function spawnAgent(
   consumer: SlopConsumer,
   name = "research-agent",
   goal = "Investigate a protocol detail",
-  model = "gpt-5.4",
+  profileId = "gpt-5.4",
 ): Promise<string> {
-  const result = await consumer.invoke("/session", "spawn_agent", { name, goal, model });
+  const result = await consumer.invoke("/session", "spawn_agent", {
+    name,
+    goal,
+    executor: { kind: "llm", profileId },
+  });
   expect(result.status).toBe("ok");
 
   const data = result.data as { id: string; status: string; created_at: string };
@@ -127,11 +131,11 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("passes execution mode through spawn state and runner factory", async () => {
-    let capturedExecutionMode: string | undefined;
+  test("passes ACP executor binding through spawn state and runner factory", async () => {
+    let capturedExecutor: unknown;
     const { provider, consumer } = createDelegationHarness({
       runnerFactory: (spawn, callbacks) => {
-        capturedExecutionMode = spawn.executionMode;
+        capturedExecutor = spawn.executor;
         return {
           async start() {
             callbacks.onUpdate({ status: "running" });
@@ -148,20 +152,37 @@ describe("DelegationProvider", () => {
       const result = await consumer.invoke("/session", "spawn_agent", {
         name: "acp-worker",
         goal: "Run through an external adapter",
-        execution_mode: "acp:fake",
+        executor: { kind: "acp", adapterId: "fake" },
       });
       expect(result.status).toBe("ok");
       const data = result.data as { id: string; execution_mode: string };
       expect(data.execution_mode).toBe("acp:fake");
-      expect(capturedExecutionMode).toBe("acp:fake");
+      expect(capturedExecutor).toEqual({ kind: "acp", adapterId: "fake" });
 
       const agent = await consumer.query(`/agents/${data.id}`, 2);
       expect(agent.properties).toMatchObject({
         id: data.id,
         execution_mode: "acp:fake",
+        executor: { kind: "acp", adapterId: "fake" },
       });
 
       await consumer.invoke(`/agents/${data.id}`, "cancel", {});
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rejects malformed executor bindings", async () => {
+    const { provider, consumer } = createDelegationHarness();
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "broken",
+        goal: "Should not start",
+        executor: { kind: "llm" },
+      });
+      expect(result.status).toBe("error");
     } finally {
       provider.stop();
     }

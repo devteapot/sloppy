@@ -71,6 +71,8 @@ Not all base config is mutable at runtime. The overlay schema enumerates the pat
 | Retry / respawn heuristics (N, thresholds) | Yes | Tunable failure handling. |
 | Verification rules per gate type (e.g. required evidence kinds) | Yes | Tighten or relax under specific scopes. |
 | Specialist allowlist (which specialists may be spawned) | Yes | Capability surface control. |
+| Executor binding per role / specialist / task (`docs/15`) | Yes | Routes an agent to an LLM profile or ACP adapter; loosening always escalates. |
+| LLM profile and ACP adapter definitions themselves | **No** | Adding a profile/adapter or changing its declared capabilities is a release. |
 | Descriptor *schemas* (artifact shapes, message types) | **No** | Schema drift breaks the audit trail. Bumped via code release. |
 | Affordance signatures | **No** | Provider contract; bumped via code release. |
 | Storage backends, CAS roots | **No** | Process-level wiring. |
@@ -172,6 +174,9 @@ SpecialistSpec {
     wall_time
     tool_calls
   }
+
+  executor                   # optional ExecutorBinding (docs/15); falls back to role default
+                             # then session/global. Cross-kind (llm ↔ acp) always escalates.
 
   lifecycle {
     on_scope_end             # "kill" | "detach" | "persist"
@@ -437,7 +442,7 @@ Aggregate caps hit before per-specialist caps when many small specialists run in
 
 ### 3.4.1 Gate schema migration
 
-The gate names introduced by the meta-runtime are schema changes, not free-form strings. Before the corresponding providers land, the checked-in orchestration `GateType` and generic `open_gate` descriptor must be extended for: `overlay_accept`, `overlay_revoke`, `specialist_spawn`, `specialist_capability_extend`, `reconciliation_resolve`, `aggregate_specialist_cap`, and `manager_action_review`.
+The gate names introduced by the meta-runtime are schema changes, not free-form strings. Before the corresponding providers land, the checked-in orchestration `GateType` and generic `open_gate` descriptor must be extended for: `overlay_accept`, `overlay_revoke`, `specialist_spawn`, `specialist_capability_extend`, `reconciliation_resolve`, `aggregate_specialist_cap`, and `manager_action_review`. The executor-routing layer (`docs/15`) adds two more — `executor_change` and `executor_capability_extend` — that ride the same migration.
 
 `budget_exceeded` exists in docs/12 as a design-level gate, but it is not in the current checked-in gate enum. Budget enforcement must add it to the same schema migration. This keeps the "schema is code" invariant in §6.1 honest.
 
@@ -686,6 +691,7 @@ Free-form manager actions (manager invents action types) are explicitly **not** 
 - `docs/09-orchestration-state-machine.md` — substrate, CAS, verification gate.
 - `docs/12-orchestration-design.md` — artifacts, roles, gates as policy tree, evidence schema. The meta-runtime extends docs/12; conflicts resolve in docs/12's favour for substrate concerns.
 - `docs/11-memory-tiers.md` — superseded routing sketch for role memory. The `auto_with_precedent` gate model lives in docs/12's precedent/case design, not in docs/11.
+- `docs/15-executor-routing.md` — per-agent LLM/ACP executor binding. Adds one overlay-able surface (§1.2), one `SpecialistSpec` field (§2.2), two gate types (§3.4.1), one reflection projection, and two manager menu items.
 - `src/providers/builtin/orchestration/descriptor-*.ts` — current descriptor pattern. Meta-runtime providers follow the same pattern (state subtree + descriptors + affordances).
 
 ### External — load-bearing references

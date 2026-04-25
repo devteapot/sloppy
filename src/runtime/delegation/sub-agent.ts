@@ -28,11 +28,12 @@ export interface SubAgentRunnerOptions {
   id: string;
   name: string;
   goal: string;
-  model?: string;
   parentHub: ProviderRuntimeHub;
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
   llmProfileManager?: LlmProfileManager;
+  llmProfileId?: string;
+  llmModelOverride?: string;
   requiresLlmProfile?: boolean;
   externalAgentState?: ExternalSessionAgentState;
   providerIdPrefix?: string;
@@ -50,7 +51,6 @@ export class SubAgentRunner {
   readonly id: string;
   readonly name: string;
   readonly goal: string;
-  readonly model?: string;
   readonly sessionProviderId: string;
 
   private parentHub: ProviderRuntimeHub;
@@ -70,7 +70,6 @@ export class SubAgentRunner {
     this.id = options.id;
     this.name = options.name;
     this.goal = options.goal;
-    this.model = options.model;
     this.parentHub = options.parentHub;
     this.taskContext = options.taskContext;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
@@ -104,6 +103,8 @@ export class SubAgentRunner {
       title: options.name,
       agentFactory: options.agentFactory,
       llmProfileManager: options.llmProfileManager,
+      llmProfileId: options.llmProfileId,
+      llmModelOverride: options.llmModelOverride,
       requiresLlmProfile: options.requiresLlmProfile,
       externalAgentState: options.externalAgentState,
       parentActorId: "parent",
