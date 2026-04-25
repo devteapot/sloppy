@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { affordancesToTools, type LlmTool, type SlopNode } from "@slop-ai/consumer/browser";
 
 import { buildVisibleTree, type ProviderTreeView } from "./subscriptions";
+
+const TOOL_NAME_LIMIT = 64;
 
 export type RuntimeToolResolution =
   | {
@@ -167,8 +170,15 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
   ];
 }
 
-function prefixToolName(providerId: string, toolName: string): string {
-  return `${providerId}__${toolName}`;
+export function buildToolName(
+  providerId: string,
+  toolName: string,
+  limit = TOOL_NAME_LIMIT,
+): string {
+  const candidate = `${providerId}__${toolName}`;
+  if (candidate.length <= limit) return candidate;
+  const hash = createHash("sha256").update(candidate).digest("hex").slice(0, 7);
+  return `${candidate.slice(0, limit - 8)}_${hash}`;
 }
 
 function normalizeTreeForTools(node: SlopNode, fallbackId: string, path: string): SlopNode {
@@ -210,7 +220,12 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
     const toolSet = affordancesToTools(visibleTree);
 
     for (const tool of toolSet.tools) {
-      const prefixedName = prefixToolName(view.providerId, tool.function.name);
+      const prefixedName = buildToolName(view.providerId, tool.function.name);
+      if (resolutions.has(prefixedName)) {
+        console.warn(
+          `[sloppy] tool name collision after truncation: ${prefixedName} (${view.providerId}.${tool.function.name})`,
+        );
+      }
       const resolution = toolSet.resolve(tool.function.name) as {
         path: string | null;
         action: string;
