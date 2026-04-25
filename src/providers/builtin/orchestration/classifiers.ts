@@ -1,5 +1,5 @@
 import { normalizeReference } from "./normalization";
-import type { AcceptanceCriterion, CreateTaskParams, TaskStatus } from "./types";
+import type { AcceptanceCriterion, TaskStatus } from "./types";
 
 export function uniqueStrings(values: string[]): string[] {
   const seen = new Set<string>();
@@ -53,85 +53,6 @@ export function buildAcceptanceCriteria(goal: string, explicit?: string[]): Acce
       id: `ac-${index + 1}`,
       text,
     }));
-}
-
-function taskSearchText(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): string {
-  return `${task.name} ${task.goal} ${task.client_ref ?? ""}`.toLowerCase();
-}
-
-function hasTerm(text: string, terms: RegExp[]): boolean {
-  return terms.some((term) => term.test(text));
-}
-
-export function isDocumentationTask(
-  task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">,
-): boolean {
-  return hasTerm(taskSearchText(task), [
-    /\breadme\b/,
-    /\bdocs?\b/,
-    /\bdocumentation\b/,
-    /\busage guide\b/,
-    /\bsetup instructions\b/,
-  ]);
-}
-
-export function isVerificationTask(
-  task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">,
-): boolean {
-  const text = taskSearchText(task);
-  return hasTerm(text, [
-    /\bverify\b/,
-    /\bverification\b/,
-    /\bvalidate\b/,
-    /\bsmoke\b/,
-    /\btest suite\b/,
-    /\blint\b/,
-    /\btypecheck\b/,
-    /\bbuild passes\b/,
-    /\bbuild verification\b/,
-    /\brun (?:npm|bun|pnpm|yarn) (?:run )?build\b/,
-  ]);
-}
-
-export function isScaffoldTask(
-  task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">,
-): boolean {
-  return hasTerm(taskSearchText(task), [
-    /\bscaffold\b/,
-    /\bbootstrap\b/,
-    /\binitiali[sz]e\b/,
-    /\bsetup project\b/,
-    /\bcreate (?:a |the )?(?:vite|react|next|node|bun|typescript).*project\b/,
-    /\bproject structure\b/,
-  ]);
-}
-
-export function isDataModelTask(
-  task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">,
-): boolean {
-  return hasTerm(taskSearchText(task), [
-    /\bdata model\b/,
-    /\bseed data\b/,
-    /\bschema\b/,
-    /\btypes?\b/,
-    /\bstore\b/,
-    /\bstate management\b/,
-    /\bcontext\b/,
-  ]);
-}
-
-export function isUiTask(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): boolean {
-  return hasTerm(taskSearchText(task), [
-    /\bui\b/,
-    /\bfrontend\b/,
-    /\bcomponents?\b/,
-    /\bviews?\b/,
-    /\bscreens?\b/,
-    /\blayout\b/,
-    /\bboard\b/,
-    /\bcards?\b/,
-    /\bforms?\b/,
-  ]);
 }
 
 export function looksLikeFileEvidenceRef(ref: string): boolean {

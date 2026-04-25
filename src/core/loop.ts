@@ -16,6 +16,11 @@ export interface RunLoopHooks {
     params: Record<string, unknown>,
     config: SloppyConfig,
   ) => ToolPolicyDecision;
+  transformInvoke?: (
+    resolution: RuntimeToolResolution,
+    params: Record<string, unknown>,
+    config: SloppyConfig,
+  ) => Record<string, unknown>;
   beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
 }
 
@@ -201,6 +206,7 @@ async function executeToolCall(
   config: SloppyConfig,
   onToolEvent?: (event: AgentToolEvent) => void,
   toolPolicy?: RunLoopHooks["toolPolicy"],
+  transformInvoke?: RunLoopHooks["transformInvoke"],
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
@@ -354,7 +360,9 @@ async function executeToolCall(
       };
     }
 
-    const result = await hub.invoke(resolution.providerId, path, resolution.action, rawInput);
+    const finalInput = transformInvoke ? transformInvoke(resolution, rawInput, config) : rawInput;
+    invocation.params = finalInput;
+    const result = await hub.invoke(resolution.providerId, path, resolution.action, finalInput);
     if (result.status === "accepted") {
       await hub
         .focusState({
@@ -434,6 +442,7 @@ async function executeToolCalls(options: {
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   toolPolicy?: RunLoopHooks["toolPolicy"];
+  transformInvoke?: RunLoopHooks["transformInvoke"];
 }): Promise<
   | {
       status: "completed";
@@ -456,6 +465,7 @@ async function executeToolCalls(options: {
       options.config,
       options.onToolEvent,
       options.toolPolicy,
+      options.transformInvoke,
     );
 
     if (result.kind === "approval_requested") {
@@ -519,6 +529,7 @@ export async function runLoop(options: {
   const system = options.systemPrompt ?? buildSystemPrompt(options.config);
   let pendingResume = options.resume;
   const toolPolicy = options.hooks?.toolPolicy;
+  const transformInvoke = options.hooks?.transformInvoke;
   const beforeNextTurn = options.hooks?.beforeNextTurn;
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
@@ -543,6 +554,7 @@ export async function runLoop(options: {
         onToolResult: options.onToolResult,
         onToolEvent: options.onToolEvent,
         toolPolicy,
+        transformInvoke,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -600,6 +612,7 @@ export async function runLoop(options: {
       onToolResult: options.onToolResult,
       onToolEvent: options.onToolEvent,
       toolPolicy,
+      transformInvoke,
     });
     if (execution.status === "waiting_approval") {
       return {

@@ -12,6 +12,17 @@ export type RoleProfile = {
     params: Record<string, unknown>,
     config: SloppyConfig,
   ) => ToolPolicyDecision;
+  /**
+   * Optional pre-invocation transform: rewrite tool params before the
+   * affordance is dispatched to the provider. Returning the params object
+   * unchanged is a no-op. Used by role layers to inject domain-specific
+   * planning policy that the generic providers should not own.
+   */
+  transformInvoke?: (
+    resolution: RuntimeToolResolution,
+    params: Record<string, unknown>,
+    config: SloppyConfig,
+  ) => Record<string, unknown>;
   beforeNextTurn?: (hub: ConsumerHub, signal?: AbortSignal) => Promise<void>;
   attachRuntime?: (hub: ConsumerHub, config: SloppyConfig) => { stop(): void };
 };

@@ -279,6 +279,7 @@ export class Agent {
   private buildHooks(): RunLoopHooks {
     return {
       toolPolicy: this.role.toolPolicy,
+      transformInvoke: this.role.transformInvoke,
       beforeNextTurn: this.role.beforeNextTurn,
     };
   }

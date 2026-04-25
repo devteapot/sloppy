@@ -174,9 +174,9 @@ describe("OrchestrationProvider", () => {
         .created;
       expect(created).toHaveLength(3);
       expect(created[1]?.depends_on).toEqual([created[0]?.id]);
-      expect([...(created[2]?.depends_on ?? [])].sort()).toEqual(
-        [created[0]?.id, created[1]?.id].sort(),
-      );
+      // Provider-level create_tasks resolves only the explicit batch refs;
+      // it no longer infers extra edges (e.g. scaffold -> ui).
+      expect(created[2]?.depends_on).toEqual([created[1]?.id]);
     } finally {
       provider.stop();
     }
@@ -293,7 +293,11 @@ describe("OrchestrationProvider", () => {
     }
   });
 
-  test("infers conservative dependencies for common coding DAGs when omitted", async () => {
+  test("provider does not infer coding-domain dependencies when depends_on is omitted", async () => {
+    // Coding-domain dependency inference (scaffold -> ui, docs after producers,
+    // verification last) lives in the orchestrator role's planning-policy, not
+    // the generic provider. Calling create_tasks directly without explicit
+    // depends_on must therefore yield zero inferred edges.
     const { provider, consumer } = await harness();
 
     try {
@@ -332,79 +336,14 @@ describe("OrchestrationProvider", () => {
         ],
       });
       expect(result.status).toBe("ok");
-
       const created = (
         result.data as {
-          created: Array<{ id: string; client_ref?: string; depends_on: string[] }>;
+          created: Array<{ client_ref?: string; depends_on: string[] }>;
         }
       ).created;
-      const byRef = new Map(created.map((task) => [task.client_ref, task]));
-      const scaffold = byRef.get("scaffold");
-      const dataModel = byRef.get("data-model");
-      const ui = byRef.get("ui");
-      const docs = byRef.get("docs");
-      const verification = byRef.get("verification");
-      expect(scaffold).toBeDefined();
-      expect(dataModel).toBeDefined();
-      expect(ui).toBeDefined();
-      expect(docs).toBeDefined();
-      expect(verification).toBeDefined();
-      if (!scaffold || !dataModel || !ui || !docs || !verification) {
-        throw new Error("Expected all inferred dependency test tasks to be created.");
+      for (const task of created) {
+        expect(task.depends_on).toEqual([]);
       }
-
-      expect(dataModel.depends_on).toEqual([scaffold.id]);
-      expect(ui.depends_on).toEqual([scaffold.id]);
-      expect([...docs.depends_on].sort()).toEqual([scaffold.id, dataModel.id, ui.id].sort());
-      expect([...verification.depends_on].sort()).toEqual(
-        [scaffold.id, dataModel.id, ui.id].sort(),
-      );
-    } finally {
-      provider.stop();
-    }
-  });
-
-  test("lets UI and data-model work fan out after scaffold when no explicit edge is given", async () => {
-    const { provider, consumer } = await harness();
-
-    try {
-      await consumer.invoke("/orchestration", "create_plan", {
-        query: "Create a Vite React project with data and UI work.",
-      });
-      const result = await consumer.invoke("/orchestration", "create_tasks", {
-        tasks: [
-          {
-            name: "scaffold-project",
-            client_ref: "scaffold",
-            goal: "Create project structure with src/components, src/data, and src/types directories.",
-          },
-          {
-            name: "data-model",
-            client_ref: "data-model",
-            goal: "Create Task types, context, state management, and seed data.",
-          },
-          {
-            name: "ui-components",
-            client_ref: "ui",
-            goal: "Build board columns, task cards, forms, and stats components.",
-          },
-        ],
-      });
-      expect(result.status).toBe("ok");
-      const created = (
-        result.data as {
-          created: Array<{ id: string; client_ref?: string; depends_on: string[] }>;
-        }
-      ).created;
-      const scaffold = created.find((task) => task.client_ref === "scaffold");
-      const dataModel = created.find((task) => task.client_ref === "data-model");
-      const ui = created.find((task) => task.client_ref === "ui");
-      if (!scaffold || !dataModel || !ui) {
-        throw new Error("Expected scaffold, data-model, and ui tasks to be created.");
-      }
-      expect(scaffold.depends_on).toEqual([]);
-      expect(dataModel.depends_on).toEqual([scaffold.id]);
-      expect(ui.depends_on).toEqual([scaffold.id]);
     } finally {
       provider.stop();
     }

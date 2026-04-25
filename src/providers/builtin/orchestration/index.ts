@@ -6,11 +6,6 @@ import { debug } from "../../../core/debug";
 import {
   buildAcceptanceCriteria,
   globSegmentToRegExp,
-  isDataModelTask,
-  isDocumentationTask,
-  isScaffoldTask,
-  isUiTask,
-  isVerificationTask,
   looksLikeFileEvidenceRef,
   terminalTaskStatus,
   uniqueStrings,
@@ -595,63 +590,6 @@ export class OrchestrationProvider {
     );
   }
 
-  private inferBatchDependencyRefs(drafts: TaskDraft[]): Map<string, string[]> {
-    const dependencies = new Map<string, string[]>();
-    for (const draft of drafts) {
-      dependencies.set(draft.id, [...(draft.depends_on ?? [])]);
-    }
-
-    const addDependency = (draft: TaskDraft, dependency: TaskDraft): void => {
-      if (draft.id === dependency.id) return;
-      const current = dependencies.get(draft.id) ?? [];
-      current.push(dependency.id);
-      dependencies.set(draft.id, uniqueStrings(current));
-    };
-
-    const producerTasks = drafts.filter(
-      (draft) => !isDocumentationTask(draft) && !isVerificationTask(draft),
-    );
-    const scaffoldTasks = producerTasks.filter(isScaffoldTask);
-    const dataModelTasks = producerTasks.filter(
-      (draft) => isDataModelTask(draft) && !isScaffoldTask(draft),
-    );
-    const codingPlan =
-      scaffoldTasks.length > 0 ||
-      dataModelTasks.length > 0 ||
-      producerTasks.some(isUiTask) ||
-      drafts.some(isVerificationTask);
-    if (!codingPlan) {
-      return dependencies;
-    }
-
-    // UI and data/context work can usually fan out after scaffold when the
-    // task goals describe the shared interface. If the model needs real data
-    // artifacts before UI work starts, it should express that edge explicitly.
-    for (const draft of drafts) {
-      if (isDocumentationTask(draft)) {
-        for (const dependency of producerTasks) {
-          addDependency(draft, dependency);
-        }
-        continue;
-      }
-
-      if (isVerificationTask(draft)) {
-        for (const dependency of producerTasks) {
-          addDependency(draft, dependency);
-        }
-        continue;
-      }
-
-      if (!isScaffoldTask(draft)) {
-        for (const dependency of scaffoldTasks) {
-          addDependency(draft, dependency);
-        }
-      }
-    }
-
-    return dependencies;
-  }
-
   private createTask(params: CreateTaskParams): {
     id: string;
     version: number;
@@ -787,11 +725,10 @@ export class OrchestrationProvider {
       }
     }
 
-    const inferredDependencies = this.inferBatchDependencyRefs(drafts);
     const resolvedDependencies = new Map<string, string[]>();
     for (const draft of drafts) {
       const dependsOn = this.resolveTaskDependencyReferences(
-        inferredDependencies.get(draft.id) ?? [],
+        draft.depends_on ?? [],
         batchReferences,
       );
       if (dependsOn.includes(draft.id)) {
@@ -1856,7 +1793,7 @@ export class OrchestrationProvider {
           {
             label: "Create Tasks",
             description:
-              "Batch-create a dependency graph of tasks. Prefer this over several create_task calls when tasks depend on each other, because local refs can be resolved without polling or guessed ids. Common coding DAGs get conservative setup/docs/verification inference while preserving parallel implementation siblings.",
+              "Batch-create a dependency graph of tasks. Prefer this over several create_task calls when tasks depend on each other, because local refs can be resolved without polling or guessed ids. Callers must supply explicit depends_on edges; the provider validates the DAG but does not infer dependencies.",
             estimate: "instant",
           },
         ),
