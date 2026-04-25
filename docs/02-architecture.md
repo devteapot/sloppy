@@ -492,6 +492,7 @@ Additional built-ins currently checked in:
 - `memory`
   - `session`, `memories`, `tags`, `approvals`
   - supports memory add/search/update/delete, compaction, weak-memory pruning, and approval-gated clear-all
+  - planned tiering (general vs role, cross-project vs project-bound) is sketched in `docs/11-memory-tiers.md`
 - `skills`
   - `session`, `skills`, `approvals`
   - supports skill discovery refresh and reading installed skill content
