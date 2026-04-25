@@ -16,6 +16,7 @@ import {
   describeProviderTransport,
   type RegisteredProvider,
 } from "../providers/registry";
+import type { ApprovalRecord } from "./approvals";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
 import { buildSystemPrompt } from "./context";
 import { ConversationHistory } from "./history";
@@ -88,6 +89,7 @@ export class Agent {
   private ignoredProviderIds: Set<string>;
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
+  private pendingApprovalSourceId: string | null = null;
   private activeRunAbortController: AbortController | null = null;
   private role: RoleProfile;
   private roleId?: string;
@@ -111,11 +113,17 @@ export class Agent {
     } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
+    const userOnToolEvent = options?.onToolEvent;
     this.callbacks = {
       onText: options?.onText,
       onToolCall: options?.onToolCall,
       onToolResult: options?.onToolResult,
-      onToolEvent: options?.onToolEvent,
+      onToolEvent: (event) => {
+        if (event.kind === "approval_requested" && event.approvalId) {
+          this.pendingApprovalSourceId = event.approvalId;
+        }
+        userOnToolEvent?.(event);
+      },
       onExternalProviderStates: options?.onExternalProviderStates,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
@@ -393,8 +401,90 @@ export class Agent {
     return this.pendingApproval?.blockedInvocation ?? null;
   }
 
+  getPendingApprovalSourceId(): string | null {
+    return this.pendingApproval ? this.pendingApprovalSourceId : null;
+  }
+
+  /**
+   * List the hub-owned approval queue. Returns an empty array when the agent
+   * is not started. Callers (e.g. REPL `/approvals`) get the same view as
+   * any other approval-aware UI surface.
+   */
+  listApprovals(filter?: { providerId?: string }): ApprovalRecord[] {
+    if (!this.hub) {
+      return [];
+    }
+    return this.hub.approvals.list(filter);
+  }
+
+  /**
+   * Approve a pending approval and, if it corresponds to the agent's blocked
+   * invocation, resume the paused turn with the resolved tool result. Wraps
+   * the boilerplate that REPL/CLI surfaces would otherwise duplicate from
+   * `src/session/runtime.ts`.
+   */
+  async approveAndResume(approvalId: string): Promise<AgentRunResult | null> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+    const pending = this.pendingApproval;
+    const sourceId = this.pendingApprovalSourceId;
+    const result = await this.resolveApprovalDirect(approvalId);
+    if (!pending || sourceId !== approvalId) {
+      return null;
+    }
+    this.pendingApprovalSourceId = null;
+    const toolUseId = pending.blockedInvocation.toolUseId;
+    const summary = `${pending.blockedInvocation.providerId}:${pending.blockedInvocation.action} ${pending.blockedInvocation.path}`;
+    const block: ToolResultContentBlock = {
+      type: "tool_result",
+      toolUseId,
+      content: typeof result === "string" ? result : JSON.stringify(result, null, 2),
+      isError: result.status === "error",
+    };
+    return this.resumeWithToolResult({
+      block,
+      status: result.status,
+      summary,
+      errorCode: result.error?.code,
+      errorMessage: result.error?.message,
+    });
+  }
+
+  /**
+   * Reject a pending approval and, if it corresponds to the agent's blocked
+   * invocation, resume the turn with a tool-error result.
+   */
+  async rejectAndResume(approvalId: string, reason?: string): Promise<AgentRunResult | null> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+    const pending = this.pendingApproval;
+    const sourceId = this.pendingApprovalSourceId;
+    this.rejectApprovalDirect(approvalId, reason);
+    if (!pending || sourceId !== approvalId) {
+      return null;
+    }
+    this.pendingApprovalSourceId = null;
+    const toolUseId = pending.blockedInvocation.toolUseId;
+    const summary = `${pending.blockedInvocation.providerId}:${pending.blockedInvocation.action} ${pending.blockedInvocation.path}`;
+    return this.resumeWithToolResult({
+      block: {
+        type: "tool_result",
+        toolUseId,
+        content: reason ? `Approval rejected: ${reason}` : "Approval rejected.",
+        isError: true,
+      },
+      status: "cancelled",
+      summary,
+      errorCode: "approval_rejected",
+      errorMessage: reason ? `Approval rejected: ${reason}` : "Approval rejected.",
+    });
+  }
+
   clearPendingApproval(): void {
     this.pendingApproval = null;
+    this.pendingApprovalSourceId = null;
   }
 
   cancelActiveTurn(): boolean {

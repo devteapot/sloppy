@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { defaultConfigPromise } from "./config/load";
-import { Agent } from "./core/agent";
+import { Agent, type AgentRunResult } from "./core/agent";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 const stdout = Bun.stdout.writer();
@@ -23,6 +23,16 @@ function writeProviderNotice(agent: Agent): void {
   const providers = agent.listConnectedProviders();
   const ids = providers.map((p) => p.id).join(", ");
   writeStderr(`[sloppy] providers: ${ids} (${providers.length})\n`);
+}
+
+function summarizeApprovalResult(result: AgentRunResult | null): void {
+  if (!result) {
+    writeStdout("[approval] resolved (no matching pending turn)\n");
+    return;
+  }
+  if (result.status === "waiting_approval") {
+    writeStdout("\n[approval] turn is waiting on another approval\n");
+  }
 }
 
 async function runSingleShot(prompt: string): Promise<number> {
@@ -49,16 +59,93 @@ async function runSingleShot(prompt: string): Promise<number> {
       if (!streamed && response.response) {
         writeStdout(response.response);
       }
-    } else {
-      writeStdout("\n[approval] turn is waiting on provider approval\n");
+      writeStdout("\n");
+      return 0;
     }
-    writeStdout("\n");
-    return 0;
+    const approvalId = agent.getPendingApprovalSourceId();
+    writeStdout(
+      `\n[approval] turn paused awaiting approval${approvalId ? ` ${approvalId}` : ""}; use the REPL (\`bun src/cli.ts\`) to resolve.\n`,
+    );
+    return 2;
   } catch (error) {
     writeStderr(`[error] ${errorMessage(error)}\n`);
     return 1;
   } finally {
     agent.shutdown();
+  }
+}
+
+const REPL_HELP = [
+  "Commands:",
+  "  /help                — show this help",
+  "  /approvals           — list pending approvals",
+  "  /approve <id>        — approve and resume the paused turn",
+  "  /reject <id> [reason]— reject and resume the paused turn",
+  "  exit | quit          — leave the REPL",
+  "",
+].join("\n");
+
+function listApprovalsLine(agent: Agent): string {
+  const items = agent.listApprovals();
+  const pending = items.filter((a) => a.status === "pending");
+  if (pending.length === 0) {
+    return "[approvals] no pending approvals\n";
+  }
+  return pending
+    .map(
+      (a) =>
+        `  ${a.id}  ${a.providerId}:${a.action} ${a.path}\n    reason: ${a.reason}${
+          a.paramsPreview ? `\n    params: ${a.paramsPreview}` : ""
+        }`,
+    )
+    .join("\n")
+    .concat("\n");
+}
+
+async function handleSlashCommand(agent: Agent, line: string): Promise<boolean> {
+  const [command, ...rest] = line.slice(1).split(/\s+/);
+  switch (command) {
+    case "help": {
+      writeStdout(REPL_HELP);
+      return true;
+    }
+    case "approvals": {
+      writeStdout(listApprovalsLine(agent));
+      return true;
+    }
+    case "approve": {
+      const id = rest[0];
+      if (!id) {
+        writeStdout("[approve] usage: /approve <id>\n");
+        return true;
+      }
+      try {
+        const result = await agent.approveAndResume(id);
+        summarizeApprovalResult(result);
+      } catch (error) {
+        writeStdout(`[error] ${errorMessage(error)}\n`);
+      }
+      return true;
+    }
+    case "reject": {
+      const id = rest[0];
+      const reason = rest.slice(1).join(" ").trim() || undefined;
+      if (!id) {
+        writeStdout("[reject] usage: /reject <id> [reason]\n");
+        return true;
+      }
+      try {
+        const result = await agent.rejectAndResume(id, reason);
+        summarizeApprovalResult(result);
+      } catch (error) {
+        writeStdout(`[error] ${errorMessage(error)}\n`);
+      }
+      return true;
+    }
+    default: {
+      writeStdout(`[error] unknown command: /${command}. Try /help.\n`);
+      return true;
+    }
   }
 }
 
@@ -79,6 +166,7 @@ async function runRepl(): Promise<number> {
   try {
     await agent.start();
     writeProviderNotice(agent);
+    writeStdout("Type /help for commands.\n");
     while (true) {
       const line = prompt("sloppy> ");
       if (line == null) {
@@ -93,10 +181,26 @@ async function runRepl(): Promise<number> {
         break;
       }
 
+      if (trimmed.startsWith("/")) {
+        await handleSlashCommand(agent, trimmed);
+        continue;
+      }
+
+      if (agent.getPendingApprovalInvocation()) {
+        const approvalId = agent.getPendingApprovalSourceId();
+        writeStdout(
+          `[approval] turn is waiting on approval${approvalId ? ` ${approvalId}` : ""}. Run /approvals or /approve <id>.\n`,
+        );
+        continue;
+      }
+
       try {
         const result = await agent.chat(trimmed);
         if (result.status === "waiting_approval") {
-          writeStdout("\n[approval] turn is waiting on provider approval\n");
+          const approvalId = agent.getPendingApprovalSourceId();
+          writeStdout(
+            `\n[approval] turn is waiting on approval${approvalId ? ` ${approvalId}` : ""}. Run /approvals to inspect.\n`,
+          );
         }
       } catch (error) {
         writeStdout(`\n[error] ${errorMessage(error)}\n`);
