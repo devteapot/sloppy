@@ -62,9 +62,20 @@ async function runSingleShot(prompt: string): Promise<number> {
       writeStdout("\n");
       return 0;
     }
+    // Single-shot cannot resolve the approval (the agent and its hub are
+    // about to be torn down in `finally`). Reject the queued approval so
+    // we don't leave a live, approvable destructive command behind, then
+    // tell the user accurately that the turn was dropped.
     const approvalId = agent.getPendingApprovalSourceId();
+    if (approvalId) {
+      try {
+        agent.rejectApprovalDirect(approvalId, "Single-shot CLI cannot resolve approvals.");
+      } catch {
+        // best-effort
+      }
+    }
     writeStdout(
-      `\n[approval] turn paused awaiting approval${approvalId ? ` ${approvalId}` : ""}; use the REPL (\`bun src/cli.ts\`) to resolve.\n`,
+      `\n[approval] turn was dropped — single-shot CLI cannot resolve approvals${approvalId ? ` (${approvalId})` : ""}. Run \`bun src/cli.ts\` interactively to handle approvals.\n`,
     );
     return 2;
   } catch (error) {
