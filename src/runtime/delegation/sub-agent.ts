@@ -6,7 +6,11 @@ import type { LlmProfileManager } from "../../llm/profile-manager";
 import { InProcessTransport } from "../../providers/builtin/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
 import { AgentSessionProvider } from "../../session/provider";
-import { type SessionAgentFactory, SessionRuntime } from "../../session/runtime";
+import {
+  type ExternalSessionAgentState,
+  type SessionAgentFactory,
+  SessionRuntime,
+} from "../../session/runtime";
 
 export type SubAgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -29,6 +33,8 @@ export interface SubAgentRunnerOptions {
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
   llmProfileManager?: LlmProfileManager;
+  requiresLlmProfile?: boolean;
+  externalAgentState?: ExternalSessionAgentState;
   providerIdPrefix?: string;
   taskContext?: TaskContext;
   /**
@@ -98,6 +104,8 @@ export class SubAgentRunner {
       title: options.name,
       agentFactory: options.agentFactory,
       llmProfileManager: options.llmProfileManager,
+      requiresLlmProfile: options.requiresLlmProfile,
+      externalAgentState: options.externalAgentState,
       parentActorId: "parent",
     });
 

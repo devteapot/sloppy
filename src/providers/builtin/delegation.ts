@@ -9,6 +9,7 @@ export type DelegationAgentSpawn = {
   name: string;
   goal: string;
   model?: string;
+  executionMode?: string;
   /**
    * Opaque external task id supplied by whoever requested the spawn (e.g. an
    * orchestrator). The delegation provider passes it through unchanged; only
@@ -43,6 +44,7 @@ type DelegationAgent = {
   goal: string;
   status: AgentStatus;
   model?: string;
+  executionMode?: string;
   externalTaskId?: string;
   result?: string;
   error?: string;
@@ -279,7 +281,14 @@ export class DelegationProvider {
     goal: string,
     model?: string,
     externalTaskId?: string,
-  ): { id: string; status: AgentStatus; created_at: string; session_provider_id?: string } {
+    executionMode?: string,
+  ): {
+    id: string;
+    status: AgentStatus;
+    created_at: string;
+    execution_mode: string;
+    session_provider_id?: string;
+  } {
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
     ).length;
@@ -296,6 +305,7 @@ export class DelegationProvider {
       goal,
       status: "pending",
       model,
+      executionMode: executionMode ?? "native",
       externalTaskId,
       created_at,
     };
@@ -305,10 +315,11 @@ export class DelegationProvider {
       name,
       goal_preview: goal.slice(0, 80),
       model,
+      execution_mode: agent.executionMode,
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, model, externalTaskId },
+      { id, name, goal, model, executionMode: agent.executionMode, externalTaskId },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -352,6 +363,7 @@ export class DelegationProvider {
       id,
       status: agent.status,
       created_at,
+      execution_mode: agent.executionMode ?? "native",
       session_provider_id: agent.session_provider_id,
     };
   }
@@ -431,13 +443,20 @@ export class DelegationProvider {
                 "Optional orchestration task id (e.g. task-abcd1234) to attach to. If set, the sub-agent updates that task's lifecycle instead of creating a new one. Use this to execute a task you already planned via /orchestration.create_task.",
               optional: true,
             },
+            execution_mode: {
+              type: "string",
+              description:
+                "Optional execution backend. Use 'native' or 'acp:<adapterId>' when ACP delegation adapters are configured.",
+              optional: true,
+            },
           },
-          async ({ name, goal, model, task_id }) =>
+          async ({ name, goal, model, task_id, execution_mode }) =>
             this.spawnAgent(
               name as string,
               goal as string,
               typeof model === "string" ? model : undefined,
               typeof task_id === "string" ? task_id : undefined,
+              typeof execution_mode === "string" ? execution_mode : undefined,
             ),
           {
             label: "Spawn Agent",
@@ -462,6 +481,7 @@ export class DelegationProvider {
         goal: agent.goal,
         status: agent.status,
         model: agent.model,
+        execution_mode: agent.executionMode ?? "native",
         orchestration_task_id: agent.externalTaskId,
         created_at: agent.created_at,
         completed_at: agent.completed_at,

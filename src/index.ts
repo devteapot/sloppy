@@ -40,6 +40,8 @@ export {
   createRegisteredProviders,
   describeProviderTransport,
 } from "./providers/registry";
+export type { AcpAdapterConfig, AcpSessionAgentOptions } from "./runtime/acp";
+export { AcpSessionAgent } from "./runtime/acp";
 export {
   attachSubAgentRunnerFactory,
   createAwaitChildrenHook,

@@ -436,11 +436,11 @@ describe("TerminalProvider", () => {
       await consumer.connect();
       await consumer.subscribe("/", 3);
 
-      const escape = await consumer.invoke("/session", "cd", {
+      const escapeResult = await consumer.invoke("/session", "cd", {
         path: "escape",
       });
-      expect(escape.status).toBe("error");
-      expect(escape.error?.message ?? "").toContain("outside workspace root");
+      expect(escapeResult.status).toBe("error");
+      expect(escapeResult.error?.message ?? "").toContain("outside workspace root");
 
       const session = await consumer.query("/session", 1);
       expect(session.properties?.cwd).toBe(realpathSync(cwd));

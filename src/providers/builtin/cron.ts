@@ -196,10 +196,7 @@ export class CronProvider {
           const approvalId = (result.data as { approvalId?: string } | undefined)?.approvalId;
           if (approvalId) {
             try {
-              this.runner.cancelApproval(
-                approvalId,
-                `Cron job "${job.name}" blocked by policy.`,
-              );
+              this.runner.cancelApproval(approvalId, `Cron job "${job.name}" blocked by policy.`);
             } catch {
               // best-effort cancellation; the approval may already be resolved
             }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { CronProvider, type CronCommandRunner } from "../src/providers/builtin/cron";
+import { type CronCommandRunner, CronProvider } from "../src/providers/builtin/cron";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 
 // Default test runner: spawns the command directly. Equivalent to what

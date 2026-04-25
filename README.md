@@ -129,7 +129,7 @@ These providers are currently implemented as in-process SLOP providers:
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
-- `delegation` for subagent lifecycle state, cancellation, and result retrieval
+- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
 - `orchestration` for durable plans, task DAGs, typed handoffs, verification, audit findings, and scoped child work packets
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
@@ -289,6 +289,22 @@ providers:
     orchestration: true
     spec: true
 ```
+
+Delegation can also launch configured Agent Client Protocol agents as child sessions while preserving the same SLOP session surface:
+
+```yaml
+providers:
+  builtin:
+    delegation: true
+  delegation:
+    acp:
+      enabled: true
+      adapters:
+        gemini:
+          command: ["gemini", "--acp"]
+```
+
+Then use `execution_mode: "acp:gemini"` on `delegation.spawn_agent`; omitted execution mode still uses the native Sloppy sub-agent.
 
 When using the orchestrator role programmatically, the `withOrchestratorBuiltins(config)` helper flips `delegation`, `orchestration`, and `spec` on for you.
 

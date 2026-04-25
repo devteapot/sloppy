@@ -27,14 +27,15 @@ describe("FilesystemProvider", () => {
     tempPaths.push(outside);
     await writeFile(join(outside, "leak.txt"), "leak", "utf8");
 
-    expect(() =>
-      new FilesystemProvider({
-        root,
-        focus: outside,
-        recentLimit: 10,
-        searchLimit: 20,
-        readMaxBytes: 65536,
-      }),
+    expect(
+      () =>
+        new FilesystemProvider({
+          root,
+          focus: outside,
+          recentLimit: 10,
+          searchLimit: 20,
+          readMaxBytes: 65536,
+        }),
     ).toThrow(/focus must be inside workspace root/);
   });
 

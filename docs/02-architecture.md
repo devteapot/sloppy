@@ -284,6 +284,8 @@ Another agent could consume a session or delegation provider and interact throug
 
 That opens the door to supervisor-worker patterns, review loops, and delegated subtasks, while still requiring clear identity, authorization, and cycle-avoidance rules.
 
+The checked-in ACP integration follows this rule: Agent Client Protocol agents are launched only behind the `SessionAgent` boundary for delegated children. Their prompt stream, tool updates, permissions, and cancellation are translated into the same SLOP session-provider state; ACP does not replace the core provider/consumer model.
+
 ---
 
 ## Subscription strategy

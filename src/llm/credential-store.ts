@@ -53,7 +53,9 @@ function loadKeytar(): Promise<KeytarModule | null> {
   return keytarLookup;
 }
 
-export function __resetKeytarCacheForTests(value: Promise<KeytarModule | null> | null = null): void {
+export function __resetKeytarCacheForTests(
+  value: Promise<KeytarModule | null> | null = null,
+): void {
   keytarLookup = value;
 }
 

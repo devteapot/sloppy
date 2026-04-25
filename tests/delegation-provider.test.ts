@@ -127,6 +127,46 @@ describe("DelegationProvider", () => {
     }
   });
 
+  test("passes execution mode through spawn state and runner factory", async () => {
+    let capturedExecutionMode: string | undefined;
+    const { provider, consumer } = createDelegationHarness({
+      runnerFactory: (spawn, callbacks) => {
+        capturedExecutionMode = spawn.executionMode;
+        return {
+          async start() {
+            callbacks.onUpdate({ status: "running" });
+          },
+          async cancel() {
+            callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+          },
+        };
+      },
+    });
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "acp-worker",
+        goal: "Run through an external adapter",
+        execution_mode: "acp:fake",
+      });
+      expect(result.status).toBe("ok");
+      const data = result.data as { id: string; execution_mode: string };
+      expect(data.execution_mode).toBe("acp:fake");
+      expect(capturedExecutionMode).toBe("acp:fake");
+
+      const agent = await consumer.query(`/agents/${data.id}`, 2);
+      expect(agent.properties).toMatchObject({
+        id: data.id,
+        execution_mode: "acp:fake",
+      });
+
+      await consumer.invoke(`/agents/${data.id}`, "cancel", {});
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("observes lifecycle changes through pushed state", async () => {
     const { provider, consumer } = createDelegationHarness();
 

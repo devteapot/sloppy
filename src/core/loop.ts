@@ -7,8 +7,16 @@ import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
 import type { ProviderRuntimeHub } from "./hub";
-import { stringifyResult, toolErrorCode, truncateToolResult } from "./loop/result-format";
-import { PolicyDeniedError } from "./policy";
+import {
+  type ApprovalState,
+  classifyToolInvocationError,
+  extractApprovalId,
+  idleApproval,
+  planIteration,
+  resumingApproval,
+  suspendedResult,
+} from "./loop/approval-suspension";
+import { stringifyResult, truncateToolResult } from "./loop/result-format";
 import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
 
@@ -368,20 +376,13 @@ async function executeToolCall(
     }
 
     if (result.status === "error" && result.error?.code === "approval_required") {
-      const approvalId =
-        result.data &&
-        typeof result.data === "object" &&
-        !Array.isArray(result.data) &&
-        typeof (result.data as { approvalId?: unknown }).approvalId === "string"
-          ? (result.data as { approvalId: string }).approvalId
-          : undefined;
       return {
         kind: "approval_requested",
         invocation,
         summary,
         errorCode: result.error.code,
         errorMessage: result.error.message,
-        approvalId,
+        approvalId: extractApprovalId(result.data),
       };
     }
 
@@ -413,11 +414,7 @@ async function executeToolCall(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // Hub policy `deny` decisions surface as PolicyDeniedError. Map them to
-    // the same `tool_policy_rejected` code the legacy in-loop `toolPolicy`
-    // hook used so user-visible behavior is unchanged after the migration.
-    const errorCode =
-      error instanceof PolicyDeniedError ? "tool_policy_rejected" : toolErrorCode(error);
+    const errorCode = classifyToolInvocationError(error);
     return {
       kind: "completed",
       invocation: activeInvocation,
@@ -537,7 +534,9 @@ export async function runLoop(options: {
   hooks?: RunLoopHooks;
 }): Promise<RunLoopResult> {
   const system = options.systemPrompt ?? buildSystemPrompt(options.config);
-  let pendingResume = options.resume;
+  let approval: ApprovalState = options.resume
+    ? resumingApproval(options.resume.continuation, options.resume.resolvedToolResult)
+    : idleApproval;
   const toolPolicy = options.hooks?.toolPolicy;
   const transformInvoke = options.hooks?.transformInvoke;
   const beforeNextTurn = options.hooks?.beforeNextTurn;
@@ -548,15 +547,15 @@ export async function runLoop(options: {
       throw new LlmAbortError();
     }
 
-    if (pendingResume && iteration < pendingResume.continuation.iteration) {
-      continue;
-    }
+    const plan = planIteration(approval, iteration);
 
-    if (pendingResume && iteration === pendingResume.continuation.iteration) {
+    if (plan.kind === "skip") continue;
+
+    if (plan.kind === "resume") {
       const resumedExecution = await executeToolCalls({
-        toolCalls: pendingResume.continuation.toolCalls,
-        startIndex: pendingResume.continuation.nextToolCallIndex,
-        toolResults: [...pendingResume.continuation.toolResults, pendingResume.resolvedToolResult],
+        toolCalls: plan.continuation.toolCalls,
+        startIndex: plan.continuation.nextToolCallIndex,
+        toolResults: [...plan.continuation.toolResults, plan.resolvedToolResult],
         iteration,
         toolSet: options.hub.getRuntimeToolSet(),
         hub: options.hub,
@@ -570,14 +569,11 @@ export async function runLoop(options: {
       });
 
       if (resumedExecution.status === "waiting_approval") {
-        return {
-          status: "waiting_approval",
-          pending: resumedExecution.pending,
-        };
+        return suspendedResult(resumedExecution.pending);
       }
 
       options.history.addToolResults(resumedExecution.toolResults);
-      pendingResume = undefined;
+      approval = idleApproval;
       if (beforeNextTurn) {
         await beforeNextTurn(options.hub, options.signal);
       }
@@ -628,10 +624,7 @@ export async function runLoop(options: {
       roleId,
     });
     if (execution.status === "waiting_approval") {
-      return {
-        status: "waiting_approval",
-        pending: execution.pending,
-      };
+      return suspendedResult(execution.pending);
     }
 
     options.history.addToolResults(execution.toolResults);

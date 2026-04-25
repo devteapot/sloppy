@@ -3,13 +3,15 @@
 ## Research: Wrapping Headless Coding CLIs as Sub-Agents
 
 **Date:** 2026-04-23
-**Status:** Design sketch — no implementation yet.
+**Status:** First ACP-backed implementation landed. The generic stdout-parsing
+CLI path remains design context; the checked-in v1 uses Agent Client Protocol
+at the `SessionAgent` boundary.
 
 ---
 
 ## 1. The Core Idea
 
-Sloppy currently runs sub-agents via direct LLM API calls (Anthropic, OpenAI, Gemini) through `LlmAdapter` → `Agent` → `SessionRuntime`. This doc proposes a parallel execution mode: **wrap existing headless coding CLIs** (Claude Code, Codex CLI, Pi, potentially others) as sub-agents that the orchestrator delegates to just like any native sub-agent.
+Sloppy currently runs sub-agents via direct LLM API calls (Anthropic, OpenAI, Gemini) through `LlmAdapter` → `Agent` → `SessionRuntime`. This doc proposes a parallel execution mode: **wrap existing headless coding CLIs** (Claude Code, Codex CLI, Pi, potentially others) as sub-agents that the orchestrator delegates to just like any native sub-agent. The first implementation chooses ACP-compatible agents before ad hoc CLI stdout adapters.
 
 The orchestrator doesn't know or care whether the child is a subprocess or a native Agent loop — it observes the same SLOP surface (`/session`, `/turn`, `/transcript`, `/activity`, `/approvals`) and interacts through the same affordances.
 
@@ -42,7 +44,7 @@ export interface SessionAgent {
 }
 ```
 
-A CLI-backed `SessionAgent` implementation is a drop-in replacement. `SubAgentRunner` already constructs `SessionRuntime` and `AgentSessionProvider` from an `agentFactory` option — all that changes is which factory gets wired in.
+A subprocess-backed `SessionAgent` implementation is a drop-in replacement. `SubAgentRunner` already constructs `SessionRuntime` and `AgentSessionProvider` from an `agentFactory` option — all that changes is which factory gets wired in. Checked in now: `AcpSessionAgent`, which launches stdio ACP agents and translates ACP session updates and permission requests into the existing SLOP session surface.
 
 ### Diagram
 
@@ -60,14 +62,13 @@ Orchestrator (sloppy Agent)
 │         │                                         │
 │         │  wraps SessionRuntime                   │
 │         │                                         │
-│         ├── NativeSessionAgent  (today: LlmAdapter)
-│         └── CliSessionAgent     (new: subprocess) ┘
+│         ├── NativeSessionAgent  (LlmAdapter)
+│         └── AcpSessionAgent     (stdio ACP subprocess) ┘
 └───────────────────────────────────────────────────┘
                                    │
                                    ▼
-                          spawn: claude --print --output-format stream-json
-                                  codex exec ...
-                                  pi ...
+                          spawn: gemini --acp
+                                  other configured ACP agents
 ```
 
 ---
@@ -140,12 +141,12 @@ Extend `DelegationProvider.spawnAgent` params (or the `runnerFactory`) with an o
 spawn_agent({
   name: "refactor-auth",
   goal: "consolidate duplicate auth middleware",
-  execution_mode: "cli:claude-code",   // or "native" (default), "cli:codex", "cli:pi"
+  execution_mode: "acp:gemini",        // or "native" (default)
   model: "claude-sonnet-4-6",          // passed through to the CLI
 })
 ```
 
-The registry's real `runnerFactory` (in `src/providers/registry.ts`) picks the appropriate `agentFactory` for the chosen mode when constructing the `SubAgentRunner`. Native stays the default.
+The registry's real `runnerFactory` (in `src/providers/registry.ts`) picks the appropriate `agentFactory` for the chosen mode when constructing the `SubAgentRunner`. Native stays the default. `execution_mode` is exposed on `/delegation/agents/{id}` for inspectability.
 
 Current native sub-agents already accept the `model` field and expose it in `/agents/{id}`, but the field is metadata only: `SubAgentRunner` still inherits the parent's resolved LLM config. Wiring per-child model selection needs an LLM config/profile overlay before `SessionRuntime` starts the child. CLI-backed agents should pass the same field through to the adapter command once that execution mode lands.
 
@@ -154,12 +155,10 @@ Current native sub-agents already accept the `model` field and expose it in `/ag
 New config block:
 
 ```ts
-providers.delegation.cli = {
+providers.delegation.acp = {
   enabled: true,
   adapters: {
-    "claude-code": { command: ["claude", "--print", "--output-format", "stream-json"], env: {...} },
-    "codex":       { command: ["codex", "exec", "--json"], env: {...} },
-    "pi":          { command: ["pi", "run", "--non-interactive"], env: {...} },
+    "gemini": { command: ["gemini", "--acp"], env: {...} },
   },
   defaultTimeoutMs: 600_000,
 }
@@ -192,15 +191,15 @@ Recommendation: ship **A** for a first milestone as opt-in (`trust_child: true`)
 
 ## 6. Proposed First Slice
 
-**Claude Code only.** Prove the pattern end-to-end before generalizing.
+**Implemented v1:** ACP-compatible agents only. Prove the pattern end-to-end before generalizing to ad hoc CLI stdout adapters.
 
-1. `CliSessionAgent` in `src/core/sub-agent/cli-session-agent.ts`.
-2. `ClaudeCodeAdapter` parsing `--output-format stream-json`.
-3. `execution_mode: "cli:claude-code"` wired through `spawn_agent`.
-4. Run in trust-child mode (Strategy A) for the MVP; workspace stays the orchestrator's root.
-5. Test: orchestrator spawns a claude-code sub-agent with goal "add a TODO comment to foo.ts", observes streamed output in the child's `/transcript`, observes file edit via filesystem drift, final result lands in `tasks/{id}/result.md`.
+1. `AcpSessionAgent` in `src/runtime/acp/session-agent.ts`.
+2. `execution_mode: "acp:<adapterId>"` wired through `spawn_agent`.
+3. Optional `providers.delegation.acp.adapters` config for stdio command launch.
+4. ACP permission requests mirrored into the child session `/approvals`.
+5. Tests cover ACP text streaming, permission approval/resume, and delegation execution-mode state.
 
-Defer: codex, pi, approval-prompt parsing, MCP bridge, worktree isolation.
+Defer: registry auto-discovery, non-ACP stdout adapters, ACP filesystem/terminal client-method proxying through SLOP providers, worktree isolation.
 
 ---
 

@@ -42,6 +42,7 @@ Implemented now:
 - native Gemini adapter
 - lazy LLM startup so the session can boot without a ready API key
 - managed LLM profiles with secure credential storage for macOS and Linux
+- ACP-backed delegated child agents through the `SessionAgent` boundary, preserving the same session-provider state surface
 - CLI single-shot mode and REPL
 - checked-in `src/session/` agent-session provider with `/llm` onboarding/profile-management state and `/apps` external-provider attachment visibility
 - checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding and settings management
@@ -414,7 +415,7 @@ After the current implementation, the most important follow-ups are:
 1. keep hardening the agent-session provider boundary as the public interface surface
 2. build the first `apps/tui/` client against that public boundary
 3. harden adapter compatibility coverage across Anthropic, OpenAI-compatible providers, and Gemini
-4. replace simulated Phase 2 providers with real external integrations where appropriate
+4. broaden ACP adapter coverage and replace simulated Phase 2 providers with real external integrations where appropriate
 5. improve approval and policy enforcement for dangerous affordances
 6. add SQLite-backed history and search
 
