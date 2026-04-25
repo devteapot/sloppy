@@ -24,6 +24,7 @@ import {
   type ProviderTransportDescriptor,
 } from "./discovery";
 import { NodeSocketClientTransport } from "./node-socket";
+import type { ProviderApprovalManager } from "./approvals";
 
 export interface RegisteredProvider {
   id: string;
@@ -38,6 +39,12 @@ export interface RegisteredProvider {
     config: SloppyConfig,
     ctx?: RuntimeContext,
   ) => { stop(): void } | undefined;
+  /**
+   * Optional reference to the provider's `ProviderApprovalManager`. When
+   * present, the registry / hub connects it to `hub.approvals` so all
+   * policy-mediated and provider-native approval requests share one queue.
+   */
+  approvals?: ProviderApprovalManager;
 }
 
 export function describeProviderTransport(transport: ProviderTransportDescriptor): string {
@@ -71,6 +78,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(terminal.server),
       transportLabel: "in-process",
       stop: () => terminal.stop(),
+      approvals: terminal.approvals,
     });
   }
 
@@ -107,6 +115,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(memory.server),
       transportLabel: "in-process",
       stop: () => memory.stop(),
+      approvals: memory.approvals,
     });
   }
 
@@ -121,6 +130,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(skills.server),
       transportLabel: "in-process",
       stop: () => skills.stop(),
+      approvals: skills.approvals,
     });
   }
 
@@ -135,6 +145,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(web.server),
       transportLabel: "in-process",
       stop: () => web.stop(),
+      approvals: web.approvals,
     });
   }
 
@@ -164,6 +175,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(cron.server),
       transportLabel: "in-process",
       stop: () => cron.stop(),
+      approvals: cron.approvals,
     });
   }
 
@@ -178,6 +190,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(messaging.server),
       transportLabel: "in-process",
       stop: () => messaging.stop(),
+      approvals: messaging.approvals,
     });
   }
 
@@ -247,6 +260,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(vision.server),
       transportLabel: "in-process",
       stop: () => vision.stop(),
+      approvals: vision.approvals,
     });
   }
 

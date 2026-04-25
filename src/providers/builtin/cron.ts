@@ -91,7 +91,7 @@ function spawnCommand(command: string) {
 export class CronProvider {
   readonly server: SlopServer;
   private maxJobs: number;
-  private approvals: ProviderApprovalManager;
+  readonly approvals: ProviderApprovalManager;
   private jobs = new Map<string, CronJob>();
   private ticker: ReturnType<typeof setInterval>;
 

@@ -28,7 +28,7 @@ export class VisionProvider {
   private maxImages: number;
   private defaultWidth: number;
   private defaultHeight: number;
-  private approvals: ProviderApprovalManager;
+  readonly approvals: ProviderApprovalManager;
   private images = new Map<string, ImageGeneration>();
   private analyses = new Map<string, ImageAnalysis>();
 

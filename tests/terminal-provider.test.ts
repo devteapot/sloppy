@@ -4,8 +4,86 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
+import type { SloppyConfig } from "../src/config/schema";
+import { ConsumerHub } from "../src/core/consumer";
+import { terminalSafetyRule } from "../src/core/policy/rules";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { TerminalProvider } from "../src/providers/builtin/terminal";
+
+// Minimal hub config sufficient for connecting an in-process provider.
+const HUB_CONFIG: SloppyConfig = {
+  llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
+  agent: {
+    maxIterations: 12,
+    contextBudgetTokens: 24000,
+    minSalience: 0.2,
+    overviewDepth: 2,
+    overviewMaxNodes: 200,
+    detailDepth: 4,
+    detailMaxNodes: 200,
+    historyTurns: 8,
+    toolResultMaxChars: 16000,
+  },
+  maxToolResultSize: 4096,
+  providers: {
+    builtin: {
+      terminal: false,
+      filesystem: false,
+      memory: false,
+      skills: false,
+      web: false,
+      browser: false,
+      cron: false,
+      messaging: false,
+      delegation: false,
+      orchestration: false,
+      spec: false,
+      vision: false,
+    },
+    discovery: { enabled: false, paths: [] },
+    terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
+    filesystem: {
+      root: ".",
+      focus: ".",
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+      contentRefThresholdBytes: 8192,
+      previewBytes: 2048,
+    },
+    memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
+    skills: { skillsDir: "~/.hermes/skills" },
+    web: { historyLimit: 10 },
+    browser: { viewportWidth: 1280, viewportHeight: 800 },
+    cron: { maxJobs: 16 },
+    messaging: { maxMessages: 100 },
+    delegation: { maxAgents: 4 },
+    orchestration: { progressTailMaxChars: 2000 },
+    vision: { maxImages: 16, defaultWidth: 1024, defaultHeight: 768 },
+  },
+} as unknown as SloppyConfig;
+
+async function attachTerminalToHub(provider: TerminalProvider): Promise<{
+  hub: ConsumerHub;
+  consumer: SlopConsumer;
+}> {
+  const hub = new ConsumerHub([], HUB_CONFIG);
+  await hub.connect();
+  hub.addPolicyRule(terminalSafetyRule);
+  await hub.addProvider({
+    id: "terminal",
+    name: "Terminal",
+    kind: "builtin",
+    transport: new InProcessTransport(provider.server),
+    transportLabel: "in-process",
+    stop: () => provider.stop(),
+    approvals: provider.approvals,
+  });
+  const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+  await consumer.connect();
+  await consumer.subscribe("/", 4);
+  return { hub, consumer };
+}
 
 const tempPaths: string[] = [];
 
@@ -80,7 +158,7 @@ describe("TerminalProvider", () => {
     }
   });
 
-  test("creates a provider-native approval for destructive commands", async () => {
+  test("creates a hub-mediated approval for destructive commands", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);
     await writeFile(join(cwd, "remove-me.txt"), "hello", "utf8");
@@ -90,40 +168,40 @@ describe("TerminalProvider", () => {
       historyLimit: 10,
       syncTimeoutMs: 5000,
     });
-    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    const { hub, consumer } = await attachTerminalToHub(provider);
 
-    await consumer.connect();
-    await consumer.subscribe("/", 4);
+    try {
+      const result = await hub.invoke("terminal", "/session", "execute", {
+        command: "rm remove-me.txt",
+        background: false,
+      });
 
-    const result = await consumer.invoke("/session", "execute", {
-      command: "rm remove-me.txt",
-      background: false,
-      confirmed: false,
-    });
+      expect(result.status).toBe("error");
+      expect(result.error?.code).toBe("approval_required");
 
-    expect(result.status).toBe("error");
-    expect(result.error?.code).toBe("approval_required");
+      const approvals = await consumer.query("/approvals", 2);
+      expect(approvals.children?.length).toBe(1);
+      expect(approvals.children?.[0]?.properties?.status).toBe("pending");
+      expect(approvals.children?.[0]?.properties?.action).toBe("execute");
+      expect(approvals.children?.[0]?.properties?.reason).toContain(
+        "destructive shell command pattern",
+      );
+      expect(approvals.children?.[0]?.properties?.params_preview).toContain("rm remove-me.txt");
 
-    const approvals = await consumer.query("/approvals", 2);
-    expect(approvals.children?.length).toBe(1);
-    expect(approvals.children?.[0]?.properties?.status).toBe("pending");
-    expect(approvals.children?.[0]?.properties?.action).toBe("execute");
-    expect(approvals.children?.[0]?.properties?.reason).toContain(
-      "destructive shell command pattern",
-    );
-    expect(approvals.children?.[0]?.properties?.params_preview).toContain("rm remove-me.txt");
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+      const approveResult = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approveResult.status).toBe("ok");
+      expect(await Bun.file(join(cwd, "remove-me.txt")).exists()).toBe(false);
 
-    const approvalId = approvals.children?.[0]?.id;
-    expect(typeof approvalId).toBe("string");
-    const approveResult = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
-    expect(approveResult.status).toBe("ok");
-    expect(await Bun.file(join(cwd, "remove-me.txt")).exists()).toBe(false);
-
-    const updatedApprovals = await consumer.query("/approvals", 2);
-    expect(updatedApprovals.children?.[0]?.properties?.status).toBe("approved");
+      const updatedApprovals = await consumer.query("/approvals", 2);
+      expect(updatedApprovals.children?.[0]?.properties?.status).toBe("approved");
+    } finally {
+      hub.shutdown();
+    }
   });
 
-  test("rejecting a provider-native approval leaves state unchanged", async () => {
+  test("rejecting a hub-mediated approval leaves state unchanged", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);
     await writeFile(join(cwd, "keep-me.txt"), "hello", "utf8");
@@ -133,29 +211,29 @@ describe("TerminalProvider", () => {
       historyLimit: 10,
       syncTimeoutMs: 5000,
     });
-    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    const { hub, consumer } = await attachTerminalToHub(provider);
 
-    await consumer.connect();
-    await consumer.subscribe("/", 4);
+    try {
+      await hub.invoke("terminal", "/session", "execute", {
+        command: "rm keep-me.txt",
+        background: false,
+      });
 
-    await consumer.invoke("/session", "execute", {
-      command: "rm keep-me.txt",
-      background: false,
-      confirmed: false,
-    });
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
 
-    const approvals = await consumer.query("/approvals", 2);
-    const approvalId = approvals.children?.[0]?.id;
-    expect(typeof approvalId).toBe("string");
+      const rejectResult = await consumer.invoke(`/approvals/${approvalId}`, "reject", {
+        reason: "keep the file",
+      });
+      expect(rejectResult.status).toBe("ok");
+      expect(await Bun.file(join(cwd, "keep-me.txt")).exists()).toBe(true);
 
-    const rejectResult = await consumer.invoke(`/approvals/${approvalId}`, "reject", {
-      reason: "keep the file",
-    });
-    expect(rejectResult.status).toBe("ok");
-    expect(await Bun.file(join(cwd, "keep-me.txt")).exists()).toBe(true);
-
-    const updatedApprovals = await consumer.query("/approvals", 2);
-    expect(updatedApprovals.children?.[0]?.properties?.status).toBe("rejected");
+      const updatedApprovals = await consumer.query("/approvals", 2);
+      expect(updatedApprovals.children?.[0]?.properties?.status).toBe("rejected");
+    } finally {
+      hub.shutdown();
+    }
   });
 
   test("approval metadata explains file output redirection", async () => {
@@ -167,16 +245,12 @@ describe("TerminalProvider", () => {
       historyLimit: 10,
       syncTimeoutMs: 5000,
     });
-    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    const { hub, consumer } = await attachTerminalToHub(provider);
 
     try {
-      await consumer.connect();
-      await consumer.subscribe("/", 4);
-
-      const result = await consumer.invoke("/session", "execute", {
+      const result = await hub.invoke("terminal", "/session", "execute", {
         command: "printf hello > out.txt",
         background: false,
-        confirmed: false,
       });
 
       expect(result.status).toBe("error");
@@ -188,7 +262,7 @@ describe("TerminalProvider", () => {
         "printf hello > out.txt",
       );
     } finally {
-      provider.stop();
+      hub.shutdown();
     }
   });
 
@@ -201,16 +275,12 @@ describe("TerminalProvider", () => {
       historyLimit: 10,
       syncTimeoutMs: 5000,
     });
-    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    const { hub, consumer } = await attachTerminalToHub(provider);
 
     try {
-      await consumer.connect();
-      await consumer.subscribe("/", 4);
-
-      const result = await consumer.invoke("/session", "execute", {
+      const result = await hub.invoke("terminal", "/session", "execute", {
         command: "printf hello 2>&1",
         background: false,
-        confirmed: false,
       });
 
       expect(result.status).toBe("ok");
@@ -219,7 +289,7 @@ describe("TerminalProvider", () => {
       const approvals = await consumer.query("/approvals", 2);
       expect(approvals.children ?? []).toHaveLength(0);
     } finally {
-      provider.stop();
+      hub.shutdown();
     }
   });
 

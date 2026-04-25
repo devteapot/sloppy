@@ -18,6 +18,7 @@ import {
 } from "../providers/registry";
 import { ConsumerHub, type ExternalProviderState } from "./consumer";
 import { buildSystemPrompt } from "./context";
+import { dangerousActionRule, terminalSafetyRule } from "./policy/rules";
 import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
@@ -200,6 +201,14 @@ export class Agent {
     if (roleRuntime) {
       this.runtimeStops.push(roleRuntime);
     }
+
+    // Install hub-wide safety rules. Order matters: orchestrator role rules
+    // (added during provider/role attach) run first so role-scoped denials
+    // short-circuit before generic destructive-command and dangerous-action
+    // checks. The safety rules run only when the role layer allows the
+    // invocation through.
+    hub.addPolicyRule(terminalSafetyRule);
+    hub.addPolicyRule(dangerousActionRule(() => hub.getProviderViews()));
     const roleFragment = this.role.systemPromptFragment?.(this.config);
     if (roleFragment) {
       this.systemPromptFragments.push(roleFragment);

@@ -266,7 +266,11 @@ describe("ConsumerHub", () => {
       const result = await hub.invoke("demo", "/workspace", "noop", {});
       expect(result.status).toBe("error");
       expect(result.error?.code).toBe("approval_required");
-      expect(result.error?.message).toBe("needs blessing");
+      expect(result.error?.message).toContain("needs blessing");
+      // Hub should also enqueue an approval into hub.approvals.
+      const pending = hub.approvals.list({ providerId: "demo" });
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.status).toBe("pending");
 
       // addPolicyRule on default hub should construct a composite lazily.
       hub.setPolicy(null);

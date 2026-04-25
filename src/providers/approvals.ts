@@ -1,6 +1,8 @@
 import { AsyncActionResult } from "@slop-ai/core";
 import { action, type ItemDescriptor, type NodeDescriptor, type SlopServer } from "@slop-ai/server";
 
+import type { ApprovalQueue, ApprovalRecord } from "../core/approvals";
+
 export const APPROVAL_REQUIRED_ERROR_CODE = "approval_required";
 export const APPROVAL_REJECTED_ERROR_CODE = "approval_rejected";
 export const APPROVAL_REQUESTED_EVENT = "approval.requested";
@@ -25,7 +27,7 @@ export type ApprovalResolutionPayload = {
   };
 };
 
-type ApprovalRecord = {
+type LocalApprovalRecord = {
   id: string;
   path: string;
   action: string;
@@ -100,10 +102,46 @@ export function createApprovalRequiredError(message: string): Error {
   return error;
 }
 
+/**
+ * Per-provider façade over approvals. When attached to the hub-owned
+ * `ApprovalQueue` via `setQueue(...)`, requests and the SLOP `/approvals`
+ * collection are backed by the shared queue (filtered by `providerId`).
+ * When unattached, falls back to a per-provider in-memory store so providers
+ * (and their unit tests) work standalone.
+ */
 export class ProviderApprovalManager {
-  private approvals = new Map<string, ApprovalRecord>();
+  private localApprovals = new Map<string, LocalApprovalRecord>();
+  private queue: ApprovalQueue | null = null;
+  private unsubscribers: Array<() => void> = [];
 
   constructor(private server: SlopServer) {}
+
+  setQueue(queue: ApprovalQueue | null): void {
+    // Detach previous subscriptions if any.
+    for (const off of this.unsubscribers) {
+      try {
+        off();
+      } catch {
+        // best-effort
+      }
+    }
+    this.unsubscribers = [];
+    this.queue = queue;
+    if (!queue) {
+      return;
+    }
+    const refresh = (id: string) => {
+      const record = queue.get(id);
+      if (record && record.providerId !== this.server.id) {
+        return;
+      }
+      this.server.refresh();
+    };
+    this.unsubscribers.push(queue.on("requested", refresh));
+    this.unsubscribers.push(queue.on("approved", refresh));
+    this.unsubscribers.push(queue.on("rejected", refresh));
+    this.server.refresh();
+  }
 
   request(options: {
     path: string;
@@ -113,7 +151,29 @@ export class ProviderApprovalManager {
     dangerous?: boolean;
     execute: () => unknown | Promise<unknown>;
   }): string {
-    const approval: ApprovalRecord = {
+    if (this.queue) {
+      const id = this.queue.enqueue({
+        providerId: this.server.id,
+        path: options.path,
+        action: options.action,
+        reason: options.reason,
+        paramsPreview: options.paramsPreview,
+        dangerous: options.dangerous,
+        execute: options.execute,
+      });
+      this.server.emitEvent(APPROVAL_REQUESTED_EVENT, {
+        approvalId: id,
+        path: options.path,
+        action: options.action,
+        reason: options.reason,
+        createdAt: now(),
+        paramsPreview: options.paramsPreview,
+        dangerous: options.dangerous,
+      });
+      return id;
+    }
+
+    const approval: LocalApprovalRecord = {
       id: buildApprovalId(),
       path: options.path,
       action: options.action,
@@ -124,7 +184,7 @@ export class ProviderApprovalManager {
       dangerous: options.dangerous,
       execute: options.execute,
     };
-    this.approvals.set(approval.id, approval);
+    this.localApprovals.set(approval.id, approval);
     this.server.refresh();
     this.server.emitEvent(APPROVAL_REQUESTED_EVENT, {
       approvalId: approval.id,
@@ -139,17 +199,74 @@ export class ProviderApprovalManager {
   }
 
   buildDescriptor(): NodeDescriptor {
+    if (this.queue) {
+      const records = this.queue.list({ providerId: this.server.id });
+      return {
+        type: "collection",
+        props: {
+          count: records.length,
+        },
+        summary: "Provider-native approval requests.",
+        items: records.map((record) => this.buildItemFromRecord(record)),
+      };
+    }
+
     return {
       type: "collection",
       props: {
-        count: this.approvals.size,
+        count: this.localApprovals.size,
       },
       summary: "Provider-native approval requests.",
-      items: [...this.approvals.values()].map((approval) => this.buildItem(approval)),
+      items: [...this.localApprovals.values()].map((approval) => this.buildLocalItem(approval)),
     };
   }
 
-  private buildItem(approval: ApprovalRecord): ItemDescriptor {
+  private buildItemFromRecord(record: ApprovalRecord): ItemDescriptor {
+    const pending = record.status === "pending";
+    return {
+      id: record.id,
+      props: {
+        status: record.status,
+        provider: this.server.id,
+        path: record.path,
+        action: record.action,
+        reason: record.reason,
+        created_at: record.createdAt,
+        resolved_at: record.resolvedAt,
+        params_preview: record.paramsPreview,
+        dangerous: record.dangerous,
+        resolution_reason: record.resolutionReason,
+      },
+      summary: record.reason,
+      actions: pending
+        ? {
+            approve: action(async () => this.approveQueueId(record.id), {
+              label: "Approve",
+              description: "Approve and run the blocked action.",
+              dangerous: true,
+              estimate: "fast",
+            }),
+            reject: action(
+              {
+                reason: {
+                  type: "string",
+                  description: "Optional explanation for the rejection.",
+                },
+              },
+              async ({ reason }) =>
+                this.rejectQueueId(record.id, typeof reason === "string" ? reason : undefined),
+              {
+                label: "Reject",
+                description: "Reject the blocked action.",
+                estimate: "instant",
+              },
+            ),
+          }
+        : undefined,
+    };
+  }
+
+  private buildLocalItem(approval: LocalApprovalRecord): ItemDescriptor {
     return {
       id: approval.id,
       props: {
@@ -168,7 +285,7 @@ export class ProviderApprovalManager {
       actions:
         approval.status === "pending"
           ? {
-              approve: action(async () => this.approve(approval.id), {
+              approve: action(async () => this.approveLocal(approval.id), {
                 label: "Approve",
                 description: "Approve and run the blocked action.",
                 dangerous: true,
@@ -182,7 +299,7 @@ export class ProviderApprovalManager {
                   },
                 },
                 async ({ reason }) =>
-                  this.reject(approval.id, typeof reason === "string" ? reason : undefined),
+                  this.rejectLocal(approval.id, typeof reason === "string" ? reason : undefined),
                 {
                   label: "Reject",
                   description: "Reject the blocked action.",
@@ -194,8 +311,80 @@ export class ProviderApprovalManager {
     };
   }
 
-  private async approve(approvalId: string): Promise<unknown> {
-    const approval = this.requirePendingApproval(approvalId);
+  private async approveQueueId(approvalId: string): Promise<unknown> {
+    const queue = this.queue;
+    if (!queue) {
+      throw new Error("Approval queue is not attached.");
+    }
+    const record = queue.get(approvalId);
+    if (!record) {
+      throw new Error(`Unknown approval: ${approvalId}`);
+    }
+    const resolvedAt = now();
+    try {
+      const result = await queue.approve(approvalId);
+      this.server.emitEvent(APPROVAL_RESOLVED_EVENT, {
+        approvalId,
+        path: record.path,
+        action: record.action,
+        status: "approved",
+        resolvedAt,
+        result: normalizeResultPayload(result),
+      } satisfies ApprovalResolutionPayload);
+      return result;
+    } catch (error) {
+      this.server.emitEvent(APPROVAL_RESOLVED_EVENT, {
+        approvalId,
+        path: record.path,
+        action: record.action,
+        status: "approved",
+        resolvedAt,
+        result: {
+          status: "error",
+          error: normalizeError(error),
+        },
+      } satisfies ApprovalResolutionPayload);
+      throw error;
+    }
+  }
+
+  private async rejectQueueId(
+    approvalId: string,
+    reason?: string,
+  ): Promise<{ approvalId: string; status: string }> {
+    const queue = this.queue;
+    if (!queue) {
+      throw new Error("Approval queue is not attached.");
+    }
+    const record = queue.get(approvalId);
+    if (!record) {
+      throw new Error(`Unknown approval: ${approvalId}`);
+    }
+    const resolvedAt = now();
+    queue.reject(approvalId, reason);
+    this.server.emitEvent(APPROVAL_RESOLVED_EVENT, {
+      approvalId,
+      path: record.path,
+      action: record.action,
+      status: "rejected",
+      resolvedAt,
+      reason,
+      result: {
+        status: "error",
+        error: {
+          code: APPROVAL_REJECTED_ERROR_CODE,
+          message: reason ? `Approval rejected: ${reason}` : "Approval rejected.",
+        },
+      },
+    } satisfies ApprovalResolutionPayload);
+    return {
+      approvalId,
+      status: "rejected",
+    };
+  }
+
+  private async approveLocal(approvalId: string): Promise<unknown> {
+    const approval = this.requirePendingLocalApproval(approvalId);
     const resolvedAt = now();
     approval.status = "approved";
     approval.resolvedAt = resolvedAt;
@@ -228,11 +417,11 @@ export class ProviderApprovalManager {
     }
   }
 
-  private async reject(
+  private async rejectLocal(
     approvalId: string,
     reason?: string,
   ): Promise<{ approvalId: string; status: string }> {
-    const approval = this.requirePendingApproval(approvalId);
+    const approval = this.requirePendingLocalApproval(approvalId);
     const resolvedAt = now();
     approval.status = "rejected";
     approval.resolutionReason = reason;
@@ -259,8 +448,8 @@ export class ProviderApprovalManager {
     };
   }
 
-  private requirePendingApproval(approvalId: string): ApprovalRecord {
-    const approval = this.approvals.get(approvalId);
+  private requirePendingLocalApproval(approvalId: string): LocalApprovalRecord {
+    const approval = this.localApprovals.get(approvalId);
     if (!approval) {
       throw new Error(`Unknown approval: ${approvalId}`);
     }

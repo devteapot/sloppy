@@ -1,18 +1,15 @@
+import type { SlopNode } from "@slop-ai/consumer/browser";
+
 import type { ProviderTreeView } from "../subscriptions";
 import type { InvokeContext, InvokePolicy, PolicyDecision } from "../policy";
 
 const ALLOW: PolicyDecision = { kind: "allow" };
 
 /**
- * Mirror of the regexes embedded in `src/providers/builtin/terminal.ts`. Kept
- * here so the same destructive-command heuristic can be evaluated at the
- * `ConsumerHub` boundary without depending on the provider implementation.
- *
- * Migration note: today the terminal provider still owns destructive-command
- * approvals via `ProviderApprovalManager`. When the hub-owned approval queue
- * lands, install `terminalSafetyRule` on the hub and remove the in-provider
- * checks (`looksDestructive`, `runSyncCommand`/`startBackgroundCommand`
- * gating) so the rule isn't evaluated twice.
+ * Canonical destructive-command heuristic for shell `execute` invocations.
+ * Evaluated at the `ConsumerHub` boundary by `terminalSafetyRule`; the
+ * terminal provider no longer mirrors this check inline (the rule is the
+ * single source of truth).
  */
 const DESTRUCTIVE_COMMAND_RE =
   /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|git\s+(?:reset|clean|checkout)\s|sed\s+-i|truncate\s|dd\s|shred\s)/;
@@ -140,11 +137,6 @@ export const orchestratorRoleRule: InvokePolicy = {
  * `dangerous: true` to require_approval. Requires a callback that returns the
  * current provider tree views so the rule can look up the descriptor for the
  * (providerId, path, action) tuple at evaluation time.
- *
- * Migration note: not installed by default. Once a hub-owned approval queue
- * is in place, install this rule and remove per-provider `dangerous: true`
- * gates that today rely on `ProviderApprovalManager`. Until then, providers
- * still own their own approval flows.
  */
 export function dangerousActionRule(
   getViews: () => ProviderTreeView[],
@@ -159,10 +151,6 @@ export function dangerousActionRule(
       if (!view) {
         return ALLOW;
       }
-      // Walking the SLOP overview tree to locate (path, action) is provider-
-      // shape-specific and best done lazily; for now we conservatively allow
-      // when the descriptor isn't found in the cached overview, deferring to
-      // the provider's own dangerous handling.
       const descriptor = findActionDescriptor(view, ctx.path, ctx.action);
       if (descriptor?.dangerous) {
         return {
@@ -187,17 +175,53 @@ function safePreview(params: Record<string, unknown>): string {
 
 function findActionDescriptor(
   view: ProviderTreeView,
-  _path: string,
-  _action: string,
+  path: string,
+  action: string,
 ): { dangerous?: boolean } | null {
-  // Placeholder: a future iteration should walk view.overviewTree (and
-  // view.detailTree when present) to find the matching action descriptor.
-  // Current SLOP node shapes don't expose action metadata directly in the
-  // overview tree, so locating the descriptor requires either a richer hub-
-  // side cache or a one-shot consumer.query at evaluation time. Returning
-  // null today means the dangerous-flag rule is a no-op; per-provider
-  // `dangerous: true` markers continue to drive their existing approval
-  // flows. See the migration note on `dangerousActionRule`.
-  void view;
-  return null;
+  const node = locateNode(view, path);
+  if (!node) {
+    return null;
+  }
+  const affordances = node.affordances;
+  if (!Array.isArray(affordances)) {
+    return null;
+  }
+  const found = affordances.find((aff) => aff.action === action);
+  return found ? { dangerous: found.dangerous } : null;
+}
+
+function locateNode(view: ProviderTreeView, path: string): SlopNode | null {
+  // Try the focused detail tree first, since it's typically deeper and the
+  // most likely to carry the affordance descriptor for the path being
+  // invoked. Fall back to the overview tree.
+  const segments = path.replace(/^\//, "").split("/").filter(Boolean);
+  if (view.detailTree && view.detailPath) {
+    const detailSegments = view.detailPath.replace(/^\//, "").split("/").filter(Boolean);
+    if (
+      segments.length >= detailSegments.length &&
+      detailSegments.every((seg, idx) => segments[idx] === seg)
+    ) {
+      const remainder = segments.slice(detailSegments.length);
+      const node = walkSegments(view.detailTree, remainder);
+      if (node) {
+        return node;
+      }
+    }
+  }
+  return walkSegments(view.overviewTree, segments);
+}
+
+function walkSegments(root: SlopNode, segments: string[]): SlopNode | null {
+  let node: SlopNode | null = root;
+  for (const segment of segments) {
+    if (!node?.children) {
+      return null;
+    }
+    const next: SlopNode | undefined = node.children.find((child) => child.id === segment);
+    if (!next) {
+      return null;
+    }
+    node = next;
+  }
+  return node;
 }

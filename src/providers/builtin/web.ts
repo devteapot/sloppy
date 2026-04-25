@@ -37,7 +37,7 @@ function truncateContent(text: string, maxBytes: number): string {
 export class WebProvider {
   readonly server: SlopServer;
   private historyLimit: number;
-  private approvals: ProviderApprovalManager;
+  readonly approvals: ProviderApprovalManager;
   private history: WebOp[] = [];
   private lastSearch: { query: string; results: SearchResult[] } | null = null;
 

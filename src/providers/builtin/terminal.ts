@@ -2,7 +2,7 @@ import { basename, relative, resolve } from "node:path";
 import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
-import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
+import { ProviderApprovalManager } from "../approvals";
 
 type CommandRecord = {
   id: string;
@@ -28,43 +28,12 @@ type RunningTask = {
   process: Bun.Subprocess<"ignore", "pipe", "pipe">;
 };
 
-const DESTRUCTIVE_COMMAND_RE =
-  /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|git\s+(?:reset|clean|checkout)\s|sed\s+-i|truncate\s|dd\s|shred\s)/;
-const FILE_OUTPUT_REDIRECT_RE = /(^|[^>])(?:\d?>|&>)(?![>&])\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g;
-
 function truncateOutput(text: string, maxChars = 1200): string {
   if (text.length <= maxChars) {
     return text;
   }
 
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
-}
-
-function usesFileOutputRedirection(command: string): boolean {
-  FILE_OUTPUT_REDIRECT_RE.lastIndex = 0;
-  for (const match of command.matchAll(FILE_OUTPUT_REDIRECT_RE)) {
-    const rawTarget = match[2]?.trim() ?? "";
-    const target = rawTarget.replace(/^["']|["']$/g, "");
-    if (target !== "/dev/null") {
-      return true;
-    }
-  }
-  return false;
-}
-
-function looksDestructive(command: string): boolean {
-  return DESTRUCTIVE_COMMAND_RE.test(command) || usesFileOutputRedirection(command);
-}
-
-function approvalReason(command: string): string {
-  const reasons: string[] = [];
-  if (DESTRUCTIVE_COMMAND_RE.test(command)) {
-    reasons.push("matches a destructive shell command pattern");
-  }
-  if (usesFileOutputRedirection(command)) {
-    reasons.push("uses file output redirection");
-  }
-  return `Shell command requires approval because it ${reasons.join(" and ")}.`;
 }
 
 function buildTaskId(): string {
@@ -77,7 +46,7 @@ export class TerminalProvider {
   private cwd: string;
   private historyLimit: number;
   private syncTimeoutMs: number;
-  private approvals: ProviderApprovalManager;
+  readonly approvals: ProviderApprovalManager;
   private history: CommandRecord[] = [];
   private tasks = new Map<string, RunningTask>();
 
@@ -191,21 +160,7 @@ export class TerminalProvider {
     });
   }
 
-  private async runSyncCommand(command: string, confirmed = false): Promise<CommandRecord> {
-    if (looksDestructive(command) && !confirmed) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "execute",
-        reason: approvalReason(command),
-        paramsPreview: JSON.stringify({ command, background: false }),
-        dangerous: true,
-        execute: () => this.runSyncCommand(command, true),
-      });
-      throw createApprovalRequiredError(
-        `Destructive shell commands require approval via /approvals/${approvalId}.`,
-      );
-    }
-
+  private async runSyncCommand(command: string): Promise<CommandRecord> {
     const startedAt = Date.now();
     const process = this.spawnCommand(command);
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -257,21 +212,7 @@ export class TerminalProvider {
     }
   }
 
-  private startBackgroundCommand(command: string, confirmed = false): CoreAsyncActionResult {
-    if (looksDestructive(command) && !confirmed) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "execute",
-        reason: approvalReason(command),
-        paramsPreview: JSON.stringify({ command, background: true }),
-        dangerous: true,
-        execute: () => this.startBackgroundCommand(command, true),
-      });
-      throw createApprovalRequiredError(
-        `Destructive shell commands require approval via /approvals/${approvalId}.`,
-      );
-    }
-
+  private startBackgroundCommand(command: string): CoreAsyncActionResult {
     const taskId = buildTaskId();
     const process = this.spawnCommand(command);
     const task: RunningTask = {
@@ -392,12 +333,16 @@ export class TerminalProvider {
                 "Optional. Set true only after the user explicitly approved a destructive command.",
             },
           },
-          async ({ command, background, confirmed }) => {
+          async ({ command, background }) => {
+            // The `confirmed` param remains in the descriptor so the hub can
+            // re-invoke after approval with `confirmed: true` to bypass
+            // `terminalSafetyRule`. The provider itself no longer enforces
+            // destructiveness — that lives in the hub-level rule.
             if (background) {
-              return this.startBackgroundCommand(command, Boolean(confirmed));
+              return this.startBackgroundCommand(command);
             }
 
-            return this.runSyncCommand(command, Boolean(confirmed));
+            return this.runSyncCommand(command);
           },
           {
             label: "Execute Command",

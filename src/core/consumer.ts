@@ -8,6 +8,7 @@ import {
 
 import type { SloppyConfig } from "../config/schema";
 import type { RegisteredProvider } from "../providers/registry";
+import { ApprovalQueue } from "./approvals";
 import { debug, isDebugEnabled } from "./debug";
 import {
   allowAllPolicy,
@@ -87,6 +88,13 @@ export class ConsumerHub {
    * leaves it unset, which means rules see `roleId: undefined`.
    */
   private invocationMetadata: { roleId?: string } = {};
+  /**
+   * Hub-owned approval queue. Single source of truth for any policy-mediated
+   * `require_approval` decision; per-provider `/approvals` SLOP collections
+   * are filtered views over this queue once their `ProviderApprovalManager`
+   * is attached via the registry.
+   */
+  readonly approvals = new ApprovalQueue();
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
@@ -214,6 +222,10 @@ export class ConsumerHub {
       consumer.on("disconnect", disconnectListener);
 
       this.providers.set(provider.id, provider);
+      // Connect any per-provider approval manager to the hub-owned queue so
+      // its `/approvals` collection becomes a filtered view of the shared
+      // queue and any policy-mediated approval requests show up there too.
+      provider.approvals?.setQueue(this.approvals);
       if (provider.kind === "external") {
         this.upsertExternalProviderState({
           id: provider.id,
@@ -302,6 +314,7 @@ export class ConsumerHub {
       }
     }
 
+    provider.approvals?.setQueue(null);
     provider.stop?.();
     this.providers.delete(providerId);
     this.bumpStateRevision();
@@ -457,17 +470,27 @@ export class ConsumerHub {
         throw new PolicyDeniedError(decision.reason);
       }
       if (decision.kind === "require_approval") {
-        // Return a SLOP-shaped error so existing tooling that already handles
-        // `approval_required` (the run loop, terminal provider tests) treats
-        // policy-mediated approvals identically to provider-native ones.
-        // NOTE: a future iteration will route this to a hub-owned ApprovalQueue
-        // so the user can approve via /approvals; today the rule simply blocks
-        // the invocation and surfaces the reason.
+        // Enqueue into the hub-owned approval queue so the user can resolve it
+        // via the per-provider `/approvals` collection (or any UI watching
+        // `hub.approvals`). On approve, the action is re-invoked with
+        // `confirmed: true` so the rule short-circuits and the invocation
+        // proceeds. Returning the SLOP `approval_required` error preserves
+        // the existing run-loop / tooling contract.
+        const approvalId = this.approvals.enqueue({
+          providerId,
+          path,
+          action,
+          reason: decision.reason,
+          paramsPreview: decision.paramsPreview,
+          dangerous: decision.dangerous,
+          execute: () =>
+            this.invoke(providerId, path, action, { ...(params ?? {}), confirmed: true }),
+        });
         return {
           status: "error",
           error: {
             code: "approval_required",
-            message: decision.reason,
+            message: `${decision.reason} Resolve via /approvals/${approvalId} on provider ${providerId}.`,
           },
         } as ResultMessage;
       }

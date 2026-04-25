@@ -23,7 +23,7 @@ type Channel = {
 export class MessagingProvider {
   readonly server: SlopServer;
   private maxMessages: number;
-  private approvals: ProviderApprovalManager;
+  readonly approvals: ProviderApprovalManager;
   private channels = new Map<string, Channel>();
 
   constructor(options: { maxMessages?: number } = {}) {
