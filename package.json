@@ -41,6 +41,9 @@
     "typescript": "5.9.3",
     "vitest": "4.1.2"
   },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
+  },
   "patchedDependencies": {
     "@slop-ai/consumer@0.2.0": "patches/@slop-ai%2Fconsumer@0.2.0.patch",
     "@slop-ai/core@0.2.0": "patches/@slop-ai%2Fcore@0.2.0.patch"

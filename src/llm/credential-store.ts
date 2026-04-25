@@ -190,31 +190,19 @@ class KeychainCredentialStore extends BaseCredentialStore {
 
   async set(profileId: string, secret: string): Promise<void> {
     await this.ensureAvailable();
-    // Prefer keytar when installed: it writes via the native Keychain API,
-    // keeping the secret in process memory. Falling back to `security
-    // add-generic-password -w <secret>` works but exposes the secret in the
-    // child process's argv where any local user can see it via `ps`.
+    // The macOS keychain path requires `keytar` (an optional dependency).
+    // We refuse to fall back to `security add-generic-password -w <secret>`
+    // because that places the API key in argv, where any local process can
+    // observe it via `ps`. If the optional install failed (e.g. native
+    // toolchain missing), the user can reinstall with keytar present or set
+    // the API key via the env var that the profile points at.
     const keytar = await loadKeytar();
-    if (keytar) {
-      await keytar.setPassword(KEYCHAIN_SERVICE_NAME, profileId, secret);
-      return;
-    }
-
-    const result = await this.runner("security", [
-      "add-generic-password",
-      "-U",
-      "-a",
-      profileId,
-      "-s",
-      KEYCHAIN_SERVICE_NAME,
-      "-w",
-      secret,
-    ]);
-    if (result.exitCode !== 0) {
+    if (!keytar) {
       throw new Error(
-        result.stderr.trim() || result.stdout.trim() || "Failed to store API key in Keychain.",
+        "Keychain storage requires the optional `keytar` package. Install it with `bun add keytar`, or set the API key via the profile's apiKeyEnv environment variable.",
       );
     }
+    await keytar.setPassword(KEYCHAIN_SERVICE_NAME, profileId, secret);
   }
 
   async delete(profileId: string): Promise<void> {
@@ -222,6 +210,8 @@ class KeychainCredentialStore extends BaseCredentialStore {
       return;
     }
 
+    // Use keytar when available; otherwise fall back to the `security` CLI.
+    // delete is argv-safe (no secret in argv), so no fail-secure needed here.
     const keytar = await loadKeytar();
     if (keytar) {
       await keytar.deletePassword(KEYCHAIN_SERVICE_NAME, profileId);
