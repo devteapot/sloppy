@@ -3,9 +3,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import { buildRuntimeLlmConfig } from "../src/llm/runtime-config";
 
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
 const originalGeminiKey = process.env.GEMINI_API_KEY;
+const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
+const originalModel = process.env.SLOPPY_MODEL;
+const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -34,7 +38,7 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-      orchestratorMode: false,
+    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -49,6 +53,7 @@ const TEST_CONFIG: SloppyConfig = {
       messaging: false,
       delegation: false,
       orchestration: false,
+      spec: false,
       vision: false,
     },
     discovery: {
@@ -141,6 +146,24 @@ afterEach(() => {
   } else {
     process.env.GEMINI_API_KEY = originalGeminiKey;
   }
+
+  if (originalProvider == null) {
+    delete process.env.SLOPPY_LLM_PROVIDER;
+  } else {
+    process.env.SLOPPY_LLM_PROVIDER = originalProvider;
+  }
+
+  if (originalModel == null) {
+    delete process.env.SLOPPY_MODEL;
+  } else {
+    process.env.SLOPPY_MODEL = originalModel;
+  }
+
+  if (originalBaseUrl == null) {
+    delete process.env.SLOPPY_LLM_BASE_URL;
+  } else {
+    process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
 });
 
 describe("LlmProfileManager", () => {
@@ -211,6 +234,43 @@ describe("LlmProfileManager", () => {
     expect(envProfile?.provider).toBe("openai");
     expect(envProfile?.keySource).toBe("env");
     expect(envProfile?.isDefault).toBe(false);
+  });
+
+  test("can pin a one-shot run to env routing without exposing managed profiles", async () => {
+    process.env.OPENAI_API_KEY = "stub-key";
+    process.env.SLOPPY_LLM_PROVIDER = "openai";
+    process.env.SLOPPY_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8";
+    process.env.SLOPPY_LLM_BASE_URL = "http://192.168.1.96:8001/v1";
+
+    const manager = new LlmProfileManager({
+      config: {
+        ...TEST_CONFIG,
+        llm: buildRuntimeLlmConfig(
+          {
+            ...TEST_CONFIG.llm,
+            provider: "openai",
+            model: "Qwen/Qwen3.6-35B-A3B-FP8",
+            baseUrl: "http://192.168.1.96:8001/v1",
+          },
+          process.env,
+        ),
+      },
+      credentialStore: new MemoryCredentialStore(
+        "available",
+        new Map([["openai-main", "sk-stored-cloud-key"]]),
+      ),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
+
+    expect(state.activeProfileId).toStartWith("env-openai-openai-api-key-");
+    expect(state.selectedModel).toBe("Qwen/Qwen3.6-35B-A3B-FP8");
+    expect(activeProfile?.baseUrl).toBe("http://192.168.1.96:8001/v1");
+    expect(activeProfile?.keySource).toBe("env");
+    expect(activeProfile?.origin).toBe("environment");
+    expect(state.profiles.every((profile) => profile.origin !== "managed")).toBe(true);
   });
 
   test("allows selecting an environment-backed profile as the active default", async () => {

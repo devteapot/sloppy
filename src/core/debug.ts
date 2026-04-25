@@ -39,11 +39,7 @@ export function isDebugEnabled(scope: DebugScope): boolean {
   return enabled.has(scope);
 }
 
-export function debug(
-  scope: DebugScope,
-  event: string,
-  data?: Record<string, unknown>,
-): void {
+export function debug(scope: DebugScope, event: string, data?: Record<string, unknown>): void {
   if (!enabled.has(scope)) return;
   const line = JSON.stringify({
     ts: new Date().toISOString(),

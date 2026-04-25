@@ -11,6 +11,7 @@ import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { MemoryProvider } from "../src/providers/builtin/memory";
 import { MessagingProvider } from "../src/providers/builtin/messaging";
 import { SkillsProvider } from "../src/providers/builtin/skills";
+import { SpecProvider } from "../src/providers/builtin/spec";
 import { VisionProvider } from "../src/providers/builtin/vision";
 import { WebProvider } from "../src/providers/builtin/web";
 
@@ -276,9 +277,9 @@ Use this for testing.
       expect(typeof agentId).toBe("string");
 
       const monitored = await waitFor(async () => {
-        const current = await consumer.invoke(`/agents/${agentId}`, "monitor", {});
-        const data = current.data as { status: string };
-        return data.status === "running" || data.status === "pending" ? data : null;
+        const current = await consumer.query(`/agents/${agentId}`, 2);
+        const status = current.properties?.status;
+        return status === "running" || status === "pending" ? { status } : null;
       }, 2000);
       expect(["pending", "running"]).toContain(monitored.status);
 
@@ -333,6 +334,36 @@ Use this for testing.
       const viewResult = await consumer.invoke(`/analyses/${analysisId}`, "view_result", {});
       expect(viewResult.status).toBe("ok");
       expect((viewResult.data as { result: string }).result).toContain("Simulated analysis");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("SpecProvider stores active specs and requirements", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-spec-phase2-"));
+    tempPaths.push(root);
+    const provider = new SpecProvider({ workspaceRoot: root });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const created = await consumer.invoke("/specs", "create_spec", {
+        title: "Provider slice",
+      });
+      expect(created.status).toBe("ok");
+      const specId = (created.data as { id: string }).id;
+
+      const added = await consumer.invoke(`/specs/${specId}`, "add_requirement", {
+        text: "Requirements are visible in provider state.",
+      });
+      expect(added.status).toBe("ok");
+
+      const specs = await consumer.query("/specs", 3);
+      expect(specs.properties?.active_spec_id).toBe(specId);
+      const requirements = await consumer.query(`/specs/${specId}/requirements`, 2);
+      expect(requirements.children?.length).toBe(1);
     } finally {
       provider.stop();
     }

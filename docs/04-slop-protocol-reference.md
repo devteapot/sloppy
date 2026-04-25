@@ -51,13 +51,19 @@ Actions available on a specific node, at a specific time. They are NOT global to
     "type": "object",
     "properties": {
       "strategy": { "type": "string", "enum": ["merge", "squash", "rebase"] }
-    }
+    },
+    "required": ["strategy"],
+    "additionalProperties": false
   },
   "dangerous": false,
   "idempotent": false,
   "estimate": "fast"
 }
 ```
+
+`params` is a JSON Schema object. Sloppy's runtime emits an LLM-facing normalized
+form with explicit `required` fields and `additionalProperties: false`; fields
+whose description marks them `Optional` are left out of `required`.
 
 **Key:** Many affordances are **parameterless** — the target is implicit from the node context. `toggle` on a todo item doesn't need a todo ID.
 

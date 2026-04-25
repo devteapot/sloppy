@@ -23,8 +23,8 @@
 - State observation is primary; affordance invocation is secondary.
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes built-in `terminal` and `filesystem` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, and a managed LLM-profile layer with secure credential storage for macOS and Linux.
-- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, and a Go TUI under `apps/tui/` that can onboard/manage LLM profiles and inspect external app attachment state.
+- The current implementation includes built-in `terminal`, `filesystem`, `orchestration`, `spec`, and `delegation` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, and a managed LLM-profile layer with secure credential storage for macOS and Linux. The orchestration provider supports durable plan-scoped task DAGs, cycle rejection, spec refs, audit findings, typed handoffs, scoped child work packets, parallel-friendly dependency inference for common coding plans, scheduler-claimed ready tasks, pushed child results, and verification-gated completion.
+- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, a Go TUI under `apps/tui/` that can onboard/manage LLM profiles and inspect external app attachment state, and a read-only canvas/HTML dashboard prototype under `apps/dashboard/` that visualizes orchestration files.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -34,6 +34,7 @@
 ```sh
 bun install
 bun run build
+bun run dashboard:serve
 bun run lint
 bun run session:serve
 bun run typecheck
@@ -60,6 +61,7 @@ bun test tests/gemini-adapter.test.ts
 
 ```text
 apps/
+  dashboard/
   tui/
 src/
   cli.ts

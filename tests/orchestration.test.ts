@@ -23,7 +23,7 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-      orchestratorMode: false,
+    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -38,6 +38,7 @@ const TEST_CONFIG: SloppyConfig = {
       messaging: false,
       delegation: false,
       orchestration: false,
+      spec: false,
       vision: false,
     },
     discovery: { enabled: false, paths: [] },
@@ -359,8 +360,8 @@ describe("Agent orchestration (sub-agent federation)", () => {
     }
   });
 
-  test("SubAgentRunner drives a task to completed with a stub LLM + writes result.md", async () => {
-    const { mkdtemp, rm, readFile } = await import("node:fs/promises");
+  test("SubAgentRunner drives a task to verifying with a stub LLM", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { SubAgentRunner } = await import("../src/core/sub-agent");
@@ -460,38 +461,168 @@ describe("Agent orchestration (sub-agent federation)", () => {
       await consumer.subscribe("/", 3);
 
       try {
-        let completedTaskId: string | null = null;
+        let verifyingTaskId: string | null = null;
         for (let i = 0; i < 100; i++) {
           const tasks = await consumer.query("/tasks", 2);
           const task = tasks.children?.[0];
-          if (task?.properties?.status === "completed") {
-            completedTaskId = String(task.id);
+          if (task?.properties?.status === "verifying") {
+            verifyingTaskId = String(task.id);
             expect(task.properties).toMatchObject({
               name: "analyzer",
               goal: "analyze requirements",
-              status: "completed",
+              status: "verifying",
+              result_preview: cannedResponse,
             });
             break;
           }
           await Bun.sleep(20);
         }
-        expect(completedTaskId).not.toBeNull();
-
-        const result = await consumer.invoke(`/tasks/${completedTaskId}`, "get_result", {});
-        expect((result.data as { result: string }).result).toBe(cannedResponse);
-
-        const resultFile = join(
-          workspaceRoot,
-          ".sloppy",
-          "orchestration",
-          "tasks",
-          completedTaskId ?? "",
-          "result.md",
-        );
-        expect(await readFile(resultFile, "utf8")).toBe(cannedResponse);
+        expect(verifyingTaskId).not.toBeNull();
+        expect(runner.getResult()).toBe(cannedResponse);
       } finally {
         consumer.disconnect();
         runner.shutdown();
+        hub.shutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("SubAgentRunner sends a scoped work packet with spec and dependency context", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { SubAgentRunner } = await import("../src/core/sub-agent");
+    const { OrchestrationProvider } = await import("../src/providers/builtin/orchestration");
+    const { SpecProvider } = await import("../src/providers/builtin/spec");
+
+    const readyState = {
+      status: "ready" as const,
+      message: "ready",
+      activeProfileId: "stub",
+      selectedProvider: "openai" as const,
+      selectedModel: "stub-model",
+      secureStoreKind: "memory" as const,
+      secureStoreStatus: "ready" as const,
+      profiles: [],
+    };
+    const stubLlmProfileManager = {
+      ensureReady: async () => readyState,
+      getState: async () => readyState,
+      getConfig: () => TEST_CONFIG,
+      updateConfig: () => undefined,
+      createAdapter: async () => ({
+        async chat() {
+          throw new Error("stubLlmProfileManager.createAdapter should not be reached");
+        },
+      }),
+    } as unknown as import("../src/llm/profile-manager").LlmProfileManager;
+
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-work-packet-"));
+    try {
+      const orchestration = new OrchestrationProvider({
+        workspaceRoot,
+        sessionId: "sess-packet",
+      });
+      const spec = new SpecProvider({ workspaceRoot });
+      const hub = new ConsumerHub([], TEST_CONFIG);
+      await hub.connect();
+      await hub.addProvider({
+        id: "orchestration",
+        name: "Orchestration",
+        kind: "builtin",
+        transport: new InProcessTransport(orchestration.server),
+        transportLabel: "in-process",
+        stop: () => orchestration.stop(),
+      });
+      await hub.addProvider({
+        id: "spec",
+        name: "Spec",
+        kind: "builtin",
+        transport: new InProcessTransport(spec.server),
+        transportLabel: "in-process",
+        stop: () => spec.stop(),
+      });
+
+      const createdSpec = await hub.invoke("spec", "/specs", "create_spec", {
+        title: "Sprint Board",
+      });
+      const specId = (createdSpec.data as { id: string }).id;
+      const requirement = await hub.invoke("spec", `/specs/${specId}`, "add_requirement", {
+        text: "The board must expose four workflow columns.",
+      });
+      const requirementId = (requirement.data as { id: string }).id;
+
+      await hub.invoke("orchestration", "/orchestration", "create_plan", {
+        query: "build from spec",
+      });
+      const dep = await hub.invoke("orchestration", "/orchestration", "create_task", {
+        name: "data",
+        goal: "Create seed data.",
+      });
+      const depId = (dep.data as { id: string }).id;
+      await hub.invoke("orchestration", `/tasks/${depId}`, "start", {});
+      await hub.invoke("orchestration", `/tasks/${depId}`, "record_verification", {
+        status: "not_required",
+        summary: "Seed data fixture accepted for work packet test.",
+      });
+      await hub.invoke("orchestration", `/tasks/${depId}`, "complete", {
+        result: "Seed data exports eight tasks.",
+      });
+
+      const task = await hub.invoke("orchestration", "/orchestration", "create_task", {
+        name: "ui",
+        kind: "implementation",
+        goal: "Build the task board UI.",
+        depends_on: [depId],
+        spec_refs: [requirementId],
+        acceptance_criteria: ["Four workflow columns are rendered."],
+      });
+      const taskId = (task.data as { id: string }).id;
+
+      let capturedMessage = "";
+      let runner: InstanceType<typeof SubAgentRunner> | null = null;
+      try {
+        runner = new SubAgentRunner({
+          id: "packet1",
+          name: "ui-worker",
+          goal: "Build the task board UI.",
+          parentHub: hub,
+          parentConfig: TEST_CONFIG,
+          orchestrationProviderId: "orchestration",
+          orchestrationTaskId: taskId,
+          llmProfileManager: stubLlmProfileManager,
+          agentFactory: (callbacks) => ({
+            async start() {},
+            async chat(userMessage: string) {
+              capturedMessage = userMessage;
+              callbacks.onText?.("done");
+              return { status: "completed" as const, response: "done" };
+            },
+            async resumeWithToolResult(): Promise<never> {
+              throw new Error("not used in work-packet test");
+            },
+            async invokeProvider(): Promise<never> {
+              throw new Error("not used in work-packet test");
+            },
+            cancelActiveTurn() {
+              return false;
+            },
+            clearPendingApproval() {},
+            shutdown() {},
+          }),
+        });
+
+        await runner.start();
+
+        expect(capturedMessage).toContain("# Delegated Work Packet");
+        expect(capturedMessage).toContain(`spec_refs: ${requirementId}`);
+        expect(capturedMessage).toContain("The board must expose four workflow columns.");
+        expect(capturedMessage).toContain("Four workflow columns are rendered.");
+        expect(capturedMessage).toContain("Seed data exports eight tasks.");
+      } finally {
+        runner?.shutdown();
         hub.shutdown();
       }
     } finally {

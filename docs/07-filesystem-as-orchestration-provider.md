@@ -30,7 +30,7 @@ The SLOP architecture already implements the conceptual foundation for this:
 
 3. **Provider registry:** Every built-in capability (terminal, filesystem, memory, skills, browser, web, cron, messaging, delegation, vision) is a SLOP provider. The architecture says "everything is a provider."
 
-4. **Delegation provider scaffold:** A simulated delegation provider exists (`src/providers/builtin/delegation.ts`) with agent lifecycle management (spawn, monitor, cancel, get_result). It is the logical home for multi-agent orchestration.
+4. **Delegation provider scaffold:** A simulated delegation provider exists (`src/providers/builtin/delegation.ts`) with agent lifecycle management (spawn, push-observed state, cancel, and completed-result retrieval for standalone agents). Task-linked agents push results through the orchestration task and do not advertise `get_result`, keeping orchestrated runs patch-driven. It is the logical home for multi-agent orchestration.
 
 5. **Two-level subscription model:** Shallow overview subscriptions for presence/context, deeper focused subscriptions for specific subtrees.
 
@@ -42,13 +42,18 @@ The current filesystem provider is **data-centric** -- it manages workspace file
 
 **Shipped:**
 - *Filesystem CAS + range reads* — per-file `version`, `expected_version` guard on `write` (atomic via per-path mutex), `start_line`/`end_line` slicing on `read`, drift detection on external edits.
-- *Sub-agent federation* — `DelegationProvider` has a pluggable `runnerFactory`; registry wires a real `SubAgentRunner` via `RegisteredProvider.onHubReady`. Each sub-agent's `AgentSessionProvider` registers into the parent's `ConsumerHub` so `/session /turn /activity /approvals` arrive as live patches.
-- *Durable orchestration fabric* — `OrchestrationProvider` exposes `/orchestration` (plan + counts), `/tasks` (collection), and `/handoffs` (collection) backed by files under `.sloppy/orchestration/`. CAS versions are persisted inside each JSON document and hydrated on restart.
-- *Lifecycle-gated affordances* — task affordances appear/disappear by status: `start` only for pending, `complete` only for running, `fail`/`cancel`/`append_progress` for active states, `get_result` always. Handoff `respond`/`cancel` only while pending.
-- *Live ↔ durable loop closed* — `SubAgentRunner` auto-creates a task on spawn, transitions it through `start → complete/fail/cancel` as its session turn progresses, and writes the final assistant text to `tasks/{id}/result.md`. Empty results do not produce a stub file.
+- *Sub-agent federation* — `DelegationProvider` has a pluggable `runnerFactory`; registry wires a real `SubAgentRunner` via `RegisteredProvider.onHubReady`. Each sub-agent's `AgentSessionProvider` registers into the parent's `ConsumerHub` so `/session /turn /activity /approvals` arrive as live patches. The runtime scheduler calls `spawn_agent` with `task_id` for ready tasks; the child result is pushed into that orchestration task and `/agents/{id}.get_result` is hidden.
+- *Durable orchestration fabric* — `OrchestrationProvider` exposes `/orchestration` (plan + counts), `/tasks` (collection), `/handoffs` (collection), and `/findings` (collection) backed by files under `.sloppy/orchestration/`. CAS versions are persisted inside each JSON document and hydrated on restart.
+- *Spec source of truth* — `SpecProvider` exposes `/specs` backed by `.sloppy/specs/`, including active spec metadata, requirements, decisions, and proposed changes. Orchestration tasks can link to spec requirements or decisions with `spec_refs`.
+- *Scheduler-assisted execution* — `OrchestrationScheduler` watches task and agent patches, claims ready pending tasks with the CAS-backed `schedule` affordance, starts delegated agents when capacity is available, and emits dashboard-visible scheduler events.
+- *Lifecycle-gated affordances* — task affordances appear/disappear by status: `schedule`/`start` for ready pending tasks, `start` for scheduled tasks, `attach_result`/`start_verification` around running/verifying, `complete` only for verifying, `fail`/`cancel`/`append_progress` for active states, and `get_result` only after a task has reached a terminal state with a durable result. Handoff `respond`/`cancel` only while pending.
+- *Live ↔ durable loop closed* — `SubAgentRunner` auto-creates or attaches to a task on spawn, transitions it through `start → verifying/fail/cancel` as its session turn progresses, and pushes the child result into the task's `result.md` before final verification/completion.
 - *Approval forwarding primitives* — `/agents/{id}.list_approvals` (fallback), `.approve_child_approval`, and `.reject_child_approval` forward decisions to the child's session provider via the parent hub.
 - *Approval auto-mirror* — when a sub-agent's `session_provider_id` is registered, `DelegationProvider` subscribes to the child's `/approvals` and mirrors pending approvals into `/agents/{id}.pending_approvals` as a prop. Orchestrators see child approvals appear and disappear as patches; no polling.
-- *Dependency enforcement* — `depends_on` is now load-bearing. A task's `start` affordance is hidden while any dependency is not `completed`, and an `unmet_dependencies` array is exposed on the task's props. Completing a dependency automatically unblocks downstream tasks via normal patch propagation.
+- *Dependency enforcement + retries* — `depends_on` is now load-bearing. A task's `start` affordance is hidden while any dependency is not satisfied, and an `unmet_dependencies` array is exposed on the task's props. Dependency refs are normalized to canonical task ids from ids, names, `client_ref` values, and aliases like `task-1`; `create_tasks` can batch-create a DAG with local refs so the orchestrator does not need to guess generated ids. The provider rejects dependency cycles before writing a batch, so a malformed DAG does not leave half-created blocked tasks behind. For common coding plans, `create_tasks` also infers conservative missing edges: docs and final verification wait for code-producing tasks, and non-scaffold producers wait for scaffold; data/context and UI implementation work can fan out after scaffold unless the model explicitly adds a blocking edge. Replacements use `retry_of`, which marks the failed task `superseded` and links it via `superseded_by`; a superseded dependency is satisfied once its replacement completes.
+- *Verification evidence* — tasks expose generic `record_verification` / `get_verifications` affordances and summarize verification counts plus acceptance-criteria coverage in state. The schema is domain-neutral (`kind`, `status`, `summary`, optional `criteria`/`command`/`evidence`/`evidence_refs`) so code tasks can record build/test/lint/format checks while non-code tasks can record smoke checks, review outcomes, benchmarks, or other acceptance evidence. A task with acceptance criteria cannot move from `verifying` to `completed` until every criterion is covered by `passed` or `not_required` evidence. Passed evidence that covers criteria must include `evidence_refs`; file-like refs are validated against the workspace, including simple `*.js`/`*.css` style globs. Sub-agent summaries alone are not enough to prove criteria that name exact files, identifiers, exports, imports, or UI text.
+- *Audit findings* — `/findings` records structured audit drift with `severity`, `spec_refs`, `evidence_refs`, and a recommended resolution (`repair`, `spec_change`, or `accept_deviation`). A plan cannot complete while a blocking finding is still open; findings can create linked repair tasks or be accepted, dismissed, or marked fixed after re-audit.
+- *Orchestrator guardrails* — orchestrator-mode loops may inspect state/files and run simple verification commands (`build`, `lint`, `test`, `typecheck`), but direct filesystem mutations and setup/repair shell commands are rejected before provider invocation. Repairs must be delegated through a new/retry task, preserving the orchestrator/worker split in the runtime rather than only in the prompt.
 
 **Still missing:**
 - Transcript-level content refs (session provider still inlines assistant/tool-result text). Filesystem `read` is already ref-aware above `contentRefThresholdBytes`.
@@ -181,7 +186,7 @@ Directory structure under `/workspace/.sloppy/orchestration/`:
 tasks/
 ├── task-1/
 │   ├── definition.json    ← goal, boundary, tools, constraints
-│   ├── state.json         ← pending → running → completed/failed
+│   ├── state.json         ← pending → running → verifying → completed/failed
 │   ├── progress.md        ← running log, iterative thinking
 │   ├── result.md          ← final output (written on completion)
 │   ├── handoff_requests/  ← cross-agent requests
@@ -194,8 +199,8 @@ tasks/
 orchestrator creates plan.json ──► agent observes via subscription
 agent reads task definition.json ──► agent sets state.json to "running"
 agent writes to progress.md ────► patches push to all observers
-agent writes result.md ─────────► state.json to "completed"
-orchestrator observes completion ──► synthesizes results
+agent finishes leaf work ───────► state.json to "verifying"
+orchestrator records verification ─► state.json to "completed" + result.md
 ```
 
 Key principle: **writes trigger patches, patches trigger reactions**. No polling, no optimistic fetches.
@@ -336,23 +341,29 @@ The filesystem approach is unique because:
 ## 8. Proposed Implementation Phases
 
 ### Phase 1: Orchestration File Schema *(shipped)*
-`OrchestrationProvider` owns `.sloppy/orchestration/plan.json` and `tasks/{id}/definition|state|progress|result`. Plan and tasks are exposed as SLOP state (`/orchestration`, `/tasks`) with CAS-guarded mutations. `depends_on` stored on each task definition is enforced — `start` is gated on all deps reaching `completed`, with `unmet_dependencies` visible as a task prop.
+`OrchestrationProvider` owns `.sloppy/orchestration/plan.json`, `tasks/{id}/definition|state|progress|result|verifications`, and `findings/{id}.json`. Plan, tasks, and findings are exposed as SLOP state (`/orchestration`, `/tasks`, `/findings`) with CAS-guarded mutations where lifecycle state can conflict. `depends_on` stored on each task definition is enforced — `start` is gated on all deps reaching `completed`, or a `superseded` dependency whose replacement completed, with `unmet_dependencies` visible as a task prop. Task definitions can carry `kind`, `spec_refs`, `audit_of`, and `finding_refs` for spec-driven implementation, audit, and repair loops. `create_tasks` batch-creates dependency graphs with local refs and acceptance criteria; it rejects dependency cycles before writing the batch, and task/handoff/finding visibility is scoped to the current plan id so a cancelled run cannot block the next plan. If a model accidentally stringifies the task array, the runtime accepts parseable JSON arrays and normalizes them to the same typed task list. Single `create_task` calls also normalize existing task names, refs, and aliases to canonical ids. Completion is gated on verification and audit: tasks move `running → verifying → completed`, `complete` requires a `passed` or `not_required` verification record, and `complete_plan` rejects open blocking findings. When acceptance criteria exist, every criterion must be covered by verification evidence before completion. Failed replacements are represented with `create_task({ retry_of })`, which links the new task and marks the old task `superseded`.
+
+### Phase 1.5: Spec Provider and Audit Findings *(shipped)*
+`SpecProvider` owns `.sloppy/specs/active.json` and `specs/{id}/metadata|spec|requirements|decisions|changes`. The active spec is exposed through `/specs`, and implementation/audit tasks can cite spec requirements or decisions with `spec_refs`. Proposed spec changes live with the spec instead of being inferred upward from implementation drift. Audit findings live under `/findings`, can spawn repair tasks via `create_repair_task`, and block plan completion while a blocking finding remains open.
 
 ### Phase 2: Extended Filesystem Provider with CAS *(shipped — `bd1469d`, `b70f52f`)*
 Version + `expected_version` CAS live on every file node. Range reads (`start_line`/`end_line`) avoid loading full files into agent context. Drift detection bumps version on external edits.
 
 ### Phase 3: Real Sub-Agent Delegation *(shipped)*
 - **Live:** `SubAgentRunner` registers each sub-agent's `AgentSessionProvider` into the parent hub via `onHubReady`. Pluggable `runnerFactory` on `DelegationProvider` keeps the simulated path for tests.
-- **Durable:** when `OrchestrationProvider` is present, `SubAgentRunner` auto-creates + transitions a task per spawn, so crash-recovery and git-diffable progress come for free.
+- **Durable:** when `OrchestrationProvider` is present, `SubAgentRunner` auto-creates + transitions a task per spawn through `running → verifying`; the orchestrator records verification and completes the task, so crash-recovery and git-diffable progress come for free without marking unverified work done.
+- **Scoped:** scheduled children receive a generated work packet containing only the attached task, acceptance criteria, dependency result previews, linked findings, and spec requirements cited by `spec_refs`. Child runtimes disable orchestration, delegation, and spec providers so plan/spec mutation stays parent-owned.
 
 ### Phase 5: Handoff Protocol *(shipped)*
-`/handoffs` collection with `create_handoff(from_task, to_task, request)` and per-item `respond(response)` / `cancel`. Backed by `.sloppy/orchestration/handoffs/{id}.json`, CAS-guarded, affordances disappear once the handoff is no longer pending.
+`/handoffs` collection with `create_handoff(from_task, to_task, request, kind?, priority?, spec_refs?, evidence_refs?, blocks_task?)` and per-item `respond(response, decision_refs?, evidence_refs?, unblock?)` / `cancel`. Backed by `.sloppy/orchestration/handoffs/{id}.json`, CAS-guarded, affordances disappear once the handoff is no longer pending. Supported kinds are `question`, `artifact_request`, `review_request`, `decision_request`, and `dependency_signal`.
 
 ### Phase 6: Approval Routing *(shipped)*
 `/agents/{id}.list_approvals` returns the child session provider's pending approvals (fallback); `.approve_child_approval(approval_id)` / `.reject_child_approval(approval_id, reason?)` forward to the child's session provider. For the state-first path, `DelegationProvider` subscribes to each registered child's `/approvals` and auto-mirrors pending entries into `/agents/{id}.pending_approvals` so the orchestrator sees them as patches without any explicit call.
 
 ### Phase 4: Orchestrator Agent Prompt *(shipped)*
-`agent.orchestratorMode` (default `false`) switches `buildSystemPrompt` to append an orchestrator preamble that teaches: observe `/orchestration` and `/agents` first; `create_plan` → `create_task` (with real `depends_on`) → `spawn_agent` → resolve handoffs/approvals → `complete_plan`. The delegation rule is explicit: leaf work (file edits, shell, research) belongs to sub-agents; the orchestrator only writes to `/orchestration` and `/agents`. Two worked examples are included.
+`agent.orchestratorMode` (default `false`) switches `buildSystemPrompt` to append an orchestrator preamble that teaches: observe `/specs`, `/orchestration`, `/findings`, and `/agents` first; `create_plan` → `create_tasks` (with local refs, real dependencies, spec refs, and acceptance criteria) → let the scheduler start ready tasks with scoped work packets → resolve typed handoffs/approvals → `record_verification(criteria: ..., evidence_refs: ...)` → record/resolve findings → `complete_plan`. The delegation rule is explicit: leaf work (file edits, shell, research) belongs to scheduled sub-agents; the orchestrator writes task state through `/orchestration`, audit state through `/findings`, keeps plan/spec mutation parent-owned, and does not manually call `spawn_agent`. Two worked examples are included.
+
+Documentation tasks should depend on the implementation tasks they describe. Their acceptance criteria should include checking the docs against actual scripts, filenames, and implemented features so READMEs do not overclaim drag-and-drop, delete/edit flows, dependencies, or file layouts that the generated app does not contain.
 
 Prompt lives in `src/core/context.ts`. Verified against a real OpenAI-compatible endpoint (Qwen3-35B) via `tests/orchestration-e2e.test.ts` — plan completed, two tasks with dependency, CAS retry exercised organically.
 
@@ -387,7 +398,9 @@ Anthropic/Gemini: swap `SLOPPY_LLM_PROVIDER` and the key env var. Timeout is 5 m
 
 ### Demo script (manual)
 
-`bun run demo:orchestrate "<goal>"` runs a one-shot orchestrator against a fresh `.sloppy-demo/` workspace, leaving `.sloppy-demo/.sloppy/orchestration/` populated for inspection. Useful alongside the TUI for watching live provider patches.
+`bun run demo:orchestrate "<goal>"` runs a one-shot orchestrator against a fresh `.sloppy-demo/` workspace, leaving `.sloppy-demo/.sloppy/orchestration/` populated for inspection. The demo enables the filesystem, terminal, delegation, and orchestration providers, with both filesystem and terminal rooted in `.sloppy-demo/`. Useful alongside the TUI for watching live provider patches.
+
+If you set `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` for the demo run, Sloppy rebuilds the runtime LLM config from those process env values and ignores managed profiles/default profile ids for that invocation. This keeps local OpenAI-compatible demos from accidentally falling back to stored cloud credentials.
 
 ---
 

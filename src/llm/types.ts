@@ -10,6 +10,11 @@ export interface ToolUseContentBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  inputError?: {
+    code: "invalid_json";
+    message: string;
+    raw: string;
+  };
 }
 
 export interface ToolResultContentBlock {

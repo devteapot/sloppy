@@ -29,7 +29,7 @@ export const sloppyConfigSchema = z.object({
     }),
   agent: z
     .object({
-      maxIterations: z.number().int().min(1).default(12),
+      maxIterations: z.number().int().min(1).default(32),
       contextBudgetTokens: z.number().int().min(1024).default(24000),
       minSalience: z.number().min(0).max(1).default(0.2),
       overviewDepth: z.number().int().min(1).default(2),
@@ -41,7 +41,7 @@ export const sloppyConfigSchema = z.object({
       orchestratorMode: z.boolean().default(false),
     })
     .default({
-      maxIterations: 12,
+      maxIterations: 32,
       contextBudgetTokens: 24000,
       minSalience: 0.2,
       overviewDepth: 2,
@@ -67,6 +67,7 @@ export const sloppyConfigSchema = z.object({
           messaging: z.boolean().default(true),
           delegation: z.boolean().default(true),
           orchestration: z.boolean().default(true),
+          spec: z.boolean().default(true),
           vision: z.boolean().default(true),
         })
         .default({
@@ -80,6 +81,7 @@ export const sloppyConfigSchema = z.object({
           messaging: true,
           delegation: true,
           orchestration: true,
+          spec: true,
           vision: true,
         }),
       discovery: z
@@ -206,6 +208,7 @@ export const sloppyConfigSchema = z.object({
         messaging: true,
         delegation: true,
         orchestration: true,
+        spec: true,
         vision: true,
       },
       discovery: {

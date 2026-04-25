@@ -27,7 +27,9 @@ Implemented now:
 - Bun + TypeScript project scaffold
 - npm-installed SLOP SDK dependencies
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
-- built-in `terminal`, `filesystem`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
+- built-in `terminal`, `filesystem`, `orchestration`, `spec`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
+- durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, dependency normalization plus parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and acceptance-criteria-gated verification with cited evidence refs
+- orchestrator-mode guardrails that block direct file mutations, setup/repair shell commands, and direct delegation spawns so fixes stay delegated through scheduled tasks
 - in-process transport for built-in providers
 - live-watched provider descriptor discovery for Unix socket and WebSocket providers
 - consumer hub with overview and detail subscriptions
@@ -114,6 +116,7 @@ src/
         ├── in-process.ts
         ├── memory.ts
         ├── messaging.ts
+        ├── spec.ts
         ├── skills.ts
         ├── terminal.ts
         ├── vision.ts
@@ -283,6 +286,7 @@ Deliverables:
 - cron scheduler provider
 - messaging provider
 - delegation provider
+- spec provider
 - vision provider
 - in-process transport bridge
 
@@ -290,7 +294,7 @@ Success criteria:
 
 - the agent sees directory state instead of blind file tools
 - the agent sees command history and async task state instead of blind shell execution only
-- the agent can inspect and act on memory/skills/browser/web/cron/messaging/delegation/vision state through the same provider boundary
+- the agent can inspect and act on memory/skills/browser/web/cron/messaging/delegation/spec/vision state through the same provider boundary
 - state changes are reflected back through new snapshots/patches
 
 ### D. Test slice

@@ -21,6 +21,69 @@ export interface RuntimeToolSet {
   resolve(toolName: string): RuntimeToolResolution | null;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isOptionalParameter(schema: unknown): boolean {
+  if (!isRecord(schema)) return false;
+  const description = typeof schema.description === "string" ? schema.description : "";
+  return /\boptional\b/i.test(description);
+}
+
+function normalizeJsonSchema(schema: unknown): JsonObject {
+  const source = isRecord(schema) ? schema : {};
+  const normalized: JsonObject = { ...source };
+  const properties = isRecord(source.properties) ? source.properties : undefined;
+
+  if (source.type === "object" || properties) {
+    const normalizedProperties: JsonObject = {};
+    for (const [key, propertySchema] of Object.entries(properties ?? {})) {
+      normalizedProperties[key] = normalizeJsonSchema(propertySchema);
+    }
+
+    const existingRequired = Array.isArray(source.required)
+      ? source.required.filter((item): item is string => typeof item === "string")
+      : Object.keys(normalizedProperties);
+    const required = existingRequired.filter(
+      (key) =>
+        Object.hasOwn(normalizedProperties, key) && !isOptionalParameter(normalizedProperties[key]),
+    );
+
+    normalized.type = "object";
+    normalized.properties = normalizedProperties;
+    normalized.required = required;
+    normalized.additionalProperties =
+      typeof source.additionalProperties === "boolean" ? source.additionalProperties : false;
+  }
+
+  if (source.type === "array" && source.items !== undefined) {
+    normalized.items = normalizeJsonSchema(source.items);
+  }
+
+  return normalized;
+}
+
+function parameterContractHint(parameters: JsonObject): string {
+  const properties = isRecord(parameters.properties) ? parameters.properties : {};
+  const required = Array.isArray(parameters.required)
+    ? parameters.required.filter((item): item is string => typeof item === "string")
+    : [];
+  const optional = Object.keys(properties).filter((key) => !required.includes(key));
+  const parts = [
+    required.length > 0 ? `Required parameters: ${required.join(", ")}.` : "",
+    optional.length > 0 ? `Optional parameters: ${optional.join(", ")}.` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+function withParameterContractDescription(description: string, parameters: JsonObject): string {
+  const hint = parameterContractHint(parameters);
+  return hint ? `${description} ${hint}` : description;
+}
+
 function buildObservationTools(providerIds: string[]): LlmTool[] {
   const providerEnum = providerIds.length > 0 ? providerIds : ["terminal", "filesystem"];
 
@@ -65,6 +128,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
             },
           },
           required: ["provider", "path"],
+          additionalProperties: false,
         },
       },
     },
@@ -96,6 +160,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
             },
           },
           required: ["provider", "path"],
+          additionalProperties: false,
         },
       },
     },
@@ -155,19 +220,24 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         continue;
       }
 
+      const parameters = normalizeJsonSchema(tool.function.parameters);
+      const description = withParameterContractDescription(tool.function.description, parameters);
+
       resolutions.set(prefixedName, {
         kind: "affordance",
         providerId: view.providerId,
         action: resolution.action,
         path: resolution.path,
         targets: resolution.targets,
-        dangerous: tool.function.description.includes("[DANGEROUS - confirm first]"),
+        dangerous: description.includes("[DANGEROUS - confirm first]"),
       });
       tools.push({
         ...tool,
         function: {
           ...tool.function,
           name: prefixedName,
+          description,
+          parameters,
         },
       });
     }

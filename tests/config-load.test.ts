@@ -11,6 +11,7 @@ const originalHome = process.env.HOME;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
+const originalMaxIterations = process.env.SLOPPY_MAX_ITERATIONS;
 
 async function createTempDir(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix));
@@ -49,6 +50,12 @@ afterEach(async () => {
     delete process.env.SLOPPY_LLM_BASE_URL;
   } else {
     process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
+
+  if (originalMaxIterations == null) {
+    delete process.env.SLOPPY_MAX_ITERATIONS;
+  } else {
+    process.env.SLOPPY_MAX_ITERATIONS = originalMaxIterations;
   }
 
   while (tempPaths.length > 0) {
@@ -116,5 +123,21 @@ describe("loadConfig", () => {
     expect(config.llm.model).toBe("llama3.2");
     expect(config.llm.apiKeyEnv).toBeUndefined();
     expect(config.llm.baseUrl).toBe("http://127.0.0.1:11434/v1");
+  });
+
+  test("applies env override for max iterations", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+
+    process.env.HOME = home;
+    process.env.SLOPPY_MAX_ITERATIONS = "80";
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.agent.maxIterations).toBe(80);
   });
 });

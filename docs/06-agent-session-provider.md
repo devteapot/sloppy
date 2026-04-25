@@ -6,6 +6,11 @@ Define the public SLOP shape for one running Sloppy agent session.
 
 This provider is the boundary that first-party and third-party UIs should consume.
 
+Current first-party consumers are the Go TUI under `apps/tui/` and a read-only
+canvas/HTML dashboard prototype under `apps/dashboard/`. The dashboard currently
+visualizes `.sloppy/orchestration/` files directly and should move to this
+provider plus the orchestration provider surface when the browser bridge lands.
+
 It is intentionally session-scoped:
 
 - one provider instance represents one agent session

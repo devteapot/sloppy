@@ -109,6 +109,13 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
     };
   }
 
+  if (Bun.env.SLOPPY_MAX_ITERATIONS) {
+    overrides.agent = {
+      ...(overrides.agent as JsonObject | undefined),
+      maxIterations: Number.parseInt(Bun.env.SLOPPY_MAX_ITERATIONS, 10),
+    };
+  }
+
   return deepMerge(config, overrides);
 }
 

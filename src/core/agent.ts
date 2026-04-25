@@ -25,6 +25,10 @@ import {
   type RunLoopResult,
   runLoop,
 } from "./loop";
+import {
+  OrchestrationScheduler,
+  type OrchestrationSchedulerEvent,
+} from "./orchestration-scheduler";
 
 export type { AgentToolEvent, AgentToolInvocation } from "./loop";
 
@@ -55,6 +59,7 @@ export interface AgentCallbacks {
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onExternalProviderStates?: (states: ExternalProviderState[]) => void;
+  onSchedulerEvent?: (event: OrchestrationSchedulerEvent) => void;
   onProviderSnapshot?: (update: {
     providerId: string;
     path: "/approvals" | "/tasks";
@@ -77,6 +82,7 @@ export class Agent {
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
   private activeRunAbortController: AbortController | null = null;
+  private orchestrationScheduler: OrchestrationScheduler | null = null;
 
   constructor(
     options?: {
@@ -92,6 +98,7 @@ export class Agent {
       onToolResult: options?.onToolResult,
       onToolEvent: options?.onToolEvent,
       onExternalProviderStates: options?.onExternalProviderStates,
+      onSchedulerEvent: options?.onSchedulerEvent,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
     this.ignoredProviderIds = new Set(options?.ignoredProviderIds ?? []);
@@ -138,6 +145,19 @@ export class Agent {
 
     for (const view of hub.getProviderViews()) {
       await this.registerProviderMirrors(view.providerId);
+    }
+
+    if (
+      this.config.agent.orchestratorMode &&
+      this.config.providers.builtin.orchestration &&
+      this.config.providers.builtin.delegation
+    ) {
+      this.orchestrationScheduler = new OrchestrationScheduler({
+        hub,
+        maxAgents: this.config.providers.delegation.maxAgents,
+        onEvent: this.callbacks.onSchedulerEvent,
+      });
+      await this.orchestrationScheduler.start();
     }
 
     if (this.config.providers.discovery.enabled) {
@@ -274,6 +294,9 @@ export class Agent {
   }
 
   shutdown(): void {
+    this.orchestrationScheduler?.stop();
+    this.orchestrationScheduler = null;
+
     this.discoveryStop?.();
     this.discoveryStop = null;
     this.unsubscribeExternalProviderStateChanges?.();

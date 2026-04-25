@@ -69,6 +69,8 @@ export class ConsumerHub {
   private registeredProviders: RegisteredProvider[];
   private providerEventListeners = new Set<(event: ProviderEvent) => void>();
   private externalProviderStateListeners = new Set<(states: ExternalProviderState[]) => void>();
+  private stateRevision = 0;
+  private stateRevisionListeners = new Set<() => void>();
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
@@ -107,11 +109,13 @@ export class ConsumerHub {
 
         if (subscriptionId === connectedProvider.overviewSubscriptionId) {
           connectedProvider.overviewTree = tree;
+          this.bumpStateRevision();
           return;
         }
 
         if (subscriptionId === connectedProvider.detailSubscriptionId) {
           connectedProvider.detailTree = tree;
+          this.bumpStateRevision();
           return;
         }
 
@@ -124,6 +128,7 @@ export class ConsumerHub {
           for (const listener of watched.listeners) {
             listener(tree);
           }
+          this.bumpStateRevision();
           return;
         }
       };
@@ -168,6 +173,7 @@ export class ConsumerHub {
         });
       }
       debug("hub", "add_provider", { id: provider.id, kind: provider.kind });
+      this.bumpStateRevision();
       return true;
     } catch (error) {
       registeredProvider.stop?.();
@@ -248,6 +254,7 @@ export class ConsumerHub {
 
     provider.stop?.();
     this.providers.delete(providerId);
+    this.bumpStateRevision();
     if (provider.kind === "external") {
       if (options.removeExternalState) {
         this.deleteExternalProviderState(providerId);
@@ -276,6 +283,58 @@ export class ConsumerHub {
 
   getRuntimeToolSet(): RuntimeToolSet {
     return buildRuntimeToolSet(this.getProviderViews());
+  }
+
+  getStateRevision(): number {
+    return this.stateRevision;
+  }
+
+  async waitForStateChange(
+    revision: number,
+    options: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<boolean> {
+    if (this.stateRevision !== revision) {
+      return true;
+    }
+
+    if (options.signal?.aborted) {
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+
+      const finish = (changed: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        this.stateRevisionListeners.delete(listener);
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve(changed);
+      };
+
+      const listener = () => {
+        if (this.stateRevision !== revision) {
+          finish(true);
+        }
+      };
+      const onAbort = () => finish(false);
+
+      this.stateRevisionListeners.add(listener);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+
+      if (options.timeoutMs != null) {
+        timeout = setTimeout(() => finish(false), options.timeoutMs);
+      }
+    });
   }
 
   getExternalProviderStates(): ExternalProviderState[] {
@@ -453,6 +512,13 @@ export class ConsumerHub {
     const states = this.getExternalProviderStates();
     for (const listener of this.externalProviderStateListeners) {
       listener(states);
+    }
+  }
+
+  private bumpStateRevision(): void {
+    this.stateRevision += 1;
+    for (const listener of this.stateRevisionListeners) {
+      listener();
     }
   }
 }

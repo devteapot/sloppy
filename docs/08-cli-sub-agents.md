@@ -147,6 +147,8 @@ spawn_agent({
 
 The registry's real `runnerFactory` (in `src/providers/registry.ts`) picks the appropriate `agentFactory` for the chosen mode when constructing the `SubAgentRunner`. Native stays the default.
 
+Current native sub-agents already accept the `model` field and expose it in `/agents/{id}`, but the field is metadata only: `SubAgentRunner` still inherits the parent's resolved LLM config. Wiring per-child model selection needs an LLM config/profile overlay before `SessionRuntime` starts the child. CLI-backed agents should pass the same field through to the adapter command once that execution mode lands.
+
 ### Configuration
 
 New config block:
@@ -208,6 +210,7 @@ Defer: codex, pi, approval-prompt parsing, MCP bridge, worktree isolation.
 - Is there value in native + CLI hybrids? (Native orchestrator delegates planning to a Claude Code sub-agent, then directly executes the plan itself.)
 - How do we handle CLIs that need interactive auth (device-code flows, browser login)? Pre-requisite: CLI already authenticated on the host.
 - Should the `execution_mode` surface on the orchestration `tasks/{id}` props for inspectability?
+- What is the right native-sub-agent model override shape: exact model-only override on the parent's provider/base URL, a named managed profile, or a full provider/model/base URL tuple?
 
 ---
 

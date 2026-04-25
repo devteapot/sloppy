@@ -85,7 +85,7 @@ export type ApprovalItem = {
   turnId?: string;
 };
 
-export type SessionTaskStatus = "running" | "completed" | "failed" | "cancelled";
+export type SessionTaskStatus = "running" | "completed" | "failed" | "cancelled" | "superseded";
 
 export type SessionTask = {
   id: string;

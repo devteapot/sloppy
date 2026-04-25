@@ -12,6 +12,7 @@ import { MemoryProvider } from "./builtin/memory";
 import { MessagingProvider } from "./builtin/messaging";
 import { OrchestrationProvider } from "./builtin/orchestration";
 import { SkillsProvider } from "./builtin/skills";
+import { SpecProvider } from "./builtin/spec";
 import { TerminalProvider } from "./builtin/terminal";
 import { VisionProvider } from "./builtin/vision";
 import { WebProvider } from "./builtin/web";
@@ -241,6 +242,20 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(orchestration.server),
       transportLabel: "in-process",
       stop: () => orchestration.stop(),
+    });
+  }
+
+  if (config.providers.builtin.spec) {
+    const spec = new SpecProvider({
+      workspaceRoot: config.providers.filesystem.root,
+    });
+    providers.push({
+      id: "spec",
+      name: "Spec",
+      kind: "builtin",
+      transport: new InProcessTransport(spec.server),
+      transportLabel: "in-process",
+      stop: () => spec.stop(),
     });
   }
 

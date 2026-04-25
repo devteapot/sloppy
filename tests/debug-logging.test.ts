@@ -52,7 +52,14 @@ describe("debug logger", () => {
   test("SLOPPY_DEBUG=all enables every scope", () => {
     process.env.SLOPPY_DEBUG = "all";
     reloadDebugFromEnv();
-    for (const scope of ["sub-agent", "orchestration", "filesystem", "delegation", "hub", "loop"] as const) {
+    for (const scope of [
+      "sub-agent",
+      "orchestration",
+      "filesystem",
+      "delegation",
+      "hub",
+      "loop",
+    ] as const) {
       expect(isDebugEnabled(scope)).toBe(true);
     }
   });

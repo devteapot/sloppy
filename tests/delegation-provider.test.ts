@@ -110,8 +110,6 @@ describe("DelegationProvider", () => {
         error: undefined,
       });
       expect(agents.children?.[0]?.affordances?.map((affordance) => affordance.action)).toEqual([
-        "monitor",
-        "get_result",
         "cancel",
       ]);
 
@@ -129,25 +127,23 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("monitors lifecycle changes from pending to running", async () => {
+  test("observes lifecycle changes through pushed state", async () => {
     const { provider, consumer } = createDelegationHarness();
 
     try {
       await connect(consumer);
       const agentId = await spawnAgent(consumer, "runner", "Reach running state");
 
-      const pendingResult = await consumer.invoke(`/agents/${agentId}`, "monitor", {});
-      expect(pendingResult.status).toBe("ok");
-      expect(pendingResult.data).toMatchObject({
+      const pendingResult = await consumer.query(`/agents/${agentId}`, 2);
+      expect(pendingResult.properties).toMatchObject({
         id: agentId,
         name: "runner",
         status: "pending",
       });
 
       const running = await waitFor(async () => {
-        const result = await consumer.invoke(`/agents/${agentId}`, "monitor", {});
-        const data = result.data as { status: string };
-        return data.status === "running" ? data : null;
+        const result = await consumer.query(`/agents/${agentId}`, 2);
+        return result.properties?.status === "running" ? result.properties : null;
       }, 1500);
       expect(running).toMatchObject({
         id: agentId,
@@ -178,10 +174,7 @@ describe("DelegationProvider", () => {
         status: "cancelled",
       });
       expect(cancelled.properties?.completed_at).toBeString();
-      expect(cancelled.affordances?.map((affordance) => affordance.action)).toEqual([
-        "monitor",
-        "get_result",
-      ]);
+      expect(cancelled.affordances?.map((affordance) => affordance.action) ?? []).toEqual([]);
 
       const session = await consumer.query("/session", 2);
       expect(session.properties).toMatchObject({
@@ -195,7 +188,7 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("rejects result retrieval before completion", async () => {
+  test("does not expose result retrieval before completion", async () => {
     const { provider, consumer } = createDelegationHarness();
 
     try {
@@ -204,7 +197,7 @@ describe("DelegationProvider", () => {
 
       const result = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
       expect(result.status).toBe("error");
-      expect(result.error?.message).toContain(`Agent ${agentId} has not completed yet`);
+      expect(result.error?.message).toContain(`No handler for get_result at /agents/${agentId}`);
 
       await consumer.invoke(`/agents/${agentId}`, "cancel", {});
     } finally {
@@ -230,10 +223,7 @@ describe("DelegationProvider", () => {
         result_preview: 'Agent "finisher" completed goal: Produce a final answer',
       });
       expect(completed.properties?.completed_at).toBeString();
-      expect(completed.affordances?.map((affordance) => affordance.action)).toEqual([
-        "monitor",
-        "get_result",
-      ]);
+      expect(completed.affordances?.map((affordance) => affordance.action)).toEqual(["get_result"]);
 
       const result = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
       expect(result.status).toBe("ok");
@@ -249,6 +239,41 @@ describe("DelegationProvider", () => {
         completed_agents: 1,
         failed_agents: 0,
       });
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("task-linked completed agents rely on pushed orchestration results", async () => {
+    const { provider, consumer } = createDelegationHarness();
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "task-worker",
+        goal: "Produce a final answer",
+        task_id: "task-1234abcd",
+      });
+      expect(result.status).toBe("ok");
+      const agentId = (result.data as { id: string }).id;
+
+      const completed = await waitFor(async () => {
+        const current = await consumer.query(`/agents/${agentId}`, 2);
+        return current.properties?.status === "completed" ? current : null;
+      }, 4500);
+      expect(completed.properties).toMatchObject({
+        id: agentId,
+        status: "completed",
+        orchestration_task_id: "task-1234abcd",
+        result_preview: 'Agent "task-worker" completed goal: Produce a final answer',
+      });
+      expect((completed.affordances ?? []).map((affordance) => affordance.action)).not.toContain(
+        "get_result",
+      );
+
+      const retrieval = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
+      expect(retrieval.status).toBe("error");
+      expect(retrieval.error?.message).toContain(`No handler for get_result at /agents/${agentId}`);
     } finally {
       provider.stop();
     }
@@ -306,15 +331,21 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("returns router errors for unknown agent items", async () => {
+  test("does not expose monitor as a polling affordance", async () => {
     const { provider, consumer } = createDelegationHarness();
 
     try {
       await connect(consumer);
+      const agentId = await spawnAgent(consumer, "no-monitor", "Expose state only");
 
-      const result = await consumer.invoke("/agents/missing", "monitor", {});
+      const agent = await consumer.query(`/agents/${agentId}`, 2);
+      expect(agent.affordances?.map((affordance) => affordance.action)).not.toContain("monitor");
+
+      const result = await consumer.invoke(`/agents/${agentId}`, "monitor", {});
       expect(result.status).toBe("error");
-      expect(result.error?.message).toContain("No handler for monitor at /agents/missing");
+      expect(result.error?.message).toContain(`No handler for monitor at /agents/${agentId}`);
+
+      await consumer.invoke(`/agents/${agentId}`, "cancel", {});
     } finally {
       provider.stop();
     }

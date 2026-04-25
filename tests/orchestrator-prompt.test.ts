@@ -29,5 +29,16 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("create_plan");
     expect(prompt).toContain("spawn_agent");
     expect(prompt).toContain("Delegation rule");
+    expect(prompt).toContain("/specs");
+    expect(prompt).toContain("/findings");
+    expect(prompt).toContain("spec_refs");
+    expect(prompt).toContain("blocking findings");
+    expect(prompt).toContain("Model only true blocking dependencies");
+    expect(prompt).toContain("Do not add a dependency just because two workers share data flow");
+    expect(prompt).toContain("scaffold -> {data-model, ui} -> {docs, verification}");
+    expect(prompt).toContain("scoped work packet");
+    expect(prompt).toContain("decision_request");
+    expect(prompt).toContain("unblock: true");
+    expect(prompt).toContain("do not edit files directly");
   });
 });

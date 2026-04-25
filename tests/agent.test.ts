@@ -26,7 +26,7 @@ const TEST_CONFIG: SloppyConfig = {
     detailMaxNodes: 200,
     historyTurns: 8,
     toolResultMaxChars: 16000,
-      orchestratorMode: false,
+    orchestratorMode: false,
   },
   maxToolResultSize: 4096,
   providers: {
@@ -41,6 +41,7 @@ const TEST_CONFIG: SloppyConfig = {
       messaging: false,
       delegation: false,
       orchestration: false,
+      spec: false,
       vision: false,
     },
     discovery: {

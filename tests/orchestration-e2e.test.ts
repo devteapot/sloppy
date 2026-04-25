@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { defaultConfigPromise } from "../src/config/load";
 import { Agent } from "../src/core/agent";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import { buildRuntimeLlmConfig } from "../src/llm/runtime-config";
 
 const LIVE = process.env.SLOPPY_E2E_LLM === "1";
 
@@ -73,35 +74,36 @@ async function buildOrchestratorConfig(root: string) {
   return {
     ...baseConfig,
     agent: { ...baseConfig.agent, orchestratorMode: true, maxIterations: 60 },
-    // Build the llm config from scratch from env vars so nothing from
-    // ~/.sloppy/config.yaml (managed profiles, apiKeyEnv, default profile id)
-    // can route the test to the user's cloud billing account.
-    llm: {
-      provider: provider as typeof baseConfig.llm.provider,
-      baseUrl,
-      model,
-      apiKeyEnv,
-      profiles: [],
-      defaultProfileId: undefined,
-      maxTokens: baseConfig.llm.maxTokens,
-    },
+    // Build the llm config from the process env and discard managed profiles
+    // so the live test cannot route to a stored cloud credential by mistake.
+    llm: buildRuntimeLlmConfig(baseConfig.llm, {
+      ...process.env,
+      SLOPPY_LLM_API_KEY_ENV: apiKeyEnv,
+    }),
     providers: {
       ...baseConfig.providers,
       builtin: {
         ...baseConfig.providers.builtin,
-        terminal: false,
+        terminal: true,
         memory: false,
         skills: false,
         web: false,
         browser: false,
         cron: false,
         messaging: false,
+        spec: false,
         vision: false,
         filesystem: true,
         delegation: true,
         orchestration: true,
       },
       filesystem: { ...baseConfig.providers.filesystem, root, focus: root },
+      terminal: {
+        ...baseConfig.providers.terminal,
+        cwd: root,
+        syncTimeoutMs: Math.max(baseConfig.providers.terminal.syncTimeoutMs, 300_000),
+      },
+      discovery: { ...baseConfig.providers.discovery, enabled: false },
     },
   };
 }
@@ -497,12 +499,10 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
 
         // Observational: did the model pick the right affordance? Report, don't fail.
         const logLines = existsSync(debugLog) ? readFileSync(debugLog, "utf8") : "";
-        const editCalls = (
-          logLines.match(/"toolName":"filesystem__workspace__edit"/g) ?? []
-        ).length;
-        const writeCalls = (
-          logLines.match(/"toolName":"filesystem__workspace__write"/g) ?? []
-        ).length;
+        const editCalls = (logLines.match(/"toolName":"filesystem__workspace__edit"/g) ?? [])
+          .length;
+        const writeCalls = (logLines.match(/"toolName":"filesystem__workspace__write"/g) ?? [])
+          .length;
         process.stderr.write(
           `[e2e] tool choice: edit=${editCalls} write=${writeCalls} ` +
             `(affordance-driven steering is ${editCalls > 0 && writeCalls === 0 ? "WORKING" : "not exclusive"})\n`,

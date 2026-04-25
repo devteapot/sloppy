@@ -18,6 +18,7 @@ import {
 } from "../llm/profile-manager";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
+import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import { buildMirroredItemId, SessionStore } from "./store";
 import type {
   ApprovalItem,
@@ -43,6 +44,8 @@ function normalizeTaskStatus(status: unknown): SessionTaskStatus {
       return "failed";
     case "cancelled":
       return "cancelled";
+    case "superseded":
+      return "superseded";
     default:
       return "running";
   }
@@ -240,6 +243,7 @@ export class SessionRuntime {
 
   private agent: SessionAgent;
   private llmProfileManager: LlmProfileManager;
+  private eventBus: AgentEventBus | null = null;
   private started = false;
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
@@ -257,6 +261,8 @@ export class SessionRuntime {
     agentFactory?: SessionAgentFactory;
     llmProfileManager?: LlmProfileManager;
     ignoredProviderIds?: string[];
+    parentActorId?: string;
+    taskId?: string;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.llmProfileManager =
@@ -326,6 +332,25 @@ export class SessionRuntime {
       },
     };
 
+    const eventLogPath = process.env.SLOPPY_EVENT_LOG;
+    if (eventLogPath) {
+      const orchestratorMode = this.config.agent.orchestratorMode;
+      this.eventBus = createAgentEventBus({
+        logPath: eventLogPath,
+        actor: {
+          id: orchestratorMode ? "orchestrator" : (options?.sessionId ?? "agent"),
+          name: orchestratorMode ? "Orchestrator" : options?.title,
+          kind: orchestratorMode ? "orchestrator" : "agent",
+          parentId: options?.parentActorId,
+          taskId: options?.taskId,
+        },
+      });
+    }
+
+    const finalCallbacks = this.eventBus
+      ? mergeCallbacks(callbacks, this.eventBus.callbacks)
+      : callbacks;
+
     const agentFactory =
       options?.agentFactory ??
       ((callbacks, config, llmProfileManager) =>
@@ -335,7 +360,7 @@ export class SessionRuntime {
           llmProfileManager,
           options?.ignoredProviderIds,
         ));
-    this.agent = agentFactory(callbacks, this.config, this.llmProfileManager);
+    this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
   }
 
   async start(): Promise<void> {

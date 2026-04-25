@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { AsyncActionResult as CoreAsyncActionResult } from "@slop-ai/core";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
@@ -30,7 +30,7 @@ type RunningTask = {
 
 const DESTRUCTIVE_COMMAND_RE =
   /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|git\s+(?:reset|clean|checkout)\s|sed\s+-i|truncate\s|dd\s|shred\s)/;
-const OVERWRITE_REDIRECT_RE = /(^|[^>])>([^>]|$)/;
+const FILE_OUTPUT_REDIRECT_RE = /(^|[^>])(?:\d?>|&>)(?![>&])\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g;
 
 function truncateOutput(text: string, maxChars = 1200): string {
   if (text.length <= maxChars) {
@@ -40,8 +40,31 @@ function truncateOutput(text: string, maxChars = 1200): string {
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
+function usesFileOutputRedirection(command: string): boolean {
+  FILE_OUTPUT_REDIRECT_RE.lastIndex = 0;
+  for (const match of command.matchAll(FILE_OUTPUT_REDIRECT_RE)) {
+    const rawTarget = match[2]?.trim() ?? "";
+    const target = rawTarget.replace(/^["']|["']$/g, "");
+    if (target !== "/dev/null") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function looksDestructive(command: string): boolean {
-  return DESTRUCTIVE_COMMAND_RE.test(command) || OVERWRITE_REDIRECT_RE.test(command);
+  return DESTRUCTIVE_COMMAND_RE.test(command) || usesFileOutputRedirection(command);
+}
+
+function approvalReason(command: string): string {
+  const reasons: string[] = [];
+  if (DESTRUCTIVE_COMMAND_RE.test(command)) {
+    reasons.push("matches a destructive shell command pattern");
+  }
+  if (usesFileOutputRedirection(command)) {
+    reasons.push("uses file output redirection");
+  }
+  return `Shell command requires approval because it ${reasons.join(" and ")}.`;
 }
 
 function buildTaskId(): string {
@@ -50,6 +73,7 @@ function buildTaskId(): string {
 
 export class TerminalProvider {
   readonly server: SlopServer;
+  private root: string;
   private cwd: string;
   private historyLimit: number;
   private syncTimeoutMs: number;
@@ -58,7 +82,8 @@ export class TerminalProvider {
   private tasks = new Map<string, RunningTask>();
 
   constructor(options: { cwd: string; historyLimit: number; syncTimeoutMs: number }) {
-    this.cwd = resolve(options.cwd);
+    this.root = resolve(options.cwd);
+    this.cwd = this.root;
     this.historyLimit = options.historyLimit;
     this.syncTimeoutMs = options.syncTimeoutMs;
 
@@ -87,7 +112,7 @@ export class TerminalProvider {
   }
 
   private async changeDirectory(path: string): Promise<{ cwd: string }> {
-    const next = resolve(this.cwd, path);
+    const next = this.resolveDirectoryInput(path);
     const info = await Bun.file(next)
       .stat()
       .catch(() => null);
@@ -101,6 +126,36 @@ export class TerminalProvider {
 
     this.cwd = next;
     return { cwd: this.cwd };
+  }
+
+  private resolveDirectoryInput(path: string): string {
+    const trimmed = path.trim();
+    if (!trimmed || trimmed === "." || trimmed === "./") {
+      return this.cwd;
+    }
+
+    if (trimmed === "/workspace" || trimmed === "workspace") {
+      return this.root;
+    }
+    if (trimmed.startsWith("/workspace/")) {
+      return resolve(this.root, trimmed.slice("/workspace/".length));
+    }
+    if (trimmed.startsWith("workspace/")) {
+      return resolve(this.root, trimmed.slice("workspace/".length));
+    }
+
+    const rootName = basename(this.root);
+    if (trimmed === rootName || trimmed === `./${rootName}`) {
+      return this.root;
+    }
+    if (trimmed.startsWith(`${rootName}/`)) {
+      return resolve(this.root, trimmed.slice(rootName.length + 1));
+    }
+    if (trimmed.startsWith(`./${rootName}/`)) {
+      return resolve(this.root, trimmed.slice(rootName.length + 3));
+    }
+
+    return resolve(this.cwd, trimmed);
   }
 
   private spawnCommand(command: string) {
@@ -119,7 +174,7 @@ export class TerminalProvider {
       const approvalId = this.approvals.request({
         path: "/session",
         action: "execute",
-        reason: "Destructive shell commands require explicit user approval.",
+        reason: approvalReason(command),
         paramsPreview: JSON.stringify({ command, background: false }),
         dangerous: true,
         execute: () => this.runSyncCommand(command, true),
@@ -185,7 +240,7 @@ export class TerminalProvider {
       const approvalId = this.approvals.request({
         path: "/session",
         action: "execute",
-        reason: "Destructive shell commands require explicit user approval.",
+        reason: approvalReason(command),
         paramsPreview: JSON.stringify({ command, background: true }),
         dangerous: true,
         execute: () => this.startBackgroundCommand(command, true),
@@ -307,12 +362,12 @@ export class TerminalProvider {
             background: {
               type: "boolean",
               description:
-                "Run the command asynchronously and expose progress via the tasks collection.",
+                "Optional. Run the command asynchronously and expose progress via the tasks collection.",
             },
             confirmed: {
               type: "boolean",
               description:
-                "Set true only after the user explicitly approved a destructive command.",
+                "Optional. Set true only after the user explicitly approved a destructive command.",
             },
           },
           async ({ command, background, confirmed }) => {

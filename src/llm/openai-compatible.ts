@@ -49,17 +49,77 @@ function toOpenAITools(tools: LlmTool[]): ChatCompletionTool[] {
   }));
 }
 
-function parseToolArguments(argumentsJson: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(argumentsJson) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-
-    return { value: parsed };
-  } catch {
-    return { _raw: argumentsJson };
+function parseToolArguments(
+  argumentsJson: string,
+): Pick<ToolUseContentBlock, "input" | "inputError"> {
+  const parsed = parseToolArgumentsJson(argumentsJson);
+  if (parsed) {
+    return parsed;
   }
+
+  const repaired = parseToolArgumentsWithTrailingBraceRepair(argumentsJson);
+  if (repaired) {
+    return repaired;
+  }
+
+  try {
+    JSON.parse(argumentsJson);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      input: {},
+      inputError: {
+        code: "invalid_json",
+        message: `Tool arguments were not valid JSON: ${message}`,
+        raw: argumentsJson,
+      },
+    };
+  }
+
+  return {
+    input: {},
+    inputError: {
+      code: "invalid_json",
+      message: "Tool arguments could not be normalized.",
+      raw: argumentsJson,
+    },
+  };
+}
+
+function normalizeParsedToolArguments(
+  parsed: unknown,
+): Pick<ToolUseContentBlock, "input" | "inputError"> {
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return { input: parsed as Record<string, unknown> };
+  }
+
+  return { input: { value: parsed } };
+}
+
+function parseToolArgumentsJson(
+  argumentsJson: string,
+): Pick<ToolUseContentBlock, "input" | "inputError"> | null {
+  try {
+    return normalizeParsedToolArguments(JSON.parse(argumentsJson) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function parseToolArgumentsWithTrailingBraceRepair(
+  argumentsJson: string,
+): Pick<ToolUseContentBlock, "input" | "inputError"> | null {
+  let candidate = argumentsJson.trimEnd();
+
+  for (let attempts = 0; attempts < 4 && /[}\]]$/.test(candidate); attempts += 1) {
+    candidate = candidate.slice(0, -1).trimEnd();
+    const parsed = parseToolArgumentsJson(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 function extractTextContent(
@@ -167,11 +227,12 @@ function normalizeAssistantContent(completion: ChatCompletion): AssistantContent
       continue;
     }
 
+    const parsed = parseToolArguments(toolCall.function.arguments);
     blocks.push({
       type: "tool_use",
       id: toolCall.id,
       name: toolCall.function.name,
-      input: parseToolArguments(toolCall.function.arguments),
+      ...parsed,
     });
   }
 

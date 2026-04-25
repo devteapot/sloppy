@@ -1,4 +1,4 @@
-import { formatTree } from "@slop-ai/consumer/browser";
+import { formatTree, type SlopNode } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
@@ -7,7 +7,8 @@ import type { ConsumerHub } from "./consumer";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
-import type { RuntimeToolSet } from "./tools";
+import type { ProviderTreeView } from "./subscriptions";
+import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
 
 type ToolResult = {
   block: ToolResultContentBlock;
@@ -83,12 +84,167 @@ type ExecuteToolCallResult =
       errorMessage: string;
     };
 
+const DELEGATED_WORK_SUSPEND_TIMEOUT_MS = 5 * 60_000;
+const STATE_CHANGE_WAIT_SLICE_MS = 30_000;
+const ACTIVE_AGENT_STATUSES = new Set(["pending", "running"]);
+const ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS = new Set([
+  "write",
+  "edit",
+  "mkdir",
+  "delete",
+  "remove",
+  "move",
+  "copy",
+]);
+
+const ORCHESTRATOR_SAFE_TERMINAL_COMMANDS = [
+  /^npm run (build|lint|test|typecheck)$/,
+  /^npm test$/,
+  /^bun run (build|lint|test|typecheck)$/,
+  /^bun test(?: .*)?$/,
+  /^tsc(?: -b| --noEmit)?$/,
+  /^vite build$/,
+];
+
 function stringifyResult(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
 
   return JSON.stringify(value, null, 2);
+}
+
+function orchestratorToolPolicyViolation(
+  config: SloppyConfig,
+  resolution: RuntimeToolResolution,
+  params: Record<string, unknown>,
+): string | null {
+  if (!config.agent.orchestratorMode || resolution.kind !== "affordance") {
+    return null;
+  }
+
+  if (
+    resolution.providerId === "filesystem" &&
+    ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS.has(resolution.action)
+  ) {
+    return `Orchestrator mode cannot call filesystem.${resolution.action} directly. Create or retry a delegated task with spawn_agent so a sub-agent performs file mutations.`;
+  }
+
+  if (resolution.providerId === "delegation" && resolution.action === "spawn_agent") {
+    return `Orchestrator mode does not spawn delegation agents directly. Create or retry orchestration tasks; the runtime scheduler starts ready tasks when dependencies and capacity allow.`;
+  }
+
+  if (resolution.providerId === "terminal" && resolution.action === "execute") {
+    const command = typeof params.command === "string" ? params.command.trim() : "";
+    const isSafeVerification = ORCHESTRATOR_SAFE_TERMINAL_COMMANDS.some((pattern) =>
+      pattern.test(command),
+    );
+    if (!isSafeVerification) {
+      return `Orchestrator mode can only run simple verification commands directly (build, lint, test, typecheck). Delegate setup, install, repair, and shell-composed commands to a sub-agent.`;
+    }
+  }
+
+  return null;
+}
+
+function toolErrorCode(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    const candidate = error as Error & { code?: unknown };
+    return typeof candidate.code === "string" ? candidate.code : undefined;
+  }
+  if (error && typeof error === "object") {
+    const candidate = error as { code?: unknown };
+    return typeof candidate.code === "string" ? candidate.code : undefined;
+  }
+  return undefined;
+}
+
+function getNodeProperties(node: SlopNode): Record<string, unknown> {
+  const properties = node.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    return {};
+  }
+  return properties as Record<string, unknown>;
+}
+
+function walkTree(node: SlopNode, visit: (node: SlopNode) => void): void {
+  visit(node);
+  for (const child of node.children ?? []) {
+    walkTree(child, visit);
+  }
+}
+
+function hasPendingChildApproval(view: ProviderTreeView): boolean {
+  let found = false;
+  walkTree(view.overviewTree, (node) => {
+    const properties = getNodeProperties(node);
+    const pendingApprovals = properties.pending_approvals;
+    if (Array.isArray(pendingApprovals) && pendingApprovals.length > 0) {
+      found = true;
+    }
+    if (properties.state === "waiting_approval") {
+      found = true;
+    }
+  });
+  if (view.detailTree) {
+    walkTree(view.detailTree, (node) => {
+      const properties = getNodeProperties(node);
+      if (properties.state === "waiting_approval") {
+        found = true;
+      }
+    });
+  }
+  return found;
+}
+
+function hasSuspensibleDelegatedWork(views: ProviderTreeView[]): boolean {
+  const delegationView = views.find((view) => view.providerId === "delegation");
+  if (!delegationView || hasPendingChildApproval(delegationView)) {
+    return false;
+  }
+
+  let activeAgent = false;
+  walkTree(delegationView.overviewTree, (node) => {
+    const properties = getNodeProperties(node);
+    if (typeof properties.status === "string" && ACTIVE_AGENT_STATUSES.has(properties.status)) {
+      activeAgent = true;
+    }
+  });
+
+  return activeAgent;
+}
+
+async function suspendForDelegatedWork(hub: ConsumerHub, signal?: AbortSignal): Promise<void> {
+  const startedAt = Date.now();
+  let logged = false;
+
+  while (hasSuspensibleDelegatedWork(hub.getProviderViews())) {
+    if (signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
+    const elapsed = Date.now() - startedAt;
+    const remaining = DELEGATED_WORK_SUSPEND_TIMEOUT_MS - elapsed;
+    if (remaining <= 0) {
+      debug("loop", "delegated_work_suspend_timeout", {
+        timeout_ms: DELEGATED_WORK_SUSPEND_TIMEOUT_MS,
+      });
+      return;
+    }
+
+    if (!logged) {
+      debug("loop", "delegated_work_suspend", {
+        timeout_ms: DELEGATED_WORK_SUSPEND_TIMEOUT_MS,
+      });
+      logged = true;
+    }
+
+    const revision = hub.getStateRevision();
+    await hub.waitForStateChange(revision, {
+      timeoutMs: Math.min(STATE_CHANGE_WAIT_SLICE_MS, remaining),
+      signal,
+    });
+  }
 }
 
 export function truncateToolResult(result: unknown, maxSize: number): string {
@@ -107,6 +263,69 @@ export function truncateToolResult(result: unknown, maxSize: number): string {
   return (
     content.slice(0, keep) + truncationMessage.replace("$removed", String(contentLength - keep))
   );
+}
+
+function invalidToolArgumentsResult(
+  toolUse: ToolUseContentBlock,
+  resolution: RuntimeToolResolution,
+  onToolEvent?: (event: AgentToolEvent) => void,
+): ExecuteToolCallResult {
+  const error = toolUse.inputError;
+  const message =
+    error?.message ??
+    "Tool arguments were invalid and could not be parsed before provider invocation.";
+  const rawPreview = error?.raw
+    ? error.raw.length > 500
+      ? `${error.raw.slice(0, 484)}...[truncated]`
+      : error.raw
+    : undefined;
+  const invocation: AgentToolInvocation = {
+    toolUseId: toolUse.id,
+    toolName: toolUse.name,
+    kind: resolution.kind === "observation" ? "observation" : "affordance",
+    providerId: resolution.kind === "affordance" ? resolution.providerId : undefined,
+    path: resolution.kind === "affordance" ? (resolution.path ?? undefined) : undefined,
+    action: resolution.action,
+    params: {
+      invalid_tool_arguments: {
+        code: error?.code ?? "invalid_json",
+        message,
+        raw: rawPreview,
+      },
+    },
+  };
+  const summary =
+    resolution.kind === "affordance"
+      ? `${resolution.providerId}:${resolution.action} ${resolution.path ?? ""}`.trim()
+      : `${resolution.action} invalid arguments`;
+
+  onToolEvent?.({ kind: "started", invocation, summary });
+
+  return {
+    kind: "completed",
+    invocation,
+    result: {
+      block: {
+        type: "tool_result",
+        toolUseId: toolUse.id,
+        isError: true,
+        content: stringifyResult({
+          status: "error",
+          error: {
+            code: "invalid_tool_arguments",
+            message:
+              "The model emitted malformed JSON for this tool call. Re-emit the same tool call with valid JSON arguments that match the tool schema.",
+            detail: message,
+            raw_preview: rawPreview,
+          },
+        }),
+      },
+      summary,
+    },
+    status: "error",
+    errorCode: "invalid_tool_arguments",
+    errorMessage: message,
+  };
 }
 
 async function executeToolCall(
@@ -132,6 +351,10 @@ async function executeToolCall(
       status: "error",
       errorMessage: `Unknown tool: ${toolUse.name}`,
     };
+  }
+
+  if (toolUse.inputError) {
+    return invalidToolArgumentsResult(toolUse, resolution, onToolEvent);
   }
 
   try {
@@ -244,6 +467,26 @@ async function executeToolCall(
       summary,
     });
 
+    const policyViolation = orchestratorToolPolicyViolation(config, resolution, rawInput);
+    if (policyViolation) {
+      return {
+        kind: "completed",
+        invocation,
+        result: {
+          block: {
+            type: "tool_result",
+            toolUseId: toolUse.id,
+            isError: true,
+            content: policyViolation,
+          },
+          summary,
+        },
+        status: "error",
+        errorCode: "orchestrator_tool_restricted",
+        errorMessage: policyViolation,
+      };
+    }
+
     const result = await hub.invoke(resolution.providerId, path, resolution.action, rawInput);
     if (result.status === "accepted") {
       await hub
@@ -293,6 +536,7 @@ async function executeToolCall(
       errorMessage: result.error?.message,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       kind: "completed",
       result: {
@@ -300,12 +544,13 @@ async function executeToolCall(
           type: "tool_result",
           toolUseId: toolUse.id,
           isError: true,
-          content: error instanceof Error ? error.message : String(error),
+          content: message,
         },
         summary: `error ${toolUse.name}`,
       },
       status: "error",
-      errorMessage: error instanceof Error ? error.message : String(error),
+      errorCode: toolErrorCode(error),
+      errorMessage: message,
     };
   }
 }
@@ -435,6 +680,7 @@ export async function runLoop(options: {
 
       options.history.addToolResults(resumedExecution.toolResults);
       pendingResume = undefined;
+      await suspendForDelegatedWork(options.hub, options.signal);
       continue;
     }
 
@@ -486,7 +732,10 @@ export async function runLoop(options: {
     }
 
     options.history.addToolResults(execution.toolResults);
+    await suspendForDelegatedWork(options.hub, options.signal);
   }
 
-  throw new Error(`Exceeded max iterations (${options.config.agent.maxIterations}).`);
+  throw new Error(
+    `Exceeded max iterations (${options.config.agent.maxIterations}). Increase agent.maxIterations in config or set SLOPPY_MAX_ITERATIONS for this run.`,
+  );
 }

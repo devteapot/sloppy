@@ -39,6 +39,7 @@ type DelegationAgent = {
   goal: string;
   status: AgentStatus;
   model?: string;
+  orchestrationTaskId?: string;
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -285,7 +286,15 @@ export class DelegationProvider {
 
     const id = buildAgentId();
     const created_at = new Date().toISOString();
-    const agent: DelegationAgent = { id, name, goal, status: "pending", model, created_at };
+    const agent: DelegationAgent = {
+      id,
+      name,
+      goal,
+      status: "pending",
+      model,
+      orchestrationTaskId,
+      created_at,
+    };
     this.agents.set(id, agent);
     debug("delegation", "spawn_agent", {
       id,
@@ -341,14 +350,6 @@ export class DelegationProvider {
       created_at,
       session_provider_id: agent.session_provider_id,
     };
-  }
-
-  private monitor(agentId: string): DelegationAgent {
-    const agent = this.agents.get(agentId);
-    if (!agent) {
-      throw new Error(`Unknown agent: ${agentId}`);
-    }
-    return { ...agent };
   }
 
   private cancel(agentId: string): { cancelled: boolean } {
@@ -455,6 +456,7 @@ export class DelegationProvider {
         goal: agent.goal,
         status: agent.status,
         model: agent.model,
+        orchestration_task_id: agent.orchestrationTaskId,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
@@ -463,19 +465,17 @@ export class DelegationProvider {
         pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
       },
       actions: {
-        monitor: action(async () => this.monitor(agent.id), {
-          label: "Monitor Agent",
-          description:
-            "Return the full current state of this agent, including result if completed.",
-          idempotent: true,
-          estimate: "instant",
-        }),
-        get_result: action(async () => this.getResult(agent.id), {
-          label: "Get Result",
-          description: "Return the full result text for a completed agent.",
-          idempotent: true,
-          estimate: "instant",
-        }),
+        ...(agent.status === "completed" && !agent.orchestrationTaskId
+          ? {
+              get_result: action(async () => this.getResult(agent.id), {
+                label: "Get Result",
+                description:
+                  "Return the full result text for a completed agent. This affordance appears only after completion; use pushed agent state while it is running.",
+                idempotent: true,
+                estimate: "instant",
+              }),
+            }
+          : {}),
         ...(agent.status === "pending" || agent.status === "running"
           ? {
               cancel: action(async () => this.cancel(agent.id), {

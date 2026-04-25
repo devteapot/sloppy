@@ -33,9 +33,10 @@ Current checked-in implementation includes:
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native Gemini support
 - consumer hub for built-in and live-discovered SLOP providers
-- ten built-in in-process providers:
+- twelve built-in in-process providers:
   - `terminal`
   - `filesystem`
+  - `orchestration`
   - `memory`
   - `skills`
   - `browser`
@@ -43,6 +44,7 @@ Current checked-in implementation includes:
   - `cron`
   - `messaging`
   - `delegation`
+  - `spec`
   - `vision`
 - fixed observation tools:
   - `slop_query_state`
@@ -56,6 +58,8 @@ Current checked-in implementation includes:
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
+- canvas + HTML dashboard prototype under `apps/dashboard/` for visualizing orchestration files
+- durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, typed handoffs, scoped child work packets, parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and verification-gated completion
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -66,6 +70,7 @@ Near-term direction:
 
 - keep the core runtime headless
 - add richer interfaces under `apps/`, starting with `apps/tui/`
+- keep the dashboard prototype read-only until it consumes the public SLOP provider surface directly
 - expose the running agent session through a public bridge or provider surface
 - have first-party and third-party UIs use that same public contract
 - allow multiple UIs to attach to the same session concurrently
@@ -124,7 +129,9 @@ These providers are currently implemented as in-process SLOP providers:
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
-- `delegation` for subagent lifecycle state and cancellation/result retrieval
+- `delegation` for subagent lifecycle state, cancellation, and result retrieval
+- `orchestration` for durable plans, task DAGs, typed handoffs, verification, audit findings, and scoped child work packets
+- `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 
 They follow the same architectural rule as terminal/filesystem: state first, affordances second.
@@ -180,6 +187,9 @@ Provider-specific config now exists for:
 - `delegation`
 - `vision`
 
+The `spec` provider uses the configured filesystem workspace root and currently
+does not require a provider-specific config block.
+
 ## Development
 
 Install dependencies:
@@ -225,6 +235,19 @@ cd apps/tui
 go run .
 ```
 
+Run the dashboard prototype:
+
+```sh
+bun run dashboard:serve
+```
+
+The dashboard serves `http://localhost:8787` by default. It reads active live e2e
+workspaces under the system temp directory, `.sloppy/orchestration/` from the current
+workspace, then `.sloppy-demo/.sloppy/orchestration/`. If none exist, it shows an
+empty waiting state. When a run writes `debug.log` with `SLOPPY_DEBUG=loop,orchestration,sub-agent`
+or `SLOPPY_DEBUG=all`, the dashboard also visualizes model turns, tool calls,
+provider state updates, sub-agent transitions, and filesystem read/write flow.
+
 ## Config
 
 Sloppy reads configuration from:
@@ -263,6 +286,11 @@ Provider defaults:
 
 You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, and `SLOPPY_LLM_BASE_URL`.
 
+The agent loop defaults to 32 model/tool iterations. For longer runs, set
+`agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
+run. The orchestration demo uses at least 60 iterations because multi-agent
+plans naturally need more turns than a normal chat.
+
 Managed profile metadata is stored in `~/.sloppy/config.yaml`.
 
 API keys are not written to YAML:
@@ -271,6 +299,7 @@ API keys are not written to YAML:
 - Linux stores them in Secret Service via `secret-tool`
 - environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
+- one-shot orchestration entrypoints that are explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
 
 The current TUI uses the session provider's `/llm` state to onboard and manage profiles, and its `/apps` state to surface external provider attachment status.
 

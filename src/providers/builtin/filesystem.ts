@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
-import { dirname, extname, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../core/debug";
@@ -20,6 +20,35 @@ type RecentFileOperation = {
   path: string;
   detail?: string;
 };
+
+const WORKSPACE_FILE_PATH_DESCRIPTION =
+  "File path relative to the filesystem workspace root, e.g. 'todo-app/src/App.jsx'. Put this path at the top level of the tool arguments, not inside edits[]. Required.";
+
+const WORKSPACE_DIRECTORY_PATH_DESCRIPTION =
+  "Directory path relative to the filesystem workspace root, e.g. 'todo-app' or 'todo-app/src'. Do not include the workspace directory name; paths like '.sloppy-demo/todo-app' are normalized when possible but 'todo-app' is preferred.";
+
+const EDIT_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    oldText: {
+      type: "string",
+      description:
+        "Exact text to replace. Must appear exactly once in the original file. Include enough surrounding context to make it unique.",
+    },
+    newText: {
+      type: "string",
+      description: "Replacement text.",
+    },
+  },
+  required: ["oldText", "newText"],
+  additionalProperties: false,
+};
+
+const EDITS_DESCRIPTION =
+  'One or more targeted replacements. Each item must be exactly { oldText, newText }. Do not put path inside each edit; for workspace-level edit, path is a top-level argument. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique -- do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Example: {"path":"src/App.jsx","edits":[{"oldText":"const title = \'Old\';","newText":"const title = \'New\';"}],"expected_version":3}. Errors return { error, edit_index } identifying the offending edit.';
+
+const ENTRY_EDITS_DESCRIPTION =
+  "One or more targeted replacements. This per-file action already targets the file, so each item must be exactly { oldText, newText } and must not include a path. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally. (4) Keep each oldText as small as possible while still unique. Errors return { error, edit_index } identifying the offending edit.";
 
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -47,6 +76,28 @@ function displayNameForPath(path: string): string {
   return path.split("/").at(-1) ?? path;
 }
 
+function invalidInput(message: string): Error {
+  const error = new Error(message) as Error & { code?: string };
+  error.code = "invalid_input";
+  return error;
+}
+
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidInput(
+      `${name} must be a non-empty string relative to the filesystem workspace root.`,
+    );
+  }
+  return value;
+}
+
+function requireText(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw invalidInput(`${name} must be a string.`);
+  }
+  return value;
+}
+
 function coerceEdits(value: unknown): Array<{ oldText: string; newText: string }> {
   if (!Array.isArray(value)) {
     return [];
@@ -63,6 +114,42 @@ function coerceEdits(value: unknown): Array<{ oldText: string; newText: string }
     out.push({ oldText, newText });
   }
   return out;
+}
+
+function pathFromNestedEdits(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const paths = value
+    .map((edit) =>
+      edit && typeof edit === "object" && typeof (edit as { path?: unknown }).path === "string"
+        ? (edit as { path: string }).path.trim() || undefined
+        : undefined,
+    )
+    .filter((path): path is string => typeof path === "string");
+
+  if (paths.length === 0) {
+    return undefined;
+  }
+
+  const first = paths[0];
+  return paths.every((path) => path === first) ? first : undefined;
+}
+
+function requirePathOrNestedEditPath(path: unknown, edits: unknown): string {
+  if (typeof path === "string" && path.trim().length > 0) {
+    return path;
+  }
+
+  const nestedPath = pathFromNestedEdits(edits);
+  if (nestedPath) {
+    return nestedPath;
+  }
+
+  throw invalidInput(
+    'path must be a non-empty string relative to the filesystem workspace root. For edit, pass path as a top-level argument, e.g. {"path":"src/App.jsx","edits":[{"oldText":"...","newText":"..."}]}.',
+  );
 }
 
 export class FilesystemProvider {
@@ -121,10 +208,53 @@ export class FilesystemProvider {
     this.recent = this.recent.slice(0, this.recentLimit);
   }
 
+  private normalizeInputPath(inputPath: string): string {
+    const trimmed = inputPath.trim();
+    if (!trimmed || trimmed === "." || trimmed === "./") {
+      return ".";
+    }
+
+    if (trimmed === "/workspace" || trimmed === "workspace") {
+      return ".";
+    }
+    if (trimmed.startsWith("/workspace/")) {
+      return trimmed.slice("/workspace/".length);
+    }
+    if (trimmed.startsWith("workspace/")) {
+      return trimmed.slice("workspace/".length);
+    }
+
+    if (isAbsolute(trimmed)) {
+      const relativeToRoot = relative(this.root, trimmed);
+      if (
+        relativeToRoot === "" ||
+        (!relativeToRoot.startsWith("..") && !isAbsolute(relativeToRoot))
+      ) {
+        return relativeToRoot || ".";
+      }
+    }
+
+    const rootName = basename(this.root);
+    if (trimmed === rootName || trimmed === `./${rootName}`) {
+      return ".";
+    }
+    if (trimmed.startsWith(`${rootName}/`)) {
+      return trimmed.slice(rootName.length + 1);
+    }
+    if (trimmed.startsWith(`./${rootName}/`)) {
+      return trimmed.slice(rootName.length + 3);
+    }
+
+    return trimmed;
+  }
+
   private ensureWithinRoot(inputPath: string): string {
-    const resolved = resolve(this.root, inputPath);
+    const normalizedPath = this.normalizeInputPath(inputPath);
+    const resolved = resolve(this.root, normalizedPath);
     if (resolved !== this.root && !resolved.startsWith(`${this.root}/`)) {
-      throw new Error(`Path escapes filesystem root: ${inputPath}`);
+      throw invalidInput(
+        `Path escapes filesystem root: ${inputPath}. Use a path relative to the workspace root.`,
+      );
     }
     return resolved;
   }
@@ -229,6 +359,9 @@ export class FilesystemProvider {
     preview_only?: boolean;
     total_bytes?: number;
     ref?: { kind: "fs"; path: string; version: number; total_bytes: number; total_lines: number };
+    kind?: "file" | "directory";
+    entries?: Array<{ name: string; path: string; kind: "file" | "directory"; size: number }>;
+    hint?: string;
   }> {
     const fullPath = this.ensureWithinRoot(inputPath);
     const stat = await Bun.file(fullPath)
@@ -247,16 +380,50 @@ export class FilesystemProvider {
         exists: false,
       };
     }
-    const bytes = await Bun.file(fullPath).bytes();
     const version = this.observeVersion(fullPath, stat.mtimeMs);
+    const relPath = relativePath(this.root, fullPath);
+
+    if (stat.isDirectory()) {
+      const entries = readdirSync(fullPath, { withFileTypes: true })
+        .sort((left, right) => {
+          if (left.isDirectory() && !right.isDirectory()) return -1;
+          if (!left.isDirectory() && right.isDirectory()) return 1;
+          return left.name.localeCompare(right.name);
+        })
+        .map((entry) => {
+          const entryPath = resolve(fullPath, entry.name);
+          const entryInfo = statSync(entryPath);
+          return {
+            name: entry.name,
+            path: relativePath(this.root, entryPath),
+            kind: entry.isDirectory() ? ("directory" as const) : ("file" as const),
+            size: entryInfo.size,
+          };
+        });
+      this.recordRecent("read_directory", relPath, `${entries.length} entries`);
+
+      return {
+        path: relPath,
+        content: entries.map((entry) => `${entry.kind}\t${entry.path}`).join("\n"),
+        truncated: false,
+        version,
+        exists: true,
+        kind: "directory",
+        entries,
+        hint: "This path is a directory. Use set_focus or slop_query_state for richer directory state, or read a specific file path for file contents.",
+      };
+    }
+
+    const bytes = await Bun.file(fullPath).bytes();
 
     if (isProbablyBinary(bytes)) {
       return {
-        path: relativePath(this.root, fullPath),
+        path: relPath,
         content: `[binary file ${displayNameForPath(inputPath)} omitted]`,
         truncated: false,
         version,
         exists: true,
+        kind: "file",
       };
     }
 
@@ -277,14 +444,15 @@ export class FilesystemProvider {
       const sliced = lines.slice(startLine - 1, endLine).join("\n");
       const truncated = sliced.length > this.readMaxBytes;
       const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
-      this.recordRecent("read", relativePath(this.root, fullPath), `lines ${startLine}-${endLine}`);
+      this.recordRecent("read", relPath, `lines ${startLine}-${endLine}`);
 
       return {
-        path: relativePath(this.root, fullPath),
+        path: relPath,
         content: text,
         truncated,
         version,
         exists: true,
+        kind: "file",
         startLine,
         endLine,
         totalLines,
@@ -293,7 +461,6 @@ export class FilesystemProvider {
 
     // No explicit range: decide whether to return full content or a preview+ref.
     if (bytes.byteLength > this.contentRefThresholdBytes) {
-      const relPath = relativePath(this.root, fullPath);
       const previewText = TEXT_DECODER.decode(bytes.subarray(0, this.previewBytes));
       const totalLines = TEXT_DECODER.decode(bytes).split("\n").length;
       this.recordRecent("read", relPath, "preview+ref");
@@ -304,6 +471,7 @@ export class FilesystemProvider {
         truncated: true,
         version,
         exists: true,
+        kind: "file",
         preview_only: true,
         total_bytes: bytes.byteLength,
         totalLines,
@@ -319,14 +487,15 @@ export class FilesystemProvider {
 
     const truncated = bytes.byteLength > this.readMaxBytes;
     const text = TEXT_DECODER.decode(bytes.subarray(0, this.readMaxBytes));
-    this.recordRecent("read", relativePath(this.root, fullPath));
+    this.recordRecent("read", relPath);
 
     return {
-      path: relativePath(this.root, fullPath),
+      path: relPath,
       content: truncated ? truncateText(text, this.readMaxBytes) : text,
       truncated,
       version,
       exists: true,
+      kind: "file",
     };
   }
 
@@ -694,8 +863,8 @@ export class FilesystemProvider {
                 {
                   edits: {
                     type: "array",
-                    description:
-                      "One or more targeted replacements as { oldText, newText }. Rules: (1) oldText must match EXACTLY — no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique — do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Errors return { error, edit_index } identifying the offending edit.",
+                    description: ENTRY_EDITS_DESCRIPTION,
+                    items: EDIT_ITEM_SCHEMA,
                   },
                   expected_version: {
                     type: "number",
@@ -745,16 +914,29 @@ export class FilesystemProvider {
       },
       summary: `Focused directory ${relativePath(this.root, this.focusPath)}`,
       actions: {
-        set_focus: action({ path: "string" }, async ({ path }) => this.setFocus(path), {
-          label: "Set Focus",
-          description:
-            "Move the filesystem focus to a different directory under the workspace root.",
-          idempotent: true,
-          estimate: "instant",
-        }),
+        set_focus: action(
+          {
+            path: {
+              type: "string",
+              description: WORKSPACE_DIRECTORY_PATH_DESCRIPTION,
+            },
+          },
+          async ({ path }) => this.setFocus(requireString(path, "path")),
+          {
+            label: "Set Focus",
+            description:
+              "Move the filesystem focus to a directory under the workspace root. The path is a filesystem path, not a SLOP path.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
         read: action(
           {
-            path: "string",
+            path: {
+              type: "string",
+              description:
+                "File or directory path relative to the filesystem workspace root, e.g. 'todo-app/src/App.jsx' or 'todo-app/src'. Required.",
+            },
             start_line: {
               type: "number",
               description:
@@ -766,22 +948,29 @@ export class FilesystemProvider {
             },
           },
           async ({ path, start_line, end_line }) =>
-            this.readTextFile(path as string, {
+            this.readTextFile(requireString(path, "path"), {
               startLine: typeof start_line === "number" ? start_line : undefined,
               endLine: typeof end_line === "number" ? end_line : undefined,
             }),
           {
             label: "Read By Path",
             description:
-              "Read a text file relative to the workspace root. Always succeeds: returns { content, version, exists, ... }. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file.",
+              "Read a path relative to the workspace root. For files, returns { content, version, exists, kind: 'file', ... }. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file.",
             idempotent: true,
             estimate: "fast",
           },
         ),
         write: action(
           {
-            path: "string",
-            content: "string",
+            path: {
+              type: "string",
+              description: WORKSPACE_FILE_PATH_DESCRIPTION,
+            },
+            content: {
+              type: "string",
+              description:
+                "Full new UTF-8 text content for the file as one valid JSON string. Required. Newlines must be escaped by the tool-call serializer; if generating a very large file is error-prone, create a minimal file first and then use edit for smaller targeted replacements.",
+            },
             expected_version: {
               type: "number",
               description:
@@ -790,8 +979,8 @@ export class FilesystemProvider {
           },
           async ({ path, content, expected_version }) =>
             this.writeTextFile(
-              path as string,
-              content as string,
+              requireString(path, "path"),
+              requireText(content, "content"),
               typeof expected_version === "number" ? expected_version : undefined,
             ),
           {
@@ -803,11 +992,14 @@ export class FilesystemProvider {
         ),
         edit: action(
           {
-            path: "string",
+            path: {
+              type: "string",
+              description: WORKSPACE_FILE_PATH_DESCRIPTION,
+            },
             edits: {
               type: "array",
-              description:
-                "One or more targeted replacements as { oldText, newText }. Rules: (1) oldText must match EXACTLY — no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique — do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Errors return { error, edit_index } identifying the offending edit.",
+              description: EDITS_DESCRIPTION,
+              items: EDIT_ITEM_SCHEMA,
             },
             expected_version: {
               type: "number",
@@ -815,12 +1007,14 @@ export class FilesystemProvider {
                 "Optional CAS guard. Pass the version returned by the last read. expected_version=N succeeds only if the file is currently at version N; otherwise returns { error: 'version_conflict', currentVersion }. Edit does not create files — use write with expected_version=0 for first creation.",
             },
           },
-          async ({ path, edits, expected_version }) =>
-            this.editTextFile(
-              path as string,
+          async ({ path, edits, expected_version }) => {
+            const resolvedPath = requirePathOrNestedEditPath(path, edits);
+            return this.editTextFile(
+              resolvedPath,
               coerceEdits(edits),
               typeof expected_version === "number" ? expected_version : undefined,
-            ),
+            );
+          },
           {
             label: "Edit By Path",
             description:
@@ -828,11 +1022,21 @@ export class FilesystemProvider {
             estimate: "fast",
           },
         ),
-        mkdir: action({ path: "string" }, async ({ path }) => this.makeDirectory(path), {
-          label: "Create Directory",
-          description: "Create a directory under the workspace root.",
-          estimate: "instant",
-        }),
+        mkdir: action(
+          {
+            path: {
+              type: "string",
+              description:
+                "Directory path relative to the filesystem workspace root, e.g. 'todo-app/src'. Required.",
+            },
+          },
+          async ({ path }) => this.makeDirectory(requireString(path, "path")),
+          {
+            label: "Create Directory",
+            description: "Create a directory under the workspace root.",
+            estimate: "instant",
+          },
+        ),
         search: action(
           {
             pattern: "string",
@@ -842,7 +1046,10 @@ export class FilesystemProvider {
             },
           },
           async ({ pattern, path }) =>
-            this.search(pattern, typeof path === "string" && path ? path : undefined),
+            this.search(
+              requireString(pattern, "pattern"),
+              typeof path === "string" && path ? path : undefined,
+            ),
           {
             label: "Search Workspace",
             description: "Search for matching text under the focused directory or a provided path.",

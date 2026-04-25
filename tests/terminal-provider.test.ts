@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import { InProcessTransport } from "../src/providers/builtin/in-process";
@@ -47,6 +47,39 @@ describe("TerminalProvider", () => {
     expect(history.children?.length).toBeGreaterThan(0);
   });
 
+  test("normalizes cd paths that include the workspace directory name", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+    await mkdir(join(cwd, "sprint-board"));
+    await writeFile(join(cwd, "sprint-board", ".keep"), "hello", "utf8");
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const result = await consumer.invoke("/session", "cd", {
+        path: `${basename(cwd)}/sprint-board`,
+      });
+      expect(result.status).toBe("ok");
+      expect((result.data as { cwd: string }).cwd).toBe(join(cwd, "sprint-board"));
+
+      const repeat = await consumer.invoke("/session", "cd", {
+        path: `${basename(cwd)}/sprint-board`,
+      });
+      expect(repeat.status).toBe("ok");
+      expect((repeat.data as { cwd: string }).cwd).toBe(join(cwd, "sprint-board"));
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("creates a provider-native approval for destructive commands", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);
@@ -75,6 +108,10 @@ describe("TerminalProvider", () => {
     expect(approvals.children?.length).toBe(1);
     expect(approvals.children?.[0]?.properties?.status).toBe("pending");
     expect(approvals.children?.[0]?.properties?.action).toBe("execute");
+    expect(approvals.children?.[0]?.properties?.reason).toContain(
+      "destructive shell command pattern",
+    );
+    expect(approvals.children?.[0]?.properties?.params_preview).toContain("rm remove-me.txt");
 
     const approvalId = approvals.children?.[0]?.id;
     expect(typeof approvalId).toBe("string");
@@ -119,5 +156,100 @@ describe("TerminalProvider", () => {
 
     const updatedApprovals = await consumer.query("/approvals", 2);
     expect(updatedApprovals.children?.[0]?.properties?.status).toBe("rejected");
+  });
+
+  test("approval metadata explains file output redirection", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 4);
+
+      const result = await consumer.invoke("/session", "execute", {
+        command: "printf hello > out.txt",
+        background: false,
+        confirmed: false,
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.error?.code).toBe("approval_required");
+
+      const approvals = await consumer.query("/approvals", 2);
+      expect(approvals.children?.[0]?.properties?.reason).toContain("file output redirection");
+      expect(approvals.children?.[0]?.properties?.params_preview).toContain(
+        "printf hello > out.txt",
+      );
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("allows harmless file descriptor redirection without approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 4);
+
+      const result = await consumer.invoke("/session", "execute", {
+        command: "printf hello 2>&1",
+        background: false,
+        confirmed: false,
+      });
+
+      expect(result.status).toBe("ok");
+      expect((result.data as { stdout: string }).stdout).toBe("hello");
+
+      const approvals = await consumer.query("/approvals", 2);
+      expect(approvals.children ?? []).toHaveLength(0);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("allows stderr redirection to /dev/null without approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 4);
+
+      const result = await consumer.invoke("/session", "execute", {
+        command: "find missing-directory -type f 2>/dev/null || true",
+        background: false,
+        confirmed: false,
+      });
+
+      expect(result.status).toBe("ok");
+
+      const approvals = await consumer.query("/approvals", 2);
+      expect(approvals.children ?? []).toHaveLength(0);
+    } finally {
+      provider.stop();
+    }
   });
 });

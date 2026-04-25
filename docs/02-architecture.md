@@ -92,6 +92,12 @@ The runtime exposes two kinds of tools to the selected model:
 2. **Dynamic affordance tools**
    - generated from the currently visible provider state using `affordancesToTools()`
 
+All LLM-facing tool parameters are emitted as a strict JSON Schema object:
+`type: "object"`, explicit `properties`, explicit `required`, and
+`additionalProperties: false`. Provider affordance params remain the source of
+truth; the runtime normalizes them for OpenAI, Anthropic, and Gemini adapters so
+models see the same contract everywhere.
+
 This is important.
 
 The LLM still uses native tool calling, but the runtime preserves the SLOP distinction between:
@@ -137,7 +143,7 @@ Responsibilities:
 
 The current implementation supports:
 
-- built-in in-process providers for terminal, filesystem, memory, skills, browser, web, cron, messaging, delegation, and vision
+- built-in in-process providers for terminal, filesystem, orchestration, memory, skills, browser, web, cron, messaging, delegation, spec, and vision
 - external Unix socket providers
 - external WebSocket providers
 
@@ -273,6 +279,90 @@ Example shape:
 
 Long-running commands are represented as async task nodes under `tasks`.
 
+### Orchestration provider
+
+The orchestration provider is a durable planning and verification surface backed
+by `.sloppy/orchestration/`.
+
+It exposes:
+
+- `orchestration` context node for the active plan and plan-level actions
+- `tasks` collection with task definitions, state, dependencies, result previews,
+  spec refs, audit links, finding refs, and verification coverage
+- `handoffs` collection for typed cross-task questions, artifact requests,
+  decisions, dependency signals, and responses
+- `findings` collection for structured audit findings tied to tasks and spec refs
+
+Tasks are stateful contracts, not just labels. `create_tasks` can batch-create a
+DAG with local `client_ref` values; dependency refs are normalized to canonical
+task ids from ids, names, refs, or aliases. Tasks may also carry `kind`,
+`spec_refs`, `audit_of`, and `finding_refs` so spec-driven implementation,
+audit, and repair loops stay visible as durable state. The provider rejects
+dependency cycles before writing a batch, and task/handoff/finding visibility is
+scoped to the current plan id so a cancelled or completed plan does not leak
+stale blockers into the next run. For common coding plans, missing scaffold,
+docs, and final verification edges are conservatively inferred so setup still
+precedes file-producing implementation work, while independent implementation
+tasks such as data/context and UI can fan out after scaffold unless the model
+explicitly adds a blocking dependency. If a
+model accidentally passes the task array as a JSON string, parseable arrays are
+accepted and normalized into the same typed task definitions. Task completion is
+gated by verification: when
+`acceptance_criteria` exist, every criterion must be covered by `passed` or
+`not_required` verification evidence before `complete` appears as a successful
+path. Verification records can cite `evidence_refs` such as file paths,
+commands, state paths, screenshots, or URLs so UIs can audit whether claims are
+backed by concrete artifacts. Passed evidence covering acceptance criteria must
+include refs, and file-like refs are validated against the workspace before the
+verification record is accepted. Plan completion is also blocked while a
+blocking audit finding remains open; findings can be repaired through linked
+tasks, accepted as intentional deviations, dismissed, or marked fixed after
+re-audit. In orchestrator mode, the loop rejects direct file mutations and
+setup/repair shell commands before provider invocation; the orchestrator may run
+simple verification commands, but repairs must be delegated through tasks.
+
+Sub-agent context is scoped at the task boundary. When a scheduled task starts,
+`SubAgentRunner` builds a work packet from the task definition, acceptance
+criteria, completed dependency result previews, linked findings, and
+requirements/decisions named by `spec_refs`. Child runtimes have their
+orchestration, delegation, and spec providers disabled so they perform leaf work
+against an explicit contract instead of recursively rewriting the plan or spec.
+If a child needs more context, it records that need through its final result or a
+typed handoff.
+
+Handoffs are structured records, not free-form chat. A request can include
+`kind` (`question`, `artifact_request`, `review_request`, `decision_request`, or
+`dependency_signal`), `priority`, `blocks_task`, `spec_refs`, and
+`evidence_refs`. Responses can cite `decision_refs`, supporting `evidence_refs`,
+and `unblock: true` when the answer is intended to release the receiver.
+
+### Spec provider
+
+The spec provider is a durable source-of-truth surface backed by
+`.sloppy/specs/`.
+
+It exposes:
+
+- `specs` collection with active spec metadata and spec-level actions
+- per-spec `requirements`, `decisions`, and `changes` child collections
+
+Specs are intentionally separate from orchestration plans. A spec can outlive a
+single run, while orchestration tasks reference concrete spec requirements or
+decisions through `spec_refs`. Proposed changes are recorded under the spec and
+must be approved or rejected instead of letting implementation drift silently
+rewrite the source of truth.
+
+Runtime execution is now scheduler-assisted rather than model-scheduled. The
+orchestration provider remains the durable state source, but a lightweight
+`OrchestrationScheduler` watches task and delegation patches, computes runnable
+pending tasks, claims them with the task-level `schedule` affordance, and starts
+delegated agents when capacity is available. The scheduler emits
+`task_unblocked`, `task_scheduled`, `task_started`, `scheduler_idle`, and
+`scheduler_blocked` events for dashboard visibility. The model still creates and
+revises plans, records verification evidence, handles handoffs, and decides
+retry/repair semantics; it should not manually spawn delegation agents for
+ready orchestration tasks.
+
 ### Filesystem provider
 
 The filesystem provider is also stateful.
@@ -323,7 +413,10 @@ Additional built-ins currently checked in:
   - supports channel creation/removal, outbound send, and message-history reads
 - `delegation`
   - `session`, `agents`
-  - supports agent spawning, monitoring, cancellation, and result retrieval
+  - supports agent spawning, push-observed lifecycle state, cancellation, and result retrieval
+- `spec`
+  - `specs`
+  - supports active specs, requirements, decisions, and proposed spec changes
 - `vision`
   - `session`, `images`, `analyses`, `approvals`
   - supports image generation, image analysis, cached outputs, and result inspection
@@ -338,6 +431,7 @@ Instead:
 
 - visible affordances are converted to provider-native tool definitions
 - fixed observation tools are added alongside them
+- tool input contracts use a normalized JSON Schema object with explicit required fields
 - Anthropic emits `tool_use`, OpenAI-compatible providers emit tool calls, and Gemini emits `functionCall`
 - the runtime maps tool names back to `{ provider, path, action }`
 

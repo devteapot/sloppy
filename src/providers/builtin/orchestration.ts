@@ -1,16 +1,35 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../core/debug";
 
-type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+type TaskStatus =
+  | "pending"
+  | "scheduled"
+  | "running"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "superseded";
+
+type TaskKind = "implementation" | "audit" | "repair" | "docs" | "verification";
 
 type TaskDefinition = {
   id: string;
+  plan_id?: string;
   name: string;
   goal: string;
+  kind?: TaskKind;
   depends_on: string[];
+  spec_refs?: string[];
+  audit_of?: string;
+  finding_refs?: string[];
+  acceptance_criteria?: AcceptanceCriterion[];
+  aliases?: string[];
+  client_ref?: string;
+  retry_of?: string;
   created_at: string;
 };
 
@@ -20,11 +39,52 @@ type TaskState = {
   iteration: number;
   message?: string;
   error?: string;
+  scheduled_at?: string;
+  verification_started_at?: string;
   completed_at?: string;
+  superseded_by?: string;
   version?: number;
 };
 
+type VerificationStatus = "passed" | "failed" | "skipped" | "not_required" | "unknown";
+
+type VerificationRecord = {
+  id: string;
+  kind: string;
+  status: VerificationStatus;
+  summary: string;
+  created_at: string;
+  criteria?: string[];
+  command?: string;
+  evidence?: string;
+  evidence_refs?: string[];
+};
+
+type AcceptanceCriterion = {
+  id: string;
+  text: string;
+};
+
+type CreateTaskParams = {
+  name: string;
+  goal: string;
+  kind?: TaskKind;
+  depends_on?: string[];
+  spec_refs?: string[];
+  audit_of?: string;
+  finding_refs?: string[];
+  acceptance_criteria?: string[];
+  client_ref?: string;
+  retry_of?: string;
+};
+
+type TaskDraft = CreateTaskParams & {
+  id: string;
+  aliases: string[];
+};
+
 type Plan = {
+  id?: string;
   session_id: string;
   query: string;
   strategy: string;
@@ -35,20 +95,62 @@ type Plan = {
 };
 
 type HandoffStatus = "pending" | "responded" | "cancelled";
+type HandoffKind =
+  | "question"
+  | "artifact_request"
+  | "review_request"
+  | "decision_request"
+  | "dependency_signal";
+type HandoffPriority = "low" | "normal" | "high";
 
 type Handoff = {
   id: string;
+  plan_id?: string;
   from_task: string;
   to_task: string;
+  kind?: HandoffKind;
+  priority?: HandoffPriority;
   request: string;
+  spec_refs?: string[];
+  evidence_refs?: string[];
+  blocks_task?: boolean;
   status: HandoffStatus;
   created_at: string;
   responded_at?: string;
   response?: string;
+  decision_refs?: string[];
+  response_evidence_refs?: string[];
+  unblock?: boolean;
+  version?: number;
+};
+
+type AuditFindingSeverity = "blocking" | "warning" | "note";
+type AuditFindingStatus = "open" | "accepted" | "fixed" | "dismissed";
+type AuditFindingRecommendation = "repair" | "spec_change" | "accept_deviation";
+
+type AuditFinding = {
+  id: string;
+  audit_task_id: string;
+  target_task_id: string;
+  severity: AuditFindingSeverity;
+  status: AuditFindingStatus;
+  spec_refs: string[];
+  summary: string;
+  evidence_refs: string[];
+  recommendation: AuditFindingRecommendation;
+  created_at: string;
+  resolved_at?: string;
+  resolution_reason?: string;
+  repair_task_id?: string;
   version?: number;
 };
 
 const ORCHESTRATION_DIR = ".sloppy/orchestration";
+const OPTIONAL_EXPECTED_VERSION_PARAM = {
+  type: "number",
+  description:
+    "Optional CAS guard. If provided, the update is rejected when the task/handoff/plan version has moved on.",
+} as const;
 
 function readJson<T>(path: string): T | null {
   if (!existsSync(path)) return null;
@@ -78,6 +180,333 @@ function truncateText(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
+function normalizeVerificationStatus(value: unknown): VerificationStatus {
+  return value === "passed" ||
+    value === "failed" ||
+    value === "skipped" ||
+    value === "not_required" ||
+    value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function codedError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+function normalizeReference(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+}
+
+function normalizeStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const list = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return list.length > 0 ? list : undefined;
+}
+
+function normalizeTaskKind(value: unknown): TaskKind | undefined {
+  switch (value) {
+    case "implementation":
+    case "audit":
+    case "repair":
+    case "docs":
+    case "verification":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeFindingSeverity(value: unknown): AuditFindingSeverity {
+  switch (value) {
+    case "warning":
+    case "note":
+      return value;
+    default:
+      return "blocking";
+  }
+}
+
+function normalizeFindingRecommendation(value: unknown): AuditFindingRecommendation {
+  switch (value) {
+    case "spec_change":
+    case "accept_deviation":
+      return value;
+    default:
+      return "repair";
+  }
+}
+
+function normalizeHandoffKind(value: unknown): HandoffKind | undefined {
+  switch (value) {
+    case "question":
+    case "artifact_request":
+    case "review_request":
+    case "decision_request":
+    case "dependency_signal":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeHandoffPriority(value: unknown): HandoffPriority | undefined {
+  switch (value) {
+    case "low":
+    case "normal":
+    case "high":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseTaskArray(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const nested = (value as { tasks?: unknown }).tasks;
+  return Array.isArray(nested) ? nested : null;
+}
+
+function parseJsonTaskArrayString(value: string): unknown[] | null {
+  let trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) {
+    trimmed = fenced[1].trim();
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const parsedArray = parseTaskArray(parsed);
+    if (parsedArray) return parsedArray;
+  } catch {
+    // Fall through to best-effort bracket extraction below.
+  }
+
+  const start = trimmed.indexOf("[");
+  const end = trimmed.lastIndexOf("]");
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed.slice(start, end + 1));
+    return parseTaskArray(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeTaskList(value: unknown): CreateTaskParams[] {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? parseJsonTaskArrayString(value)
+      : parseTaskArray(value);
+
+  if (!source) {
+    return [];
+  }
+
+  return source
+    .filter((task): task is Record<string, unknown> => {
+      return task !== null && typeof task === "object" && !Array.isArray(task);
+    })
+    .map((task) => ({
+      name: typeof task.name === "string" ? task.name : "",
+      goal: typeof task.goal === "string" ? task.goal : "",
+      kind: normalizeTaskKind(task.kind),
+      client_ref: typeof task.client_ref === "string" ? task.client_ref : undefined,
+      depends_on: normalizeStringList(task.depends_on),
+      spec_refs: normalizeStringList(task.spec_refs),
+      audit_of: typeof task.audit_of === "string" ? task.audit_of : undefined,
+      finding_refs: normalizeStringList(task.finding_refs),
+      acceptance_criteria: normalizeStringList(task.acceptance_criteria),
+    }))
+    .filter((task) => task.name.trim().length > 0 && task.goal.trim().length > 0);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeReference(value);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(value);
+  }
+  return out;
+}
+
+function terminalTaskStatus(status: TaskStatus): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "superseded"
+  );
+}
+
+function dependencyCycle(dependencies: Map<string, string[]>): string[] | null {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const stack: string[] = [];
+
+  const visit = (taskId: string): string[] | null => {
+    if (visiting.has(taskId)) {
+      const cycleStart = stack.indexOf(taskId);
+      return [...stack.slice(cycleStart), taskId];
+    }
+    if (visited.has(taskId)) {
+      return null;
+    }
+
+    visiting.add(taskId);
+    stack.push(taskId);
+    for (const dependencyId of dependencies.get(taskId) ?? []) {
+      if (!dependencies.has(dependencyId)) continue;
+      const cycle = visit(dependencyId);
+      if (cycle) return cycle;
+    }
+    stack.pop();
+    visiting.delete(taskId);
+    visited.add(taskId);
+    return null;
+  };
+
+  for (const taskId of dependencies.keys()) {
+    const cycle = visit(taskId);
+    if (cycle) return cycle;
+  }
+
+  return null;
+}
+
+function deriveAcceptanceCriteria(goal: string): string[] {
+  const matches = [...goal.matchAll(/(?:^|\s)(\d+)[.)]\s+/g)];
+  if (matches.length < 2) {
+    return [];
+  }
+
+  const criteria: string[] = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    if (!match || match.index === undefined) continue;
+    const start = match.index + match[0].length;
+    const end = matches[index + 1]?.index ?? goal.length;
+    const text = goal.slice(start, end).trim().replace(/\s+/g, " ");
+    if (text.length > 0) {
+      criteria.push(text);
+    }
+  }
+
+  return criteria.slice(0, 12);
+}
+
+function buildAcceptanceCriteria(goal: string, explicit?: string[]): AcceptanceCriterion[] {
+  const source = explicit && explicit.length > 0 ? explicit : deriveAcceptanceCriteria(goal);
+  return uniqueStrings(source)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+    .map((text, index) => ({
+      id: `ac-${index + 1}`,
+      text,
+    }));
+}
+
+function taskSearchText(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): string {
+  return `${task.name} ${task.goal} ${task.client_ref ?? ""}`.toLowerCase();
+}
+
+function hasTerm(text: string, terms: RegExp[]): boolean {
+  return terms.some((term) => term.test(text));
+}
+
+function isDocumentationTask(
+  task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">,
+): boolean {
+  return hasTerm(taskSearchText(task), [
+    /\breadme\b/,
+    /\bdocs?\b/,
+    /\bdocumentation\b/,
+    /\busage guide\b/,
+    /\bsetup instructions\b/,
+  ]);
+}
+
+function isVerificationTask(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): boolean {
+  const text = taskSearchText(task);
+  return hasTerm(text, [
+    /\bverify\b/,
+    /\bverification\b/,
+    /\bvalidate\b/,
+    /\bsmoke\b/,
+    /\btest suite\b/,
+    /\blint\b/,
+    /\btypecheck\b/,
+    /\bbuild passes\b/,
+    /\bbuild verification\b/,
+    /\brun (?:npm|bun|pnpm|yarn) (?:run )?build\b/,
+  ]);
+}
+
+function isScaffoldTask(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): boolean {
+  return hasTerm(taskSearchText(task), [
+    /\bscaffold\b/,
+    /\bbootstrap\b/,
+    /\binitiali[sz]e\b/,
+    /\bsetup project\b/,
+    /\bcreate (?:a |the )?(?:vite|react|next|node|bun|typescript).*project\b/,
+    /\bproject structure\b/,
+  ]);
+}
+
+function isDataModelTask(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): boolean {
+  return hasTerm(taskSearchText(task), [
+    /\bdata model\b/,
+    /\bseed data\b/,
+    /\bschema\b/,
+    /\btypes?\b/,
+    /\bstore\b/,
+    /\bstate management\b/,
+    /\bcontext\b/,
+  ]);
+}
+
+function isUiTask(task: Pick<CreateTaskParams, "name" | "goal" | "client_ref">): boolean {
+  return hasTerm(taskSearchText(task), [
+    /\bui\b/,
+    /\bfrontend\b/,
+    /\bcomponents?\b/,
+    /\bviews?\b/,
+    /\bscreens?\b/,
+    /\blayout\b/,
+    /\bboard\b/,
+    /\bcards?\b/,
+    /\bforms?\b/,
+  ]);
+}
+
+function looksLikeFileEvidenceRef(ref: string): boolean {
+  const trimmed = ref.trim();
+  if (!trimmed || trimmed.startsWith("/")) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.includes("://")) return false;
+  return trimmed.includes("/") || /\.[a-z0-9]+$/i.test(trimmed);
+}
+
+function globSegmentToRegExp(segment: string): RegExp {
+  const escaped = segment.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
+}
+
 export interface OrchestrationProviderOptions {
   workspaceRoot: string;
   sessionId?: string;
@@ -86,27 +515,32 @@ export interface OrchestrationProviderOptions {
 
 export class OrchestrationProvider {
   readonly server: SlopServer;
+  private workspaceRoot: string;
   private root: string;
   private sessionId: string;
   private progressTailMaxChars: number;
   private planVersions = new Map<string, number>();
   private taskVersions = new Map<string, number>();
   private handoffVersions = new Map<string, number>();
+  private findingVersions = new Map<string, number>();
 
   constructor(options: OrchestrationProviderOptions) {
-    this.root = resolve(options.workspaceRoot, ORCHESTRATION_DIR);
+    this.workspaceRoot = resolve(options.workspaceRoot);
+    this.root = resolve(this.workspaceRoot, ORCHESTRATION_DIR);
     this.sessionId = options.sessionId ?? "default";
     this.progressTailMaxChars = options.progressTailMaxChars ?? 2048;
 
     mkdirSync(this.root, { recursive: true });
     mkdirSync(join(this.root, "tasks"), { recursive: true });
     mkdirSync(join(this.root, "handoffs"), { recursive: true });
+    mkdirSync(join(this.root, "findings"), { recursive: true });
 
     this.hydrateVersionsFromDisk();
     debug("orchestration", "hydrate", {
       plans: this.planVersions.size,
       tasks: this.taskVersions.size,
       handoffs: this.handoffVersions.size,
+      findings: this.findingVersions.size,
     });
 
     this.server = createSlopServer({
@@ -117,6 +551,7 @@ export class OrchestrationProvider {
     this.server.register("orchestration", () => this.buildRootDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
     this.server.register("handoffs", () => this.buildHandoffsDescriptor());
+    this.server.register("findings", () => this.buildFindingsDescriptor());
   }
 
   stop(): void {
@@ -129,6 +564,10 @@ export class OrchestrationProvider {
 
   private taskDir(taskId: string): string {
     return join(this.root, "tasks", taskId);
+  }
+
+  private resultPath(taskId: string): string {
+    return join(this.taskDir(taskId), "result.md");
   }
 
   private loadPlan(): Plan | null {
@@ -151,6 +590,24 @@ export class OrchestrationProvider {
     return `...[truncated head]\n${content.slice(-this.progressTailMaxChars)}`;
   }
 
+  private loadResultPreview(taskId: string): string | undefined {
+    const path = this.resultPath(taskId);
+    if (!existsSync(path)) return undefined;
+    return truncateText(readFileSync(path, "utf8"), 400);
+  }
+
+  private verificationsPath(taskId: string): string {
+    return join(this.taskDir(taskId), "verifications.json");
+  }
+
+  private loadVerifications(taskId: string): VerificationRecord[] {
+    return readJson<VerificationRecord[]>(this.verificationsPath(taskId)) ?? [];
+  }
+
+  private loadAcceptanceCriteria(taskId: string): AcceptanceCriterion[] {
+    return this.loadTaskDefinition(taskId)?.acceptance_criteria ?? [];
+  }
+
   private listTaskIds(): string[] {
     const dir = join(this.root, "tasks");
     if (!existsSync(dir)) return [];
@@ -160,12 +617,46 @@ export class OrchestrationProvider {
       .sort();
   }
 
+  private taskBelongsToPlan(definition: TaskDefinition | null, plan: Plan | null): boolean {
+    if (!definition || !plan) {
+      return false;
+    }
+    if (!plan.id) {
+      return true;
+    }
+    return definition.plan_id === plan.id;
+  }
+
+  private listTaskIdsForPlan(plan = this.loadPlan()): string[] {
+    if (!plan) {
+      return [];
+    }
+    if (!plan.id) {
+      return this.listTaskIds();
+    }
+    return this.listTaskIds().filter((id) =>
+      this.taskBelongsToPlan(this.loadTaskDefinition(id), plan),
+    );
+  }
+
   private handoffPath(handoffId: string): string {
     return join(this.root, "handoffs", `${handoffId}.json`);
   }
 
+  private findingsDir(): string {
+    return join(this.root, "findings");
+  }
+
+  private findingPath(findingId: string): string {
+    return join(this.findingsDir(), `${findingId}.json`);
+  }
+
   private loadHandoff(handoffId: string): Handoff | null {
     return readJson<Handoff>(this.handoffPath(handoffId));
+  }
+
+  private loadFinding(findingId: string): AuditFinding | null {
+    return readJson<AuditFinding>(this.findingPath(findingId));
   }
 
   private listHandoffs(): Handoff[] {
@@ -176,6 +667,42 @@ export class OrchestrationProvider {
       .map((entry) => readJson<Handoff>(join(dir, entry.name)))
       .filter((handoff): handoff is Handoff => handoff !== null)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  private listFindings(): AuditFinding[] {
+    const dir = this.findingsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<AuditFinding>(join(dir, entry.name)))
+      .filter((finding): finding is AuditFinding => finding !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  private listHandoffsForPlan(plan = this.loadPlan()): Handoff[] {
+    if (!plan) {
+      return [];
+    }
+    const handoffs = this.listHandoffs();
+    if (!plan.id) {
+      return handoffs;
+    }
+    return handoffs.filter((handoff) => handoff.plan_id === plan.id);
+  }
+
+  private listFindingsForPlan(plan = this.loadPlan()): AuditFinding[] {
+    if (!plan) {
+      return [];
+    }
+    const findings = this.listFindings();
+    if (!plan.id) {
+      return findings;
+    }
+    return findings.filter((finding) => {
+      const auditTask = this.loadTaskDefinition(finding.audit_task_id);
+      const targetTask = this.loadTaskDefinition(finding.target_task_id);
+      return this.taskBelongsToPlan(auditTask, plan) || this.taskBelongsToPlan(targetTask, plan);
+    });
   }
 
   private bumpVersion(map: Map<string, number>, key: string): number {
@@ -205,6 +732,16 @@ export class OrchestrationProvider {
         }
       }
     }
+    const findingDir = this.findingsDir();
+    if (existsSync(findingDir)) {
+      for (const entry of readdirSync(findingDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const finding = readJson<AuditFinding>(join(findingDir, entry.name));
+        if (finding?.version !== undefined) {
+          this.findingVersions.set(finding.id, finding.version);
+        }
+      }
+    }
   }
 
   private listTaskIdsUnchecked(): string[] {
@@ -223,6 +760,160 @@ export class OrchestrationProvider {
     return this.taskVersions.get(taskId) ?? 0;
   }
 
+  private findingVersion(findingId: string): number {
+    return this.findingVersions.get(findingId) ?? 0;
+  }
+
+  private requireActivePlan(): Plan {
+    const plan = this.loadPlan();
+    if (!plan || plan.status !== "active") {
+      throw codedError("no_active_plan", "No active orchestration plan exists.");
+    }
+    return plan;
+  }
+
+  private describeAvailableTasks(): string {
+    const plan = this.loadPlan();
+    const descriptions = this.listTaskIds()
+      .filter((id) => this.taskBelongsToPlan(this.loadTaskDefinition(id), plan))
+      .map((id) => {
+        const definition = this.loadTaskDefinition(id);
+        const aliases = definition?.aliases?.length
+          ? ` aliases=${definition.aliases.join("/")}`
+          : "";
+        return definition ? `${definition.name}=${id}${aliases}` : id;
+      })
+      .join(", ");
+    return descriptions || "none";
+  }
+
+  private taskReferenceMap(extraReferences?: Map<string, string>): Map<string, string> {
+    const refs = new Map<string, string>();
+    const plan = this.loadPlan();
+    for (const id of this.listTaskIdsForPlan(plan)) {
+      const definition = this.loadTaskDefinition(id);
+      if (!definition) continue;
+      const candidates = [
+        id,
+        definition.name,
+        definition.client_ref,
+        ...(definition.aliases ?? []),
+      ].filter((candidate): candidate is string => typeof candidate === "string");
+      for (const candidate of candidates) {
+        refs.set(normalizeReference(candidate), id);
+      }
+    }
+    for (const [key, value] of extraReferences ?? []) {
+      refs.set(normalizeReference(key), value);
+    }
+    return refs;
+  }
+
+  private dependencyLabelsForPlan(plan: Plan): Map<string, string> {
+    const labels = new Map<string, string>();
+    for (const id of this.listTaskIdsForPlan(plan)) {
+      const definition = this.loadTaskDefinition(id);
+      labels.set(id, definition?.name ?? id);
+    }
+    return labels;
+  }
+
+  private dependencyGraphForPlan(
+    plan: Plan,
+    overrides?: Map<string, string[]>,
+  ): Map<string, string[]> {
+    const graph = new Map<string, string[]>();
+    for (const id of this.listTaskIdsForPlan(plan)) {
+      const definition = this.loadTaskDefinition(id);
+      if (!definition) continue;
+      graph.set(id, definition.depends_on);
+    }
+    for (const [taskId, dependsOn] of overrides ?? []) {
+      graph.set(taskId, dependsOn);
+    }
+    return graph;
+  }
+
+  private assertAcyclicDependencies(
+    graph: Map<string, string[]>,
+    labels: Map<string, string>,
+  ): void {
+    const cycle = dependencyCycle(graph);
+    if (!cycle) {
+      return;
+    }
+    const formatted = cycle.map((taskId) => labels.get(taskId) ?? taskId).join(" -> ");
+    throw codedError(
+      "invalid_dependencies",
+      `Dependency cycle detected: ${formatted}. Correct depends_on and retry; no new tasks were written.`,
+    );
+  }
+
+  private resolveTaskDependencyReferences(
+    dependsOn: string[],
+    extraReferences?: Map<string, string>,
+  ): string[] {
+    const refs = this.taskReferenceMap(extraReferences);
+    const resolved: string[] = [];
+    const unknown: string[] = [];
+
+    for (const dependency of dependsOn) {
+      const id = refs.get(normalizeReference(dependency));
+      if (!id) {
+        unknown.push(dependency);
+        continue;
+      }
+      resolved.push(id);
+    }
+
+    if (unknown.length > 0) {
+      throw codedError(
+        "invalid_dependencies",
+        `depends_on must reference existing task ids, task names, client_ref values, or created aliases such as task-1. Unknown dependencies: ${unknown.join(", ")}. Available tasks: ${this.describeAvailableTasks()}.`,
+      );
+    }
+
+    return uniqueStrings(resolved);
+  }
+
+  private resolveOptionalTaskReference(
+    reference: string | undefined,
+    field: string,
+    extraReferences?: Map<string, string>,
+  ): string | undefined {
+    if (!reference) return undefined;
+    const id = this.taskReferenceMap(extraReferences).get(normalizeReference(reference));
+    if (!id) {
+      throw codedError(
+        `invalid_${field}`,
+        `${field} must reference an existing task id, task name, client_ref value, or created alias. Unknown reference: ${reference}. Available tasks: ${this.describeAvailableTasks()}.`,
+      );
+    }
+    return id;
+  }
+
+  private validateRetryOf(
+    taskId: string,
+    plan: Plan,
+  ): { definition: TaskDefinition; state: TaskState } {
+    const definition = this.loadTaskDefinition(taskId);
+    const state = this.loadTaskState(taskId);
+    if (!definition || !state || !this.taskBelongsToPlan(definition, plan)) {
+      throw codedError("invalid_retry", `retry_of must reference an existing task id: ${taskId}.`);
+    }
+    if (
+      state.status !== "failed" &&
+      state.status !== "cancelled" &&
+      state.status !== "superseded"
+    ) {
+      throw codedError(
+        "invalid_retry",
+        `retry_of must reference a failed, cancelled, or superseded task; ${taskId} is ${state.status}.`,
+      );
+    }
+    return { definition, state };
+  }
+
   private createPlan(params: {
     query: string;
     strategy?: string;
@@ -234,6 +925,7 @@ export class OrchestrationProvider {
     }
 
     const plan: Plan = {
+      id: `plan-${crypto.randomUUID().slice(0, 8)}`,
       session_id: this.sessionId,
       query: params.query,
       strategy: params.strategy ?? "sequential",
@@ -246,6 +938,62 @@ export class OrchestrationProvider {
     debug("orchestration", "create_plan", { session: this.sessionId, version });
     this.server.refresh();
     return { ...plan, version };
+  }
+
+  private incompleteTasksForPlanCompletion(): string[] {
+    const plan = this.loadPlan();
+    return this.listTaskIdsForPlan(plan).filter((taskId) => {
+      const state = this.loadTaskState(taskId);
+      if (!state) return true;
+      return (
+        state.status !== "completed" &&
+        state.status !== "cancelled" &&
+        state.status !== "superseded"
+      );
+    });
+  }
+
+  private openBlockingFindingsForPlan(plan = this.loadPlan()): string[] {
+    return this.listFindingsForPlan(plan)
+      .filter((finding) => finding.status === "open" && finding.severity === "blocking")
+      .map((finding) => finding.id);
+  }
+
+  private cancelUnfinishedTasksForPlan(plan: Plan): number {
+    let cancelled = 0;
+    for (const taskId of this.listTaskIdsForPlan(plan)) {
+      const state = this.loadTaskState(taskId);
+      if (!state || terminalTaskStatus(state.status)) continue;
+      const result = this.updateTaskState(
+        taskId,
+        {
+          status: "cancelled",
+          message: "Cancelled because the orchestration plan was cancelled.",
+          completed_at: new Date().toISOString(),
+        },
+        undefined,
+      );
+      if (!("error" in result)) {
+        cancelled += 1;
+      }
+    }
+    return cancelled;
+  }
+
+  private cancelPendingHandoffsForPlan(plan: Plan): number {
+    let cancelled = 0;
+    for (const handoff of this.listHandoffsForPlan(plan)) {
+      if (handoff.status !== "pending") continue;
+      const version = this.bumpVersion(this.handoffVersions, handoff.id);
+      writeJson(this.handoffPath(handoff.id), {
+        ...handoff,
+        status: "cancelled",
+        responded_at: new Date().toISOString(),
+        version,
+      });
+      cancelled += 1;
+    }
+    return cancelled;
   }
 
   private completePlan(params: { status: "completed" | "cancelled"; expected_version?: number }): {
@@ -262,24 +1010,152 @@ export class OrchestrationProvider {
       });
       return { status: plan.status, version: current };
     }
+    if (params.status === "completed") {
+      const incomplete = this.incompleteTasksForPlanCompletion();
+      if (incomplete.length > 0) {
+        throw codedError(
+          "plan_incomplete",
+          `Cannot complete plan while non-superseded tasks are unfinished: ${incomplete.join(", ")}.`,
+        );
+      }
+      const openBlockingFindings = this.openBlockingFindingsForPlan(plan);
+      if (openBlockingFindings.length > 0) {
+        throw codedError(
+          "blocking_findings_open",
+          `Cannot complete plan while blocking audit findings are open: ${openBlockingFindings.join(", ")}.`,
+        );
+      }
+    }
+    const cancelledTasks =
+      params.status === "cancelled" ? this.cancelUnfinishedTasksForPlan(plan) : 0;
+    const cancelledHandoffs =
+      params.status === "cancelled" ? this.cancelPendingHandoffsForPlan(plan) : 0;
     const version = this.bumpVersion(this.planVersions, "plan");
     const next: Plan = { ...plan, status: params.status, version };
     writeJson(this.planPath(), next);
-    debug("orchestration", "complete_plan", { status: params.status, version });
+    debug("orchestration", "complete_plan", {
+      status: params.status,
+      version,
+      cancelledTasks,
+      cancelledHandoffs,
+    });
     this.server.refresh();
     return { status: next.status, version };
   }
 
-  private createTask(params: { name: string; goal: string; depends_on?: string[] }): {
+  private aliasesForNewTask(params: CreateTaskParams, ordinal: number): string[] {
+    return uniqueStrings(
+      [`task-${ordinal}`, `task ${ordinal}`, params.client_ref ?? ""]
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+  }
+
+  private inferBatchDependencyRefs(drafts: TaskDraft[]): Map<string, string[]> {
+    const dependencies = new Map<string, string[]>();
+    for (const draft of drafts) {
+      dependencies.set(draft.id, [...(draft.depends_on ?? [])]);
+    }
+
+    const addDependency = (draft: TaskDraft, dependency: TaskDraft): void => {
+      if (draft.id === dependency.id) return;
+      const current = dependencies.get(draft.id) ?? [];
+      current.push(dependency.id);
+      dependencies.set(draft.id, uniqueStrings(current));
+    };
+
+    const producerTasks = drafts.filter(
+      (draft) => !isDocumentationTask(draft) && !isVerificationTask(draft),
+    );
+    const scaffoldTasks = producerTasks.filter(isScaffoldTask);
+    const dataModelTasks = producerTasks.filter(
+      (draft) => isDataModelTask(draft) && !isScaffoldTask(draft),
+    );
+    const codingPlan =
+      scaffoldTasks.length > 0 ||
+      dataModelTasks.length > 0 ||
+      producerTasks.some(isUiTask) ||
+      drafts.some(isVerificationTask);
+    if (!codingPlan) {
+      return dependencies;
+    }
+
+    // UI and data/context work can usually fan out after scaffold when the
+    // task goals describe the shared interface. If the model needs real data
+    // artifacts before UI work starts, it should express that edge explicitly.
+    for (const draft of drafts) {
+      if (isDocumentationTask(draft)) {
+        for (const dependency of producerTasks) {
+          addDependency(draft, dependency);
+        }
+        continue;
+      }
+
+      if (isVerificationTask(draft)) {
+        for (const dependency of producerTasks) {
+          addDependency(draft, dependency);
+        }
+        continue;
+      }
+
+      if (!isScaffoldTask(draft)) {
+        for (const dependency of scaffoldTasks) {
+          addDependency(draft, dependency);
+        }
+      }
+    }
+
+    return dependencies;
+  }
+
+  private createTask(params: CreateTaskParams): {
     id: string;
     version: number;
+    kind?: TaskKind;
+    spec_refs?: string[];
+    audit_of?: string;
+    finding_refs?: string[];
+    acceptance_criteria: AcceptanceCriterion[];
+    depends_on: string[];
+    retry_of?: string;
   } {
+    const plan = this.requireActivePlan();
+    const retrySource = params.retry_of ? this.validateRetryOf(params.retry_of, plan) : undefined;
+    const auditOf = this.resolveOptionalTaskReference(params.audit_of, "audit_of");
+    for (const findingId of params.finding_refs ?? []) {
+      if (!this.loadFinding(findingId)) {
+        throw codedError(
+          "invalid_finding_ref",
+          `finding_refs contains unknown finding: ${findingId}.`,
+        );
+      }
+    }
+    const dependsOn = this.resolveTaskDependencyReferences(
+      params.depends_on ?? retrySource?.definition.depends_on ?? [],
+    );
     const id = `task-${crypto.randomUUID().slice(0, 8)}`;
+    const labels = this.dependencyLabelsForPlan(plan);
+    labels.set(id, params.name);
+    this.assertAcyclicDependencies(
+      this.dependencyGraphForPlan(plan, new Map([[id, dependsOn]])),
+      labels,
+    );
+    const ordinal = this.listTaskIdsForPlan(plan).length + 1;
+    const acceptanceCriteria = buildAcceptanceCriteria(params.goal, params.acceptance_criteria);
     const definition: TaskDefinition = {
       id,
+      ...(plan.id ? { plan_id: plan.id } : {}),
       name: params.name,
       goal: params.goal,
-      depends_on: params.depends_on ?? [],
+      kind: params.kind,
+      depends_on: dependsOn,
+      spec_refs: params.spec_refs,
+      audit_of: auditOf,
+      finding_refs: params.finding_refs,
+      acceptance_criteria: acceptanceCriteria,
+      aliases: this.aliasesForNewTask(params, ordinal),
+      client_ref: params.client_ref,
+      retry_of: params.retry_of,
       created_at: new Date().toISOString(),
     };
     const state: TaskState = {
@@ -294,10 +1170,170 @@ export class OrchestrationProvider {
       id,
       name: params.name,
       depends_on: definition.depends_on,
+      aliases: definition.aliases,
+      client_ref: definition.client_ref,
+      acceptance_criteria: definition.acceptance_criteria?.length ?? 0,
+      retry_of: definition.retry_of,
+      kind: definition.kind,
+      spec_refs: definition.spec_refs,
+      audit_of: definition.audit_of,
+      finding_refs: definition.finding_refs,
       version,
     });
+    if (params.retry_of) {
+      this.updateTaskState(
+        params.retry_of,
+        { status: "superseded", superseded_by: id, completed_at: new Date().toISOString() },
+        undefined,
+      );
+    }
     this.server.refresh();
-    return { id, version };
+    return {
+      id,
+      version,
+      kind: params.kind,
+      spec_refs: params.spec_refs,
+      audit_of: auditOf,
+      finding_refs: params.finding_refs,
+      acceptance_criteria: acceptanceCriteria,
+      depends_on: dependsOn,
+      retry_of: params.retry_of,
+    };
+  }
+
+  private createTasks(params: { tasks: CreateTaskParams[] }): {
+    created: Array<{
+      id: string;
+      name: string;
+      kind?: TaskKind;
+      client_ref?: string;
+      spec_refs?: string[];
+      audit_of?: string;
+      finding_refs?: string[];
+      depends_on: string[];
+      acceptance_criteria: AcceptanceCriterion[];
+      version: number;
+    }>;
+  } {
+    if (params.tasks.length === 0) {
+      throw codedError("invalid_tasks", "create_tasks requires at least one valid task.");
+    }
+
+    const plan = this.requireActivePlan();
+    const now = new Date().toISOString();
+    const existingCount = this.listTaskIdsForPlan(plan).length;
+    const drafts: TaskDraft[] = params.tasks.map((task, index) => {
+      const id = `task-${crypto.randomUUID().slice(0, 8)}`;
+      return {
+        ...task,
+        id,
+        aliases: this.aliasesForNewTask(task, existingCount + index + 1),
+      };
+    });
+
+    const batchReferences = new Map<string, string>();
+    for (const draft of drafts) {
+      for (const candidate of [
+        draft.id,
+        draft.name,
+        draft.client_ref,
+        ...(draft.aliases ?? []),
+      ].filter((candidate): candidate is string => typeof candidate === "string")) {
+        batchReferences.set(normalizeReference(candidate), draft.id);
+      }
+    }
+
+    const inferredDependencies = this.inferBatchDependencyRefs(drafts);
+    const resolvedDependencies = new Map<string, string[]>();
+    for (const draft of drafts) {
+      const dependsOn = this.resolveTaskDependencyReferences(
+        inferredDependencies.get(draft.id) ?? [],
+        batchReferences,
+      );
+      if (dependsOn.includes(draft.id)) {
+        throw codedError("invalid_dependencies", `Task ${draft.name} cannot depend on itself.`);
+      }
+      resolvedDependencies.set(draft.id, dependsOn);
+    }
+
+    const labels = this.dependencyLabelsForPlan(plan);
+    for (const draft of drafts) {
+      labels.set(draft.id, draft.name);
+    }
+    this.assertAcyclicDependencies(this.dependencyGraphForPlan(plan, resolvedDependencies), labels);
+
+    const created: Array<{
+      id: string;
+      name: string;
+      kind?: TaskKind;
+      client_ref?: string;
+      spec_refs?: string[];
+      audit_of?: string;
+      finding_refs?: string[];
+      depends_on: string[];
+      acceptance_criteria: AcceptanceCriterion[];
+      version: number;
+    }> = [];
+
+    for (const draft of drafts) {
+      const dependsOn = resolvedDependencies.get(draft.id) ?? [];
+      const auditOf = this.resolveOptionalTaskReference(
+        draft.audit_of,
+        "audit_of",
+        batchReferences,
+      );
+      for (const findingId of draft.finding_refs ?? []) {
+        if (!this.loadFinding(findingId)) {
+          throw codedError(
+            "invalid_finding_ref",
+            `finding_refs contains unknown finding: ${findingId}.`,
+          );
+        }
+      }
+      const acceptanceCriteria = buildAcceptanceCriteria(draft.goal, draft.acceptance_criteria);
+      const definition: TaskDefinition = {
+        id: draft.id,
+        ...(plan.id ? { plan_id: plan.id } : {}),
+        name: draft.name,
+        goal: draft.goal,
+        kind: draft.kind,
+        depends_on: dependsOn,
+        spec_refs: draft.spec_refs,
+        audit_of: auditOf,
+        finding_refs: draft.finding_refs,
+        acceptance_criteria: acceptanceCriteria,
+        aliases: draft.aliases,
+        client_ref: draft.client_ref,
+        created_at: now,
+      };
+      const state: TaskState = {
+        status: "pending",
+        updated_at: now,
+        iteration: 0,
+      };
+      const version = this.bumpVersion(this.taskVersions, draft.id);
+      writeJson(join(this.taskDir(draft.id), "definition.json"), definition);
+      writeJson(join(this.taskDir(draft.id), "state.json"), { ...state, version });
+      created.push({
+        id: draft.id,
+        name: draft.name,
+        kind: draft.kind,
+        client_ref: draft.client_ref,
+        spec_refs: draft.spec_refs,
+        audit_of: auditOf,
+        finding_refs: draft.finding_refs,
+        depends_on: dependsOn,
+        acceptance_criteria: acceptanceCriteria,
+        version,
+      });
+    }
+
+    debug("orchestration", "create_tasks", {
+      count: created.length,
+      ids: created.map((task) => task.id),
+    });
+    this.server.refresh();
+    return { created };
   }
 
   private updateTaskState(
@@ -338,13 +1374,20 @@ export class OrchestrationProvider {
     return { version, state: next };
   }
 
+  private isDependencySatisfied(taskId: string): boolean {
+    const state = this.loadTaskState(taskId);
+    if (!state) return false;
+    if (state.status === "completed") return true;
+    if (state.status !== "superseded" || !state.superseded_by) return false;
+    return this.loadTaskState(state.superseded_by)?.status === "completed";
+  }
+
   private unmetDependencies(taskId: string): string[] {
     const def = this.loadTaskDefinition(taskId);
     if (!def?.depends_on?.length) return [];
     const unmet: string[] = [];
     for (const depId of def.depends_on) {
-      const depState = this.loadTaskState(depId);
-      if (!depState || depState.status !== "completed") {
+      if (!this.isDependencySatisfied(depId)) {
         unmet.push(depId);
       }
     }
@@ -355,6 +1398,16 @@ export class OrchestrationProvider {
     task_id: string;
     expected_version?: number;
   }): { version: number; status: TaskStatus } | { error: string; currentVersion: number } {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
+      throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status !== "pending" && state.status !== "scheduled") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} can only start from pending or scheduled (current status: ${state.status}).`,
+      );
+    }
     const unmet = this.unmetDependencies(params.task_id);
     if (unmet.length > 0) {
       throw new Error(
@@ -364,6 +1417,65 @@ export class OrchestrationProvider {
     const result = this.updateTaskState(
       params.task_id,
       { status: "running" },
+      params.expected_version,
+    );
+    if ("error" in result) return result;
+    return { version: result.version, status: result.state.status };
+  }
+
+  private scheduleTask(params: {
+    task_id: string;
+    expected_version?: number;
+  }): { version: number; status: TaskStatus } | { error: string; currentVersion: number } {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
+      throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status !== "pending") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} can only be scheduled from pending (current status: ${state.status}).`,
+      );
+    }
+    const unmet = this.unmetDependencies(params.task_id);
+    if (unmet.length > 0) {
+      throw new Error(
+        `Cannot schedule task ${params.task_id}: unmet dependencies [${unmet.join(", ")}].`,
+      );
+    }
+    const result = this.updateTaskState(
+      params.task_id,
+      {
+        status: "scheduled",
+        message: "Scheduled for delegation.",
+        scheduled_at: new Date().toISOString(),
+      },
+      params.expected_version,
+    );
+    if ("error" in result) return result;
+    return { version: result.version, status: result.state.status };
+  }
+
+  private startVerification(params: {
+    task_id: string;
+    expected_version?: number;
+  }): { version: number; status: TaskStatus } | { error: string; currentVersion: number } {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
+      throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status !== "running" && state.status !== "verifying") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} cannot enter verification from status ${state.status}.`,
+      );
+    }
+    if (state.status === "verifying") {
+      return { version: this.taskVersion(params.task_id), status: state.status };
+    }
+    const result = this.updateTaskState(
+      params.task_id,
+      { status: "verifying", verification_started_at: new Date().toISOString() },
       params.expected_version,
     );
     if ("error" in result) return result;
@@ -389,13 +1501,264 @@ export class OrchestrationProvider {
     return { version, bytes: params.message.length };
   }
 
+  private attachResult(params: {
+    task_id: string;
+    result: string;
+    expected_version?: number;
+  }):
+    | { version: number; status: TaskStatus; bytes: number }
+    | { error: string; currentVersion: number } {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
+      throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status !== "running" && state.status !== "verifying") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} can only attach a pushed result while running or verifying (current status: ${state.status}).`,
+      );
+    }
+    mkdirSync(this.taskDir(params.task_id), { recursive: true });
+    writeFileSync(this.resultPath(params.task_id), params.result, "utf8");
+
+    const update =
+      state.status === "running"
+        ? { status: "verifying" as const, verification_started_at: new Date().toISOString() }
+        : {};
+    const result = this.updateTaskState(params.task_id, update, params.expected_version);
+    if ("error" in result) return result;
+    return { version: result.version, status: result.state.status, bytes: params.result.length };
+  }
+
+  private recordVerification(params: {
+    task_id: string;
+    kind?: string;
+    status: VerificationStatus;
+    summary: string;
+    criteria?: string[];
+    command?: string;
+    evidence?: string;
+    evidence_refs?: string[];
+  }): {
+    task_id: string;
+    verification_id: string;
+    status: VerificationStatus;
+    count: number;
+    covered_criteria: string[];
+    missing_criteria: string[];
+  } {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
+      throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status === "pending") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} must be running before verification can be recorded.`,
+      );
+    }
+    if (
+      state.status === "failed" ||
+      state.status === "cancelled" ||
+      state.status === "superseded"
+    ) {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} is ${state.status}; verification cannot be recorded.`,
+      );
+    }
+    if (state.status === "running") {
+      this.updateTaskState(
+        params.task_id,
+        {
+          status: "verifying",
+          verification_started_at: new Date().toISOString(),
+        },
+        undefined,
+      );
+    }
+
+    const verifications = this.loadVerifications(params.task_id);
+    const criteria = this.normalizeVerificationCriteria(params.task_id, params.criteria);
+    const evidenceRefs = params.evidence_refs ?? [];
+    if (params.status === "passed" && criteria.length > 0 && evidenceRefs.length === 0) {
+      throw codedError(
+        "evidence_required",
+        "Passed verification covering acceptance criteria must include evidence_refs with supporting files, commands, URLs, screenshots, or state paths.",
+      );
+    }
+    const invalidEvidenceRefs = this.invalidEvidenceRefs(evidenceRefs);
+    if (invalidEvidenceRefs.length > 0) {
+      throw codedError(
+        "invalid_evidence_refs",
+        `Evidence refs do not exist in the workspace: ${invalidEvidenceRefs.join(", ")}.`,
+      );
+    }
+    const record: VerificationRecord = {
+      id: `verification-${crypto.randomUUID().slice(0, 8)}`,
+      kind: params.kind?.trim() || "check",
+      status: params.status,
+      summary: params.summary,
+      criteria,
+      command: params.command,
+      evidence: params.evidence,
+      evidence_refs: evidenceRefs.length > 0 ? evidenceRefs : undefined,
+      created_at: new Date().toISOString(),
+    };
+    const next = [...verifications, record];
+    writeJson(this.verificationsPath(params.task_id), next);
+    debug("orchestration", "record_verification", {
+      taskId: params.task_id,
+      verificationId: record.id,
+      kind: record.kind,
+      status: record.status,
+    });
+    this.server.refresh();
+    return {
+      task_id: params.task_id,
+      verification_id: record.id,
+      status: record.status,
+      count: next.length,
+      covered_criteria: this.coveredAcceptanceCriteria(params.task_id, next),
+      missing_criteria: this.missingAcceptanceCriteria(params.task_id, next),
+    };
+  }
+
+  private invalidEvidenceRefs(refs: string[]): string[] {
+    const invalid: string[] = [];
+    for (const ref of refs) {
+      if (!looksLikeFileEvidenceRef(ref)) {
+        continue;
+      }
+      if (!this.evidencePathExists(ref)) {
+        invalid.push(ref);
+      }
+    }
+    return invalid;
+  }
+
+  private evidencePathExists(ref: string): boolean {
+    const trimmed = ref.trim();
+    const fullPath = resolve(this.workspaceRoot, trimmed);
+    const relativePath = relative(this.workspaceRoot, fullPath);
+    if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      return false;
+    }
+
+    if (!/[?*]/.test(trimmed)) {
+      return existsSync(fullPath);
+    }
+
+    const slash = trimmed.lastIndexOf("/");
+    const parentRef = slash >= 0 ? trimmed.slice(0, slash) : ".";
+    const pattern = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+    if (/[?*]/.test(parentRef)) {
+      return true;
+    }
+    const parentPath = resolve(this.workspaceRoot, parentRef);
+    const parentRelative = relative(this.workspaceRoot, parentPath);
+    if (parentRelative.startsWith("..") || isAbsolute(parentRelative) || !existsSync(parentPath)) {
+      return false;
+    }
+    const regex = globSegmentToRegExp(pattern);
+    return readdirSync(parentPath).some((entry) => regex.test(entry));
+  }
+
+  private normalizeVerificationCriteria(taskId: string, rawCriteria?: string[]): string[] {
+    const criteria = this.loadAcceptanceCriteria(taskId);
+    if (criteria.length === 0) {
+      return [];
+    }
+    if (!rawCriteria || rawCriteria.length === 0) {
+      return [];
+    }
+
+    const byReference = new Map<string, string>();
+    for (const criterion of criteria) {
+      byReference.set(normalizeReference(criterion.id), criterion.id);
+      byReference.set(normalizeReference(criterion.text), criterion.id);
+      const numeric = criterion.id.replace(/^ac-/, "");
+      byReference.set(normalizeReference(numeric), criterion.id);
+    }
+
+    const ids: string[] = [];
+    for (const item of rawCriteria) {
+      const normalized = normalizeReference(item);
+      if (normalized === "all" || normalized === "*") {
+        ids.push(...criteria.map((criterion) => criterion.id));
+        continue;
+      }
+      const id = byReference.get(normalized);
+      if (id) {
+        ids.push(id);
+      }
+    }
+
+    return uniqueStrings(ids);
+  }
+
+  private coveredAcceptanceCriteria(
+    taskId: string,
+    verifications = this.loadVerifications(taskId),
+  ): string[] {
+    const covered = new Set<string>();
+    for (const verification of verifications) {
+      if (verification.status !== "passed" && verification.status !== "not_required") {
+        continue;
+      }
+      for (const criterionId of verification.criteria ?? []) {
+        covered.add(criterionId);
+      }
+    }
+    return [...covered].sort();
+  }
+
+  private missingAcceptanceCriteria(
+    taskId: string,
+    verifications = this.loadVerifications(taskId),
+  ): string[] {
+    const covered = new Set(this.coveredAcceptanceCriteria(taskId, verifications));
+    return this.loadAcceptanceCriteria(taskId)
+      .map((criterion) => criterion.id)
+      .filter((criterionId) => !covered.has(criterionId));
+  }
+
+  private hasCompletionVerification(taskId: string): boolean {
+    const criteria = this.loadAcceptanceCriteria(taskId);
+    if (criteria.length > 0) {
+      return this.missingAcceptanceCriteria(taskId).length === 0;
+    }
+
+    return this.loadVerifications(taskId).some(
+      (verification) => verification.status === "passed" || verification.status === "not_required",
+    );
+  }
+
   private completeTask(params: {
     task_id: string;
     result: string;
     expected_version?: number;
   }): { version: number; status: TaskStatus } | { error: string; currentVersion: number } {
-    if (!this.loadTaskState(params.task_id)) {
+    const state = this.loadTaskState(params.task_id);
+    if (!state) {
       throw new Error(`Unknown task: ${params.task_id}`);
+    }
+    if (state.status !== "verifying") {
+      throw codedError(
+        "invalid_state",
+        `Task ${params.task_id} must be verifying before completion (current status: ${state.status}).`,
+      );
+    }
+    if (!this.hasCompletionVerification(params.task_id)) {
+      const missingCriteria = this.missingAcceptanceCriteria(params.task_id);
+      const detail =
+        missingCriteria.length > 0
+          ? ` Missing acceptance criteria: ${missingCriteria.join(", ")}.`
+          : "";
+      throw codedError(
+        "verification_required",
+        `Task ${params.task_id} needs passed or not_required verification coverage before completion.${detail}`,
+      );
     }
     const result = this.updateTaskState(
       params.task_id,
@@ -404,7 +1767,7 @@ export class OrchestrationProvider {
     );
     if ("error" in result) return result;
     if (params.result.length > 0) {
-      const resultPath = join(this.taskDir(params.task_id), "result.md");
+      const resultPath = this.resultPath(params.task_id);
       mkdirSync(dirname(resultPath), { recursive: true });
       writeFileSync(resultPath, params.result, "utf8");
     }
@@ -439,31 +1802,193 @@ export class OrchestrationProvider {
   }
 
   private getResult(taskId: string): { task_id: string; result: string | null } {
-    const resultPath = join(this.taskDir(taskId), "result.md");
+    const resultPath = this.resultPath(taskId);
     if (!existsSync(resultPath)) {
       return { task_id: taskId, result: null };
     }
     return { task_id: taskId, result: readFileSync(resultPath, "utf8") };
   }
 
+  private getVerifications(taskId: string): {
+    task_id: string;
+    verifications: VerificationRecord[];
+  } {
+    return {
+      task_id: taskId,
+      verifications: this.loadVerifications(taskId),
+    };
+  }
+
+  private recordFinding(params: {
+    audit_task_id: string;
+    target_task_id: string;
+    severity: AuditFindingSeverity;
+    spec_refs?: string[];
+    summary: string;
+    evidence_refs?: string[];
+    recommendation: AuditFindingRecommendation;
+  }): AuditFinding {
+    const plan = this.requireActivePlan();
+    if (!this.taskBelongsToPlan(this.loadTaskDefinition(params.audit_task_id), plan)) {
+      throw codedError(
+        "invalid_audit_task",
+        `audit_task_id must reference a task in the active plan.`,
+      );
+    }
+    if (!this.taskBelongsToPlan(this.loadTaskDefinition(params.target_task_id), plan)) {
+      throw codedError(
+        "invalid_target_task",
+        `target_task_id must reference a task in the active plan.`,
+      );
+    }
+
+    const evidenceRefs = params.evidence_refs ?? [];
+    const invalidEvidenceRefs = this.invalidEvidenceRefs(evidenceRefs);
+    if (invalidEvidenceRefs.length > 0) {
+      throw codedError(
+        "invalid_evidence_refs",
+        `Evidence refs do not exist in the workspace: ${invalidEvidenceRefs.join(", ")}.`,
+      );
+    }
+
+    const id = `finding-${crypto.randomUUID().slice(0, 8)}`;
+    const finding: AuditFinding = {
+      id,
+      audit_task_id: params.audit_task_id,
+      target_task_id: params.target_task_id,
+      severity: params.severity,
+      status: "open",
+      spec_refs: params.spec_refs ?? [],
+      summary: params.summary,
+      evidence_refs: evidenceRefs,
+      recommendation: params.recommendation,
+      created_at: new Date().toISOString(),
+      version: this.bumpVersion(this.findingVersions, id),
+    };
+    writeJson(this.findingPath(id), finding);
+    debug("orchestration", "record_finding", {
+      id,
+      audit_task_id: finding.audit_task_id,
+      target_task_id: finding.target_task_id,
+      severity: finding.severity,
+      recommendation: finding.recommendation,
+    });
+    this.server.refresh();
+    return finding;
+  }
+
+  private resolveFinding(params: {
+    finding_id: string;
+    status: Exclude<AuditFindingStatus, "open">;
+    reason?: string;
+  }): { id: string; status: AuditFindingStatus; version: number } {
+    const finding = this.loadFinding(params.finding_id);
+    if (!finding) {
+      throw new Error(`Unknown finding: ${params.finding_id}`);
+    }
+    if (finding.status !== "open") {
+      throw new Error(`Finding ${params.finding_id} is already ${finding.status}.`);
+    }
+    const version = this.bumpVersion(this.findingVersions, params.finding_id);
+    const next: AuditFinding = {
+      ...finding,
+      status: params.status,
+      resolved_at: new Date().toISOString(),
+      resolution_reason: params.reason,
+      version,
+    };
+    writeJson(this.findingPath(params.finding_id), next);
+    this.server.refresh();
+    return { id: next.id, status: next.status, version };
+  }
+
+  private createRepairTask(params: {
+    finding_id: string;
+    name?: string;
+    goal?: string;
+    acceptance_criteria?: string[];
+  }): {
+    finding_id: string;
+    repair_task_id: string;
+    version: number;
+  } {
+    const finding = this.loadFinding(params.finding_id);
+    if (!finding) {
+      throw new Error(`Unknown finding: ${params.finding_id}`);
+    }
+    if (finding.status !== "open") {
+      throw new Error(`Finding ${params.finding_id} is ${finding.status}; repair is not needed.`);
+    }
+
+    const task = this.createTask({
+      name: params.name ?? `repair-${params.finding_id}`,
+      goal:
+        params.goal ??
+        `Repair audit finding ${params.finding_id} for ${finding.target_task_id}: ${finding.summary}`,
+      kind: "repair",
+      spec_refs: finding.spec_refs,
+      finding_refs: [finding.id],
+      depends_on: [finding.target_task_id],
+      acceptance_criteria: params.acceptance_criteria ?? [
+        `Finding ${finding.id} is resolved or no longer applies after re-audit`,
+      ],
+    });
+
+    const version = this.bumpVersion(this.findingVersions, params.finding_id);
+    writeJson(this.findingPath(params.finding_id), {
+      ...finding,
+      repair_task_id: task.id,
+      version,
+    });
+    this.server.refresh();
+    return { finding_id: finding.id, repair_task_id: task.id, version };
+  }
+
   private createHandoff(params: {
     from_task: string;
     to_task: string;
     request: string;
+    kind?: HandoffKind;
+    priority?: HandoffPriority;
+    spec_refs?: string[];
+    evidence_refs?: string[];
+    blocks_task?: boolean;
   }): Handoff & { version: number } {
-    if (!this.loadTaskDefinition(params.from_task)) {
+    const fromDefinition = this.loadTaskDefinition(params.from_task);
+    const toDefinition = this.loadTaskDefinition(params.to_task);
+    if (!fromDefinition) {
       throw new Error(`Unknown from_task: ${params.from_task}`);
     }
-    if (!this.loadTaskDefinition(params.to_task)) {
+    if (!toDefinition) {
       throw new Error(`Unknown to_task: ${params.to_task}`);
+    }
+    const plan = this.requireActivePlan();
+    if (!this.taskBelongsToPlan(fromDefinition, plan)) {
+      throw new Error(`Unknown from_task: ${params.from_task}`);
+    }
+    if (!this.taskBelongsToPlan(toDefinition, plan)) {
+      throw new Error(`Unknown to_task: ${params.to_task}`);
+    }
+    const invalidEvidenceRefs = this.invalidEvidenceRefs(params.evidence_refs ?? []);
+    if (invalidEvidenceRefs.length > 0) {
+      throw codedError(
+        "invalid_evidence_refs",
+        `Evidence refs do not exist in the workspace: ${invalidEvidenceRefs.join(", ")}.`,
+      );
     }
 
     const id = `handoff-${crypto.randomUUID().slice(0, 8)}`;
     const handoff: Handoff = {
       id,
+      ...(plan.id ? { plan_id: plan.id } : {}),
       from_task: params.from_task,
       to_task: params.to_task,
+      kind: params.kind,
+      priority: params.priority,
       request: params.request,
+      spec_refs: params.spec_refs,
+      evidence_refs: params.evidence_refs,
+      blocks_task: params.blocks_task,
       status: "pending",
       created_at: new Date().toISOString(),
     };
@@ -482,6 +2007,9 @@ export class OrchestrationProvider {
   private respondHandoff(params: {
     handoff_id: string;
     response: string;
+    decision_refs?: string[];
+    evidence_refs?: string[];
+    unblock?: boolean;
     expected_version?: number;
   }): { version: number; status: HandoffStatus } | { error: string; currentVersion: number } {
     const handoff = this.loadHandoff(params.handoff_id);
@@ -500,12 +2028,22 @@ export class OrchestrationProvider {
     if (handoff.status !== "pending") {
       throw new Error(`Handoff ${params.handoff_id} is already ${handoff.status}.`);
     }
+    const invalidEvidenceRefs = this.invalidEvidenceRefs(params.evidence_refs ?? []);
+    if (invalidEvidenceRefs.length > 0) {
+      throw codedError(
+        "invalid_evidence_refs",
+        `Evidence refs do not exist in the workspace: ${invalidEvidenceRefs.join(", ")}.`,
+      );
+    }
     const version = this.bumpVersion(this.handoffVersions, params.handoff_id);
     const updated: Handoff = {
       ...handoff,
       status: "responded",
       responded_at: new Date().toISOString(),
       response: params.response,
+      decision_refs: params.decision_refs,
+      response_evidence_refs: params.evidence_refs,
+      unblock: params.unblock,
       version,
     };
     writeJson(this.handoffPath(params.handoff_id), updated);
@@ -547,23 +2085,29 @@ export class OrchestrationProvider {
 
   private buildRootDescriptor() {
     const plan = this.loadPlan();
-    const taskIds = this.listTaskIds();
+    const taskIds = this.listTaskIdsForPlan(plan);
     const states = taskIds
       .map((id) => this.loadTaskState(id))
       .filter((state): state is TaskState => state !== null);
+    const handoffs = this.listHandoffsForPlan(plan);
+    const findings = this.listFindingsForPlan(plan);
     const counts = {
       total: states.length,
       pending: states.filter((s) => s.status === "pending").length,
+      scheduled: states.filter((s) => s.status === "scheduled").length,
       running: states.filter((s) => s.status === "running").length,
+      verifying: states.filter((s) => s.status === "verifying").length,
       completed: states.filter((s) => s.status === "completed").length,
       failed: states.filter((s) => s.status === "failed").length,
       cancelled: states.filter((s) => s.status === "cancelled").length,
+      superseded: states.filter((s) => s.status === "superseded").length,
     };
 
     return {
       type: "context",
       props: {
         session_id: this.sessionId,
+        plan_id: plan?.id,
         plan_status: plan?.status ?? "none",
         plan_query: plan?.query,
         plan_strategy: plan?.strategy,
@@ -572,8 +2116,15 @@ export class OrchestrationProvider {
         plan_version: plan ? this.planVersion() : undefined,
         task_counts: counts,
         handoff_counts: {
-          total: this.listHandoffs().length,
-          pending: this.listHandoffs().filter((h) => h.status === "pending").length,
+          total: handoffs.length,
+          pending: handoffs.filter((h) => h.status === "pending").length,
+        },
+        finding_counts: {
+          total: findings.length,
+          open: findings.filter((finding) => finding.status === "open").length,
+          blocking_open: findings.filter(
+            (finding) => finding.status === "open" && finding.severity === "blocking",
+          ).length,
         },
       },
       summary: plan
@@ -610,11 +2161,7 @@ export class OrchestrationProvider {
               type: "string",
               description: "Final plan status: completed or cancelled.",
             },
-            expected_version: {
-              type: "number",
-              description:
-                "Optional CAS guard. If provided, call is a no-op when the plan version has moved on.",
-            },
+            expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
           },
           async ({ status, expected_version }) =>
             this.completePlan({
@@ -631,22 +2178,141 @@ export class OrchestrationProvider {
           {
             name: "string",
             goal: "string",
+            kind: {
+              type: "string",
+              description:
+                "Optional task kind: implementation, audit, repair, docs, or verification.",
+              enum: ["implementation", "audit", "repair", "docs", "verification"],
+            },
+            client_ref: {
+              type: "string",
+              description:
+                "Optional local reference for this task, e.g. 'scaffold' or 'task-1'. Later dependencies may use this value.",
+            },
+            spec_refs: {
+              type: "array",
+              description:
+                "Optional spec requirement or decision refs this task is responsible for satisfying.",
+              items: { type: "string" },
+            },
+            audit_of: {
+              type: "string",
+              description: "Optional task id this audit task evaluates.",
+            },
+            finding_refs: {
+              type: "array",
+              description: "Optional audit finding ids this repair task addresses.",
+              items: { type: "string" },
+            },
             depends_on: {
               type: "array",
-              description: "Optional list of task ids this task depends on.",
+              description:
+                "Optional list of dependency references. Prefer real task ids; existing task names, client_ref values, and aliases like task-1 are also accepted and normalized to ids.",
+              items: { type: "string" },
+            },
+            acceptance_criteria: {
+              type: "array",
+              description:
+                "Optional concrete criteria that verification must cover before completion. Use short, checkable statements tied to this task's goal.",
+              items: { type: "string" },
+            },
+            retry_of: {
+              type: "string",
+              description:
+                "Optional failed/cancelled/superseded task id this task replaces. When set, the old task is marked superseded_by the new one.",
             },
           },
-          async ({ name, goal, depends_on }) =>
+          async ({
+            name,
+            goal,
+            kind,
+            client_ref,
+            spec_refs,
+            audit_of,
+            finding_refs,
+            depends_on,
+            acceptance_criteria,
+            retry_of,
+          }) =>
             this.createTask({
               name: name as string,
               goal: goal as string,
-              depends_on: Array.isArray(depends_on)
-                ? depends_on.filter((item): item is string => typeof item === "string")
-                : undefined,
+              kind: normalizeTaskKind(kind),
+              client_ref: typeof client_ref === "string" ? client_ref : undefined,
+              spec_refs: normalizeStringList(spec_refs),
+              audit_of: typeof audit_of === "string" ? audit_of : undefined,
+              finding_refs: normalizeStringList(finding_refs),
+              depends_on: normalizeStringList(depends_on),
+              acceptance_criteria: normalizeStringList(acceptance_criteria),
+              retry_of: typeof retry_of === "string" ? retry_of : undefined,
             }),
           {
             label: "Create Task",
-            description: "Define a task under the active plan.",
+            description:
+              "Define one task under the active plan. For multiple dependent tasks, prefer create_tasks so local refs and forward dependencies are resolved in one call. Use retry_of when replacing a failed or cancelled task.",
+            estimate: "instant",
+          },
+        ),
+        create_tasks: action(
+          {
+            tasks: {
+              type: "array",
+              description:
+                "Batch-create tasks under the active plan. Each item is { name, goal, kind?, client_ref?, spec_refs?, audit_of?, finding_refs?, depends_on?, acceptance_criteria? }. Dependencies may refer to ids, names, client_ref values, or aliases from this same batch, so this is the preferred way to create a DAG without guessing generated task ids. Use minimal true blocking dependencies: for app builds, scaffold may block data/UI work, while docs and final verification wait for implementation. Do not make UI depend on data-model just because it imports the store; put the shared import path and API contract in both task goals instead.",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string", description: "Short task name." },
+                  goal: { type: "string", description: "Detailed task goal." },
+                  kind: {
+                    type: "string",
+                    description:
+                      "Optional task kind: implementation, audit, repair, docs, or verification.",
+                    enum: ["implementation", "audit", "repair", "docs", "verification"],
+                  },
+                  client_ref: {
+                    type: "string",
+                    description:
+                      "Optional local reference, e.g. 'scaffold' or 'ui'. Dependencies in this batch may refer to it.",
+                  },
+                  spec_refs: {
+                    type: "array",
+                    description:
+                      "Optional spec requirement or decision refs this task is responsible for satisfying.",
+                    items: { type: "string" },
+                  },
+                  audit_of: {
+                    type: "string",
+                    description: "Optional task id this audit task evaluates.",
+                  },
+                  finding_refs: {
+                    type: "array",
+                    description: "Optional audit finding ids this repair task addresses.",
+                    items: { type: "string" },
+                  },
+                  depends_on: {
+                    type: "array",
+                    description:
+                      "Optional dependency refs: ids, names, client_ref values, or aliases in this batch. Include only real blockers; implementation siblings that can agree on a stated interface should usually be parallel.",
+                    items: { type: "string" },
+                  },
+                  acceptance_criteria: {
+                    type: "array",
+                    description:
+                      "Optional concrete criteria that must be verified before this task can complete.",
+                    items: { type: "string" },
+                  },
+                },
+                required: ["name", "goal"],
+                additionalProperties: false,
+              },
+            },
+          },
+          async ({ tasks }) => this.createTasks({ tasks: normalizeTaskList(tasks) }),
+          {
+            label: "Create Tasks",
+            description:
+              "Batch-create a dependency graph of tasks. Prefer this over several create_task calls when tasks depend on each other, because local refs can be resolved without polling or guessed ids. Common coding DAGs get conservative setup/docs/verification inference while preserving parallel implementation siblings.",
             estimate: "instant",
           },
         ),
@@ -654,13 +2320,60 @@ export class OrchestrationProvider {
           {
             from_task: "string",
             to_task: "string",
+            kind: {
+              type: "string",
+              description:
+                "Optional handoff kind: question, artifact_request, review_request, decision_request, or dependency_signal.",
+              enum: [
+                "question",
+                "artifact_request",
+                "review_request",
+                "decision_request",
+                "dependency_signal",
+              ],
+            },
+            priority: {
+              type: "string",
+              description: "Optional handoff priority: low, normal, or high.",
+              enum: ["low", "normal", "high"],
+            },
             request: "string",
+            spec_refs: {
+              type: "array",
+              description: "Optional spec refs this handoff is about.",
+              items: { type: "string" },
+            },
+            evidence_refs: {
+              type: "array",
+              description:
+                "Optional files, commands, URLs, screenshots, or state paths that explain the request.",
+              items: { type: "string" },
+            },
+            blocks_task: {
+              type: "boolean",
+              description:
+                "True when the receiving task should treat this handoff as blocking until responded.",
+            },
           },
-          async ({ from_task, to_task, request }) =>
+          async ({
+            from_task,
+            to_task,
+            kind,
+            priority,
+            request,
+            spec_refs,
+            evidence_refs,
+            blocks_task,
+          }) =>
             this.createHandoff({
               from_task: from_task as string,
               to_task: to_task as string,
+              kind: normalizeHandoffKind(kind),
+              priority: normalizeHandoffPriority(priority),
               request: request as string,
+              spec_refs: normalizeStringList(spec_refs),
+              evidence_refs: normalizeStringList(evidence_refs),
+              blocks_task: typeof blocks_task === "boolean" ? blocks_task : undefined,
             }),
           {
             label: "Create Handoff",
@@ -678,20 +2391,29 @@ export class OrchestrationProvider {
   }
 
   private buildHandoffsDescriptor() {
-    const handoffs = this.listHandoffs();
+    const handoffs = this.listHandoffsForPlan();
     const items: ItemDescriptor[] = handoffs.map((handoff) => {
       const version = this.handoffVersions.get(handoff.id) ?? 0;
       return {
         id: handoff.id,
         props: {
           id: handoff.id,
+          plan_id: handoff.plan_id,
           from_task: handoff.from_task,
           to_task: handoff.to_task,
+          kind: handoff.kind,
+          priority: handoff.priority,
           request: handoff.request,
+          spec_refs: handoff.spec_refs,
+          evidence_refs: handoff.evidence_refs,
+          blocks_task: handoff.blocks_task,
           status: handoff.status,
           created_at: handoff.created_at,
           responded_at: handoff.responded_at,
           response_preview: handoff.response ? truncateText(handoff.response, 400) : undefined,
+          decision_refs: handoff.decision_refs,
+          response_evidence_refs: handoff.response_evidence_refs,
+          unblock: handoff.unblock,
           version,
         },
         summary: `${handoff.from_task} → ${handoff.to_task}: ${handoff.request.slice(0, 80)}`,
@@ -701,12 +2423,32 @@ export class OrchestrationProvider {
                 respond: action(
                   {
                     response: "string",
-                    expected_version: { type: "number" },
+                    decision_refs: {
+                      type: "array",
+                      description:
+                        "Optional spec decision refs this response establishes or cites.",
+                      items: { type: "string" },
+                    },
+                    evidence_refs: {
+                      type: "array",
+                      description:
+                        "Optional files, commands, URLs, screenshots, or state paths that support the response.",
+                      items: { type: "string" },
+                    },
+                    unblock: {
+                      type: "boolean",
+                      description:
+                        "True when this response is intended to unblock the receiving task.",
+                    },
+                    expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
                   },
-                  async ({ response, expected_version }) =>
+                  async ({ response, decision_refs, evidence_refs, unblock, expected_version }) =>
                     this.respondHandoff({
                       handoff_id: handoff.id,
                       response: response as string,
+                      decision_refs: normalizeStringList(decision_refs),
+                      evidence_refs: normalizeStringList(evidence_refs),
+                      unblock: typeof unblock === "boolean" ? unblock : undefined,
                       expected_version:
                         typeof expected_version === "number" ? expected_version : undefined,
                     }),
@@ -717,7 +2459,7 @@ export class OrchestrationProvider {
                   },
                 ),
                 cancel: action(
-                  { expected_version: { type: "number" } },
+                  { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
                   async ({ expected_version }) =>
                     this.cancelHandoff({
                       handoff_id: handoff.id,
@@ -753,14 +2495,219 @@ export class OrchestrationProvider {
     };
   }
 
+  private buildFindingsDescriptor() {
+    const findings = this.listFindingsForPlan();
+    const items: ItemDescriptor[] = findings.map((finding) => ({
+      id: finding.id,
+      props: {
+        ...finding,
+        version: this.findingVersion(finding.id),
+      },
+      summary: `${finding.severity}/${finding.status}: ${finding.summary}`,
+      actions: {
+        ...(finding.status === "open"
+          ? {
+              accept_finding: action(
+                {
+                  reason: {
+                    type: "string",
+                    description: "Optional explanation for accepting this deviation from the spec.",
+                  },
+                },
+                async ({ reason }) =>
+                  this.resolveFinding({
+                    finding_id: finding.id,
+                    status: "accepted",
+                    reason: typeof reason === "string" ? reason : undefined,
+                  }),
+                {
+                  label: "Accept Finding",
+                  description:
+                    "Accept this finding as an intentional deviation or follow-up decision.",
+                  estimate: "instant",
+                },
+              ),
+              dismiss_finding: action(
+                {
+                  reason: {
+                    type: "string",
+                    description: "Optional explanation for dismissing this finding.",
+                  },
+                },
+                async ({ reason }) =>
+                  this.resolveFinding({
+                    finding_id: finding.id,
+                    status: "dismissed",
+                    reason: typeof reason === "string" ? reason : undefined,
+                  }),
+                {
+                  label: "Dismiss Finding",
+                  description: "Dismiss this finding as not actionable.",
+                  estimate: "instant",
+                },
+              ),
+              mark_fixed: action(
+                {
+                  reason: {
+                    type: "string",
+                    description: "Optional evidence summary for the fix.",
+                  },
+                },
+                async ({ reason }) =>
+                  this.resolveFinding({
+                    finding_id: finding.id,
+                    status: "fixed",
+                    reason: typeof reason === "string" ? reason : undefined,
+                  }),
+                {
+                  label: "Mark Fixed",
+                  description: "Mark this finding fixed after repair and re-audit.",
+                  estimate: "instant",
+                },
+              ),
+              create_repair_task: action(
+                {
+                  name: {
+                    type: "string",
+                    description: "Optional repair task name.",
+                  },
+                  goal: {
+                    type: "string",
+                    description: "Optional repair task goal.",
+                  },
+                  acceptance_criteria: {
+                    type: "array",
+                    description: "Optional acceptance criteria for the repair task.",
+                    items: { type: "string" },
+                  },
+                },
+                async ({ name, goal, acceptance_criteria }) =>
+                  this.createRepairTask({
+                    finding_id: finding.id,
+                    name: typeof name === "string" ? name : undefined,
+                    goal: typeof goal === "string" ? goal : undefined,
+                    acceptance_criteria: normalizeStringList(acceptance_criteria),
+                  }),
+                {
+                  label: "Create Repair Task",
+                  description:
+                    "Create a repair task linked to this finding. The finding remains open until fixed or accepted.",
+                  estimate: "instant",
+                },
+              ),
+            }
+          : {}),
+      },
+      meta: {
+        salience:
+          finding.status === "open" && finding.severity === "blocking"
+            ? 1
+            : finding.status === "open"
+              ? 0.85
+              : 0.45,
+        urgency:
+          finding.status === "open" && finding.severity === "blocking"
+            ? "high"
+            : finding.status === "open"
+              ? "medium"
+              : "low",
+      },
+    }));
+
+    return {
+      type: "collection",
+      props: {
+        count: items.length,
+        open: findings.filter((finding) => finding.status === "open").length,
+        blocking_open: findings.filter(
+          (finding) => finding.status === "open" && finding.severity === "blocking",
+        ).length,
+      },
+      summary: "Audit findings recorded against orchestration tasks and spec refs.",
+      actions: {
+        record_finding: action(
+          {
+            audit_task_id: "string",
+            target_task_id: "string",
+            severity: {
+              type: "string",
+              description: "Finding severity: blocking, warning, or note.",
+              enum: ["blocking", "warning", "note"],
+            },
+            spec_refs: {
+              type: "array",
+              description: "Optional spec refs this finding relates to.",
+              items: { type: "string" },
+            },
+            summary: "string",
+            evidence_refs: {
+              type: "array",
+              description:
+                "Files, commands, URLs, screenshots, or state paths supporting this finding.",
+              items: { type: "string" },
+            },
+            recommendation: {
+              type: "string",
+              description: "Recommended resolution: repair, spec_change, or accept_deviation.",
+              enum: ["repair", "spec_change", "accept_deviation"],
+            },
+          },
+          async ({
+            audit_task_id,
+            target_task_id,
+            severity,
+            spec_refs,
+            summary,
+            evidence_refs,
+            recommendation,
+          }) =>
+            this.recordFinding({
+              audit_task_id: audit_task_id as string,
+              target_task_id: target_task_id as string,
+              severity: normalizeFindingSeverity(severity),
+              spec_refs: normalizeStringList(spec_refs),
+              summary: summary as string,
+              evidence_refs: normalizeStringList(evidence_refs),
+              recommendation: normalizeFindingRecommendation(recommendation),
+            }),
+          {
+            label: "Record Finding",
+            description:
+              "Record a structured audit finding against an implementation task and optional spec refs.",
+            estimate: "instant",
+          },
+        ),
+      },
+      items,
+    };
+  }
+
   private buildTaskActions(
     id: string,
     status: TaskStatus | "unknown" | undefined,
   ): ItemDescriptor["actions"] {
+    const hasResult = existsSync(this.resultPath(id));
+    const canReadResult =
+      hasResult &&
+      (status === "completed" ||
+        status === "failed" ||
+        status === "cancelled" ||
+        status === "superseded");
     const actions: ItemDescriptor["actions"] = {
-      get_result: action(async () => this.getResult(id), {
-        label: "Get Result",
-        description: "Read the full result.md for this task.",
+      ...(canReadResult
+        ? {
+            get_result: action(async () => this.getResult(id), {
+              label: "Get Result",
+              description:
+                "Read the full result.md for this terminal task. During running/verifying, use result_preview from task state instead of polling.",
+              idempotent: true,
+              estimate: "fast",
+            }),
+          }
+        : {}),
+      get_verifications: action(async () => this.getVerifications(id), {
+        label: "Get Verifications",
+        description: "Read all recorded verification evidence for this task.",
         idempotent: true,
         estimate: "fast",
       }),
@@ -768,14 +2715,92 @@ export class OrchestrationProvider {
     if (!status) return actions;
 
     const isPending = status === "pending";
+    const isScheduled = status === "scheduled";
     const isRunning = status === "running";
-    const isActive = isPending || isRunning;
+    const isVerifying = status === "verifying";
+    const isActive = isPending || isScheduled || isRunning || isVerifying;
+    const canRecordVerification = isRunning || isVerifying || status === "completed";
 
     const depsMet = this.unmetDependencies(id).length === 0;
 
+    if (canRecordVerification) {
+      actions.record_verification = action(
+        {
+          kind: {
+            type: "string",
+            description:
+              "Optional verification kind, e.g. build, test, lint, format, compile, smoke, review, benchmark, or check.",
+          },
+          status: {
+            type: "string",
+            description:
+              "Verification status: passed, failed, skipped, not_required, or unknown. Use not_required only when this task has no meaningful external check.",
+            enum: ["passed", "failed", "skipped", "not_required", "unknown"],
+          },
+          summary: {
+            type: "string",
+            description: "Short human-readable outcome summary.",
+          },
+          criteria: {
+            type: "array",
+            description:
+              "Optional acceptance criteria covered by this verification. Use criterion ids like ac-1/ac-2 from task state, or ['all'] only when the evidence truly covers every criterion.",
+            items: { type: "string" },
+          },
+          command: {
+            type: "string",
+            description:
+              "Optional command or procedure used, e.g. 'npm run build' or 'manual browser smoke test'.",
+          },
+          evidence: {
+            type: "string",
+            description:
+              "Optional concise evidence: important output lines, observed result, or link/path to the artifact.",
+          },
+          evidence_refs: {
+            type: "array",
+            description:
+              "Optional artifact references that support the verification, e.g. file paths, command names, URLs, screenshot ids, or state paths.",
+            items: { type: "string" },
+          },
+        },
+        async ({ kind, status, summary, criteria, command, evidence, evidence_refs }) =>
+          this.recordVerification({
+            task_id: id,
+            kind: typeof kind === "string" ? kind : undefined,
+            status: normalizeVerificationStatus(status),
+            summary: typeof summary === "string" ? summary : "",
+            criteria: normalizeStringList(criteria),
+            command: typeof command === "string" ? command : undefined,
+            evidence: typeof evidence === "string" ? evidence : undefined,
+            evidence_refs: normalizeStringList(evidence_refs),
+          }),
+        {
+          label: "Record Verification",
+          description:
+            "Attach domain-neutral verification evidence to this task. If the task has acceptance_criteria, completion requires passed/not_required verification coverage for every criterion.",
+          estimate: "instant",
+        },
+      );
+    }
+
     if (isPending && depsMet) {
+      actions.schedule = action(
+        { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
+        async ({ expected_version }) =>
+          this.scheduleTask({
+            task_id: id,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Schedule Task",
+          description:
+            "Claim this pending task for runtime scheduling. The scheduler uses this CAS-backed transition before spawning a delegated agent.",
+          estimate: "instant",
+        },
+      );
       actions.start = action(
-        { expected_version: { type: "number" } },
+        { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
         async ({ expected_version }) =>
           this.startTask({
             task_id: id,
@@ -784,6 +2809,22 @@ export class OrchestrationProvider {
         {
           label: "Start Task",
           description: "Mark the task as running.",
+          estimate: "instant",
+        },
+      );
+    }
+
+    if (isScheduled && depsMet) {
+      actions.start = action(
+        { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
+        async ({ expected_version }) =>
+          this.startTask({
+            task_id: id,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Start Task",
+          description: "Move a scheduled task into running state.",
           estimate: "instant",
         },
       );
@@ -800,7 +2841,7 @@ export class OrchestrationProvider {
         },
       );
       actions.cancel = action(
-        { expected_version: { type: "number" } },
+        { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
         async ({ expected_version }) =>
           this.cancelTask({
             task_id: id,
@@ -815,11 +2856,49 @@ export class OrchestrationProvider {
       );
     }
 
+    if (isRunning || isVerifying) {
+      actions.attach_result = action(
+        {
+          result: "string",
+          expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
+        },
+        async ({ result, expected_version }) =>
+          this.attachResult({
+            task_id: id,
+            result: result as string,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Attach Result",
+          description:
+            "Attach a pushed child-agent result to result.md and move a running task to verifying without completing it.",
+          estimate: "instant",
+        },
+      );
+    }
+
     if (isRunning) {
+      actions.start_verification = action(
+        { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
+        async ({ expected_version }) =>
+          this.startVerification({
+            task_id: id,
+            expected_version: typeof expected_version === "number" ? expected_version : undefined,
+          }),
+        {
+          label: "Start Verification",
+          description:
+            "Move the task from running to verifying. After this, record a passed or not_required verification before completing.",
+          estimate: "instant",
+        },
+      );
+    }
+
+    if (isVerifying) {
       actions.complete = action(
         {
           result: "string",
-          expected_version: { type: "number" },
+          expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
         },
         async ({ result, expected_version }) =>
           this.completeTask({
@@ -829,7 +2908,8 @@ export class OrchestrationProvider {
           }),
         {
           label: "Complete Task",
-          description: "Write the task result and mark it completed.",
+          description:
+            "Write the task result and mark it completed. Requires the task to be verifying with a passed or not_required verification already recorded.",
           estimate: "instant",
         },
       );
@@ -839,7 +2919,7 @@ export class OrchestrationProvider {
       actions.fail = action(
         {
           error: "string",
-          expected_version: { type: "number" },
+          expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
         },
         async ({ error, expected_version }) =>
           this.failTask({
@@ -859,29 +2939,84 @@ export class OrchestrationProvider {
   }
 
   private buildTasksDescriptor() {
-    const ids = this.listTaskIds();
+    const ids = this.listTaskIdsForPlan();
     const items: ItemDescriptor[] = ids.map((id) => {
       const def = this.loadTaskDefinition(id);
       const state = this.loadTaskState(id);
       const version = this.taskVersion(id);
       const progress = this.loadProgressTail(id);
+      const verifications = this.loadVerifications(id);
+      const latestVerification = verifications.at(-1);
+      const acceptanceCriteria = def?.acceptance_criteria ?? [];
+      const coveredCriteria = this.coveredAcceptanceCriteria(id, verifications);
+      const missingCriteria = this.missingAcceptanceCriteria(id, verifications);
 
       return {
         id,
         props: {
           id,
+          plan_id: def?.plan_id,
           name: def?.name,
           goal: def?.goal,
+          kind: def?.kind,
           depends_on: def?.depends_on,
+          spec_refs: def?.spec_refs,
+          audit_of: def?.audit_of,
+          finding_refs: def?.finding_refs,
+          acceptance_criteria: acceptanceCriteria,
+          aliases: def?.aliases,
+          client_ref: def?.client_ref,
+          retry_of: def?.retry_of,
           created_at: def?.created_at,
           status: state?.status ?? "unknown",
           iteration: state?.iteration,
           message: state?.message,
           error: state?.error,
+          scheduled_at: state?.scheduled_at,
+          verification_started_at: state?.verification_started_at,
           completed_at: state?.completed_at,
+          superseded_by: state?.superseded_by,
           version,
           progress_preview: truncateText(progress, 400),
+          result_preview: this.loadResultPreview(id),
           unmet_dependencies: this.unmetDependencies(id),
+          verified:
+            acceptanceCriteria.length > 0
+              ? missingCriteria.length === 0
+              : verifications.some(
+                  (verification) =>
+                    verification.status === "passed" || verification.status === "not_required",
+                ),
+          verification_coverage: {
+            total: acceptanceCriteria.length,
+            covered: coveredCriteria,
+            missing: missingCriteria,
+            complete: missingCriteria.length === 0,
+          },
+          verification_counts: {
+            total: verifications.length,
+            passed: verifications.filter((verification) => verification.status === "passed").length,
+            failed: verifications.filter((verification) => verification.status === "failed").length,
+            skipped: verifications.filter((verification) => verification.status === "skipped")
+              .length,
+            not_required: verifications.filter(
+              (verification) => verification.status === "not_required",
+            ).length,
+            unknown: verifications.filter((verification) => verification.status === "unknown")
+              .length,
+          },
+          latest_verification: latestVerification
+            ? {
+                id: latestVerification.id,
+                kind: latestVerification.kind,
+                status: latestVerification.status,
+                summary: latestVerification.summary,
+                criteria: latestVerification.criteria,
+                command: latestVerification.command,
+                evidence_refs: latestVerification.evidence_refs,
+                created_at: latestVerification.created_at,
+              }
+            : undefined,
         },
         summary: def ? `${def.name}: ${def.goal}` : id,
         actions: this.buildTaskActions(id, state?.status),
@@ -889,11 +3024,17 @@ export class OrchestrationProvider {
           salience:
             state?.status === "running"
               ? 0.9
-              : state?.status === "failed" || state?.status === "cancelled"
-                ? 0.8
-                : state?.status === "pending"
-                  ? 0.7
-                  : 0.4,
+              : state?.status === "verifying"
+                ? 0.9
+                : state?.status === "scheduled"
+                  ? 0.85
+                  : state?.status === "failed" || state?.status === "cancelled"
+                    ? 0.8
+                    : state?.status === "pending"
+                      ? 0.7
+                      : state?.status === "superseded"
+                        ? 0.2
+                        : 0.4,
         },
       };
     });

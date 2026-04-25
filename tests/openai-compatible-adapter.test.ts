@@ -171,6 +171,87 @@ describe("OpenAICompatibleAdapter", () => {
     });
   });
 
+  test("repairs an extra trailing brace in OpenAI-compatible tool-call JSON", async () => {
+    const completion = createCompletion();
+    const call = completion.choices[0]?.message.tool_calls?.[0];
+    expect(call).toBeDefined();
+    if (call?.type === "function") {
+      call.function.arguments = '{"path":"README.md"}}';
+    }
+    const client = {
+      chat: {
+        completions: {
+          create: async () => completion,
+          stream: () => ({
+            on: () => undefined,
+            finalChatCompletion: async () => completion,
+          }),
+        },
+      },
+    };
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "gpt-5.4",
+      provider: "openai",
+      client,
+    });
+
+    const response = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+    });
+
+    const toolUse = response.content.find((block) => block.type === "tool_use");
+    expect(toolUse).toBeDefined();
+    expect(toolUse?.input).toEqual({ path: "README.md" });
+    expect(toolUse?.inputError).toBeUndefined();
+  });
+
+  test("marks malformed tool-call JSON instead of passing raw args as params", async () => {
+    const completion = createCompletion();
+    const call = completion.choices[0]?.message.tool_calls?.[0];
+    expect(call).toBeDefined();
+    if (call?.type === "function") {
+      call.function.arguments = '{"path":"README.md"';
+    }
+    const client = {
+      chat: {
+        completions: {
+          create: async () => completion,
+          stream: () => ({
+            on: () => undefined,
+            finalChatCompletion: async () => completion,
+          }),
+        },
+      },
+    };
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "gpt-5.4",
+      provider: "openai",
+      client,
+    });
+
+    const response = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+    });
+
+    const toolUse = response.content.find((block) => block.type === "tool_use");
+    expect(toolUse).toBeDefined();
+    expect(toolUse?.input).toEqual({});
+    expect(toolUse?.inputError).toMatchObject({
+      code: "invalid_json",
+      raw: '{"path":"README.md"',
+    });
+  });
+
   test("passes abort signals into streaming requests and normalizes cancellation", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;

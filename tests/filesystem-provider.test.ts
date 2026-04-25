@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -50,6 +50,70 @@ describe("FilesystemProvider", () => {
     const readResult = await consumer.invoke("/workspace/entries/hello.txt", "read", {});
     expect(readResult.status).toBe("ok");
     expect((readResult.data as { content: string }).content).toBe("Hello World");
+  });
+
+  test("normalizes paths that include the workspace directory name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-normalize-"));
+    tempPaths.push(root);
+    await mkdir(join(root, "todo-app"), { recursive: true });
+    await writeFile(join(root, "todo-app", "README.md"), "hello", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const withRootName = await consumer.invoke("/workspace", "set_focus", {
+        path: `${root.split("/").at(-1)}/todo-app`,
+      });
+      expect(withRootName.status).toBe("ok");
+      expect((withRootName.data as { path: string }).path).toBe("todo-app");
+
+      const absoluteRead = await consumer.invoke("/workspace", "read", {
+        path: join(root, "todo-app", "README.md"),
+      });
+      expect(absoluteRead.status).toBe("ok");
+      expect((absoluteRead.data as { path: string; content: string }).path).toBe(
+        "todo-app/README.md",
+      );
+      expect((absoluteRead.data as { content: string }).content).toBe("hello");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("returns actionable invalid-input errors for missing required filesystem paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-invalid-"));
+    tempPaths.push(root);
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {});
+      expect(read.status).toBe("error");
+      expect(read.error?.code).toBe("invalid_input");
+      expect(read.error?.message).toContain("path must be a non-empty string");
+    } finally {
+      provider.stop();
+    }
   });
 
   test("exposes per-file version and enforces expected_version on write (CAS)", async () => {
@@ -250,6 +314,49 @@ describe("FilesystemProvider", () => {
       expect(data.content).toBe("hello world");
       expect(data.preview_only).toBeUndefined();
       expect(data.ref).toBeUndefined();
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("read returns a compact listing for directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-dir-read-"));
+    tempPaths.push(root);
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "src", "App.jsx"), "export default function App() {}\n", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const result = await consumer.invoke("/workspace", "read", { path: "src" });
+      expect(result.status).toBe("ok");
+      const data = result.data as {
+        kind?: string;
+        content: string;
+        entries?: Array<{ name: string; path: string; kind: string; size: number }>;
+        hint?: string;
+      };
+      expect(data.kind).toBe("directory");
+      expect(data.entries).toEqual([
+        {
+          name: "App.jsx",
+          path: "src/App.jsx",
+          kind: "file",
+          size: Buffer.byteLength("export default function App() {}\n", "utf8"),
+        },
+      ]);
+      expect(data.content).toContain("file\tsrc/App.jsx");
+      expect(data.hint).toContain("Use set_focus or slop_query_state");
     } finally {
       provider.stop();
     }
@@ -582,6 +689,42 @@ describe("FilesystemProvider", () => {
 
       const after = await consumer.invoke("/workspace", "read", { path: "per-entry.txt" });
       expect((after.data as { content: string }).content).toBe("kept me");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("workspace edit accepts a path mistakenly nested inside every edit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-edit-nested-path-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "postcss.config.js"), "tailwindcss: {},\n", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const result = await consumer.invoke("/workspace", "edit", {
+        edits: [
+          {
+            path: "postcss.config.js",
+            oldText: "tailwindcss: {},",
+            newText: "'@tailwindcss/postcss': {},",
+          },
+        ],
+      });
+      expect(result.status).toBe("ok");
+      expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
+
+      const after = await consumer.invoke("/workspace", "read", { path: "postcss.config.js" });
+      expect((after.data as { content: string }).content).toBe("'@tailwindcss/postcss': {},\n");
     } finally {
       provider.stop();
     }
