@@ -173,12 +173,14 @@ describe("policy metadata isolation", () => {
     try {
       await hub.connect();
       await hub.addProvider(delegationProvider);
-      // Approval-shaped rule that fires only when no `confirmed` flag is set.
+      // Approval-shaped rule that allows the re-invoke path. The hub now
+      // signals approval via the out-of-band `preApproved` flag on
+      // InvokeContext rather than a model-controlled `params.confirmed`.
       const seenRoleIds: Array<string | undefined> = [];
       hub.addPolicyRule({
         evaluate: (ctx) => {
           seenRoleIds.push(ctx.roleId);
-          if (ctx.params.confirmed === true) {
+          if (ctx.preApproved) {
             return { kind: "allow" };
           }
           return { kind: "require_approval", reason: "test approval" };

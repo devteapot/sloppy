@@ -43,7 +43,7 @@ export const terminalSafetyRule: InvokePolicy = {
       return ALLOW;
     }
     const command = typeof ctx.params.command === "string" ? ctx.params.command : "";
-    if (typeof ctx.params.confirmed === "boolean" && ctx.params.confirmed) {
+    if (ctx.preApproved) {
       return ALLOW;
     }
     if (!DESTRUCTIVE_COMMAND_RE.test(command) && !usesFileOutputRedirection(command)) {
@@ -136,7 +136,7 @@ export const orchestratorRoleRule: InvokePolicy = {
 export function dangerousActionRule(getViews: () => ProviderTreeView[]): InvokePolicy {
   return {
     evaluate(ctx: InvokeContext): PolicyDecision {
-      if (typeof ctx.params.confirmed === "boolean" && ctx.params.confirmed) {
+      if (ctx.preApproved) {
         return ALLOW;
       }
       const views = getViews();

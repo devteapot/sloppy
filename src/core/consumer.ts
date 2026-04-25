@@ -456,6 +456,17 @@ export class ConsumerHub {
     params?: Record<string, unknown>,
     metadata?: InvocationMetadata,
   ): Promise<ResultMessage> {
+    return this.invokeInternal(providerId, path, action, params, metadata, false);
+  }
+
+  private async invokeInternal(
+    providerId: string,
+    path: string,
+    action: string,
+    params: Record<string, unknown> | undefined,
+    metadata: InvocationMetadata | undefined,
+    preApproved: boolean,
+  ): Promise<ResultMessage> {
     const provider = this.requireProvider(providerId);
 
     if (this.policy !== allowAllPolicy) {
@@ -465,6 +476,7 @@ export class ConsumerHub {
         path,
         params: params ?? {},
         roleId: metadata?.roleId,
+        preApproved,
         config: this.config,
       };
       const decision = await this.policy.evaluate(ctx);
@@ -475,9 +487,10 @@ export class ConsumerHub {
         // Enqueue into the hub-owned approval queue so the user can resolve it
         // via the per-provider `/approvals` collection (or any UI watching
         // `hub.approvals`). On approve, the action is re-invoked with
-        // `confirmed: true` so the rule short-circuits and the invocation
-        // proceeds. Returning the SLOP `approval_required` error preserves
-        // the existing run-loop / tooling contract.
+        // `preApproved: true` (out of band, NOT a `params` field) so the rule
+        // short-circuits and the invocation proceeds. Returning the SLOP
+        // `approval_required` error preserves the existing run-loop / tooling
+        // contract.
         //
         // The original invocation's `metadata` is captured here and replayed
         // on approve so policy rules see the same role/actor on the second
@@ -492,13 +505,7 @@ export class ConsumerHub {
           paramsPreview: decision.paramsPreview,
           dangerous: decision.dangerous,
           execute: () =>
-            this.invoke(
-              providerId,
-              path,
-              action,
-              { ...(params ?? {}), confirmed: true },
-              capturedMetadata,
-            ),
+            this.invokeInternal(providerId, path, action, params, capturedMetadata, true),
         });
         return {
           status: "error",

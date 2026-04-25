@@ -19,6 +19,14 @@ export interface InvokeContext {
   params: Record<string, unknown>;
   /** Optional id of the role driving this invocation (e.g. "orchestrator"). */
   roleId?: string;
+  /**
+   * True when the hub is re-invoking after an approval has already been
+   * granted via the hub-owned approval queue. Set out-of-band by the hub —
+   * never derived from `params` — so model-controlled input cannot forge it.
+   * Rules that gate dangerous actions on approval should consult this flag,
+   * not any field in `params`.
+   */
+  preApproved?: boolean;
   config: SloppyConfig;
 }
 

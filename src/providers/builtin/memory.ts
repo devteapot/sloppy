@@ -171,27 +171,23 @@ export class MemoryProvider {
           },
         ),
         clear_all: action(
-          {
-            confirmed: {
-              type: "boolean",
-              description: "Set true only after explicit user approval.",
-            },
-          },
-          async ({ confirmed }) => {
-            if (!confirmed) {
-              const approvalId = this.approvals.request({
-                path: "/session",
-                action: "clear_all",
-                reason: "Clearing all memories is irreversible and cannot be undone.",
-                paramsPreview: JSON.stringify({ confirmed: true }),
-                dangerous: true,
-                execute: () => this.clearAll(),
-              });
-              throw createApprovalRequiredError(
-                `Clearing all memories requires approval via /approvals/${approvalId}.`,
-              );
-            }
-            return this.clearAll();
+          {},
+          async () => {
+            // Caller-controlled bypass parameters are unsafe (model can spoof
+            // them); always route through the provider approval queue. The
+            // approval `execute` callback invokes `clearAll` directly, not
+            // back through this descriptor, so there is no recursive bypass.
+            const approvalId = this.approvals.request({
+              path: "/session",
+              action: "clear_all",
+              reason: "Clearing all memories is irreversible and cannot be undone.",
+              paramsPreview: "{}",
+              dangerous: true,
+              execute: () => this.clearAll(),
+            });
+            throw createApprovalRequiredError(
+              `Clearing all memories requires approval via /approvals/${approvalId}.`,
+            );
           },
           {
             label: "Clear All",

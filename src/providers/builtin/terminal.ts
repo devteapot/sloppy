@@ -324,18 +324,12 @@ export class TerminalProvider {
                 "Optional. Run the command asynchronously and expose progress via the tasks collection.",
               optional: true,
             },
-            confirmed: {
-              type: "boolean",
-              description:
-                "Optional. Set true only after the user explicitly approved a destructive command.",
-              optional: true,
-            },
           },
           async ({ command, background }) => {
-            // The `confirmed` param remains in the descriptor so the hub can
-            // re-invoke after approval with `confirmed: true` to bypass
-            // `terminalSafetyRule`. The provider itself no longer enforces
-            // destructiveness — that lives in the hub-level rule.
+            // Destructive-command gating lives in the hub-level
+            // `terminalSafetyRule`. On approval the hub re-invokes with
+            // `preApproved: true` (out-of-band on `InvokeContext`), so the
+            // descriptor exposes no caller-controlled bypass parameter.
             if (background) {
               return this.startBackgroundCommand(command);
             }
