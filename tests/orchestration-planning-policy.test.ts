@@ -228,7 +228,7 @@ describe("orchestration runtime roles", () => {
 
     expect(watchedPaths).toContain("orchestration:/goals");
     expect(watchedPaths).toContain("orchestration:/gates");
-    expect(watchedPaths).toContain("specs:/specs");
+    expect(watchedPaths).toContain("spec:/specs");
 
     attached.stop();
     expect(stopped).toBe(3);

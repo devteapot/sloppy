@@ -210,6 +210,12 @@ describe("autonomous goal pipeline (Phase 2)", () => {
       );
       expect(specGate?.id).toBeString();
       await consumer.invoke(`/gates/${specGate?.id}`, "resolve_gate", { status: "accepted" });
+      const specRef = specGate?.properties?.subject_ref;
+      expect(specRef).toBeString();
+      const specMatch = /^spec:(.+):v\d+$/.exec(String(specRef));
+      expect(specMatch?.[1]).toBeString();
+      const accepted = await hub.invoke("specs", `/specs/${specMatch?.[1]}`, "accept_spec", { gate_id: specGate?.id });
+      expect(accepted.status).toBe("ok");
 
       await waitFor(
         () => observedSpawns.some((spawn) => spawn.roleId === "planner"),
