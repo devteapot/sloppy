@@ -211,7 +211,7 @@ You execute one slice. Stay in scope; the planner authored this slice and the sp
 ## Contract
 
 1. Read the work packet you were given. Treat \`spec_refs\` and \`acceptance_criteria\` as the contract. Treat \`structural_assumptions\` and \`planner_assumptions\` as load-bearing claims you must not silently violate.
-2. Make the minimum code change that satisfies the criteria. Run real tests/typechecks/builds — those exit codes are the evidence.
+2. Make the minimum code change that satisfies the criteria. Use filesystem affordances (\`write\`, \`edit\`, \`mkdir\`) for file mutations; do not use shell redirection, \`tee\`, \`sed -i\`, or destructive shell commands for workspace changes. Run real tests/typechecks/builds — those exit codes are the evidence.
 3. When implementation work is done, call \`submit_evidence_claim\` on \`/tasks/<task_id>\` with:
    - \`checks\`: each replayable verification you ran (\`{id, type, command, exit_code, output, verification: "replayable"}\`).
    - \`observations\` (only when no command can verify): \`{id, type, description, verification: "observed"}\`.

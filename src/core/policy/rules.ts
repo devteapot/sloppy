@@ -91,6 +91,8 @@ const ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS = new Set([
   "copy",
 ]);
 
+const ORCHESTRATOR_SUB_AGENT_READ_ACTIONS = new Set(["read", "list", "get", "status", "inspect"]);
+
 const ORCHESTRATOR_SAFE_TERMINAL_COMMANDS = [
   /^npm run (build|lint|test|typecheck)$/,
   /^npm test$/,
@@ -123,6 +125,16 @@ export const orchestratorRoleRule: InvokePolicy = {
       return ALLOW;
     }
 
+    if (
+      ctx.providerId.startsWith("sub-agent-") &&
+      !ORCHESTRATOR_SUB_AGENT_READ_ACTIONS.has(ctx.action)
+    ) {
+      return {
+        kind: "deny",
+        reason: `Orchestrator mode cannot mutate sub-agent session providers directly (${ctx.providerId}.${ctx.action}). Treat sub-agent providers as read-only mirrors; manage child lifecycle through /agents state and orchestration/delegation handoff or approval affordances instead.`,
+      };
+    }
+
     if (ctx.providerId === "filesystem" && ORCHESTRATOR_DENIED_FILESYSTEM_ACTIONS.has(ctx.action)) {
       return {
         kind: "deny",
@@ -134,6 +146,13 @@ export const orchestratorRoleRule: InvokePolicy = {
       return {
         kind: "deny",
         reason: `Orchestrator mode does not spawn delegation agents directly. Create or retry orchestration tasks; the runtime scheduler starts ready tasks when dependencies and capacity allow.`,
+      };
+    }
+
+    if (ctx.providerId === "delegation" && ctx.action === "cancel") {
+      return {
+        kind: "deny",
+        reason: `Orchestrator mode cannot cancel delegated agents directly. Observe completed task state and continue the plan; use orchestration retry/cancel semantics only when explicitly needed.`,
       };
     }
 
@@ -200,6 +219,20 @@ export const executorRoleRule: InvokePolicy = {
         kind: "deny",
         reason: `Executor cannot spawn further delegation agents. Submit evidence or escalate this slice.`,
       };
+    }
+
+    if (ctx.providerId === "terminal" && ctx.action === "execute") {
+      const command = typeof ctx.params.command === "string" ? ctx.params.command : "";
+      if (
+        DESTRUCTIVE_COMMAND_RE.test(command) ||
+        usesFileOutputRedirection(command) ||
+        usesTeeWrite(command)
+      ) {
+        return {
+          kind: "deny",
+          reason: `Executor cannot use approval-gated shell mutations. Use filesystem.write/edit/mkdir for file changes, then run terminal only for replayable verification commands.`,
+        };
+      }
     }
 
     return ALLOW;
@@ -317,6 +350,13 @@ export function dangerousActionRule(
         return ALLOW;
       }
       if (!isDangerous(ctx.providerId, ctx.path, ctx.action)) {
+        return ALLOW;
+      }
+      if (
+        ctx.roleId === "orchestrator" &&
+        ctx.providerId === "delegation" &&
+        (ctx.action === "approve_child_approval" || ctx.action === "reject_child_approval")
+      ) {
         return ALLOW;
       }
       return {

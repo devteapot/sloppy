@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { ProviderRuntimeHub } from "../src/core/hub";
+import { orchestratorRoleRule } from "../src/core/policy/rules";
 import { RoleRegistry, type RuntimeContext, type TaskContextFactory } from "../src/core/role";
 import { createOrchestratorRole, plannerRole, specAgentRole } from "../src/runtime/orchestration";
 import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
@@ -90,6 +91,52 @@ describe("planning-policy.inferBatchDependencyRefs", () => {
     const inferred = inferBatchDependencyRefs(drafts);
     expect(inferred.get("a")).toEqual([]);
     expect(inferred.get("b")).toEqual(["a"]);
+  });
+});
+
+describe("orchestrator role policy", () => {
+  test("denies direct mutation of sub-agent session providers instead of requiring approval", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "sub-agent-agent-abc123",
+      path: "/tasks/task-xyz",
+      action: "cancel",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("deny");
+    if (decision.kind !== "deny") throw new Error("expected deny decision");
+    expect(decision.reason).toContain("sub-agent");
+    expect(decision.reason).toContain("orchestration");
+  });
+
+  test("denies direct cancellation of delegation agents instead of requiring approval", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "delegation",
+      path: "/agents/agent-abc123",
+      action: "cancel",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("deny");
+    if (decision.kind !== "deny") throw new Error("expected deny decision");
+    expect(decision.reason).toContain("cannot cancel");
+  });
+
+  test("allows orchestrator read-only inspection of sub-agent session providers", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "sub-agent-agent-abc123",
+      path: "/tasks/task-xyz",
+      action: "read",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("allow");
   });
 });
 

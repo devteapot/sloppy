@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,37 +26,58 @@ async function setupWorkspace(): Promise<string> {
   return root;
 }
 
+function copyArtifactTree(sourceRoot: string, artifactDir: string, prefix: string): string[] {
+  const copied: string[] = [];
+  const visit = (current: string) => {
+    for (const name of readdirSync(current)) {
+      const source = join(current, name);
+      const stat = statSync(source);
+      if (stat.isDirectory()) {
+        visit(source);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      const relativePath = source.slice(sourceRoot.length + 1);
+      const artifactName = `${prefix}${relativePath.replaceAll("/", "__")}.artifact`;
+      try {
+        copyFileSync(source, join(artifactDir, artifactName));
+        copied.push(relativePath);
+      } catch {
+        // Skip files that disappear during shutdown or cannot be copied.
+      }
+    }
+  };
+  visit(sourceRoot);
+  return copied;
+}
+
 function dumpArtifacts(root: string, logPath: string, label: string): void {
   try {
     const artifactDir = resolve("test-artifacts", `${label}-${Date.now()}`);
     mkdirSync(artifactDir, { recursive: true });
     const orchestration = join(root, ".sloppy/orchestration");
     if (existsSync(orchestration)) {
-      const entries = readdirSync(orchestration, { recursive: true, withFileTypes: true });
-      writeFileSync(
-        join(artifactDir, "orchestration-listing.txt"),
-        entries.map((e) => `${e.parentPath ?? ""}/${e.name}`).join("\n"),
-      );
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        const parent = entry.parentPath ?? "";
-        const src = join(parent, entry.name);
-        const rel = src.slice(root.length + 1).replaceAll("/", "__");
-        writeFileSync(join(artifactDir, rel), readFileSync(src, "utf8"));
-      }
+      const copied = copyArtifactTree(orchestration, artifactDir, "orchestration__");
+      writeFileSync(join(artifactDir, "orchestration-listing.txt"), copied.join("\n"));
     }
     for (const file of readdirSync(root)) {
       const full = join(root, file);
-      if (existsSync(full) && !file.startsWith(".") && file !== "debug.log") {
+      if (!existsSync(full) || file.startsWith(".") || file === "debug.log") continue;
+      const stat = statSync(full);
+      if (stat.isDirectory()) {
+        copyArtifactTree(full, artifactDir, `workspace__${file}__`);
+        continue;
+      }
+      if (stat.isFile()) {
         try {
-          writeFileSync(join(artifactDir, `workspace__${file}`), readFileSync(full, "utf8"));
+          copyFileSync(full, join(artifactDir, `workspace__${file}`));
         } catch {
-          // skip non-text files
+          // skip files that disappear during shutdown
         }
       }
     }
     if (existsSync(logPath)) {
-      writeFileSync(join(artifactDir, "debug.log"), readFileSync(logPath, "utf8"));
+      copyFileSync(logPath, join(artifactDir, "debug.log"));
     }
     process.stderr.write(`[e2e] artifacts saved to ${artifactDir}\n`);
   } catch (error) {
@@ -303,6 +332,25 @@ describe.if(LIVE)("orchestration e2e (live LLM)", () => {
       try {
         await agent.start();
         const result = await agent.chat(FANOUT_GOAL);
+        if (result.status !== "completed") {
+          writeFileSync(
+            join(root, "waiting-approval.json"),
+            JSON.stringify(
+              {
+                status: result.status,
+                invocation: result.status === "waiting_approval" ? result.invocation : undefined,
+              },
+              null,
+              2,
+            ),
+          );
+          process.stderr.write(`[e2e] fanout stopped with ${result.status}\n`);
+          if (result.status === "waiting_approval") {
+            process.stderr.write(
+              `[e2e] waiting approval invocation ${JSON.stringify(result.invocation)}\n`,
+            );
+          }
+        }
         expect(result.status).toBe("completed");
 
         const expectations: Record<string, string[]> = {

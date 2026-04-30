@@ -74,6 +74,12 @@ export type OrchestrationSchedulerEvent =
     };
 
 const ACTIVE_AGENT_STATUSES = new Set(["pending", "running"]);
+const TERMINAL_TASK_STATUSES = new Set<SchedulerTaskStatus>([
+  "completed",
+  "failed",
+  "cancelled",
+  "superseded",
+]);
 const SCHEDULABLE_TASK_STATUSES = new Set(["pending", "scheduled"]);
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -300,7 +306,17 @@ export class OrchestrationScheduler {
     const tasks = parseTasks(this.tasksTree);
     this.syncAutonomousLifecycle(plan, tasks);
     const agents = parseAgents(this.agentsTree);
-    const activeAgents = agents.filter((agent) => ACTIVE_AGENT_STATUSES.has(agent.status));
+    const taskStatusById = new Map(tasks.map((task) => [task.id, task.status]));
+    const activeAgents = agents.filter((agent) => {
+      if (!ACTIVE_AGENT_STATUSES.has(agent.status)) {
+        return false;
+      }
+      if (!agent.orchestrationTaskId) {
+        return true;
+      }
+      const attachedTaskStatus = taskStatusById.get(agent.orchestrationTaskId);
+      return !attachedTaskStatus || !TERMINAL_TASK_STATUSES.has(attachedTaskStatus);
+    });
     const activeTaskIds = new Set(
       activeAgents
         .map((agent) => agent.orchestrationTaskId)

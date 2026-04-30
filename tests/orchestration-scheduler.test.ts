@@ -208,6 +208,59 @@ describe("OrchestrationScheduler", () => {
     }
   });
 
+  test("does not let stale running agents for completed tasks consume scheduler capacity", async () => {
+    const { consumer, hub, orchestration, scheduler, spawnedTaskIds } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", {
+        query: "build dependent tasks with one slot",
+        max_agents: 1,
+      });
+      const createdResult = await consumer.invoke("/orchestration", "create_tasks", {
+        tasks: [
+          { name: "first", client_ref: "first", goal: "Do the first task." },
+          {
+            name: "second",
+            client_ref: "second",
+            goal: "Do the second task after the first.",
+            depends_on: ["first"],
+          },
+        ],
+      });
+      expect(createdResult.status).toBe("ok");
+      const created = (createdResult.data as { created: Array<{ id: string }> }).created;
+      const firstId = created[0]?.id;
+      const secondId = created[1]?.id;
+      if (!firstId || !secondId) {
+        throw new Error("Expected two created tasks.");
+      }
+
+      await waitFor(() => spawnedTaskIds.includes(firstId), "first task to be spawned");
+      expect(spawnedTaskIds).toEqual([firstId]);
+
+      await consumer.invoke(`/tasks/${firstId}`, "record_verification", {
+        status: "not_required",
+        criteria: ["all"],
+        summary: "No external verification needed in scheduler test.",
+      });
+      const complete = await consumer.invoke(`/tasks/${firstId}`, "complete", {
+        result: "first done",
+      });
+      expect(complete.status).toBe("ok");
+
+      await waitFor(
+        () => spawnedTaskIds.includes(secondId),
+        "dependent task to be spawned despite first agent still running",
+      );
+      expect(spawnedTaskIds).toEqual([firstId, secondId]);
+    } finally {
+      consumer.disconnect();
+      scheduler.stop();
+      hub.shutdown();
+      orchestration.stop();
+    }
+  });
+
   test("claims ready tasks and starts dependent work after completion patches", async () => {
     const { consumer, events, hub, orchestration, scheduler, spawnedTaskIds } = await harness();
 
