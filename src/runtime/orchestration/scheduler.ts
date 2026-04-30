@@ -33,6 +33,8 @@ type SchedulerPlan = {
   maxAgents?: number;
   goalId?: string;
   version?: number;
+  gateMode?: string;
+  finalAuditId?: string;
 };
 
 export type OrchestrationSchedulerEvent =
@@ -163,6 +165,8 @@ function parsePlan(tree: SlopNode | null): SchedulerPlan {
     maxAgents: numberProp(props, "plan_max_agents"),
     goalId: stringProp(props, "plan_goal_id"),
     version: numberProp(props, "plan_version"),
+    gateMode: stringProp(props, "gate_mode"),
+    finalAuditId: stringProp(props, "final_audit_id"),
   };
 }
 
@@ -533,10 +537,45 @@ export class OrchestrationScheduler {
       return;
     }
 
+    if (this.requiresFinalAudit(plan)) {
+      this.runFinalAudit(plan);
+      return;
+    }
+
     this.persistAutonomousLifecycle(plan.goalId, "goal.completed", {
       taskIds: tasks.map((task) => task.id).join(","),
     });
     this.completeAutonomousPlan(plan);
+  }
+
+  private requiresFinalAudit(plan: SchedulerPlan): boolean {
+    return plan.gateMode === "hitl" && !plan.finalAuditId;
+  }
+
+  private runFinalAudit(plan: SchedulerPlan): void {
+    if (!plan.goalId) return;
+    const signature = `run_final_audit:${plan.goalId}:${plan.version ?? "unknown"}`;
+    if (this.lifecycleSignatures.has(signature)) return;
+    this.lifecycleSignatures.add(signature);
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    void this.options.hub
+      .invoke(orchestrationProviderId, "/audit", "run_final_audit", {}, { actor: "scheduler" })
+      .then((result) => {
+        if (result.status === "error") {
+          debug("scheduler", "run_final_audit_failed", {
+            goalId: plan.goalId,
+            error: result.error?.message,
+          });
+          return;
+        }
+        this.requestEvaluation();
+      })
+      .catch((error: unknown) => {
+        debug("scheduler", "run_final_audit_failed", {
+          goalId: plan.goalId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   private completeAutonomousPlan(plan: SchedulerPlan): void {

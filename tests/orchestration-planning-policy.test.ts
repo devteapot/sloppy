@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { ProviderRuntimeHub } from "../src/core/hub";
-import { RoleRegistry, type RuntimeContext } from "../src/core/role";
+import { RoleRegistry, type RuntimeContext, type TaskContextFactory } from "../src/core/role";
 import { createOrchestratorRole, plannerRole, specAgentRole } from "../src/runtime/orchestration";
 import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 import { inferBatchDependencyRefs } from "../src/runtime/orchestration/planning-policy";
@@ -190,6 +190,41 @@ describe("orchestration runtime roles", () => {
     expect(registry.has("spec-agent")).toBe(false);
     expect(registry.has("planner")).toBe(false);
     expect(registry.has("executor")).toBe(false);
+  });
+
+  test("task context keeps orchestration enabled for executors and skips planning specialists", () => {
+    const registry = new RoleRegistry();
+    let factory: TaskContextFactory = () => undefined;
+    const hub = {
+      addPolicyRule: () => undefined,
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+      delegationHooks: {
+        setTaskContextFactory(next) {
+          factory = next as typeof factory;
+        },
+      },
+    };
+
+    const attached = attachOrchestrationRuntime(hub, {} as SloppyConfig, ctx);
+    try {
+      expect(factory?.({ id: "s", name: "spec", goal: "g", roleId: "spec-agent" })).toBeUndefined();
+      expect(factory?.({ id: "p", name: "plan", goal: "g", roleId: "planner" })).toBeUndefined();
+      const executorContext = factory?.({
+        id: "e",
+        name: "exec",
+        goal: "g",
+        externalTaskId: "task-1",
+        roleId: "executor",
+      });
+      expect(executorContext?.disableBuiltinProviders).toEqual(["spec"]);
+    } finally {
+      attached.stop();
+    }
   });
 
   test("attach runtime starts the autonomous goal coordinator when orchestration, delegation, and specs are enabled", async () => {

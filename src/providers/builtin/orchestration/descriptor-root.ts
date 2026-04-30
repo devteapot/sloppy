@@ -73,6 +73,7 @@ export function buildRootDescriptor(wiring: DescriptorWiring) {
       planned_commit: plan?.planned_commit,
       active_revision_id: plan?.active_revision_id,
       gate_mode: plan?.gate_mode ?? "legacy",
+      final_audit_id: plan?.final_audit_id,
       budget,
       budget_usage_count: budgetUsageList.length,
       plan_version: plan ? repo.planVersion() : undefined,

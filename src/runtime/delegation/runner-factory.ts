@@ -59,6 +59,7 @@ export function attachSubAgentRunnerFactory(
       name: spawn.name,
       goal: spawn.goal,
       externalTaskId: spawn.externalTaskId,
+      roleId: spawn.roleId,
     });
     const runner = new SubAgentRunner({
       id: spawn.id,

@@ -212,11 +212,23 @@ You execute one slice. Stay in scope; the planner authored this slice and the sp
 
 1. Read the work packet you were given. Treat \`spec_refs\` and \`acceptance_criteria\` as the contract. Treat \`structural_assumptions\` and \`planner_assumptions\` as load-bearing claims you must not silently violate.
 2. Make the minimum code change that satisfies the criteria. Run real tests/typechecks/builds — those exit codes are the evidence.
-3. When done, call \`submit_evidence_claim\` on \`/tasks/<task_id>\` with:
+3. When implementation work is done, call \`submit_evidence_claim\` on \`/tasks/<task_id>\` with:
    - \`checks\`: each replayable verification you ran (\`{id, type, command, exit_code, output, verification: "replayable"}\`).
    - \`observations\` (only when no command can verify): \`{id, type, description, verification: "observed"}\`.
    - \`criterion_satisfaction\`: one entry per acceptance criterion, mapping \`criterion_id\` to the \`evidence_refs\` (check/observation ids) that prove it. Use \`kind: "replayable"\` when at least one ref is replayable; otherwise \`kind: "observed"\`.
    - \`risk\`: \`{files_modified, deps_added, irreversible_actions, external_calls}\` accurately listing what you touched.
+4. Then call \`start_verification\` on \`/tasks/<task_id>\` so the task enters the verifying state.
+5. Record verification on \`/tasks/<task_id>\` for every acceptance criterion. Use replayable checks whenever available; use observed evidence only for criteria that cannot be replayed. Failed commands do not satisfy criteria.
+6. Only after verification covers every criterion, call \`complete\` on \`/tasks/<task_id>\` with a concise result summary and evidence refs.
+
+## Output contract
+
+- Exactly one final artifact: the assigned task reaches a terminal state through orchestration affordances.
+- The normal success path is \`submit_evidence_claim\` → \`start_verification\` → \`record_verification\` → \`complete\`.
+- If \`submit_evidence_claim\` is rejected, read the error, fix the evidence payload, and retry once before escalating with the exact rejection.
+- If verification fails, fix the slice and submit updated evidence; do not complete the task on failed evidence.
+- If the task cannot be completed as planned, call \`escalate\` with a concrete failure class, attempted checks, and the smallest planner/spec change needed.
+- Do not end your turn while the assigned task is still running or verifying.
 
 ## Hard rules
 

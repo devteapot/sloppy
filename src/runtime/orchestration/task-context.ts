@@ -353,7 +353,7 @@ export function createOrchestrationTaskContext(
   }
 
   return {
-    disableBuiltinProviders: ["orchestration", "spec"],
+    disableBuiltinProviders: ["spec"],
 
     async ensureTask() {
       if (taskId) {

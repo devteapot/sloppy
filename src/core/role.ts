@@ -34,6 +34,7 @@ export interface TaskContextSpawnInfo {
   name: string;
   goal: string;
   externalTaskId?: string;
+  roleId?: string;
 }
 
 /**

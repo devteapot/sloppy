@@ -44,16 +44,19 @@ export function attachOrchestrationRuntime(
   hub.addPolicyRule(specAgentRoleRule);
   hub.addPolicyRule(plannerRoleRule);
 
-  ctx.delegationHooks?.setTaskContextFactory((spawn) =>
-    createOrchestrationTaskContext({
+  ctx.delegationHooks?.setTaskContextFactory((spawn) => {
+    if (spawn.roleId !== "executor" || !spawn.externalTaskId) {
+      return undefined;
+    }
+    return createOrchestrationTaskContext({
       hub,
       providerId: BUILTIN_PROVIDER_IDS.orchestration,
       taskId: spawn.externalTaskId,
       spawnId: spawn.id,
       spawnName: spawn.name,
       spawnGoal: spawn.goal,
-    }),
-  );
+    });
+  });
 
   const autonomousCoordinator =
     config.providers?.builtin?.orchestration &&
