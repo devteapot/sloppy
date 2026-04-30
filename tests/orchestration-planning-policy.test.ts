@@ -169,4 +169,46 @@ describe("orchestration runtime roles", () => {
     expect(registry.has("planner")).toBe(false);
     expect(registry.has("executor")).toBe(false);
   });
+
+  test("attach runtime starts the autonomous goal coordinator when orchestration, delegation, and specs are enabled", async () => {
+    const registry = new RoleRegistry();
+    const watchedPaths: string[] = [];
+    let stopped = 0;
+    const hub = {
+      addPolicyRule: () => undefined,
+      watchPath: async (providerId: string, path: string) => {
+        watchedPaths.push(`${providerId}:${path}`);
+        return () => {
+          stopped += 1;
+        };
+      },
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+    };
+    const config = {
+      providers: {
+        builtin: {
+          orchestration: true,
+          delegation: true,
+          spec: true,
+        },
+      },
+    } as SloppyConfig;
+
+    const attached = attachOrchestrationRuntime(hub, config, ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(watchedPaths).toContain("orchestration:/goals");
+    expect(watchedPaths).toContain("orchestration:/gates");
+    expect(watchedPaths).toContain("specs:/specs");
+
+    attached.stop();
+    expect(stopped).toBe(3);
+  });
 });

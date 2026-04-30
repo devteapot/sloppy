@@ -7,6 +7,7 @@ import {
   specAgentRoleRule,
 } from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
+import { AutonomousGoalCoordinator } from "./autonomous-coordinator";
 import { createOrchestratorRole, executorRole, plannerRole, specAgentRole } from "./index";
 import { createOrchestrationTaskContext } from "./task-context";
 
@@ -20,7 +21,7 @@ const ORCHESTRATION_PROVIDER_ID = "orchestration";
  */
 export function attachOrchestrationRuntime(
   hub: ProviderRuntimeHub,
-  _config: SloppyConfig,
+  config: SloppyConfig,
   ctx?: RuntimeContext,
 ): { stop(): void } {
   if (!ctx) {
@@ -55,8 +56,17 @@ export function attachOrchestrationRuntime(
     }),
   );
 
+  const autonomousCoordinator =
+    config.providers?.builtin?.orchestration &&
+    config.providers?.builtin?.delegation &&
+    config.providers?.builtin?.spec
+      ? new AutonomousGoalCoordinator({ hub })
+      : undefined;
+  void autonomousCoordinator?.start();
+
   return {
     stop() {
+      void autonomousCoordinator?.stop();
       ctx.roleRegistry.unregister("orchestrator");
       ctx.roleRegistry.unregister("spec-agent");
       ctx.roleRegistry.unregister("planner");
