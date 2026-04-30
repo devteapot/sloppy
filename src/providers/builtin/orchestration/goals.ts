@@ -31,6 +31,26 @@ function normalizeEvidenceRefs(value: string[] | undefined): string[] {
   return [...new Set(value ?? [])].filter((item) => item.length > 0);
 }
 
+const AUTONOMOUS_LIFECYCLE_ORDER = new Map<string, number>([
+  ["goal.created", 10],
+  ["spec_agent.spawned", 20],
+  ["spec.drafted", 30],
+  ["spec.accepted", 40],
+  ["planner.spawned", 50],
+  ["plan.created", 60],
+  ["executor.spawned", 70],
+  ["executor.running", 80],
+  ["executor.verifying", 90],
+  ["executor.completed", 100],
+  ["goal.completed", 110],
+  ["goal.failed", 110],
+  ["goal.escalated", 110],
+]);
+
+function lifecycleRank(stage: string | undefined): number {
+  return AUTONOMOUS_LIFECYCLE_ORDER.get(stage ?? "") ?? 0;
+}
+
 export class GoalsCoordinator {
   private readonly repo: OrchestrationRepository;
   private readonly gates: GatesCoordinator;
@@ -219,6 +239,11 @@ export class GoalsCoordinator {
     refs?: Record<string, string>;
   }): Goal {
     const goal = this.requireGoal(params.goal_id);
+    const currentRank = lifecycleRank(goal.autonomous_lifecycle?.stage);
+    const nextRank = lifecycleRank(params.stage);
+    if (currentRank > nextRank) {
+      return goal;
+    }
     const timestamp = new Date().toISOString();
     const next: Goal = {
       ...goal,

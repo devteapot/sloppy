@@ -199,6 +199,41 @@ async function harness() {
 
         if (spawnRole(spawn) === "executor" && spawn.externalTaskId) {
           await hub.invoke("orchestration", `/tasks/${spawn.externalTaskId}`, "start", {});
+          await hub.invoke(
+            "orchestration",
+            `/tasks/${spawn.externalTaskId}`,
+            "record_verification",
+            {
+              kind: "smoke",
+              status: "not_required",
+              summary: "Autonomous executor smoke uses synthetic delegated completion.",
+              criteria: ["all"],
+            },
+          );
+          await hub.invoke(
+            "orchestration",
+            `/tasks/${spawn.externalTaskId}`,
+            "start_verification",
+            {},
+          );
+          const sliceGate = await hub.invoke("orchestration", "/gates", "open_gate", {
+            gate_type: "slice_gate",
+            resolver: "policy",
+            subject_ref: `slice:${spawn.externalTaskId}`,
+            summary: "Accept autonomous smoke slice.",
+          });
+          const sliceGateId =
+            (sliceGate.data as { id?: string; gate_id?: string }).id ??
+            (sliceGate.data as { gate_id?: string }).gate_id;
+          if (!sliceGateId)
+            throw new Error(`open slice gate returned no gate id: ${JSON.stringify(sliceGate)}`);
+          await hub.invoke("orchestration", `/gates/${sliceGateId}`, "resolve_gate", {
+            status: "accepted",
+          });
+          await hub.invoke("orchestration", `/tasks/${spawn.externalTaskId}`, "complete", {
+            result: "Autonomous executor smoke task completed.",
+          });
+          await hub.invoke("orchestration", "/audit", "run_final_audit", {});
         }
 
         callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
@@ -307,6 +342,39 @@ describe("autonomous runtime smoke", () => {
       expect(observedSpawns[0].name).toStartWith("spec-agent:");
       expect(observedSpawns[1].name).toStartWith("planner:");
       expect(observedSpawns[2].externalTaskId).toBeTruthy();
+      const goalId = (goal.data as { id: string }).id;
+      try {
+        await waitFor(async () => {
+          const node = await consumer.query(`/goals/${goalId}`, 1);
+          const lifecycle = node.properties?.autonomous_lifecycle as
+            | { stage?: string; refs?: Record<string, string> }
+            | undefined;
+          return lifecycle?.stage === "goal.completed";
+        }, "goal.completed lifecycle stage");
+      } catch (error) {
+        const goalNode = await consumer.query(`/goals/${goalId}`, 1);
+        const tasks = await hub.queryState({
+          providerId: "orchestration",
+          path: "/tasks",
+          depth: 2,
+        });
+        const plan = await hub.queryState({
+          providerId: "orchestration",
+          path: "/orchestration",
+          depth: 1,
+        });
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; lifecycle=${JSON.stringify(
+            goalNode.properties?.autonomous_lifecycle,
+          )}; tasks=${JSON.stringify(tasks.children?.map((child) => child.properties))}; plan=${JSON.stringify(
+            plan.properties,
+          )}`,
+        );
+      }
+      await waitFor(async () => {
+        const plan = await consumer.query("/orchestration", 1);
+        return plan.properties?.plan_status === "completed";
+      }, "autonomous plan completion");
     } finally {
       await scheduler.stop();
       attached.stop();
