@@ -7,8 +7,8 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import {
-  DelegationProvider,
   type DelegationAgentSpawn,
+  DelegationProvider,
   type DelegationRunnerFactory,
 } from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
@@ -197,8 +197,7 @@ describe("autonomous goal pipeline (Phase 2)", () => {
         return (
           gates.children?.some(
             (gate) =>
-              gate.properties?.gate_type === "spec_accept" &&
-              gate.properties?.status === "open",
+              gate.properties?.gate_type === "spec_accept" && gate.properties?.status === "open",
           ) ?? false
         );
       }, "spec_accept gate to be opened by mock spec-agent");

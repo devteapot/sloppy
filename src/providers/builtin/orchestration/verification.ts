@@ -552,11 +552,7 @@ export class VerificationCoordinator {
             `Self-attested evidence ${ref} cannot satisfy criterion ${satisfaction.criterion_id}.`,
           );
         }
-        if (
-          item.verification === "replayable" &&
-          "exit_code" in item &&
-          item.exit_code !== 0
-        ) {
+        if (item.verification === "replayable" && "exit_code" in item && item.exit_code !== 0) {
           throw codedError(
             "failing_evidence",
             `Replayable check ${ref} (exit ${item.exit_code}) cannot satisfy criterion ${satisfaction.criterion_id}.`,

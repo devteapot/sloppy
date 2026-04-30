@@ -233,6 +233,51 @@ describe("loadConfig", () => {
     expect(config.providers.orchestration.digest?.cadence).toBe("on_escalation");
   });
 
+  test("loads ACP adapter capability declarations with safe defaults", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  delegation:",
+        "    acp:",
+        "      enabled: true",
+        "      adapters:",
+        "        claude-code:",
+        '          command: ["claude", "--acp"]',
+        "          capabilities:",
+        "            shell_allowed: true",
+        "            network_allowed: false",
+        "        pi-mono:",
+        '          command: ["pi", "--acp"]',
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+    const claudeCode = config.providers.delegation.acp?.adapters["claude-code"];
+    const piMono = config.providers.delegation.acp?.adapters["pi-mono"];
+
+    expect(claudeCode?.capabilities.shell_allowed).toBe(true);
+    expect(claudeCode?.capabilities.network_allowed).toBe(false);
+    expect(claudeCode?.capabilities.spawn_allowed).toBe(false);
+    expect(claudeCode?.capabilities.filesystem_reads_allowed).toBe(true);
+    expect(claudeCode?.capabilities.filesystem_writes_allowed).toBe(false);
+    expect(piMono?.capabilities).toEqual({
+      spawn_allowed: false,
+      shell_allowed: false,
+      network_allowed: false,
+      filesystem_writes_allowed: false,
+      filesystem_reads_allowed: true,
+    });
+  });
+
   test("applies env override for max iterations", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

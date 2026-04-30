@@ -41,6 +41,18 @@ function buildConfig(overrides?: {
   } as SloppyConfig;
 }
 
+const acpCapabilities = {
+  spawn_allowed: false,
+  shell_allowed: false,
+  network_allowed: false,
+  filesystem_writes_allowed: false,
+  filesystem_reads_allowed: true,
+};
+
+function acpAdapter(command: string[], timeoutMs?: number) {
+  return { command, timeoutMs, capabilities: acpCapabilities };
+}
+
 describe("ExecutorResolver", () => {
   test("undefined binding resolves to llm with no explicit profile", () => {
     const resolver = new ExecutorResolver({ config: buildConfig() });
@@ -76,7 +88,7 @@ describe("ExecutorResolver", () => {
           enabled: true,
           defaultTimeoutMs: 5000,
           adapters: {
-            fake: { command: ["fake-acp"], timeoutMs: 1000 },
+            fake: acpAdapter(["fake-acp"], 1000),
           },
         },
       }),
@@ -97,7 +109,7 @@ describe("ExecutorResolver", () => {
       config: buildConfig({
         acp: {
           enabled: true,
-          adapters: { fake: { command: ["fake-acp"] } },
+          adapters: { fake: acpAdapter(["fake-acp"]) },
         },
       }),
     });
@@ -124,7 +136,7 @@ describe("ExecutorResolver", () => {
   test("acp binding when ACP disabled throws", () => {
     const resolver = new ExecutorResolver({
       config: buildConfig({
-        acp: { enabled: false, adapters: { fake: { command: ["fake-acp"] } } },
+        acp: { enabled: false, adapters: { fake: acpAdapter(["fake-acp"]) } },
       }),
     });
     expect(() => resolver.resolve({ kind: "acp", adapterId: "fake" })).toThrow(

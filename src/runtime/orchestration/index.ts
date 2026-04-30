@@ -8,9 +8,9 @@ import type { ProviderRuntimeHub } from "../../core/hub";
 import type { RoleProfile } from "../../core/role";
 import type { RuntimeToolResolution } from "../../core/tools";
 import type { LlmResponse } from "../../llm/types";
+import { AutonomousGoalCoordinator } from "./autonomous-coordinator";
 import { inferBatchDependencyRefs, type PlanningTaskWithDeps } from "./planning-policy";
 import { orchestratorSystemPromptFragment } from "./prompt";
-import { AutonomousGoalCoordinator } from "./autonomous-coordinator";
 import { OrchestrationScheduler, type OrchestrationSchedulerEvent } from "./scheduler";
 
 export type { OrchestrationSchedulerEvent };

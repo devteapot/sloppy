@@ -114,13 +114,11 @@ export class DigestCoordinator {
     }
   }
 
-  private generateDigestInner(
-    params: {
-      cadence?: DigestCadence;
-      trigger_reason?: DigestTriggerReason;
-      cadence_source?: DigestCadenceSource;
-    },
-  ): DigestRecord {
+  private generateDigestInner(params: {
+    cadence?: DigestCadence;
+    trigger_reason?: DigestTriggerReason;
+    cadence_source?: DigestCadenceSource;
+  }): DigestRecord {
     const plan = this.repo.loadPlan();
     const createdAt = new Date().toISOString();
     this.drift?.evaluatePlanDrift({ nowMs: Date.parse(createdAt) });
@@ -142,11 +140,13 @@ export class DigestCoordinator {
       .filter((entry): entry is { id: string; state: TaskState } => entry.state !== null);
     const allActiveRevisionTaskStates = (
       plan
-        ? this.repo.listTaskIdsForPlan(plan).filter(
-            (id) =>
-              !plan.active_revision_id ||
-              this.repo.loadTaskDefinition(id)?.plan_revision_id === plan.active_revision_id,
-          )
+        ? this.repo
+            .listTaskIdsForPlan(plan)
+            .filter(
+              (id) =>
+                !plan.active_revision_id ||
+                this.repo.loadTaskDefinition(id)?.plan_revision_id === plan.active_revision_id,
+            )
         : []
     )
       .map((id) => ({ id, state: this.repo.loadTaskState(id) }))
@@ -361,8 +361,7 @@ export class DigestCoordinator {
             .listDriftEventsForPlan(plan)
             .filter(
               (event) =>
-                event.kind === "observed_only_coverage" &&
-                this.after(event.created_at, previousAt),
+                event.kind === "observed_only_coverage" && this.after(event.created_at, previousAt),
             )
             .map((event) => ({
               kind: "observed_only_coverage" as const,

@@ -3321,9 +3321,13 @@ describe("docs/12 spec provider snapshots", () => {
         ],
       });
       expect(first.status).toBe("ok");
-      await consumer.invoke(`/gates/${(first.data as { gate_id: string }).gate_id}`, "resolve_gate", {
-        status: "accepted",
-      });
+      await consumer.invoke(
+        `/gates/${(first.data as { gate_id: string }).gate_id}`,
+        "resolve_gate",
+        {
+          status: "accepted",
+        },
+      );
       const tasksA = await consumer.query("/tasks", 2);
       const taskA = tasksA.children?.[0]?.id;
       const criterionA = firstCriterionId(tasksA.children?.[0]?.properties?.acceptance_criteria);

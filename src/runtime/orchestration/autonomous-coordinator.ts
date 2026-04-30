@@ -1,6 +1,6 @@
+import type { SlopNode } from "@slop-ai/consumer/browser";
 import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import type { SlopNode } from "@slop-ai/consumer/browser";
 
 /**
  * Watches goal and gate state for autonomous goals, spawning spec-agent and
@@ -104,10 +104,7 @@ export class AutonomousGoalCoordinator {
     }
   }
 
-  private async spawnSpecAgent(
-    goalId: string,
-    goal: Record<string, unknown>,
-  ): Promise<void> {
+  private async spawnSpecAgent(goalId: string, goal: Record<string, unknown>): Promise<void> {
     const delegationId = this.options.delegationProviderId ?? "delegation";
     const title = stringProp(goal, "title") ?? goalId;
     const intent = stringProp(goal, "intent") ?? "";

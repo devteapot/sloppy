@@ -2,7 +2,7 @@
 
 This document specifies how an agent in the Sloppy stack — orchestrator, manager, observer, specialist, identity curator — is bound to the *executor* that runs it: which LLM provider/profile, or which ACP-backed external agent. It extends `docs/12-orchestration-design.md`, `docs/13-meta-runtime.md`, and `docs/14-agent-identity.md` additively.
 
-It is a design doc, not a state-of-the-code doc. The current code wires LLM provider selection globally per session (`src/llm/profile-manager.ts`) and dispatches ACP delegation via an `executionMode: "native" | "acp:<adapterId>"` field on the spawn path (`src/runtime/delegation/runner-factory.ts`). Per-agent routing as state does not exist yet.
+It is a design doc, not a full state-of-the-code doc. The current branch has the first typed `ExecutorBinding` slice: bindings flow through plan slices, task definitions, delegation spawn state, scheduler dispatch, and `ExecutorResolver`; ACP adapter capability declarations are now parsed from config with safe defaults. The remaining gap is broader state-resident routing: specialist descriptors, role/session/global default binding resolution, overlay-gated binding changes, and reflection counters are still design-level.
 
 The guiding principle is unchanged: **everything is a SLOP provider — state tree plus affordances**. Executor binding is not a flag on a function call; it is a typed field on agent and task descriptors, governed by the same overlay/gate/reflection machinery as anything else.
 

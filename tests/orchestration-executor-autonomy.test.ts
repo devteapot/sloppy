@@ -7,8 +7,8 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import {
-  DelegationProvider,
   type DelegationAgentSpawn,
+  DelegationProvider,
   type DelegationRunnerFactory,
 } from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
@@ -120,29 +120,33 @@ async function harness(behavior: ExecutorBehavior = "submit_evidence") {
           path: `/tasks/${taskId}`,
           depth: 1,
         });
-        const criteria = (taskNode.properties?.acceptance_criteria as
-          | Array<{ id: string }>
-          | undefined) ?? [];
+        const criteria =
+          (taskNode.properties?.acceptance_criteria as Array<{ id: string }> | undefined) ?? [];
 
         if (behavior === "submit_evidence") {
-          const evResult = await hub.invoke("orchestration", `/tasks/${taskId}`, "submit_evidence_claim", {
-            checks: [
-              {
-                id: "check-1",
-                type: "test",
-                command: "bun test",
-                exit_code: 0,
-                output: "pass",
-                verification: "replayable",
-              },
-            ],
-            criterion_satisfaction: criteria.map((criterion) => ({
-              criterion_id: criterion.id,
-              evidence_refs: ["check-1"],
-              kind: "replayable",
-            })),
-            risk: { files_modified: [], irreversible_actions: [], deps_added: [] },
-          });
+          const evResult = await hub.invoke(
+            "orchestration",
+            `/tasks/${taskId}`,
+            "submit_evidence_claim",
+            {
+              checks: [
+                {
+                  id: "check-1",
+                  type: "test",
+                  command: "bun test",
+                  exit_code: 0,
+                  output: "pass",
+                  verification: "replayable",
+                },
+              ],
+              criterion_satisfaction: criteria.map((criterion) => ({
+                criterion_id: criterion.id,
+                evidence_refs: ["check-1"],
+                kind: "replayable",
+              })),
+              risk: { files_modified: [], irreversible_actions: [], deps_added: [] },
+            },
+          );
           if (evResult.status !== "ok") {
             throw new Error(`evidence failed: ${JSON.stringify(evResult.error)}`);
           }

@@ -860,8 +860,7 @@ export class DriftCoordinator {
         { verification: "replayable" | "observed" | "self_attested" }
       >();
       for (const check of prior.checks) priorItems.set(check.id, check);
-      for (const observation of prior.observations)
-        priorItems.set(observation.id, observation);
+      for (const observation of prior.observations) priorItems.set(observation.id, observation);
       for (const satisfaction of prior.criterion_satisfaction) {
         const replayableSupport = satisfaction.evidence_refs.some(
           (ref) => priorItems.get(ref)?.verification === "replayable",

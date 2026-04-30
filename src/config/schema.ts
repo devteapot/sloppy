@@ -11,6 +11,28 @@ export const llmProfileSchema = z.object({
   baseUrl: z.string().optional(),
 });
 
+const defaultAcpAdapterCapabilities = {
+  spawn_allowed: false,
+  shell_allowed: false,
+  network_allowed: false,
+  filesystem_writes_allowed: false,
+  filesystem_reads_allowed: true,
+};
+
+const acpAdapterCapabilitiesSchema = z
+  .object({
+    spawn_allowed: z.boolean().default(defaultAcpAdapterCapabilities.spawn_allowed),
+    shell_allowed: z.boolean().default(defaultAcpAdapterCapabilities.shell_allowed),
+    network_allowed: z.boolean().default(defaultAcpAdapterCapabilities.network_allowed),
+    filesystem_writes_allowed: z
+      .boolean()
+      .default(defaultAcpAdapterCapabilities.filesystem_writes_allowed),
+    filesystem_reads_allowed: z
+      .boolean()
+      .default(defaultAcpAdapterCapabilities.filesystem_reads_allowed),
+  })
+  .default(defaultAcpAdapterCapabilities);
+
 const acpDelegationConfigSchema = z.object({
   enabled: z.boolean().default(false),
   defaultTimeoutMs: z.number().int().min(1000).optional(),
@@ -22,6 +44,7 @@ const acpDelegationConfigSchema = z.object({
         cwd: z.string().optional(),
         env: z.record(z.string(), z.string()).optional(),
         timeoutMs: z.number().int().min(1000).optional(),
+        capabilities: acpAdapterCapabilitiesSchema,
       }),
     )
     .default({}),

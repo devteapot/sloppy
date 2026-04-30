@@ -1,10 +1,6 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import type {
-  DelegationRuntimeHooks,
-  RoleRegistry,
-  TaskContextFactory,
-} from "../../core/role";
+import type { DelegationRuntimeHooks, RoleRegistry, TaskContextFactory } from "../../core/role";
 import type { LlmProfileManager } from "../../llm/profile-manager";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";

@@ -474,7 +474,7 @@ export class DelegationProvider {
             role: {
               type: "string",
               description:
-                "Optional role id (e.g. \"executor\", \"spec-agent\", \"planner\") attached to the spawned sub-agent. Resolved via the role registry; unknown roles are ignored.",
+                'Optional role id (e.g. "executor", "spec-agent", "planner") attached to the spawned sub-agent. Resolved via the role registry; unknown roles are ignored.',
               optional: true,
             },
           },
