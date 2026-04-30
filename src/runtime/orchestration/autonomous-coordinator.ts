@@ -18,8 +18,9 @@ type CoordinatorHealthError = {
  *   spec_accept gate accepted (autonomous goal) → spawn planner
  *
  * The plan_accept gate's downstream effect (creating tasks, scheduler
- * dispatching executors) is already handled by the existing scheduler and
- * gates handler; this coordinator just triggers the upstream phases.
+ * dispatching executors) is handled by the existing scheduler and gates
+ * handler; this coordinator just triggers the upstream phases and persists
+ * their lifecycle stages.
  */
 export class AutonomousGoalCoordinator {
   private stops: Array<() => void> = [];
@@ -28,8 +29,7 @@ export class AutonomousGoalCoordinator {
   private latestGoals: Array<Record<string, unknown>> = [];
   private latestGates: Array<Record<string, unknown>> = [];
   private latestSpecs: Array<Record<string, unknown>> = [];
-  private latestTasks: Array<Record<string, unknown>> = [];
-  private spawnedExecutorForTask = new Set<string>();
+
   private lifecycleByGoal = new Map<
     string,
     { stage: string; updatedAt: string; refs: Record<string, string> }
@@ -64,12 +64,7 @@ export class AutonomousGoalCoordinator {
         this.queueEvaluate();
       }),
     );
-    this.stops.push(
-      await this.options.hub.watchPath(orchestrationId, "/tasks", (tree) => {
-        this.latestTasks = childProps(tree);
-        this.queueEvaluate();
-      }),
-    );
+
     try {
       this.stops.push(
         await this.options.hub.watchPath(specId, "/specs", (tree) => {
@@ -123,7 +118,6 @@ export class AutonomousGoalCoordinator {
     const goals = [...this.latestGoals];
     const gates = [...this.latestGates];
     const specs = [...this.latestSpecs];
-    const tasks = [...this.latestTasks];
 
     for (const goal of goals) {
       const goalId = stringProp(goal, "id");
@@ -192,20 +186,6 @@ export class AutonomousGoalCoordinator {
       const specVersion = numberProp(spec, "version") ?? 1;
       this.spawnedPlannerForSpec.add(specId);
       await this.spawnPlanner(goalId, specId, specVersion, goal, spec);
-    }
-
-    for (const task of tasks) {
-      const taskId = stringProp(task, "id");
-      if (!taskId) continue;
-      if (this.spawnedExecutorForTask.has(taskId)) continue;
-      const status = stringProp(task, "status");
-      if (status !== "pending" && status !== "scheduled") continue;
-      const goalId = this.goalIdForTask(task, goals, specs);
-      if (!goalId) continue;
-      const goal = goals.find((entry) => stringProp(entry, "id") === goalId);
-      if (!goal || goal.autonomous !== true) continue;
-      this.spawnedExecutorForTask.add(taskId);
-      await this.spawnExecutor(goalId, taskId, goal, task);
     }
   }
 
@@ -337,28 +317,6 @@ export class AutonomousGoalCoordinator {
     }, 0);
   }
 
-  private goalIdForTask(
-    task: Record<string, unknown>,
-    goals: Array<Record<string, unknown>>,
-    specs: Array<Record<string, unknown>>,
-  ): string | undefined {
-    const directGoalId = stringProp(task, "goal_id");
-    if (directGoalId) return directGoalId;
-
-    const specRefs = stringArrayProp(task, "spec_refs");
-    for (const specRef of specRefs) {
-      const specId = specRef.replace(/^spec:/, "");
-      const spec = specs.find((entry) => stringProp(entry, "id") === specId);
-      const goalId = spec ? stringProp(spec, "goal_id") : undefined;
-      if (goalId) return goalId;
-    }
-
-    if (goals.length === 1 && goals[0]?.autonomous === true) {
-      return stringProp(goals[0], "id");
-    }
-    return undefined;
-  }
-
   private recordError(
     operation: CoordinatorHealthError["operation"],
     providerId: string,
@@ -469,52 +427,6 @@ export class AutonomousGoalCoordinator {
       error: result.error?.message,
     });
   }
-
-  private async spawnExecutor(
-    goalId: string,
-    taskId: string,
-    goal: Record<string, unknown>,
-    task: Record<string, unknown>,
-  ): Promise<void> {
-    const delegationId = this.delegationProviderId();
-    const title = stringProp(goal, "title") ?? goalId;
-    const taskName = stringProp(task, "name") ?? taskId;
-    const taskGoal = stringProp(task, "goal") ?? "";
-    const acceptanceCriteria = stringArrayProp(task, "acceptance_criteria");
-    const executorPrompt = [
-      `# Goal: ${title}`,
-      `# Task: ${taskName} (${taskId})`,
-      "",
-      "## Task goal",
-      taskGoal,
-      "",
-      "## Acceptance criteria",
-      ...acceptanceCriteria.map((criterion) => `- ${criterion}`),
-      "",
-      "## Your task",
-      "Execute this orchestration slice. Use the task affordances to start work, record evidence, attach results, and report failures explicitly.",
-    ].join("\n");
-    const result = await this.options.hub.invoke(
-      delegationId,
-      "/session",
-      "spawn_agent",
-      {
-        name: `executor:${taskId}`,
-        goal: executorPrompt,
-        role: "executor",
-        task_id: taskId,
-        idempotency_key: `orchestration:executor:${taskId}`,
-      },
-      { actor: "autonomous-coordinator" },
-    );
-    this.setLifecycleStage(goalId, "executor.spawned", { taskId });
-    debug("autonomous", "spawn_executor", {
-      goalId,
-      taskId,
-      status: result.status,
-      error: result.error?.message,
-    });
-  }
 }
 
 function childProps(tree: SlopNode | null): Array<Record<string, unknown>> {
@@ -534,11 +446,4 @@ function stringProp(record: Record<string, unknown>, key: string): string | unde
 function numberProp(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function stringArrayProp(record: Record<string, unknown>, key: string): string[] {
-  const value = record[key];
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
 }

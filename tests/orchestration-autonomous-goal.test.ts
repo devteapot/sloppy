@@ -15,6 +15,7 @@ import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { OrchestrationProvider } from "../src/providers/builtin/orchestration";
 import { SpecProvider } from "../src/providers/builtin/spec";
 import { AutonomousGoalCoordinator } from "../src/runtime/orchestration/autonomous-coordinator";
+import { OrchestrationScheduler } from "../src/runtime/orchestration/scheduler";
 
 const tempPaths: string[] = [];
 
@@ -198,6 +199,8 @@ describe("autonomous goal pipeline (Phase 2)", () => {
 
     const coordinator = new AutonomousGoalCoordinator({ hub });
     await coordinator.start();
+    const scheduler = new OrchestrationScheduler({ hub, maxAgents: 4 });
+    await scheduler.start();
 
     const consumer = new SlopConsumer(new InProcessTransport(orchestration.server));
     await consumer.connect();
@@ -211,11 +214,19 @@ describe("autonomous goal pipeline (Phase 2)", () => {
         autonomous: true,
       });
       expect(created.status).toBe("ok");
+      const goalId = (created.data as { id: string }).id;
 
       await waitFor(
         () => observedSpawns.some((spawn) => spawn.roleId === "spec-agent"),
         "spec-agent to be spawned for autonomous goal",
       );
+      await waitFor(async () => {
+        const goal = await consumer.query(`/goals/${goalId}`, 1);
+        const lifecycle = goal.properties?.autonomous_lifecycle as
+          | { stage?: string; refs?: Record<string, string> }
+          | undefined;
+        return lifecycle?.stage === "spec-agent.spawned";
+      }, "spec-agent lifecycle persistence");
 
       // Wait for the mock spec-agent to open the spec_accept gate.
       await waitFor(async () => {
@@ -249,6 +260,13 @@ describe("autonomous goal pipeline (Phase 2)", () => {
         () => observedSpawns.some((spawn) => spawn.roleId === "planner"),
         "planner to be spawned after spec acceptance",
       );
+      await waitFor(async () => {
+        const goal = await consumer.query(`/goals/${goalId}`, 1);
+        const lifecycle = goal.properties?.autonomous_lifecycle as
+          | { stage?: string; refs?: Record<string, string> }
+          | undefined;
+        return lifecycle?.stage === "planner.spawned" && lifecycle.refs?.specId === specMatch?.[1];
+      }, "planner lifecycle persistence");
 
       await waitFor(async () => {
         const gatesAfterPlanner = await consumer.query("/gates", 2);
@@ -272,6 +290,15 @@ describe("autonomous goal pipeline (Phase 2)", () => {
         () => observedSpawns.some((spawn) => spawn.roleId === "executor"),
         "executor to be spawned after plan acceptance",
       );
+      await waitFor(async () => {
+        const goal = await consumer.query(`/goals/${goalId}`, 1);
+        const lifecycle = goal.properties?.autonomous_lifecycle as
+          | { stage?: string; refs?: Record<string, string> }
+          | undefined;
+        return (
+          lifecycle?.stage === "executor.spawned" && typeof lifecycle.refs?.taskId === "string"
+        );
+      }, "executor lifecycle persistence");
 
       const specSpawns = observedSpawns.filter((spawn) => spawn.roleId === "spec-agent");
       const plannerSpawns = observedSpawns.filter((spawn) => spawn.roleId === "planner");
@@ -281,6 +308,7 @@ describe("autonomous goal pipeline (Phase 2)", () => {
       expect(executorSpawns.length).toBe(1);
       expect(executorSpawns[0]?.idempotencyKey).toStartWith("orchestration:executor:");
     } finally {
+      scheduler.stop();
       await coordinator.stop();
       orchestration.stop();
       spec.stop();

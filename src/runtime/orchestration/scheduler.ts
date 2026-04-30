@@ -31,6 +31,7 @@ type SchedulerAgent = {
 type SchedulerPlan = {
   active: boolean;
   maxAgents?: number;
+  goalId?: string;
 };
 
 export type OrchestrationSchedulerEvent =
@@ -159,6 +160,7 @@ function parsePlan(tree: SlopNode | null): SchedulerPlan {
   return {
     active: props.plan_status === "active",
     maxAgents: numberProp(props, "plan_max_agents"),
+    goalId: stringProp(props, "plan_goal_id"),
   };
 }
 
@@ -343,11 +345,11 @@ export class OrchestrationScheduler {
     }
 
     await Promise.all(
-      candidates.slice(0, availableSlots).map((task) => this.scheduleAndSpawn(task)),
+      candidates.slice(0, availableSlots).map((task) => this.scheduleAndSpawn(task, plan)),
     );
   }
 
-  private async scheduleAndSpawn(task: SchedulerTask): Promise<void> {
+  private async scheduleAndSpawn(task: SchedulerTask, plan: SchedulerPlan): Promise<void> {
     const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
     const delegationProviderId = this.options.delegationProviderId ?? "delegation";
     this.inFlightTasks.add(task.id);
@@ -428,11 +430,41 @@ export class OrchestrationScheduler {
         agentId: stringProp(spawnData, "id"),
         summary: `${task.name} was handed to a delegated agent.`,
       });
+      this.persistAutonomousLifecycle(plan.goalId, task.id);
     } catch (error) {
       this.blockTask(task, "invoke_failed", error instanceof Error ? error.message : String(error));
     } finally {
       this.inFlightTasks.delete(task.id);
     }
+  }
+
+  private persistAutonomousLifecycle(goalId: string | undefined, taskId: string): void {
+    if (!goalId) return;
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    void this.options.hub
+      .invoke(
+        orchestrationProviderId,
+        `/goals/${goalId}`,
+        "update_autonomous_lifecycle",
+        { stage: "executor.spawned", refs: { taskId } },
+        { actor: "scheduler" },
+      )
+      .then((result) => {
+        if (result.status === "error") {
+          debug("scheduler", "lifecycle_persist_failed", {
+            goalId,
+            taskId,
+            error: result.error?.message,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        debug("scheduler", "lifecycle_persist_failed", {
+          goalId,
+          taskId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   private blockTask(task: SchedulerTask, reason: string, detail?: string): void {
