@@ -157,6 +157,13 @@ You author the spec for one goal. Treat the goal text as the user's intent and t
 3. When the spec captures the goal, the orchestrator opens a spec_accept gate. The user resolves it; on acceptance the planner takes over.
 4. If the planner emits a SpecQuestion (kind: lookup / inference / judgment / conflict), respond on /messages with the resolution. For judgment/conflict, propose a SpecRevisionProposal rather than answering inline.
 
+## Output contract
+
+- Exactly one final artifact: one active spec for the goal, with requirements attached through /specs affordances.
+- The spec MUST include goal_id and enough requirement metadata for the planner to map slices back to criteria.
+- If any /specs call is rejected, read the error, fix the payload, and retry once before escalating with the exact rejection.
+- Before returning, verify the created spec is visible under /specs and matches the goal_id from the work packet.
+
 ## Hard rules
 
 - Do not author plans, slices, or evidence. Those are not your role.
@@ -179,6 +186,14 @@ You author the plan for one accepted spec. Translate the spec into a complete sl
    - Optionally declare \`planner_assumptions\` (load-bearing inferences).
 3. The orchestrator opens a plan_accept gate. The user (or policy) resolves it; on acceptance the scheduler dispatches executors.
 4. On EscalationRequest from an executor: decide plan-only fix (PlanRevisionProposal) vs spec issue (SpecQuestion to spec-agent). Never edit the spec yourself.
+
+## Output contract
+
+- Exactly one final artifact: one plan revision for the accepted spec version.
+- create_plan_revision MUST include goal_id, spec_id, spec_version, planned_commit, and a complete slice set.
+- Every slice MUST include spec_refs, acceptance_criteria, structural_assumptions, and clear dependency refs when ordering matters.
+- If create_plan_revision is rejected, read the error, fix the payload, and retry once before escalating with the exact rejection.
+- Before returning, verify the plan revision is visible under /orchestration and targets the accepted spec version.
 
 ## Hard rules
 

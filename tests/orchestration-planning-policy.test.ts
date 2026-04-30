@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { SloppyConfig } from "../src/config/schema";
 import type { ProviderRuntimeHub } from "../src/core/hub";
 import { RoleRegistry, type RuntimeContext } from "../src/core/role";
-import { createOrchestratorRole } from "../src/runtime/orchestration";
+import { createOrchestratorRole, plannerRole, specAgentRole } from "../src/runtime/orchestration";
 import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 import { inferBatchDependencyRefs } from "../src/runtime/orchestration/planning-policy";
 
@@ -138,6 +138,28 @@ describe("orchestrator role transformInvoke", () => {
       {} as never,
     );
     expect(transformed).toBe(params);
+  });
+});
+
+describe("autonomous specialist role prompts", () => {
+  test("spec-agent prompt requires a single structured spec creation output and recovery on invalid submissions", () => {
+    const prompt = specAgentRole.systemPromptFragment?.({} as never) ?? "";
+
+    expect(prompt).toContain("Output contract");
+    expect(prompt).toContain("Exactly one final artifact");
+    expect(prompt).toContain("/specs.create_spec");
+    expect(prompt).toContain("goal_id");
+    expect(prompt).toContain("If any /specs call is rejected");
+  });
+
+  test("planner prompt requires a complete plan revision and recovery on invalid submissions", () => {
+    const prompt = plannerRole.systemPromptFragment?.({} as never) ?? "";
+
+    expect(prompt).toContain("Output contract");
+    expect(prompt).toContain("Exactly one final artifact");
+    expect(prompt).toContain("/orchestration.create_plan_revision");
+    expect(prompt).toContain("complete slice set");
+    expect(prompt).toContain("If create_plan_revision is rejected");
   });
 });
 
