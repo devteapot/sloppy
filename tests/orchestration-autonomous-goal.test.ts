@@ -236,6 +236,203 @@ describe("autonomous goal pipeline (Phase 2)", () => {
     }
   });
 
+  test("event bursts do not duplicate autonomous spawns", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-autonomous-"));
+    tempPaths.push(root);
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    await hub.connect();
+
+    const observedSpawns: DelegationAgentSpawn[] = [];
+    const orchestration = new OrchestrationProvider({ workspaceRoot: root, sessionId: "auto" });
+    const spec = new SpecProvider({ workspaceRoot: root });
+
+    const runnerFactory: DelegationRunnerFactory = (spawn, callbacks) => ({
+      async start() {
+        observedSpawns.push(spawn);
+        callbacks.onUpdate({ status: "running" });
+        await Bun.sleep(25);
+        callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
+      },
+      async cancel() {
+        callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+      },
+    });
+    const delegation = new DelegationProvider({ maxAgents: 4, runnerFactory });
+
+    await hub.addProvider({
+      id: "orchestration",
+      name: "Orchestration",
+      kind: "builtin",
+      transport: new InProcessTransport(orchestration.server),
+      transportLabel: "in-process",
+      stop: () => orchestration.stop(),
+    });
+    await hub.addProvider({
+      id: "spec",
+      name: "Spec",
+      kind: "builtin",
+      transport: new InProcessTransport(spec.server),
+      transportLabel: "in-process",
+      stop: () => spec.stop(),
+    });
+    await hub.addProvider({
+      id: "delegation",
+      name: "Delegation",
+      kind: "builtin",
+      transport: new InProcessTransport(delegation.server),
+      transportLabel: "in-process",
+      stop: () => delegation.stop(),
+    });
+
+    const coordinator = new AutonomousGoalCoordinator({ hub });
+    await coordinator.start();
+    const consumer = new SlopConsumer(new InProcessTransport(orchestration.server));
+    await consumer.connect();
+    await consumer.subscribe("/", 3);
+
+    try {
+      const createdGoal = await consumer.invoke("/goals", "create_goal", {
+        title: "Burst goal",
+        intent: "Exercise coordinator event queue.",
+        autonomous: true,
+      });
+      expect(createdGoal.status).toBe("ok");
+      const goalId = (createdGoal.data as { id: string }).id;
+
+      await Promise.all([
+        consumer.invoke(`/goals/${goalId}`, "revise_goal", {
+          intent: "burst 1",
+          magnitude: "minor",
+        }),
+        consumer.invoke(`/goals/${goalId}`, "revise_goal", {
+          intent: "burst 2",
+          magnitude: "minor",
+        }),
+        consumer.invoke(`/goals/${goalId}`, "revise_goal", {
+          intent: "burst 3",
+          magnitude: "minor",
+        }),
+      ]);
+
+      await waitFor(
+        () => observedSpawns.some((spawn) => spawn.roleId === "spec-agent"),
+        "spec-agent spawn after burst",
+      );
+
+      const createdSpec = await hub.invoke("spec", "/specs", "create_spec", {
+        title: "Burst spec",
+        body: "Accepted burst spec.",
+        goal_id: goalId,
+      });
+      expect(createdSpec.status).toBe("ok");
+      const specId = (createdSpec.data as { id: string }).id;
+      const specVersion = (createdSpec.data as { version: number }).version;
+      const gate = await consumer.invoke("/gates", "open_gate", {
+        gate_type: "spec_accept",
+        subject_ref: `spec:${specId}:v${specVersion}`,
+        summary: "Accept burst spec.",
+      });
+      expect(gate.status).toBe("ok");
+      const gateId = (gate.data as { id: string }).id;
+
+      await Promise.all([
+        consumer.invoke(`/gates/${gateId}`, "resolve_gate", { status: "accepted" }),
+        hub.invoke("spec", `/specs/${specId}`, "accept_spec", { gate_id: gateId }),
+      ]);
+
+      await waitFor(
+        () => observedSpawns.some((spawn) => spawn.roleId === "planner"),
+        "planner spawn after burst",
+      );
+
+      expect(observedSpawns.filter((spawn) => spawn.roleId === "spec-agent")).toHaveLength(1);
+      expect(observedSpawns.filter((spawn) => spawn.roleId === "planner")).toHaveLength(1);
+      expect(observedSpawns.map((spawn) => spawn.idempotencyKey)).toContain(
+        `autonomous:${goalId}:spec-agent`,
+      );
+      expect(observedSpawns.map((spawn) => spawn.idempotencyKey)).toContain(
+        `autonomous:${goalId}:planner:${specId}:v${specVersion + 1}`,
+      );
+    } finally {
+      await coordinator.stop();
+      orchestration.stop();
+      spec.stop();
+      hub.shutdown();
+    }
+  });
+
+  test("coordinator records degraded health when critical refresh fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-autonomous-"));
+    tempPaths.push(root);
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    await hub.connect();
+
+    const orchestration = new OrchestrationProvider({ workspaceRoot: root, sessionId: "auto" });
+    const delegation = new DelegationProvider({
+      maxAgents: 4,
+      runnerFactory: (_spawn, callbacks) => ({
+        async start() {
+          callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
+        },
+        async cancel() {
+          callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+        },
+      }),
+    });
+
+    await hub.addProvider({
+      id: "orchestration",
+      name: "Orchestration",
+      kind: "builtin",
+      transport: new InProcessTransport(orchestration.server),
+      transportLabel: "in-process",
+      stop: () => orchestration.stop(),
+    });
+    await hub.addProvider({
+      id: "delegation",
+      name: "Delegation",
+      kind: "builtin",
+      transport: new InProcessTransport(delegation.server),
+      transportLabel: "in-process",
+      stop: () => delegation.stop(),
+    });
+
+    const coordinator = new AutonomousGoalCoordinator({ hub, specProviderId: "missing-spec" });
+    await coordinator.start();
+    const consumer = new SlopConsumer(new InProcessTransport(orchestration.server));
+    await consumer.connect();
+    await consumer.subscribe("/", 3);
+
+    try {
+      await consumer.invoke("/goals", "create_goal", {
+        title: "Health goal",
+        intent: "Force missing spec refresh.",
+        autonomous: true,
+      });
+      await consumer.invoke("/gates", "open_gate", {
+        gate_type: "spec_accept",
+        subject_ref: "spec:missing:v1",
+        summary: "Accepted missing spec.",
+      });
+      const gates = await consumer.query("/gates", 2);
+      const gate = gates.children?.find((child) => child.properties?.gate_type === "spec_accept");
+      await consumer.invoke(`/gates/${gate?.id}`, "resolve_gate", { status: "accepted" });
+
+      await waitFor(
+        () => coordinator.getHealth().status === "degraded",
+        "degraded coordinator health",
+      );
+      expect(coordinator.getHealth()).toMatchObject({
+        status: "degraded",
+        lastError: { providerId: "missing-spec", operation: "refreshSpecs" },
+      });
+    } finally {
+      await coordinator.stop();
+      orchestration.stop();
+      hub.shutdown();
+    }
+  });
+
   test("non-autonomous goal does not spawn spec-agent", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-autonomous-"));
     tempPaths.push(root);

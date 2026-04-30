@@ -94,6 +94,7 @@ docs/
 - Prefer state-first design over tool-first design.
 - Keep the core small; push capability-specific logic into providers.
 - Prefer live subscriptions and patches over repeated polling.
+- Autonomous runtime coordinators must be event-driven: subscribe to provider state, coalesce changes through a serialized evaluation queue, and derive idempotent actions from snapshots. Do not add polling loops for state propagation.
 - Use protocol vocabulary consistently: `provider`, `consumer`, `state tree`, `affordance`, `snapshot`, `patch`, `query`, `invoke`, `salience`, `summary`.
 - Do not reintroduce MCP-style flat tool catalogs into the core architecture.
 - Observation tools such as `slop_query_state` and `slop_focus_state` are consumer controls, not provider capabilities.

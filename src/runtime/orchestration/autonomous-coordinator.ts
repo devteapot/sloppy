@@ -3,6 +3,13 @@ import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
 import { BUILTIN_PROVIDER_IDS } from "../../providers/builtin/ids";
 
+type CoordinatorHealthError = {
+  providerId: string;
+  operation: "refreshGates" | "refreshSpecs" | "fetchSpec";
+  message: string;
+  at: string;
+};
+
 /**
  * Watches goal and gate state for autonomous goals, spawning spec-agent and
  * planner sub-agents at the appropriate gate boundaries:
@@ -23,6 +30,7 @@ export class AutonomousGoalCoordinator {
   private latestSpecs: Array<Record<string, unknown>> = [];
   private evaluateQueued = false;
   private evaluating = false;
+  private lastError: CoordinatorHealthError | undefined;
 
   constructor(
     private options: {
@@ -46,6 +54,7 @@ export class AutonomousGoalCoordinator {
     this.stops.push(
       await this.options.hub.watchPath(orchestrationId, "/gates", (tree) => {
         this.latestGates = childProps(tree);
+        this.clearError("refreshGates", orchestrationId);
         this.queueEvaluate();
       }),
     );
@@ -53,6 +62,7 @@ export class AutonomousGoalCoordinator {
       this.stops.push(
         await this.options.hub.watchPath(specId, "/specs", (tree) => {
           this.latestSpecs = childProps(tree);
+          this.clearError("refreshSpecs", specId);
           this.queueEvaluate();
         }),
       );
@@ -166,8 +176,11 @@ export class AutonomousGoalCoordinator {
         depth: 1,
       });
       this.latestGates = childProps(tree);
+      this.clearError("refreshGates", orchestrationId);
     } catch (err) {
+      this.recordError("refreshGates", orchestrationId, err);
       debug("autonomous", "gate_refresh_skipped", {
+        providerId: orchestrationId,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -183,9 +196,11 @@ export class AutonomousGoalCoordinator {
       });
       const props = tree?.properties;
       if (props !== undefined && props !== null && typeof props === "object") {
+        this.clearError("fetchSpec", providerId);
         return props as Record<string, unknown>;
       }
     } catch (err) {
+      this.recordError("fetchSpec", providerId, err);
       debug("autonomous", "spec_fetch_skipped", {
         providerId,
         specId,
@@ -200,11 +215,41 @@ export class AutonomousGoalCoordinator {
     try {
       const tree = await this.options.hub.queryState({ providerId, path: "/specs", depth: 1 });
       this.latestSpecs = childProps(tree);
+      this.clearError("refreshSpecs", providerId);
     } catch (err) {
+      this.recordError("refreshSpecs", providerId, err);
       debug("autonomous", "spec_refresh_skipped", {
         providerId,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  getHealth(): { status: "ok" } | { status: "degraded"; lastError: CoordinatorHealthError } {
+    if (!this.lastError) {
+      return { status: "ok" };
+    }
+    return { status: "degraded", lastError: this.lastError };
+  }
+
+  private recordError(
+    operation: CoordinatorHealthError["operation"],
+    providerId: string,
+    err: unknown,
+  ): void {
+    this.lastError = {
+      providerId,
+      operation,
+      message: err instanceof Error ? err.message : String(err),
+      at: new Date().toISOString(),
+    };
+    debug("autonomous", "health_degraded", this.lastError);
+  }
+
+  private clearError(operation: CoordinatorHealthError["operation"], providerId: string): void {
+    if (this.lastError?.operation === operation && this.lastError.providerId === providerId) {
+      this.lastError = undefined;
+      debug("autonomous", "health_ok", { providerId, operation });
     }
   }
 
@@ -241,6 +286,7 @@ export class AutonomousGoalCoordinator {
         name: `spec-agent:${goalId}`,
         goal: goalPrompt,
         role: "spec-agent",
+        idempotency_key: `autonomous:${goalId}:spec-agent`,
       },
       { actor: "autonomous-coordinator" },
     );
@@ -279,6 +325,7 @@ export class AutonomousGoalCoordinator {
         name: `planner:${goalId}`,
         goal: plannerPrompt,
         role: "planner",
+        idempotency_key: `autonomous:${goalId}:planner:${specId}:v${specVersion}`,
       },
       { actor: "autonomous-coordinator" },
     );

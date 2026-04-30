@@ -188,6 +188,50 @@ describe("DelegationProvider", () => {
     }
   });
 
+  test("spawn_agent is idempotent when idempotency_key is reused", async () => {
+    let starts = 0;
+    const { provider, consumer } = createDelegationHarness({
+      maxAgents: 1,
+      runnerFactory: (_spawn, callbacks) => ({
+        async start() {
+          starts += 1;
+          callbacks.onUpdate({ status: "running" });
+        },
+        async cancel() {
+          callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+        },
+      }),
+    });
+
+    try {
+      await connect(consumer);
+      const first = await consumer.invoke("/session", "spawn_agent", {
+        name: "dedupe",
+        goal: "Run once",
+        idempotency_key: "same-key",
+      });
+      const second = await consumer.invoke("/session", "spawn_agent", {
+        name: "dedupe-again",
+        goal: "Should return existing",
+        idempotency_key: "same-key",
+      });
+
+      expect(first.status).toBe("ok");
+      expect(second.status).toBe("ok");
+      expect((second.data as { id: string }).id).toBe((first.data as { id: string }).id);
+      expect(starts).toBe(1);
+
+      const agents = await consumer.query("/agents", 2);
+      expect(agents.children).toHaveLength(1);
+      expect(agents.children?.[0]?.properties).toMatchObject({
+        name: "dedupe",
+        idempotency_key: "same-key",
+      });
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("observes lifecycle changes through pushed state", async () => {
     const { provider, consumer } = createDelegationHarness();
 
