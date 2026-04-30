@@ -110,6 +110,34 @@ export function buildGoalsDescriptor(wiring: DescriptorWiring) {
             "Open a user-resolved goal_accept gate for the current goal version. The accepted gate applies the transition.",
           estimate: "instant",
         }),
+        update_autonomous_lifecycle: action(
+          {
+            stage: "string",
+            refs: {
+              type: "object",
+              description: "Lifecycle reference ids for the current stage.",
+              optional: true,
+            },
+          },
+          async ({ stage, refs }) =>
+            goals.updateAutonomousLifecycle({
+              goal_id: goal.id,
+              stage: stage as string,
+              refs:
+                refs !== null && typeof refs === "object" && !Array.isArray(refs)
+                  ? Object.fromEntries(
+                      Object.entries(refs).filter(
+                        (entry): entry is [string, string] => typeof entry[1] === "string",
+                      ),
+                    )
+                  : undefined,
+            }),
+          {
+            label: "Update Autonomous Lifecycle",
+            description: "Persist the autonomous coordinator lifecycle stage for this goal.",
+            estimate: "instant",
+          },
+        ),
         archive_goal: action(async () => goals.archiveGoal(goal.id), {
           label: "Archive Goal",
           description: "Archive this goal.",

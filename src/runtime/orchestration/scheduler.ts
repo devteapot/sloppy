@@ -399,6 +399,7 @@ export class OrchestrationScheduler {
         goal: task.goal,
         task_id: task.id,
         role: "executor",
+        idempotency_key: `orchestration:executor:${task.id}`,
       };
       if (task.executorBinding) {
         spawnParams.executor = task.executorBinding;

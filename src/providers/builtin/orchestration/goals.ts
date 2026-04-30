@@ -213,6 +213,27 @@ export class GoalsCoordinator {
     return { id: next.id, status: next.status };
   }
 
+  updateAutonomousLifecycle(params: {
+    goal_id: string;
+    stage: string;
+    refs?: Record<string, string>;
+  }): Goal {
+    const goal = this.requireGoal(params.goal_id);
+    const timestamp = new Date().toISOString();
+    const next: Goal = {
+      ...goal,
+      updated_at: timestamp,
+      autonomous_lifecycle: {
+        stage: params.stage,
+        updated_at: timestamp,
+        refs: params.refs ?? {},
+      },
+    };
+    this.repo.writeGoal(next);
+    this.refresh();
+    return next;
+  }
+
   private requireGoal(goalId: string): Goal {
     const goal = this.repo.loadGoal(goalId);
     if (!goal) {

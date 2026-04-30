@@ -44,6 +44,11 @@ export type Goal = {
    * pipeline is human-driven via affordances.
    */
   autonomous?: boolean;
+  autonomous_lifecycle?: {
+    stage: string;
+    updated_at: string;
+    refs: Record<string, string>;
+  };
 };
 
 export type GateType =

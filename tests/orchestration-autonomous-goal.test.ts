@@ -127,6 +127,32 @@ describe("autonomous goal pipeline (Phase 2)", () => {
             });
             callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
           } else if (spawn.roleId === "planner") {
+            const specMatch = /# Spec: ([^\s]+) \(v(\d+)\)/.exec(spawn.goal);
+            if (!specMatch) throw new Error(`planner prompt missing spec header: ${spawn.goal}`);
+            const createdPlan = await hub.invoke(
+              "orchestration",
+              "/orchestration",
+              "create_plan_revision",
+              {
+                query: "Implement autonomous feature",
+                goal_id: spawn.idempotencyKey?.split(":")[1],
+                spec_id: specMatch[1],
+                spec_version: Number(specMatch[2]),
+                planned_commit: "HEAD",
+                slices: [
+                  {
+                    name: "Implement slice",
+                    goal: "Make the requested feature work.",
+                    kind: "implementation",
+                    spec_refs: [`spec:${specMatch[1]}`],
+                    acceptance_criteria: ["Feature works"],
+                  },
+                ],
+              },
+            );
+            if (createdPlan.status !== "ok") {
+              throw new Error(`create_plan_revision failed: ${JSON.stringify(createdPlan.error)}`);
+            }
             callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
           } else {
             callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
@@ -224,10 +250,36 @@ describe("autonomous goal pipeline (Phase 2)", () => {
         "planner to be spawned after spec acceptance",
       );
 
+      await waitFor(async () => {
+        const gatesAfterPlanner = await consumer.query("/gates", 2);
+        return (
+          gatesAfterPlanner.children?.some(
+            (gate) =>
+              gate.properties?.gate_type === "plan_accept" && gate.properties?.status === "open",
+          ) ?? false
+        );
+      }, "plan_accept gate opened by mock planner");
+
+      const gatesAfterPlanner = await consumer.query("/gates", 2);
+      const planGate = gatesAfterPlanner.children?.find(
+        (gate) =>
+          gate.properties?.gate_type === "plan_accept" && gate.properties?.status === "open",
+      );
+      expect(planGate?.id).toBeString();
+      await consumer.invoke(`/gates/${planGate?.id}`, "resolve_gate", { status: "accepted" });
+
+      await waitFor(
+        () => observedSpawns.some((spawn) => spawn.roleId === "executor"),
+        "executor to be spawned after plan acceptance",
+      );
+
       const specSpawns = observedSpawns.filter((spawn) => spawn.roleId === "spec-agent");
       const plannerSpawns = observedSpawns.filter((spawn) => spawn.roleId === "planner");
+      const executorSpawns = observedSpawns.filter((spawn) => spawn.roleId === "executor");
       expect(specSpawns.length).toBe(1);
       expect(plannerSpawns.length).toBe(1);
+      expect(executorSpawns.length).toBe(1);
+      expect(executorSpawns[0]?.idempotencyKey).toStartWith("orchestration:executor:");
     } finally {
       await coordinator.stop();
       orchestration.stop();
