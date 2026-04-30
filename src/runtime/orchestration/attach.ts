@@ -1,8 +1,13 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import { orchestratorRoleRule } from "../../core/policy/rules";
+import {
+  executorRoleRule,
+  orchestratorRoleRule,
+  plannerRoleRule,
+  specAgentRoleRule,
+} from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
-import { createOrchestratorRole } from "./index";
+import { createOrchestratorRole, executorRole, plannerRole, specAgentRole } from "./index";
 import { createOrchestrationTaskContext } from "./task-context";
 
 const ORCHESTRATION_PROVIDER_ID = "orchestration";
@@ -27,11 +32,17 @@ export function attachOrchestrationRuntime(
       onSchedulerEvent: (event) => factoryCtx.publishEvent(event),
     }),
   );
+  ctx.roleRegistry.register("spec-agent", () => specAgentRole);
+  ctx.roleRegistry.register("planner", () => plannerRole);
+  ctx.roleRegistry.register("executor", () => executorRole);
 
   // Install the role-scoped policy at the hub layer. This replaces the
   // legacy in-loop `RoleProfile.toolPolicy` enforcement; the rule activates
   // only when the run loop tags an invocation with `roleId === "orchestrator"`.
   hub.addPolicyRule(orchestratorRoleRule);
+  hub.addPolicyRule(executorRoleRule);
+  hub.addPolicyRule(specAgentRoleRule);
+  hub.addPolicyRule(plannerRoleRule);
 
   ctx.delegationHooks?.setTaskContextFactory((spawn) =>
     createOrchestrationTaskContext({
@@ -47,6 +58,9 @@ export function attachOrchestrationRuntime(
   return {
     stop() {
       ctx.roleRegistry.unregister("orchestrator");
+      ctx.roleRegistry.unregister("spec-agent");
+      ctx.roleRegistry.unregister("planner");
+      ctx.roleRegistry.unregister("executor");
       ctx.delegationHooks?.setTaskContextFactory(null);
     },
   };

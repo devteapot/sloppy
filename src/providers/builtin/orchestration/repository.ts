@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { globSegmentToRegExp, looksLikeFileEvidenceRef, uniqueStrings } from "./classifiers";
@@ -7,9 +7,22 @@ import { normalizeReference } from "./normalization";
 import { codedError, readJson, truncateText, writeJson } from "./storage";
 import {
   type AuditFinding,
+  type BudgetUsageRecord,
+  type CaseRecord,
+  type DigestDelivery,
+  type DigestRecord,
+  type DriftEvent,
+  type EvidenceClaim,
+  type FinalAuditRecord,
+  type Gate,
+  type Goal,
+  type GoalRevision,
   type Handoff,
   ORCHESTRATION_DIR,
   type Plan,
+  type PlanRevision,
+  type Precedent,
+  type ProtocolMessage,
   type TaskDefinition,
   type TaskState,
   type VerificationRecord,
@@ -18,26 +31,48 @@ import {
 export interface OrchestrationRepositoryOptions {
   workspaceRoot: string;
   progressTailMaxChars?: number;
+  finalAuditCommandTimeoutMs?: number;
 }
 
 export class OrchestrationRepository {
   readonly workspaceRoot: string;
   readonly root: string;
   readonly progressTailMaxChars: number;
+  readonly finalAuditCommandTimeoutMs: number;
   private planVersions = new Map<string, number>();
   private taskVersions = new Map<string, number>();
   private handoffVersions = new Map<string, number>();
   private findingVersions = new Map<string, number>();
+  private gateVersions = new Map<string, number>();
+  private messageVersions = new Map<string, number>();
+  private planRevisionVersions = new Map<string, number>();
+  private precedentVersions = new Map<string, number>();
+  private caseRecordVersions = new Map<string, number>();
+  private digestDeliveryVersions = new Map<string, number>();
+  private driftEventVersions = new Map<string, number>();
 
   constructor(options: OrchestrationRepositoryOptions) {
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.root = resolve(this.workspaceRoot, ORCHESTRATION_DIR);
     this.progressTailMaxChars = options.progressTailMaxChars ?? 2048;
+    this.finalAuditCommandTimeoutMs = options.finalAuditCommandTimeoutMs ?? 30000;
 
     mkdirSync(this.root, { recursive: true });
     mkdirSync(join(this.root, "tasks"), { recursive: true });
     mkdirSync(join(this.root, "handoffs"), { recursive: true });
     mkdirSync(join(this.root, "findings"), { recursive: true });
+    mkdirSync(this.goalsDir(), { recursive: true });
+    mkdirSync(this.gatesDir(), { recursive: true });
+    mkdirSync(this.messagesDir(), { recursive: true });
+    mkdirSync(this.planRevisionsDir(), { recursive: true });
+    mkdirSync(this.auditDir(), { recursive: true });
+    mkdirSync(this.blobsDir(), { recursive: true });
+    mkdirSync(this.budgetUsageDir(), { recursive: true });
+    mkdirSync(this.digestsDir(), { recursive: true });
+    mkdirSync(this.digestDeliveriesDir(), { recursive: true });
+    mkdirSync(this.driftEventsDir(), { recursive: true });
+    mkdirSync(this.precedentsDir(), { recursive: true });
+    mkdirSync(this.caseRecordsDir(), { recursive: true });
 
     this.hydrateVersionsFromDisk();
   }
@@ -72,14 +107,145 @@ export class OrchestrationRepository {
     return join(this.findingsDir(), `${findingId}.json`);
   }
 
+  goalsDir(): string {
+    return join(this.root, "goals");
+  }
+
+  goalDir(goalId: string): string {
+    return join(this.goalsDir(), goalId);
+  }
+
+  goalPath(goalId: string): string {
+    return join(this.goalDir(goalId), "goal.json");
+  }
+
+  goalRevisionPath(goalId: string, version: number): string {
+    return join(this.goalDir(goalId), "revisions", `${version}.json`);
+  }
+
+  gatesDir(): string {
+    return join(this.root, "gates");
+  }
+
+  gatePath(gateId: string): string {
+    return join(this.gatesDir(), `${gateId}.json`);
+  }
+
+  messagesDir(): string {
+    return join(this.root, "messages");
+  }
+
+  messagePath(messageId: string): string {
+    return join(this.messagesDir(), `${messageId}.json`);
+  }
+
+  planRevisionsDir(): string {
+    return join(this.root, "plan-revisions");
+  }
+
+  planRevisionPath(revisionId: string): string {
+    return join(this.planRevisionsDir(), `${revisionId}.json`);
+  }
+
+  evidenceClaimsDir(taskId: string): string {
+    return join(this.taskDir(taskId), "evidence-claims");
+  }
+
+  evidenceClaimPath(taskId: string, claimId: string): string {
+    return join(this.evidenceClaimsDir(taskId), `${claimId}.json`);
+  }
+
+  blobsDir(): string {
+    return join(this.root, "blobs");
+  }
+
+  blobPath(blobId: string): string {
+    return join(this.blobsDir(), `${blobId}.txt`);
+  }
+
+  budgetUsageDir(): string {
+    return join(this.root, "budget-usage");
+  }
+
+  budgetUsagePath(usageId: string): string {
+    return join(this.budgetUsageDir(), `${usageId}.json`);
+  }
+
+  auditDir(): string {
+    return join(this.root, "audit");
+  }
+
+  auditPath(auditId: string): string {
+    return join(this.auditDir(), `${auditId}.json`);
+  }
+
+  digestsDir(): string {
+    return join(this.root, "digests");
+  }
+
+  digestPath(digestId: string): string {
+    return join(this.digestsDir(), `${digestId}.json`);
+  }
+
+  digestDeliveriesDir(): string {
+    return join(this.root, "digest-deliveries");
+  }
+
+  digestDeliveryPath(deliveryId: string): string {
+    return join(this.digestDeliveriesDir(), `${deliveryId}.json`);
+  }
+
+  driftEventsDir(): string {
+    return join(this.root, "drift");
+  }
+
+  driftEventPath(eventId: string): string {
+    return join(this.driftEventsDir(), `${eventId}.json`);
+  }
+
+  precedentsDir(): string {
+    return resolve(this.workspaceRoot, ".sloppy", "precedents");
+  }
+
+  precedentPath(precedentId: string): string {
+    return join(this.precedentsDir(), `${precedentId}.json`);
+  }
+
+  caseRecordsDir(): string {
+    return join(this.precedentsDir(), "cases");
+  }
+
+  caseRecordPath(caseRecordId: string): string {
+    return join(this.caseRecordsDir(), `${caseRecordId}.json`);
+  }
+
   // --- version map hydration / accessors --------------------------------
 
-  versionStats(): { plans: number; tasks: number; handoffs: number; findings: number } {
+  versionStats(): {
+    plans: number;
+    tasks: number;
+    handoffs: number;
+    findings: number;
+    gates: number;
+    messages: number;
+    planRevisions: number;
+    precedents: number;
+    caseRecords: number;
+    digestDeliveries: number;
+    driftEvents: number;
+  } {
     return {
       plans: this.planVersions.size,
       tasks: this.taskVersions.size,
       handoffs: this.handoffVersions.size,
       findings: this.findingVersions.size,
+      gates: this.gateVersions.size,
+      messages: this.messageVersions.size,
+      planRevisions: this.planRevisionVersions.size,
+      precedents: this.precedentVersions.size,
+      caseRecords: this.caseRecordVersions.size,
+      digestDeliveries: this.digestDeliveryVersions.size,
+      driftEvents: this.driftEventVersions.size,
     };
   }
 
@@ -99,6 +265,34 @@ export class OrchestrationRepository {
     return this.bumpVersion(this.findingVersions, findingId);
   }
 
+  bumpGateVersion(gateId: string): number {
+    return this.bumpVersion(this.gateVersions, gateId);
+  }
+
+  bumpMessageVersion(messageId: string): number {
+    return this.bumpVersion(this.messageVersions, messageId);
+  }
+
+  bumpPlanRevisionVersion(revisionId: string): number {
+    return this.bumpVersion(this.planRevisionVersions, revisionId);
+  }
+
+  bumpPrecedentVersion(precedentId: string): number {
+    return this.bumpVersion(this.precedentVersions, precedentId);
+  }
+
+  bumpCaseRecordVersion(caseRecordId: string): number {
+    return this.bumpVersion(this.caseRecordVersions, caseRecordId);
+  }
+
+  bumpDigestDeliveryVersion(deliveryId: string): number {
+    return this.bumpVersion(this.digestDeliveryVersions, deliveryId);
+  }
+
+  bumpDriftEventVersion(eventId: string): number {
+    return this.bumpVersion(this.driftEventVersions, eventId);
+  }
+
   planVersion(): number {
     return this.planVersions.get("plan") ?? 0;
   }
@@ -113,6 +307,34 @@ export class OrchestrationRepository {
 
   findingVersion(findingId: string): number {
     return this.findingVersions.get(findingId) ?? 0;
+  }
+
+  gateVersion(gateId: string): number {
+    return this.gateVersions.get(gateId) ?? 0;
+  }
+
+  messageVersion(messageId: string): number {
+    return this.messageVersions.get(messageId) ?? 0;
+  }
+
+  planRevisionVersion(revisionId: string): number {
+    return this.planRevisionVersions.get(revisionId) ?? 0;
+  }
+
+  precedentVersion(precedentId: string): number {
+    return this.precedentVersions.get(precedentId) ?? 0;
+  }
+
+  caseRecordVersion(caseRecordId: string): number {
+    return this.caseRecordVersions.get(caseRecordId) ?? 0;
+  }
+
+  digestDeliveryVersion(deliveryId: string): number {
+    return this.digestDeliveryVersions.get(deliveryId) ?? 0;
+  }
+
+  driftEventVersion(eventId: string): number {
+    return this.driftEventVersions.get(eventId) ?? 0;
   }
 
   private bumpVersion(map: Map<string, number>, key: string): number {
@@ -150,6 +372,39 @@ export class OrchestrationRepository {
         if (finding?.version !== undefined) {
           this.findingVersions.set(finding.id, finding.version);
         }
+      }
+    }
+    for (const gate of this.listGates()) {
+      if (gate.version !== undefined) {
+        this.gateVersions.set(gate.id, gate.version);
+      }
+    }
+    for (const message of this.listMessages()) {
+      this.messageVersions.set(message.id, message.version);
+    }
+    for (const revision of this.listPlanRevisions()) {
+      if (revision.version !== undefined) {
+        this.planRevisionVersions.set(revision.id, revision.version);
+      }
+    }
+    for (const precedent of this.listPrecedents()) {
+      if (precedent.version !== undefined) {
+        this.precedentVersions.set(precedent.id, precedent.version);
+      }
+    }
+    for (const record of this.listCaseRecords()) {
+      if (record.version !== undefined) {
+        this.caseRecordVersions.set(record.id, record.version);
+      }
+    }
+    for (const delivery of this.listDigestDeliveries()) {
+      if (delivery.version !== undefined) {
+        this.digestDeliveryVersions.set(delivery.id, delivery.version);
+      }
+    }
+    for (const event of this.listDriftEvents()) {
+      if (event.version !== undefined) {
+        this.driftEventVersions.set(event.id, event.version);
       }
     }
   }
@@ -210,6 +465,119 @@ export class OrchestrationRepository {
 
   writeFinding(finding: AuditFinding): void {
     writeJson(this.findingPath(finding.id), finding);
+  }
+
+  loadGoal(goalId: string): Goal | null {
+    return readJson<Goal>(this.goalPath(goalId));
+  }
+
+  writeGoal(goal: Goal): void {
+    writeJson(this.goalPath(goal.id), goal);
+  }
+
+  writeGoalRevision(revision: GoalRevision): void {
+    writeJson(this.goalRevisionPath(revision.goal_id, revision.version), revision);
+  }
+
+  loadGoalRevisions(goalId: string): GoalRevision[] {
+    const dir = join(this.goalDir(goalId), "revisions");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<GoalRevision>(join(dir, entry.name)))
+      .filter((revision): revision is GoalRevision => revision !== null)
+      .sort((a, b) => a.version - b.version);
+  }
+
+  loadGate(gateId: string): Gate | null {
+    return readJson<Gate>(this.gatePath(gateId));
+  }
+
+  writeGate(gate: Gate & { version: number }): void {
+    writeJson(this.gatePath(gate.id), gate);
+  }
+
+  loadMessage(messageId: string): ProtocolMessage | null {
+    return readJson<ProtocolMessage>(this.messagePath(messageId));
+  }
+
+  writeMessage(message: ProtocolMessage): void {
+    writeJson(this.messagePath(message.id), message);
+  }
+
+  loadPlanRevision(revisionId: string): PlanRevision | null {
+    return readJson<PlanRevision>(this.planRevisionPath(revisionId));
+  }
+
+  writePlanRevision(revision: PlanRevision & { version: number }): void {
+    writeJson(this.planRevisionPath(revision.id), revision);
+  }
+
+  loadEvidenceClaim(taskId: string, claimId: string): EvidenceClaim | null {
+    return readJson<EvidenceClaim>(this.evidenceClaimPath(taskId, claimId));
+  }
+
+  writeEvidenceClaim(claim: EvidenceClaim): void {
+    writeJson(this.evidenceClaimPath(claim.slice_id, claim.id), claim);
+  }
+
+  writeBlob(blobId: string, content: string): string {
+    const path = this.blobPath(blobId);
+    mkdirSync(this.blobsDir(), { recursive: true });
+    writeFileSync(path, content, "utf8");
+    return `blob:${blobId}`;
+  }
+
+  writeBudgetUsage(record: BudgetUsageRecord): void {
+    writeJson(this.budgetUsagePath(record.id), record);
+  }
+
+  loadAudit(auditId: string): FinalAuditRecord | null {
+    return readJson<FinalAuditRecord>(this.auditPath(auditId));
+  }
+
+  writeAudit(audit: FinalAuditRecord): void {
+    writeJson(this.auditPath(audit.id), audit);
+  }
+
+  loadDigest(digestId: string): DigestRecord | null {
+    return readJson<DigestRecord>(this.digestPath(digestId));
+  }
+
+  writeDigest(digest: DigestRecord): void {
+    writeJson(this.digestPath(digest.id), digest);
+  }
+
+  loadDigestDelivery(deliveryId: string): DigestDelivery | null {
+    return readJson<DigestDelivery>(this.digestDeliveryPath(deliveryId));
+  }
+
+  writeDigestDelivery(delivery: DigestDelivery & { version: number }): void {
+    writeJson(this.digestDeliveryPath(delivery.id), delivery);
+  }
+
+  loadDriftEvent(eventId: string): DriftEvent | null {
+    return readJson<DriftEvent>(this.driftEventPath(eventId));
+  }
+
+  writeDriftEvent(event: DriftEvent & { version: number }): void {
+    writeJson(this.driftEventPath(event.id), event);
+  }
+
+  loadPrecedent(precedentId: string): Precedent | null {
+    return readJson<Precedent>(this.precedentPath(precedentId));
+  }
+
+  writePrecedent(precedent: Precedent & { version: number }): void {
+    writeJson(this.precedentPath(precedent.id), precedent);
+  }
+
+  loadCaseRecord(caseRecordId: string): CaseRecord | null {
+    return readJson<CaseRecord>(this.caseRecordPath(caseRecordId));
+  }
+
+  writeCaseRecord(caseRecord: CaseRecord & { version: number }): void {
+    writeJson(this.caseRecordPath(caseRecord.id), caseRecord);
   }
 
   loadProgressTail(taskId: string): string {
@@ -283,6 +651,277 @@ export class OrchestrationRepository {
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
+  listGoals(): Goal[] {
+    if (!existsSync(this.goalsDir())) return [];
+    return readdirSync(this.goalsDir(), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readJson<Goal>(this.goalPath(entry.name)))
+      .filter((goal): goal is Goal => goal !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listGates(): Gate[] {
+    const dir = this.gatesDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<Gate>(join(dir, entry.name)))
+      .filter((gate): gate is Gate => gate !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listMessages(): ProtocolMessage[] {
+    const dir = this.messagesDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<ProtocolMessage>(join(dir, entry.name)))
+      .filter((message): message is ProtocolMessage => message !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listPlanRevisions(): PlanRevision[] {
+    const dir = this.planRevisionsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<PlanRevision>(join(dir, entry.name)))
+      .filter((revision): revision is PlanRevision => revision !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listEvidenceClaims(taskId: string): EvidenceClaim[] {
+    const dir = this.evidenceClaimsDir(taskId);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<EvidenceClaim>(join(dir, entry.name)))
+      .filter((claim): claim is EvidenceClaim => claim !== null)
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  }
+
+  listEvidenceClaimsForPlan(plan: Plan | null = this.loadPlan()): EvidenceClaim[] {
+    if (!plan) return [];
+    return this.repoTaskIdsForEvidence(plan).flatMap((taskId) => this.listEvidenceClaims(taskId));
+  }
+
+  listActiveRevisionTaskIds(plan: Plan | null = this.loadPlan()): string[] {
+    if (!plan) return [];
+    const baseIds = plan.active_revision_id
+      ? this.listTaskIdsForPlan(plan).filter(
+          (id) => this.loadTaskDefinition(id)?.plan_revision_id === plan.active_revision_id,
+        )
+      : this.listTaskIdsForPlan(plan);
+    return baseIds.filter((id) => this.loadTaskState(id)?.status !== "superseded");
+  }
+
+  private repoTaskIdsForEvidence(plan: Plan): string[] {
+    return this.listActiveRevisionTaskIds(plan);
+  }
+
+  listBudgetUsage(): BudgetUsageRecord[] {
+    const dir = this.budgetUsageDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<BudgetUsageRecord>(join(dir, entry.name)))
+      .filter((record): record is BudgetUsageRecord => record !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listBudgetUsageForPlan(plan: Plan | null = this.loadPlan()): BudgetUsageRecord[] {
+    if (!plan?.id) return [];
+    return this.listBudgetUsage().filter((record) => record.plan_id === plan.id);
+  }
+
+  listAudits(): FinalAuditRecord[] {
+    const dir = this.auditDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<FinalAuditRecord>(join(dir, entry.name)))
+      .filter((audit): audit is FinalAuditRecord => audit !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listDigests(): DigestRecord[] {
+    const dir = this.digestsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<DigestRecord>(join(dir, entry.name)))
+      .filter((digest): digest is DigestRecord => digest !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listDigestDeliveries(): DigestDelivery[] {
+    const dir = this.digestDeliveriesDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<DigestDelivery>(join(dir, entry.name)))
+      .filter((delivery): delivery is DigestDelivery => delivery !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listDriftEvents(): DriftEvent[] {
+    const dir = this.driftEventsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<DriftEvent>(join(dir, entry.name)))
+      .filter((event): event is DriftEvent => event !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listDriftEventsForPlan(plan: Plan | null = this.loadPlan()): DriftEvent[] {
+    if (!plan?.id) return [];
+    return this.listDriftEvents().filter((event) => event.plan_id === plan.id);
+  }
+
+  findOpenDriftEvent(kind: DriftEvent["kind"], subjectRef: string): DriftEvent | null {
+    return (
+      this.listDriftEvents().find(
+        (event) =>
+          event.kind === kind && event.subject_ref === subjectRef && event.status === "open",
+      ) ?? null
+    );
+  }
+
+  listPrecedents(): Precedent[] {
+    const dir = this.precedentsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<Precedent>(join(dir, entry.name)))
+      .filter((precedent): precedent is Precedent => precedent !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  listCaseRecords(): CaseRecord[] {
+    const dir = this.caseRecordsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<CaseRecord>(join(dir, entry.name)))
+      .filter((record): record is CaseRecord => record !== null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  latestDigestForPlan(plan: Plan): DigestRecord | null {
+    return (
+      this.listDigests()
+        .filter((digest) => digest.plan_id === plan.id)
+        .at(-1) ?? null
+    );
+  }
+
+  retryAttemptCount(taskId: string): number {
+    const stored = this.loadTaskDefinition(taskId)?.attempt_count;
+    const chainCount = this.retryChainLength(taskId);
+    return Math.max(typeof stored === "number" && Number.isFinite(stored) ? stored : 0, chainCount);
+  }
+
+  retryRootTaskId(taskId: string): string {
+    let currentId = taskId;
+    const seen = new Set<string>();
+    while (!seen.has(currentId)) {
+      seen.add(currentId);
+      const definition = this.loadTaskDefinition(currentId);
+      if (!definition?.retry_of) {
+        return currentId;
+      }
+      currentId = definition.retry_of;
+    }
+    return taskId;
+  }
+
+  retryBudgetUsageForPlan(plan: Plan | null = this.loadPlan()): {
+    retryAttemptsUsed?: number;
+    retryOverBudgetSliceCount?: number;
+    retryGateId?: string;
+  } {
+    if (!plan?.budget || plan.budget.retries_per_slice === undefined) {
+      return {};
+    }
+
+    const taskIds = this.listActiveRevisionTaskIds(plan);
+    const attempts = taskIds.map((taskId) => this.retryAttemptCount(taskId));
+    const overBudgetTaskCount = attempts.filter(
+      (attemptCount) => attemptCount > (plan.budget?.retries_per_slice ?? Number.POSITIVE_INFINITY),
+    ).length;
+    const retryGate =
+      this.listGates()
+        .filter(
+          (gate) =>
+            gate.gate_type === "budget_exceeded" &&
+            gate.status === "open" &&
+            gate.subject_ref.startsWith(`plan:${plan.id}:`) &&
+            gate.subject_ref.endsWith(":budget:retries_per_slice"),
+        )
+        .at(-1) ?? null;
+
+    return {
+      retryAttemptsUsed: attempts.length > 0 ? Math.max(...attempts) : 0,
+      retryOverBudgetSliceCount: Math.max(overBudgetTaskCount, retryGate ? 1 : 0),
+      retryGateId: retryGate?.id,
+    };
+  }
+
+  tokenCostBudgetUsageForPlan(plan: Plan | null = this.loadPlan()): {
+    inputTokensUsed?: number;
+    outputTokensUsed?: number;
+    tokensUsed?: number;
+    costUsdUsed?: number;
+    tokenGateId?: string;
+    costGateId?: string;
+  } {
+    if (!plan?.id) {
+      return {};
+    }
+
+    const records = this.listBudgetUsageForPlan(plan);
+    const inputTokensUsed = records.reduce((sum, record) => sum + record.input_tokens, 0);
+    const outputTokensUsed = records.reduce((sum, record) => sum + record.output_tokens, 0);
+    const tokensUsed = records.reduce((sum, record) => sum + record.total_tokens, 0);
+    const costUsdUsed = records.reduce((sum, record) => sum + (record.cost_usd ?? 0), 0);
+    const tokenGate =
+      this.listGates()
+        .filter(
+          (gate) =>
+            gate.gate_type === "budget_exceeded" &&
+            gate.status === "open" &&
+            gate.subject_ref === `plan:${plan.id}:budget:token_limit`,
+        )
+        .at(-1) ?? null;
+    const costGate =
+      this.listGates()
+        .filter(
+          (gate) =>
+            gate.gate_type === "budget_exceeded" &&
+            gate.status === "open" &&
+            gate.subject_ref === `plan:${plan.id}:budget:cost_usd`,
+        )
+        .at(-1) ?? null;
+
+    return {
+      inputTokensUsed,
+      outputTokensUsed,
+      tokensUsed,
+      costUsdUsed,
+      tokenGateId: tokenGate?.id,
+      costGateId: costGate?.id,
+    };
+  }
+
+  listBlobIds(): string[] {
+    const dir = this.blobsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  }
+
   listHandoffsForPlan(plan: Plan | null = this.loadPlan()): Handoff[] {
     if (!plan) {
       return [];
@@ -317,6 +956,76 @@ export class OrchestrationRepository {
       throw codedError("no_active_plan", "No active orchestration plan exists.");
     }
     return plan;
+  }
+
+  loadSpecMetadata(specId: string): { version: number; status: string } | null {
+    const metadata = readJson<{ version?: number; status?: string }>(
+      resolve(this.workspaceRoot, ".sloppy", "specs", "specs", specId, "metadata.json"),
+    );
+    if (typeof metadata?.version !== "number") return null;
+    return {
+      version: metadata.version,
+      status: typeof metadata.status === "string" ? metadata.status : "draft",
+    };
+  }
+
+  currentSpecVersion(specId: string): number | null {
+    return this.loadSpecMetadata(specId)?.version ?? null;
+  }
+
+  assertPlanSpecFresh(plan: Plan): void {
+    if (!plan.spec_id || plan.spec_version === undefined) {
+      return;
+    }
+    const metadata = this.loadSpecMetadata(plan.spec_id);
+    if (metadata === null) {
+      throw codedError(
+        "stale_spec_version",
+        `Plan references unknown spec ${plan.spec_id} version ${plan.spec_version}.`,
+      );
+    }
+    if (metadata.version !== plan.spec_version) {
+      throw codedError(
+        "stale_spec_version",
+        `Plan references spec ${plan.spec_id} version ${plan.spec_version}, but current version is ${metadata.version}.`,
+      );
+    }
+    if (metadata.status !== "accepted") {
+      throw codedError(
+        "spec_not_accepted",
+        `Plan references spec ${plan.spec_id} version ${plan.spec_version}, but its status is ${metadata.status}, not accepted.`,
+      );
+    }
+  }
+
+  latestAcceptedGate(gateType: Gate["gate_type"], subjectRef: string): Gate | null {
+    return (
+      this.listGates()
+        .filter(
+          (gate) =>
+            gate.gate_type === gateType &&
+            gate.subject_ref === subjectRef &&
+            gate.status === "accepted",
+        )
+        .at(-1) ?? null
+    );
+  }
+
+  findOpenGate(gateType: Gate["gate_type"], subjectRef: string): Gate | null {
+    return (
+      this.listGates().find(
+        (gate) =>
+          gate.gate_type === gateType && gate.subject_ref === subjectRef && gate.status === "open",
+      ) ?? null
+    );
+  }
+
+  latestFinalAuditForPlan(plan: Plan): FinalAuditRecord | null {
+    return (
+      this.listAudits()
+        .filter((audit) => audit.plan_id === plan.id)
+        .at(-1) ?? null
+    );
   }
 
   describeAvailableTasks(): string {
@@ -376,6 +1085,22 @@ export class OrchestrationRepository {
       graph.set(taskId, dependsOn);
     }
     return graph;
+  }
+
+  private retryChainLength(taskId: string): number {
+    let count = 0;
+    let currentId = taskId;
+    const seen = new Set<string>();
+    while (!seen.has(currentId)) {
+      seen.add(currentId);
+      const definition = this.loadTaskDefinition(currentId);
+      if (!definition?.retry_of) {
+        return count;
+      }
+      count += 1;
+      currentId = definition.retry_of;
+    }
+    return count;
   }
 
   assertAcyclicDependencies(graph: Map<string, string[]>, labels: Map<string, string>): void {

@@ -157,6 +157,85 @@ describe("orchestration task state machine — invalid transitions", () => {
     }
   });
 
+  test("failure decision: 1× reprompt → 2× respawn → 3× escalate", async () => {
+    const { provider, consumer } = await harness();
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "build" });
+
+      const drive = async (taskId: string) => {
+        const before = await readTask(consumer, taskId);
+        const started = await consumer.invoke(`/tasks/${taskId}`, "start", {
+          expected_version: before.properties?.version,
+        });
+        expect(started.status).toBe("ok");
+        const afterStart = await readTask(consumer, taskId);
+        const failed = await consumer.invoke(`/tasks/${taskId}`, "fail", {
+          error: "test_fail: assertion died",
+          expected_version: afterStart.properties?.version,
+        });
+        expect(failed.status).toBe("ok");
+        return readTask(consumer, taskId);
+      };
+
+      const t1 = await createTask(consumer, "impl");
+      const failed1 = await drive(t1);
+      expect(failed1.properties?.last_failure_decision).toBe("reprompt");
+      expect(failed1.properties?.consecutive_failure_count).toBe(1);
+      expect(failed1.properties?.last_failure_class).toBe("test_fail");
+
+      const retry1 = await consumer.invoke("/orchestration", "create_task", {
+        name: "impl-retry-1",
+        goal: "retry",
+        retry_of: t1,
+      });
+      const t2 = (retry1.data as { id: string }).id;
+      const failed2 = await drive(t2);
+      expect(failed2.properties?.last_failure_decision).toBe("respawn");
+      expect(failed2.properties?.consecutive_failure_count).toBe(2);
+
+      const retry2 = await consumer.invoke("/orchestration", "create_task", {
+        name: "impl-retry-2",
+        goal: "retry",
+        retry_of: t2,
+      });
+      const t3 = (retry2.data as { id: string }).id;
+      const failed3 = await drive(t3);
+      expect(failed3.properties?.last_failure_decision).toBe("escalate");
+      expect(failed3.properties?.consecutive_failure_count).toBe(3);
+
+      // The third failure should have opened a planner-escalation drift gate.
+      const root = await consumer.query("/orchestration", 1);
+      const props = root.properties as { gate_counts?: { open?: number } } | undefined;
+      expect(props?.gate_counts?.open ?? 0).toBeGreaterThan(0);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("failure decision: degraded context_health forces respawn on first failure", async () => {
+    const { provider, consumer } = await harness();
+    try {
+      await consumer.invoke("/orchestration", "create_plan", { query: "build" });
+      const taskId = await createTask(consumer, "impl");
+      const before = await readTask(consumer, taskId);
+      await consumer.invoke(`/tasks/${taskId}`, "start", {
+        expected_version: before.properties?.version,
+      });
+      const afterStart = await readTask(consumer, taskId);
+      const failed = await consumer.invoke(`/tasks/${taskId}`, "fail", {
+        error: "test_fail: bad",
+        context_health: "degraded",
+        expected_version: afterStart.properties?.version,
+      });
+      expect(failed.status).toBe("ok");
+      const failedState = await readTask(consumer, taskId);
+      expect(failedState.properties?.last_failure_decision).toBe("respawn");
+      expect(failedState.properties?.consecutive_failure_count).toBe(1);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("retry_of marks the source task as superseded", async () => {
     const { provider, consumer } = await harness();
     try {

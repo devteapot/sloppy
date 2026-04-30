@@ -1,5 +1,22 @@
 # Memory tiers
 
+> **Status: superseded — split across `docs/13-meta-runtime.md §2.11` (role memory) and `docs/14-agent-identity.md §2` (identity memory). Routing model carried forward, substrate replaced.**
+>
+> This document was an early sketch from before the meta-runtime (`docs/13`) and identity layer (`docs/14`) were designed. Its `(general/role × global/project)` matrix collapsed two distinct concerns that are now separated:
+>
+> - **The "general" tier** (user facts, project invariants, self-knowledge) lives in `docs/14 §2` — identity memory. Owned and written by the identity-tier; about the agent ↔ user ↔ project relationship.
+> - **The "role" tier** (specialist craft, per-role heuristics) lives in `docs/13 §2.11` — role memory. Owned and written by specialists of that role; about how the role does its job. The `(role × global/project)` axis is preserved verbatim via the `scope` field.
+>
+> The two stores are deliberately disjoint. Specialists do not read identity memory; identity does not read role memory. This is the cross-talk fix the original docs/11 motivation called for, mechanically enforced via capability masks instead of by file-layout convention.
+>
+> **What changed structurally.** The substrate is no longer flat markdown injected into the system prompt. Notes are SLOP-typed entries with structural keys, CAS-versioned writeback (Mem0-style add/update/retire), TTL + LRU decay with cold-archive eviction, and taint enforcement. The Hermes-style "frozen markdown snapshot at session start" is replaced by live-within-mask SLOP reads at spawn time (docs/13 §2.12).
+>
+> **What's still relevant.** The Phase 2 self-correction-loop heuristics below — post-turn nudge on correction, confirmation capture, cell-mismatch detection, decay markers — are not directly implemented but should be reconsidered when implementing the decay/eviction logic in docs/13 §2.11 and docs/14 §2.4.
+>
+> Do not extend this document. Update docs/13 §2.11 (role memory) or docs/14 §2 (identity memory) instead.
+
+---
+
 Status: design sketch — captures the intended shape of agent memory before we build the provider out beyond the current flat store.
 
 ## Motivation

@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
-type SpecStatus = "draft" | "active" | "archived";
+type SpecStatus = "draft" | "active" | "accepted" | "archived";
 type RequirementStatus = "active" | "changed" | "removed";
 type RequirementPriority = "must" | "should" | "could";
+type CriterionKind = "code" | "text";
 type SpecChangeStatus = "proposed" | "approved" | "rejected";
 
 type ActiveSpec = {
@@ -17,8 +18,11 @@ type SpecMetadata = {
   id: string;
   title: string;
   status: SpecStatus;
+  goal_id?: string;
+  goal_version?: number;
   created_at: string;
   updated_at: string;
+  accepted_at?: string;
   version?: number;
 };
 
@@ -28,6 +32,8 @@ type SpecRequirement = {
   status: RequirementStatus;
   priority: RequirementPriority;
   tags: string[];
+  criterion_kind?: CriterionKind;
+  verification_hint?: string;
   created_at: string;
   updated_at: string;
 };
@@ -50,6 +56,23 @@ type SpecChange = {
   resolved_at?: string;
   resolution_reason?: string;
   version?: number;
+};
+
+type SpecVersionSnapshot = {
+  spec_id: string;
+  version: number;
+  metadata: SpecMetadata;
+  body: string;
+  requirements: SpecRequirement[];
+  decisions: SpecDecision[];
+  changes: SpecChange[];
+  created_at: string;
+};
+
+type GateRecord = {
+  gate_type?: string;
+  status?: string;
+  subject_ref?: string;
 };
 
 export interface SpecProviderOptions {
@@ -91,6 +114,11 @@ function normalizeStringList(value: unknown): string[] {
 
 function normalizePriority(value: unknown): RequirementPriority {
   return value === "should" || value === "could" ? value : "must";
+}
+
+function normalizeCriterionKind(value: unknown): CriterionKind | undefined {
+  if (value === "code" || value === "text") return value;
+  return undefined;
 }
 
 function slugify(value: string): string {
@@ -163,6 +191,18 @@ export class SpecProvider {
 
   private changePath(specId: string, changeId: string): string {
     return join(this.changesDir(specId), `${changeId}.json`);
+  }
+
+  private versionsDir(specId: string): string {
+    return join(this.specDir(specId), "versions");
+  }
+
+  private versionPath(specId: string, version: number): string {
+    return join(this.versionsDir(specId), `${version}.json`);
+  }
+
+  private gatePath(gateId: string): string {
+    return resolve(this.workspaceRoot, ".sloppy", "orchestration", "gates", `${gateId}.json`);
   }
 
   private bumpSpecVersion(specId: string): number {
@@ -257,6 +297,7 @@ export class SpecProvider {
       version,
     };
     writeJson(this.metadataPath(specId), metadata);
+    this.writeVersionSnapshot(specId, metadata);
     return metadata;
   }
 
@@ -272,6 +313,8 @@ export class SpecProvider {
     title: string;
     body?: string;
     make_active?: boolean;
+    goal_id?: string;
+    goal_version?: number;
   }): SpecMetadata & { active: boolean } {
     const id = `spec-${slugify(params.title)}-${crypto.randomUUID().slice(0, 6)}`;
     const timestamp = now();
@@ -280,16 +323,20 @@ export class SpecProvider {
       id,
       title: params.title,
       status: params.make_active === false ? "draft" : "active",
+      goal_id: params.goal_id,
+      goal_version: params.goal_version,
       created_at: timestamp,
       updated_at: timestamp,
       version,
     };
 
     mkdirSync(this.changesDir(id), { recursive: true });
+    mkdirSync(this.versionsDir(id), { recursive: true });
     writeJson(this.metadataPath(id), metadata);
     writeJson(this.requirementsPath(id), []);
     writeJson(this.decisionsPath(id), []);
     writeFileSync(this.specBodyPath(id), `${params.body?.trim() ?? `# ${params.title}`}\n`, "utf8");
+    this.writeVersionSnapshot(id, metadata);
 
     const makeActive = params.make_active !== false;
     if (makeActive) {
@@ -307,7 +354,11 @@ export class SpecProvider {
       const metadata = this.loadMetadata(id);
       if (!metadata) continue;
       const nextStatus: SpecStatus = id === specId ? "active" : "draft";
-      if (metadata.status !== "archived" && metadata.status !== nextStatus) {
+      if (
+        metadata.status !== "archived" &&
+        metadata.status !== "accepted" &&
+        metadata.status !== nextStatus
+      ) {
         this.saveMetadata(id, { status: nextStatus });
       }
     }
@@ -336,6 +387,8 @@ export class SpecProvider {
     text: string;
     priority?: RequirementPriority;
     tags?: string[];
+    criterion_kind?: CriterionKind;
+    verification_hint?: string;
   }): SpecRequirement {
     this.assertSpec(params.spec_id);
     const requirements = this.loadRequirements(params.spec_id);
@@ -346,6 +399,8 @@ export class SpecProvider {
       status: "active",
       priority: params.priority ?? "must",
       tags: params.tags ?? [],
+      criterion_kind: params.criterion_kind,
+      verification_hint: params.verification_hint,
       created_at: timestamp,
       updated_at: timestamp,
     };
@@ -353,6 +408,25 @@ export class SpecProvider {
     this.saveMetadata(params.spec_id, {});
     this.server.refresh();
     return requirement;
+  }
+
+  private acceptSpec(params: { spec_id: string; gate_id: string }): SpecMetadata {
+    const metadata = this.assertSpec(params.spec_id);
+    const gate = readJson<GateRecord>(this.gatePath(params.gate_id));
+    const subjectRef = `spec:${metadata.id}:v${metadata.version ?? 0}`;
+    if (
+      gate?.gate_type !== "spec_accept" ||
+      gate.status !== "accepted" ||
+      gate.subject_ref !== subjectRef
+    ) {
+      throw new Error(
+        `Spec ${metadata.id} requires an accepted spec_accept gate for ${subjectRef}.`,
+      );
+    }
+    return this.saveMetadata(metadata.id, {
+      status: "accepted",
+      accepted_at: now(),
+    });
   }
 
   private recordDecision(params: {
@@ -436,6 +510,63 @@ export class SpecProvider {
     }));
   }
 
+  private loadVersionSnapshots(specId: string): SpecVersionSnapshot[] {
+    const dir = this.versionsDir(specId);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJson<SpecVersionSnapshot>(join(dir, entry.name)))
+      .filter((snapshot): snapshot is SpecVersionSnapshot => snapshot !== null)
+      .sort((a, b) => a.version - b.version);
+  }
+
+  private writeVersionSnapshot(specId: string, metadata = this.assertSpec(specId)): void {
+    const version = metadata.version ?? this.specVersions.get(specId) ?? 0;
+    if (version <= 0) return;
+    const snapshot: SpecVersionSnapshot = {
+      spec_id: specId,
+      version,
+      metadata,
+      body: existsSync(this.specBodyPath(specId))
+        ? readFileSync(this.specBodyPath(specId), "utf8")
+        : "",
+      requirements: this.loadRequirements(specId),
+      decisions: this.loadDecisions(specId),
+      changes: this.loadChanges(specId),
+      created_at: now(),
+    };
+    writeJson(this.versionPath(specId, version), snapshot);
+  }
+
+  private buildVersionItems(specId: string): ItemDescriptor[] {
+    return this.loadVersionSnapshots(specId).map((snapshot) => ({
+      id: String(snapshot.version),
+      props: {
+        spec_id: snapshot.spec_id,
+        version: snapshot.version,
+        title: snapshot.metadata.title,
+        status: snapshot.metadata.status,
+        goal_id: snapshot.metadata.goal_id,
+        goal_version: snapshot.metadata.goal_version,
+        requirement_count: snapshot.requirements.length,
+        decision_count: snapshot.decisions.length,
+        created_at: snapshot.created_at,
+      },
+      summary: `v${snapshot.version}: ${snapshot.metadata.title}`,
+      actions: {
+        read_version: action(async () => snapshot, {
+          label: "Read Version",
+          description: "Return this immutable spec version snapshot.",
+          idempotent: true,
+          estimate: "fast",
+        }),
+      },
+      meta: {
+        salience: snapshot.version === this.loadMetadata(specId)?.version ? 0.7 : 0.3,
+      },
+    }));
+  }
+
   private buildDecisionItems(specId: string): ItemDescriptor[] {
     return this.loadDecisions(specId).map((decision) => ({
       id: decision.id,
@@ -511,6 +642,7 @@ export class SpecProvider {
     const requirements = this.loadRequirements(metadata.id);
     const decisions = this.loadDecisions(metadata.id);
     const changes = this.loadChanges(metadata.id);
+    const versions = this.loadVersionSnapshots(metadata.id);
     const body = existsSync(this.specBodyPath(metadata.id))
       ? readFileSync(this.specBodyPath(metadata.id), "utf8")
       : "";
@@ -523,6 +655,7 @@ export class SpecProvider {
         requirement_count: requirements.length,
         decision_count: decisions.length,
         proposed_change_count: changes.filter((change) => change.status === "proposed").length,
+        version_count: versions.length,
         body_preview: truncateText(body, 400),
         spec_path: this.specBodyPath(metadata.id),
       },
@@ -545,6 +678,26 @@ export class SpecProvider {
           dangerous: true,
           estimate: "instant",
         }),
+        accept_spec: action(
+          {
+            gate_id: {
+              type: "string",
+              description:
+                "Accepted orchestration spec_accept gate whose subject_ref is spec:<id>:v<version>.",
+            },
+          },
+          async ({ gate_id }) =>
+            this.acceptSpec({
+              spec_id: metadata.id,
+              gate_id: gate_id as string,
+            }),
+          {
+            label: "Accept Spec",
+            description:
+              "Freeze this spec version after an accepted spec_accept gate from the orchestration provider.",
+            estimate: "instant",
+          },
+        ),
         add_requirement: action(
           {
             text: "string",
@@ -560,13 +713,27 @@ export class SpecProvider {
               items: { type: "string" },
               optional: true,
             },
+            criterion_kind: {
+              type: "string",
+              description: "Optional criterion kind: code or text.",
+              enum: ["code", "text"],
+              optional: true,
+            },
+            verification_hint: {
+              type: "string",
+              description: "Optional hint for how to verify this requirement.",
+              optional: true,
+            },
           },
-          async ({ text, priority, tags }) =>
+          async ({ text, priority, tags, criterion_kind, verification_hint }) =>
             this.addRequirement({
               spec_id: metadata.id,
               text: text as string,
               priority: normalizePriority(priority),
               tags: normalizeStringList(tags),
+              criterion_kind: normalizeCriterionKind(criterion_kind),
+              verification_hint:
+                typeof verification_hint === "string" ? verification_hint : undefined,
             }),
           {
             label: "Add Requirement",
@@ -649,6 +816,12 @@ export class SpecProvider {
           summary: "Proposed and resolved spec changes.",
           items: this.buildChangeItems(metadata.id),
         },
+        versions: {
+          type: "collection",
+          props: { count: versions.length },
+          summary: "Immutable spec version snapshots.",
+          items: this.buildVersionItems(metadata.id),
+        },
       },
       meta: {
         salience: activeSpecId === metadata.id ? 1 : 0.55,
@@ -687,12 +860,24 @@ export class SpecProvider {
               description: "Whether to make this spec active immediately. Defaults to true.",
               optional: true,
             },
+            goal_id: {
+              type: "string",
+              description: "Optional upstream goal id this spec captures.",
+              optional: true,
+            },
+            goal_version: {
+              type: "number",
+              description: "Optional upstream goal version this spec captures.",
+              optional: true,
+            },
           },
-          async ({ title, body, make_active }) =>
+          async ({ title, body, make_active, goal_id, goal_version }) =>
             this.createSpec({
               title: title as string,
               body: typeof body === "string" ? body : undefined,
               make_active: typeof make_active === "boolean" ? make_active : undefined,
+              goal_id: typeof goal_id === "string" ? goal_id : undefined,
+              goal_version: typeof goal_version === "number" ? goal_version : undefined,
             }),
           {
             label: "Create Spec",

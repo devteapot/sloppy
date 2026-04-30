@@ -159,6 +159,18 @@ func (m *Manager) CancelTask(ctx context.Context, taskID string) error {
 	return m.Invoke(ctx, fmt.Sprintf("/tasks/%s", taskID), "cancel", slop.Params{})
 }
 
+func (m *Manager) AcceptOrchestrationGate(ctx context.Context, gateID string) error {
+	return m.Invoke(ctx, "/orchestration", "accept_gate", slop.Params{"gate_id": gateID})
+}
+
+func (m *Manager) RejectOrchestrationGate(ctx context.Context, gateID string) error {
+	return m.Invoke(ctx, "/orchestration", "reject_gate", slop.Params{"gate_id": gateID})
+}
+
+func (m *Manager) RunDigestAction(ctx context.Context, actionID string) error {
+	return m.Invoke(ctx, "/orchestration", "run_digest_action", slop.Params{"action_id": actionID})
+}
+
 func (m *Manager) CancelTurn(ctx context.Context) error {
 	return m.Invoke(ctx, "/turn", "cancel_turn", slop.Params{})
 }

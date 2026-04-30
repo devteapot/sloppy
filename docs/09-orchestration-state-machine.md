@@ -41,12 +41,12 @@ Specifically:
 
 | From → To | Function | Guard |
 |---|---|---|
-| `pending` → `scheduled` | `TaskLifecycle.scheduleTask` | unmet deps must be empty; `expected_version` must match |
-| `pending` → `running` | `TaskLifecycle.startTask` | unmet deps empty; current status in {pending, scheduled} |
+| `pending` → `scheduled` | `TaskLifecycle.scheduleTask` | unmet deps must be empty; `expected_version` must match; referenced spec version must be fresh when present |
+| `pending` → `running` | `TaskLifecycle.startTask` | unmet deps empty; current status in {pending, scheduled}; referenced spec version must be fresh when present |
 | `scheduled` → `running` | `TaskLifecycle.startTask` | same as above |
 | `running` → `verifying` | `VerificationCoordinator.startVerification` or `attachResult` | current status in {running, verifying} |
 | `running` → `verifying` | `VerificationCoordinator.recordVerification` (auto-promote) | current status is `running`; promotes to `verifying` before recording |
-| `verifying` → `completed` | `TaskLifecycle.completeTask` | current status is exactly `verifying`; **`hasCompletionVerification(taskId)` must return true** |
+| `verifying` → `completed` | `TaskLifecycle.completeTask` | current status is exactly `verifying`; **`hasCompletionVerification(taskId)` must return true**; docs/12 slices must also have an accepted `slice_gate` |
 | any active → `failed` | `TaskLifecycle.failTask` | no status guard (sets error + completed_at) |
 | any active → `cancelled` | `TaskLifecycle.cancelTask` | no status guard (sets completed_at) |
 | `failed` / `cancelled` / `superseded` → `superseded` | `TaskLifecycle.createTask` with `retry_of` | source state is read; new task's id is written to `superseded_by` |
@@ -69,12 +69,14 @@ The runtime scheduler (`OrchestrationScheduler.evaluateOnce` → `schedule` acti
 
 The scheduler also tracks `inFlightTasks: Set<string>` to dedupe in-process claim attempts before the CAS even runs (`scheduler.ts`).
 
-## Verification gate
+## Verification and slice gates
 
 `TaskLifecycle.completeTask` requires `hasCompletionVerification(taskId)` to return true, defined in `VerificationCoordinator.hasCompletionVerification`:
 
-- If the task has acceptance criteria: every criterion must be covered by a verification record with status `passed` or `not_required`.
+- If the task has acceptance criteria: every criterion must be covered by a verification record with status `passed` or `not_required`, or by a typed `EvidenceClaim` criterion satisfaction entry backed by replayable/observed evidence.
 - If the task has **no** acceptance criteria: at least one verification record with status `passed` or `not_required` must exist.
+
+Tasks created from accepted docs/12 plan revisions set `requires_slice_gate: true`. Those tasks cannot complete until a `slice_gate` for `slice:<taskId>` is accepted. `submit_evidence_claim` opens that gate only after all acceptance criteria are covered by replayable or observed evidence. Self-attested evidence is stored but cannot satisfy criteria.
 
 `recordVerification` enforces additional rules:
 
@@ -83,6 +85,7 @@ The scheduler also tracks `inFlightTasks: Set<string>` to dedupe in-process clai
 - Calling `recordVerification` while in `running` auto-promotes the task to `verifying` before writing the record.
 - Calling `recordVerification` while `failed`, `cancelled`, or `superseded` is rejected with `invalid_state`.
 - Calling `recordVerification` while `pending` is rejected (must be running first).
+- `recordVerification` remains a compatibility affordance and writes a minimal legacy `EvidenceClaim` alongside the verification record.
 
 ## Retry / supersede
 
@@ -91,6 +94,7 @@ The scheduler also tracks `inFlightTasks: Set<string>` to dedupe in-process clai
 1. Creates a new task in `pending` (independent id, fresh version).
 2. Calls `updateTaskState` on the source task with `{ status: "superseded", superseded_by: <new id>, completed_at }`. This bumps the source's version.
 3. The new task inherits dependencies from the source unless overridden.
+4. If the active plan has `budget.retries_per_slice`, the replacement's `attempt_count` is the source retry count plus one. A replacement that would exceed the cap is rejected with `retry_budget_exceeded` and opens a `budget_exceeded` gate for the logical slice.
 
 `TaskLifecycle.isDependencySatisfied` follows supersede chains: a dependency is satisfied if it is `completed` **or** if it is `superseded` and its `superseded_by` task is `completed`.
 

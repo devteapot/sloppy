@@ -214,10 +214,7 @@ function buildNextLlmConfig(
 
 export class LlmProfileManager {
   private config: SloppyConfig;
-  private cachedAdapter: {
-    fingerprint: string;
-    adapter: LlmAdapter;
-  } | null = null;
+  private adapterCache = new Map<string, { fingerprint: string; adapter: LlmAdapter }>();
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -238,11 +235,11 @@ export class LlmProfileManager {
 
   updateConfig(config: SloppyConfig): void {
     this.config = config;
-    this.cachedAdapter = null;
+    this.adapterCache.clear();
   }
 
   invalidate(): void {
-    this.cachedAdapter = null;
+    this.adapterCache.clear();
   }
 
   async getState(): Promise<LlmStateSnapshot> {
@@ -297,41 +294,51 @@ export class LlmProfileManager {
     };
   }
 
-  async createAdapter(): Promise<LlmAdapter> {
+  async createAdapter(profileId?: string, modelOverride?: string): Promise<LlmAdapter> {
     const state = await this.getState();
-    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
-    if (!activeProfile?.ready) {
+    const targetProfile = profileId
+      ? state.profiles.find((profile) => profile.id === profileId)
+      : state.profiles.find((profile) => profile.id === state.activeProfileId);
+    if (!targetProfile) {
+      if (profileId) {
+        throw new LlmConfigurationError(
+          `LLM profile '${profileId}' is not available. Add it under llm.profiles or pick another id.`,
+        );
+      }
       throw new LlmConfigurationError(state.message);
     }
+    if (!targetProfile.ready) {
+      throw new LlmConfigurationError(targetProfile.invalidReason ?? state.message);
+    }
 
-    const credential = await this.resolveCredential(activeProfile);
+    const credential = await this.resolveCredential(targetProfile);
     if (!credential.ready) {
       throw new LlmConfigurationError((await this.getState()).message);
     }
 
+    const model = modelOverride ?? targetProfile.model;
     const fingerprint = [
-      activeProfile.id,
-      activeProfile.provider,
-      activeProfile.model,
-      activeProfile.baseUrl ?? "",
+      targetProfile.id,
+      targetProfile.provider,
+      model,
+      targetProfile.baseUrl ?? "",
       credential.keySource,
       credential.apiKey ?? "",
     ].join(":");
-    if (this.cachedAdapter?.fingerprint === fingerprint) {
-      return this.cachedAdapter.adapter;
+    const cacheKey = `${targetProfile.id}::${modelOverride ?? ""}`;
+    const cached = this.adapterCache.get(cacheKey);
+    if (cached?.fingerprint === fingerprint) {
+      return cached.adapter;
     }
 
     const adapter = createLlmAdapter({
-      provider: activeProfile.provider,
-      model: activeProfile.model,
+      provider: targetProfile.provider,
+      model,
       apiKey: credential.apiKey,
-      apiKeyEnv: activeProfile.apiKeyEnv,
-      baseUrl: activeProfile.baseUrl,
+      apiKeyEnv: targetProfile.apiKeyEnv,
+      baseUrl: targetProfile.baseUrl,
     });
-    this.cachedAdapter = {
-      fingerprint,
-      adapter,
-    };
+    this.adapterCache.set(cacheKey, { fingerprint, adapter });
     return adapter;
   }
 
@@ -438,7 +445,7 @@ export class LlmProfileManager {
     }
 
     await this.credentialStore.delete(profileId);
-    this.cachedAdapter = null;
+    this.adapterCache.clear();
     return this.getState();
   }
 
@@ -482,7 +489,7 @@ export class LlmProfileManager {
       ...this.config,
       llm: nextLlmConfig,
     };
-    this.cachedAdapter = null;
+    this.adapterCache.clear();
   }
 
   private async resolveCredential(profile: ResolvedProfile): Promise<ResolvedCredential> {

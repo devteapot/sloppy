@@ -66,7 +66,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 2 },
-    orchestration: { progressTailMaxChars: 2048 },
+    orchestration: { progressTailMaxChars: 2048, finalAuditCommandTimeoutMs: 30000 },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };
@@ -172,6 +172,34 @@ describe("OrchestrationScheduler", () => {
         const task = await consumer.query(`/tasks/${taskId}`, 1);
         expect(task.properties?.status).toBe("running");
       }
+    } finally {
+      consumer.disconnect();
+      scheduler.stop();
+      hub.shutdown();
+      orchestration.stop();
+    }
+  });
+
+  test("plan capacity can reduce scheduler fan-out below provider capacity", async () => {
+    const { consumer, hub, orchestration, scheduler, spawnedTaskIds } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", {
+        query: "build one at a time",
+        strategy: "parallel",
+        max_agents: 1,
+      });
+      const createdResult = await consumer.invoke("/orchestration", "create_tasks", {
+        tasks: [
+          { name: "alpha", client_ref: "alpha", goal: "Do independent task alpha." },
+          { name: "beta", client_ref: "beta", goal: "Do independent task beta." },
+        ],
+      });
+      expect(createdResult.status).toBe("ok");
+
+      await waitFor(() => spawnedTaskIds.length === 1, "one ready task to be spawned");
+      await Bun.sleep(80);
+      expect(spawnedTaskIds.length).toBe(1);
     } finally {
       consumer.disconnect();
       scheduler.stop();

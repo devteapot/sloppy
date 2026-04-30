@@ -29,6 +29,8 @@ Implemented now:
 - config loading from `~/.sloppy/config.yaml` and workspace `.sloppy/config.yaml`
 - built-in `terminal`, `filesystem`, `orchestration`, `spec`, `memory`, `skills`, `browser`, `web`, `cron`, `messaging`, `delegation`, and `vision` providers
 - durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, dependency normalization plus parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and acceptance-criteria-gated verification with cited evidence refs
+- additive docs/12 HITL orchestration foundations: versioned goal artifacts with minor/material revision gates, generic gates, typed protocol messages, accepted plan revisions that create gated slices, typed evidence claims with blob storage, scoped gate-policy defaults, deterministic policy-resolved slice gates plus narrow goal/plan auto-resolution, opted-in precedent-resolved `SpecQuestion`s with semantic matching plus injected or LLM-backed borderline tie-breaks, stale-spec execution rejection, persisted progress/coherence/intent drift events, blast-radius, external-call, and irreversible-action guardrails, allowlisted final-audit replay, configured wall-time, retry-per-slice, token, and cost budget gates with raise-cap affordances, typed digest generation with cadence metadata, in-digest action refs, and opt-in generic/Slack/email push-delivery outbox dispatch, durable precedent/case-record storage with deterministic structural matching, and drift state exposed in provider/digest/session surfaces
+- spec provider goal-version refs, accepted specs, immutable version snapshots, and optional criterion metadata (`criterion_kind`, `verification_hint`) on requirements
 - orchestrator-mode guardrails enforced as hub `InvokePolicy` rules (`orchestratorRoleRule`, `terminalSafetyRule`, `dangerousActionRule`) that block direct file mutations, non-whitelisted shell commands, and direct delegation spawns when `roleId === "orchestrator"` so fixes stay delegated through scheduled tasks
 - in-process transport for built-in providers
 - live-watched provider descriptor discovery for Unix socket and WebSocket providers
@@ -45,7 +47,7 @@ Implemented now:
 - ACP-backed delegated child agents through the `SessionAgent` boundary, preserving the same session-provider state surface
 - CLI single-shot mode and REPL
 - checked-in `src/session/` agent-session provider with `/llm` onboarding/profile-management state and `/apps` external-provider attachment visibility
-- checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding and settings management
+- checked-in Go + Bubble Tea TUI under `apps/tui/` with LLM onboarding, settings management, and minimal orchestration gate/digest-action controls
 - tests covering transport, runtime tool generation, session-provider flows, and all built-in providers
 
 ## Interface direction after Phase 1
@@ -129,8 +131,10 @@ src/
 │       ├── orchestration/
 │       │   ├── classifiers.ts
 │       │   ├── dag.ts
+│       │   ├── descriptor-*.ts
 │       │   ├── index.ts
 │       │   ├── normalization.ts
+│       │   ├── precedents.ts
 │       │   ├── storage.ts
 │       │   └── types.ts
 │       ├── skills.ts

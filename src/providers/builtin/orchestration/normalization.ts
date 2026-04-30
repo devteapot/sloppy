@@ -1,12 +1,22 @@
+import { executorBindingSchema } from "../../../runtime/delegation/executor-binding";
 import type {
   AuditFindingRecommendation,
   AuditFindingSeverity,
   CreateTaskParams,
+  GateResolver,
   HandoffKind,
   HandoffPriority,
   TaskKind,
   VerificationStatus,
 } from "./types";
+
+export function normalizeExecutorBinding(
+  value: unknown,
+): CreateTaskParams["executor_binding"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const parsed = executorBindingSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 export function normalizeVerificationStatus(value: unknown): VerificationStatus {
   return value === "passed" ||
@@ -47,6 +57,10 @@ export function normalizeTaskKind(value: unknown): TaskKind | undefined {
     default:
       return undefined;
   }
+}
+
+export function normalizeGateResolver(value: unknown): GateResolver | undefined {
+  return value === "policy" || value === "user" ? value : undefined;
 }
 
 export function normalizeFindingSeverity(value: unknown): AuditFindingSeverity {
@@ -153,6 +167,10 @@ export function normalizeTaskList(value: unknown): CreateTaskParams[] {
       audit_of: typeof task.audit_of === "string" ? task.audit_of : undefined,
       finding_refs: normalizeStringList(task.finding_refs),
       acceptance_criteria: normalizeStringList(task.acceptance_criteria),
+      planner_assumptions: normalizeStringList(task.planner_assumptions),
+      structural_assumptions: normalizeStringList(task.structural_assumptions),
+      slice_gate_resolver: normalizeGateResolver(task.slice_gate_resolver),
+      executor_binding: normalizeExecutorBinding(task.executor_binding),
     }))
     .filter((task) => task.name.trim().length > 0 && task.goal.trim().length > 0);
 }

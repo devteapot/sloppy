@@ -51,15 +51,17 @@ Current checked-in implementation includes:
   - `slop_focus_state`
 - dynamic affordance tools generated from visible SLOP state
 - CLI single-shot mode and interactive REPL
-- initial `src/session/` scaffold for a headless agent-session provider
+- headless `src/session/` agent-session provider
 - idle session startup without an API key
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
-- Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
-- canvas + HTML dashboard prototype under `apps/dashboard/` for visualizing orchestration files
+- session-provider `/orchestration` summary state, `start_spec_driven_goal`, gate controls, latest digest actions, slice counts, drift metrics, goal-revision pressure, and final audit status
+- Go + Bubble Tea TUI onboarding/settings flow plus orchestration gate and digest-action fallback under `apps/tui/`
+- canvas + HTML dashboard under `apps/dashboard/` for orchestration files, typed digest rendering, and optional session-provider-backed digest actions
 - durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, typed handoffs, scoped child work packets, parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and verification-gated completion
+- additive docs/12 HITL orchestration surfaces for versioned goals, goal-revision proposal gates, human-resolved gates, typed protocol messages, accepted plan revisions, slice aliases, typed evidence claims, deterministic policy-resolved slice/goal/plan gates, opted-in precedent-resolved `SpecQuestion`s with semantic precedent matching and injected or LLM-backed borderline tie-breaks, evidence blobs, stale-spec execution guards, progress/coherence/intent drift events, blast-radius/irreversibility/external-call guardrails, allowlisted final-audit replay, plan wall-time, retry-per-slice, token, and cost budgets with raise-cap affordances, typed digest generation with cadence metadata, action refs, and opt-in generic/Slack/email push-delivery outbox dispatch, and durable precedent/case-record matching
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -70,7 +72,7 @@ Near-term direction:
 
 - keep the core runtime headless
 - add richer interfaces under `apps/`, starting with `apps/tui/`
-- keep the dashboard prototype read-only until it consumes the public SLOP provider surface directly
+- keep first-party UIs on the public session/orchestration provider boundary rather than privileged in-process hooks
 - expose the running agent session through a public bridge or provider surface
 - have first-party and third-party UIs use that same public contract
 - allow multiple UIs to attach to the same session concurrently
@@ -130,8 +132,8 @@ These providers are currently implemented as in-process SLOP providers:
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
 - `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
-- `orchestration` for durable plans, task DAGs, typed handoffs, verification, audit findings, and scoped child work packets
-- `spec` for active specs, requirements, decisions, and proposed spec changes
+- `orchestration` for durable plans, task DAGs, typed handoffs, verification, audit findings, scoped child work packets, versioned goals with minor/material revision policy, gates, typed protocol messages, plan revisions, typed evidence, blobs, allowlisted final-audit replay, plan wall-time/retry/token/cost budgets with raise-cap affordances, typed digests with action refs and opt-in generic/Slack/email push-delivery outbox dispatch, semantic precedent-backed `SpecQuestion` resolution with injected or LLM-backed borderline tie-breaks, deterministic progress/coherence drift metrics, and precedent/case-record storage
+- `spec` for active/accepted specs, immutable spec version snapshots, goal-version refs, requirements with criterion metadata, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 
 They follow the same architectural rule as terminal/filesystem: state first, affordances second.
@@ -247,6 +249,12 @@ workspace, then `.sloppy-demo/.sloppy/orchestration/`. If none exist, it shows a
 empty waiting state. When a run writes `debug.log` with `SLOPPY_DEBUG=loop,orchestration,sub-agent`
 or `SLOPPY_DEBUG=all`, the dashboard also visualizes model turns, tool calls,
 provider state updates, sub-agent transitions, and filesystem read/write flow.
+It also renders the latest typed docs/12 digest. To enable digest action buttons,
+start it with a live session provider address:
+
+```sh
+bun apps/dashboard/server.ts --session /tmp/sloppy-session.sock
+```
 
 ## Config
 
@@ -288,6 +296,32 @@ providers:
     delegation: true
     orchestration: true
     spec: true
+  orchestration:
+    budget:
+      wallTimeMs: 1800000
+      retriesPerSlice: 2
+      tokenLimit: 500000
+      costUsd: 25
+    guardrails:
+      repeatedFailureLimit: 2
+      progressStallLimit: 2
+      progressProjectionRequiresBudget: true
+      coherenceReplanRateLimit: 3
+      coherenceQuestionDensityLimit: 5
+      blastRadius:
+        maxFilesModified: 20
+        maxDepsAdded: 2
+        maxExternalCalls: 5
+        publicSurfaceDeltaRequiresGate: true
+    digest:
+      cadence: on_escalation
+    policy:
+      gates:
+        sliceGate: policy
+      goals:
+        sensitive-goal-id:
+          gates:
+            sliceGate: user
 ```
 
 Delegation can also launch configured Agent Client Protocol agents as child sessions while preserving the same SLOP session surface:
@@ -333,7 +367,7 @@ API keys are not written to YAML:
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
 - one-shot orchestration entrypoints that are explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
 
-The current TUI uses the session provider's `/llm` state to onboard and manage profiles, and its `/apps` state to surface external provider attachment status.
+The current TUI uses the session provider's `/llm` state to onboard and manage profiles, its `/apps` state to surface external provider attachment status, and `/orchestration` for plan, gate, slice, final-audit, pending-gate, and latest digest-action controls.
 
 TUI-specific settings are configured under `tui`.
 

@@ -28,15 +28,24 @@ export interface SubAgentRunnerOptions {
   id: string;
   name: string;
   goal: string;
-  model?: string;
   parentHub: ProviderRuntimeHub;
   parentConfig: SloppyConfig;
   agentFactory?: SessionAgentFactory;
   llmProfileManager?: LlmProfileManager;
+  llmProfileId?: string;
+  llmModelOverride?: string;
   requiresLlmProfile?: boolean;
   externalAgentState?: ExternalSessionAgentState;
   providerIdPrefix?: string;
   taskContext?: TaskContext;
+  /**
+   * Optional role id to attach to the child SessionRuntime so role-scoped
+   * system prompts and tool policies apply. The runner factory resolves the
+   * id against the role registry at construction time.
+   */
+  roleId?: string;
+  role?: import("../../core/role").RoleProfile;
+  roleRegistry?: import("../../core/role").RoleRegistry;
   /**
    * Optional list of builtin provider keys (matching `config.providers.builtin`)
    * to force-disable in the child runtime. Lets callers strip planning-layer
@@ -50,7 +59,6 @@ export class SubAgentRunner {
   readonly id: string;
   readonly name: string;
   readonly goal: string;
-  readonly model?: string;
   readonly sessionProviderId: string;
 
   private parentHub: ProviderRuntimeHub;
@@ -70,15 +78,14 @@ export class SubAgentRunner {
     this.id = options.id;
     this.name = options.name;
     this.goal = options.goal;
-    this.model = options.model;
     this.parentHub = options.parentHub;
     this.taskContext = options.taskContext;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
     // Sub-agents do leaf work. Strip planning-layer providers (named by the
     // caller via `disableBuiltinProviders`) so they can't re-enter planning
-    // mode and recurse. The child runtime is constructed with the default
-    // role, so any role-level system prompt and tool policy do not apply.
+    // mode and recurse. A role can be attached via `options.role` /
+    // `options.roleId` so role-scoped system prompts and tool policies apply.
     // The parent hub still federates the child's session tree back via
     // AgentSessionProvider.
     const disableSet = new Set(options.disableBuiltinProviders ?? []);
@@ -104,9 +111,14 @@ export class SubAgentRunner {
       title: options.name,
       agentFactory: options.agentFactory,
       llmProfileManager: options.llmProfileManager,
+      llmProfileId: options.llmProfileId,
+      llmModelOverride: options.llmModelOverride,
       requiresLlmProfile: options.requiresLlmProfile,
       externalAgentState: options.externalAgentState,
       parentActorId: "parent",
+      role: options.role,
+      roleId: options.roleId,
+      roleRegistry: options.roleRegistry,
     });
 
     this.provider = new AgentSessionProvider(this.runtime, {

@@ -1,7 +1,12 @@
 import { formatTree } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
-import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
+import type {
+  LlmAdapter,
+  LlmResponse,
+  ToolResultContentBlock,
+  ToolUseContentBlock,
+} from "../llm/types";
 import { LlmAbortError } from "../llm/types";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
@@ -32,6 +37,11 @@ export interface RunLoopHooks {
     config: SloppyConfig,
   ) => Record<string, unknown>;
   beforeNextTurn?: (hub: ProviderRuntimeHub, signal?: AbortSignal) => Promise<void>;
+  onModelResponse?: (
+    response: LlmResponse,
+    hub: ProviderRuntimeHub,
+    signal?: AbortSignal,
+  ) => Promise<void> | void;
   /**
    * Optional id of the role driving this loop iteration. When set, the loop
    * passes this id as per-call metadata to `hub.invoke` so hub policy rules
@@ -590,6 +600,9 @@ export async function runLoop(options: {
       onText: options.onText,
       signal: options.signal,
     });
+    if (options.hooks?.onModelResponse) {
+      await options.hooks.onModelResponse(response, options.hub, options.signal);
+    }
 
     options.history.addAssistantContent(response.content);
 

@@ -1,6 +1,10 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
+import {
+  type ExecutorBinding,
+  executorBindingSchema,
+} from "../../runtime/delegation/executor-binding";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -8,14 +12,19 @@ export type DelegationAgentSpawn = {
   id: string;
   name: string;
   goal: string;
-  model?: string;
-  executionMode?: string;
+  executor?: ExecutorBinding;
   /**
    * Opaque external task id supplied by whoever requested the spawn (e.g. an
    * orchestrator). The delegation provider passes it through unchanged; only
    * extensions that recognize it (via a TaskContext factory) interpret it.
    */
   externalTaskId?: string;
+  /**
+   * Optional role id (e.g. "executor", "spec-agent", "planner") to attach to
+   * the spawned sub-agent's session runtime. The runner factory resolves it
+   * via the role registry; unknown role ids are ignored with a debug log.
+   */
+  roleId?: string;
 };
 
 export type DelegationAgentUpdate = {
@@ -43,9 +52,9 @@ type DelegationAgent = {
   name: string;
   goal: string;
   status: AgentStatus;
-  model?: string;
-  executionMode?: string;
+  executor?: ExecutorBinding;
   externalTaskId?: string;
+  roleId?: string;
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -53,6 +62,18 @@ type DelegationAgent = {
   completed_at?: string;
   runner?: DelegationRunner;
 };
+
+function describeExecutorModel(executor: ExecutorBinding | undefined): string | undefined {
+  if (!executor) return undefined;
+  if (executor.kind === "llm") return executor.modelOverride ?? executor.profileId;
+  return executor.adapterId;
+}
+
+function describeExecutionMode(executor: ExecutorBinding | undefined): string {
+  if (!executor) return "native";
+  if (executor.kind === "acp") return `acp:${executor.adapterId}`;
+  return "native";
+}
 
 function buildAgentId(): string {
   return `agent-${crypto.randomUUID()}`;
@@ -279,9 +300,9 @@ export class DelegationProvider {
   private spawnAgent(
     name: string,
     goal: string,
-    model?: string,
     externalTaskId?: string,
-    executionMode?: string,
+    executor?: ExecutorBinding,
+    roleId?: string,
   ): {
     id: string;
     status: AgentStatus;
@@ -304,9 +325,9 @@ export class DelegationProvider {
       name,
       goal,
       status: "pending",
-      model,
-      executionMode: executionMode ?? "native",
+      executor,
       externalTaskId,
+      roleId,
       created_at,
     };
     this.agents.set(id, agent);
@@ -314,12 +335,11 @@ export class DelegationProvider {
       id,
       name,
       goal_preview: goal.slice(0, 80),
-      model,
-      execution_mode: agent.executionMode,
+      executor,
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, model, executionMode: agent.executionMode, externalTaskId },
+      { id, name, goal, executor, externalTaskId, roleId },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -363,7 +383,7 @@ export class DelegationProvider {
       id,
       status: agent.status,
       created_at,
-      execution_mode: agent.executionMode ?? "native",
+      execution_mode: describeExecutionMode(agent.executor),
       session_provider_id: agent.session_provider_id,
     };
   }
@@ -432,31 +452,41 @@ export class DelegationProvider {
               type: "string",
               description: "The task or objective the agent should accomplish.",
             },
-            model: {
-              type: "string",
-              description: "Optional model identifier to run the agent with.",
-              optional: true,
-            },
             task_id: {
               type: "string",
               description:
                 "Optional orchestration task id (e.g. task-abcd1234) to attach to. If set, the sub-agent updates that task's lifecycle instead of creating a new one. Use this to execute a task you already planned via /orchestration.create_task.",
               optional: true,
             },
-            execution_mode: {
+            executor: {
+              type: "object",
+              description:
+                "Optional executor binding selecting which engine runs this agent. Omit for the session default. Shape: { kind: 'llm', profileId, modelOverride? } to bind to a configured LLM profile, or { kind: 'acp', adapterId, timeoutMs? } to delegate to a configured ACP adapter.",
+              optional: true,
+              properties: {
+                kind: { type: "string", enum: ["llm", "acp"] },
+                profileId: { type: "string", optional: true },
+                modelOverride: { type: "string", optional: true },
+                adapterId: { type: "string", optional: true },
+                timeoutMs: { type: "number", optional: true },
+              },
+            },
+            role: {
               type: "string",
               description:
-                "Optional execution backend. Use 'native' or 'acp:<adapterId>' when ACP delegation adapters are configured.",
+                "Optional role id (e.g. \"executor\", \"spec-agent\", \"planner\") attached to the spawned sub-agent. Resolved via the role registry; unknown roles are ignored.",
               optional: true,
             },
           },
-          async ({ name, goal, model, task_id, execution_mode }) =>
+          async ({ name, goal, task_id, executor, role }) =>
             this.spawnAgent(
               name as string,
               goal as string,
-              typeof model === "string" ? model : undefined,
               typeof task_id === "string" ? task_id : undefined,
-              typeof execution_mode === "string" ? execution_mode : undefined,
+              executor === undefined || executor === null
+                ? undefined
+                : executorBindingSchema.parse(executor),
+              typeof role === "string" && role.length > 0 ? role : undefined,
             ),
           {
             label: "Spawn Agent",
@@ -480,8 +510,9 @@ export class DelegationProvider {
         name: agent.name,
         goal: agent.goal,
         status: agent.status,
-        model: agent.model,
-        execution_mode: agent.executionMode ?? "native",
+        model: describeExecutorModel(agent.executor),
+        execution_mode: describeExecutionMode(agent.executor),
+        executor: agent.executor,
         orchestration_task_id: agent.externalTaskId,
         created_at: agent.created_at,
         completed_at: agent.completed_at,

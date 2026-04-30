@@ -87,6 +87,7 @@ const TEST_CONFIG: SloppyConfig = {
     },
     orchestration: {
       progressTailMaxChars: 2048,
+      finalAuditCommandTimeoutMs: 30000,
     },
     vision: {
       maxImages: 50,

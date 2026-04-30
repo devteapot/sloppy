@@ -58,6 +58,53 @@ type AppEntry struct {
 	LastError string
 }
 
+type OrchestrationGateEntry struct {
+	ID         string
+	Type       string
+	Status     string
+	SubjectRef string
+	Summary    string
+	CanAccept  bool
+	CanReject  bool
+}
+
+type DigestActionEntry struct {
+	ID         string
+	Kind       string
+	Label      string
+	TargetRef  string
+	ActionPath string
+	ActionName string
+	Urgency    string
+	CanRun     bool
+}
+
+type OrchestrationSummary struct {
+	Available                      bool
+	Provider                       string
+	PlanID                         string
+	PlanStatus                     string
+	FinalAuditStatus               string
+	LatestDigestID                 string
+	LatestDigestStatus             string
+	LatestDigestDeliveryError      string
+	PendingDigestDeliveryCount     int
+	PendingGateCount               int
+	LatestBlockingGateID           string
+	LatestBlockingGateType         string
+	LatestBlockingGateSummary      string
+	ActiveSliceCount               int
+	CompletedSliceCount            int
+	FailedSliceCount               int
+	PrecedentResolvedCount         int
+	SemanticPrecedentResolvedCount int
+	PrecedentEscalatedCount        int
+	OpenDriftEventCount            int
+	BlockingDriftEventCount        int
+	Gates                          []OrchestrationGateEntry
+	DigestActions                  []DigestActionEntry
+}
+
 type LlmProfileEntry struct {
 	ID               string
 	Label            string
@@ -93,6 +140,7 @@ type ViewState struct {
 	Approvals         []ApprovalEntry
 	Tasks             []TaskEntry
 	Apps              []AppEntry
+	Orchestration     OrchestrationSummary
 	Error             string
 }
 
@@ -242,6 +290,58 @@ func BuildView(tree *slop.WireNode, err error) ViewState {
 		}
 	}
 
+	if orchestrationNode := findChild(tree, "orchestration"); orchestrationNode != nil {
+		canAcceptGate := hasAffordance(orchestrationNode, "accept_gate")
+		canRejectGate := hasAffordance(orchestrationNode, "reject_gate")
+		canRunDigestAction := hasAffordance(orchestrationNode, "run_digest_action")
+		state.Orchestration = OrchestrationSummary{
+			Available:                      boolProp(orchestrationNode, "available"),
+			Provider:                       stringProp(orchestrationNode, "provider"),
+			PlanID:                         stringProp(orchestrationNode, "plan_id"),
+			PlanStatus:                     stringProp(orchestrationNode, "plan_status"),
+			FinalAuditStatus:               stringProp(orchestrationNode, "final_audit_status"),
+			LatestDigestID:                 stringProp(orchestrationNode, "latest_digest_id"),
+			LatestDigestStatus:             stringProp(orchestrationNode, "latest_digest_status"),
+			LatestDigestDeliveryError:      stringProp(orchestrationNode, "latest_digest_delivery_error"),
+			PendingDigestDeliveryCount:     intProp(orchestrationNode, "pending_digest_delivery_count"),
+			PendingGateCount:               intProp(orchestrationNode, "pending_gate_count"),
+			LatestBlockingGateID:           stringProp(orchestrationNode, "latest_blocking_gate_id"),
+			LatestBlockingGateType:         stringProp(orchestrationNode, "latest_blocking_gate_type"),
+			LatestBlockingGateSummary:      stringProp(orchestrationNode, "latest_blocking_gate_summary"),
+			ActiveSliceCount:               intProp(orchestrationNode, "active_slice_count"),
+			CompletedSliceCount:            intProp(orchestrationNode, "completed_slice_count"),
+			FailedSliceCount:               intProp(orchestrationNode, "failed_slice_count"),
+			PrecedentResolvedCount:         intProp(orchestrationNode, "precedent_resolved_count"),
+			SemanticPrecedentResolvedCount: intProp(orchestrationNode, "semantic_precedent_resolved_count"),
+			PrecedentEscalatedCount:        intProp(orchestrationNode, "precedent_escalated_count"),
+			OpenDriftEventCount:            intProp(orchestrationNode, "open_drift_event_count"),
+			BlockingDriftEventCount:        intProp(orchestrationNode, "blocking_drift_event_count"),
+		}
+		for _, gate := range recordSliceProp(orchestrationNode, "pending_gates") {
+			state.Orchestration.Gates = append(state.Orchestration.Gates, OrchestrationGateEntry{
+				ID:         stringRecordProp(gate, "id"),
+				Type:       stringRecordProp(gate, "gate_type"),
+				Status:     stringRecordProp(gate, "status"),
+				SubjectRef: stringRecordProp(gate, "subject_ref"),
+				Summary:    stringRecordProp(gate, "summary"),
+				CanAccept:  canAcceptGate && boolRecordProp(gate, "can_accept"),
+				CanReject:  canRejectGate && boolRecordProp(gate, "can_reject"),
+			})
+		}
+		for _, digestAction := range recordSliceProp(orchestrationNode, "latest_digest_actions") {
+			state.Orchestration.DigestActions = append(state.Orchestration.DigestActions, DigestActionEntry{
+				ID:         stringRecordProp(digestAction, "id"),
+				Kind:       stringRecordProp(digestAction, "kind"),
+				Label:      stringRecordProp(digestAction, "label"),
+				TargetRef:  stringRecordProp(digestAction, "target_ref"),
+				ActionPath: stringRecordProp(digestAction, "action_path"),
+				ActionName: stringRecordProp(digestAction, "action_name"),
+				Urgency:    stringRecordProp(digestAction, "urgency"),
+				CanRun:     canRunDigestAction,
+			})
+		}
+	}
+
 	return state
 }
 
@@ -313,6 +413,60 @@ func numberProp(node *slop.WireNode, key string) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func intProp(node *slop.WireNode, key string) int {
+	value, ok := numberProp(node, key)
+	if !ok {
+		return 0
+	}
+	return int(value)
+}
+
+func recordSliceProp(node *slop.WireNode, key string) []map[string]any {
+	if node == nil || node.Properties == nil {
+		return nil
+	}
+
+	value, ok := node.Properties[key]
+	if !ok {
+		return nil
+	}
+
+	switch records := value.(type) {
+	case []map[string]any:
+		return records
+	case []any:
+		out := make([]map[string]any, 0, len(records))
+		for _, item := range records {
+			if record, ok := item.(map[string]any); ok {
+				out = append(out, record)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func stringRecordProp(record map[string]any, key string) string {
+	value, ok := record[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+func boolRecordProp(record map[string]any, key string) bool {
+	value, ok := record[key]
+	if !ok {
+		return false
+	}
+	boolean, ok := value.(bool)
+	return ok && boolean
 }
 
 func hasAffordance(node *slop.WireNode, action string) bool {

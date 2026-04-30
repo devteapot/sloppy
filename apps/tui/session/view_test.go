@@ -157,6 +157,53 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 					},
 				}},
 			},
+			{
+				ID:   "orchestration",
+				Type: "status",
+				Properties: slop.Props{
+					"available":                    true,
+					"provider":                     "orchestration",
+					"plan_id":                      "plan-1",
+					"plan_status":                  "active",
+					"final_audit_status":           "none",
+					"latest_digest_id":             "digest-1",
+					"latest_digest_status":         "blocked",
+					"pending_gate_count":           1,
+					"latest_blocking_gate_id":      "gate-1",
+					"latest_blocking_gate_type":    "spec_accept",
+					"latest_blocking_gate_summary": "Spec needs acceptance.",
+					"active_slice_count":           2,
+					"completed_slice_count":        1,
+					"failed_slice_count":           0,
+					"pending_gates": []any{
+						map[string]any{
+							"id":          "gate-1",
+							"gate_type":   "spec_accept",
+							"status":      "open",
+							"subject_ref": "spec:spec-1",
+							"summary":     "Spec needs acceptance.",
+							"can_accept":  true,
+							"can_reject":  true,
+						},
+					},
+					"latest_digest_actions": []any{
+						map[string]any{
+							"id":          "action-gate-1-accept",
+							"kind":        "accept_gate",
+							"label":       "Accept spec_accept",
+							"target_ref":  "gate:gate-1",
+							"action_path": "/gates/gate-1",
+							"action_name": "resolve_gate",
+							"urgency":     "high",
+						},
+					},
+				},
+				Affordances: []slop.Affordance{
+					{Action: "accept_gate"},
+					{Action: "reject_gate"},
+					{Action: "run_digest_action"},
+				},
+			},
 		},
 	}
 
@@ -203,6 +250,15 @@ func TestBuildViewParsesSessionPanesAndActions(t *testing.T) {
 	}
 	if state.Apps[0].Transport != "unix:/tmp/native-demo.sock" || state.Apps[0].Status != "connected" {
 		t.Fatalf("expected app transport and status to be parsed, got %#v", state.Apps[0])
+	}
+	if !state.Orchestration.Available || state.Orchestration.PlanID != "plan-1" {
+		t.Fatalf("expected orchestration summary to be parsed, got %#v", state.Orchestration)
+	}
+	if len(state.Orchestration.Gates) != 1 || !state.Orchestration.Gates[0].CanAccept || !state.Orchestration.Gates[0].CanReject {
+		t.Fatalf("expected orchestration gate controls to be parsed, got %#v", state.Orchestration.Gates)
+	}
+	if len(state.Orchestration.DigestActions) != 1 || !state.Orchestration.DigestActions[0].CanRun {
+		t.Fatalf("expected digest action controls to be parsed, got %#v", state.Orchestration.DigestActions)
 	}
 }
 

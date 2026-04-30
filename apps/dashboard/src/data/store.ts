@@ -3,6 +3,7 @@ import { createStore, produce } from "solid-js/store";
 import type {
   ActiveFileOp,
   AgentNode,
+  DashboardDigest,
   DashboardHandoff,
   DashboardPlan,
   DashboardTask,
@@ -29,6 +30,7 @@ export function createDashboardStore() {
   const [plan, setPlan] = createStore<DashboardPlan>({ ...EMPTY_PLAN });
   const [tasks, setTasks] = createStore<Record<string, DashboardTask>>({});
   const [handoffs, setHandoffs] = createStore<Record<string, DashboardHandoff>>({});
+  const [digest, setDigest] = createSignal<DashboardDigest | null>(null);
   const [agents, setAgents] = createStore<Record<string, AgentNode>>({});
   const [files, setFiles] = createStore<Record<string, FileNode>>({});
   const [scheduler, setScheduler] = createStore<SchedulerState>({
@@ -60,6 +62,7 @@ export function createDashboardStore() {
         for (const k of Object.keys(h)) delete h[k];
       }),
     );
+    setDigest(null);
     setAgents(
       produce((a) => {
         for (const k of Object.keys(a)) delete a[k];
@@ -93,6 +96,8 @@ export function createDashboardStore() {
     setTasks,
     handoffs,
     setHandoffs,
+    digest,
+    setDigest,
     agents,
     setAgents,
     files,

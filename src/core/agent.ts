@@ -87,6 +87,8 @@ export class Agent {
   private discoverySync: Promise<void> = Promise.resolve();
   private history: ConversationHistory;
   private llmProfileManager: LlmProfileManager;
+  private llmProfileId?: string;
+  private llmModelOverride?: string;
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
@@ -106,6 +108,8 @@ export class Agent {
     options?: {
       config?: SloppyConfig;
       llmProfileManager?: LlmProfileManager;
+      llmProfileId?: string;
+      llmModelOverride?: string;
       ignoredProviderIds?: string[];
       role?: RoleProfile;
       roleId?: string;
@@ -147,6 +151,8 @@ export class Agent {
       new LlmProfileManager({
         config: this.config,
       });
+    this.llmProfileId = options?.llmProfileId;
+    this.llmModelOverride = options?.llmModelOverride;
   }
 
   async start(): Promise<void> {
@@ -187,6 +193,7 @@ export class Agent {
       setDelegationHooks: (hooks) => {
         self.delegationHooks = hooks;
       },
+      llmProfileManager: this.llmProfileManager,
     };
 
     for (const provider of providers) {
@@ -270,7 +277,10 @@ export class Agent {
 
     this.history.addUserText(userMessage);
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter();
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -316,7 +326,10 @@ export class Agent {
     });
 
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter();
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -348,6 +361,7 @@ export class Agent {
       toolPolicy: this.role.toolPolicy,
       transformInvoke: this.role.transformInvoke,
       beforeNextTurn: this.role.beforeNextTurn,
+      onModelResponse: this.role.onModelResponse,
       roleId: this.roleId ?? this.role.id,
     };
   }

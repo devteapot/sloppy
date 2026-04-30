@@ -138,6 +138,99 @@ describe("loadConfig", () => {
     const config = await loadConfig();
 
     expect(config.providers.skills.skillsDir).toBe(join(home, ".hermes/skills"));
+    expect(config.providers.orchestration.finalAuditCommandTimeoutMs).toBe(30000);
+  });
+
+  test("loads orchestration budget config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      "providers:\n  orchestration:\n    budget:\n      wallTimeMs: 2500\n      retriesPerSlice: 2\n      tokenLimit: 50000\n      costUsd: 1.25\n",
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.orchestration.budget?.wallTimeMs).toBe(2500);
+    expect(config.providers.orchestration.budget?.retriesPerSlice).toBe(2);
+    expect(config.providers.orchestration.budget?.tokenLimit).toBe(50000);
+    expect(config.providers.orchestration.budget?.costUsd).toBe(1.25);
+  });
+
+  test("loads orchestration gate policy config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  orchestration:",
+        "    policy:",
+        "      gates:",
+        "        sliceGate: policy",
+        "      goals:",
+        "        goal-importer:",
+        "          gates:",
+        "            sliceGate: user",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.orchestration.policy?.gates.sliceGate).toBe("policy");
+    expect(config.providers.orchestration.policy?.goals["goal-importer"]?.gates.sliceGate).toBe(
+      "user",
+    );
+  });
+
+  test("loads orchestration guardrail config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  orchestration:",
+        "    guardrails:",
+        "      repeatedFailureLimit: 2",
+        "      blastRadius:",
+        "        maxFilesModified: 3",
+        "        maxDepsAdded: 1",
+        "        maxExternalCalls: 2",
+        "        publicSurfaceDeltaRequiresGate: true",
+        "    digest:",
+        "      cadence: on_escalation",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.orchestration.guardrails?.repeatedFailureLimit).toBe(2);
+    expect(config.providers.orchestration.guardrails?.blastRadius.maxFilesModified).toBe(3);
+    expect(config.providers.orchestration.guardrails?.blastRadius.maxDepsAdded).toBe(1);
+    expect(config.providers.orchestration.guardrails?.blastRadius.maxExternalCalls).toBe(2);
+    expect(
+      config.providers.orchestration.guardrails?.blastRadius.publicSurfaceDeltaRequiresGate,
+    ).toBe(true);
+    expect(config.providers.orchestration.digest?.cadence).toBe("on_escalation");
   });
 
   test("applies env override for max iterations", async () => {
