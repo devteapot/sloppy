@@ -109,7 +109,7 @@ describe("autonomous goal pipeline (Phase 2)", () => {
           if (spawn.roleId === "spec-agent") {
             // Mock spec-agent: create a spec for the goal extracted from name.
             const goalId = spawn.name.replace(/^spec-agent:/, "");
-            const created = await hub.invoke("specs", "/specs", "create_spec", {
+            const created = await hub.invoke("spec", "/specs", "create_spec", {
               title: "Autonomous spec",
               body: "# Spec\nDeliver feature.",
               goal_id: goalId,
@@ -154,7 +154,7 @@ describe("autonomous goal pipeline (Phase 2)", () => {
       stop: () => orchestration.stop(),
     });
     await hub.addProvider({
-      id: "specs",
+      id: "spec",
       name: "Specs",
       kind: "builtin",
       transport: new InProcessTransport(spec.server),
@@ -214,7 +214,9 @@ describe("autonomous goal pipeline (Phase 2)", () => {
       expect(specRef).toBeString();
       const specMatch = /^spec:(.+):v\d+$/.exec(String(specRef));
       expect(specMatch?.[1]).toBeString();
-      const accepted = await hub.invoke("specs", `/specs/${specMatch?.[1]}`, "accept_spec", { gate_id: specGate?.id });
+      const accepted = await hub.invoke("spec", `/specs/${specMatch?.[1]}`, "accept_spec", {
+        gate_id: specGate?.id,
+      });
       expect(accepted.status).toBe("ok");
 
       await waitFor(
@@ -265,7 +267,7 @@ describe("autonomous goal pipeline (Phase 2)", () => {
       stop: () => orchestration.stop(),
     });
     await hub.addProvider({
-      id: "specs",
+      id: "spec",
       name: "Specs",
       kind: "builtin",
       transport: new InProcessTransport(spec.server),

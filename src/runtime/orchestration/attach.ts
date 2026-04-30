@@ -7,11 +7,10 @@ import {
   specAgentRoleRule,
 } from "../../core/policy/rules";
 import type { RuntimeContext } from "../../core/role";
+import { BUILTIN_PROVIDER_IDS } from "../../providers/builtin/ids";
 import { AutonomousGoalCoordinator } from "./autonomous-coordinator";
 import { createOrchestratorRole, executorRole, plannerRole, specAgentRole } from "./index";
 import { createOrchestrationTaskContext } from "./task-context";
-
-const ORCHESTRATION_PROVIDER_ID = "orchestration";
 
 /**
  * Wires the orchestration extension into the agent runtime: registers the
@@ -48,7 +47,7 @@ export function attachOrchestrationRuntime(
   ctx.delegationHooks?.setTaskContextFactory((spawn) =>
     createOrchestrationTaskContext({
       hub,
-      providerId: ORCHESTRATION_PROVIDER_ID,
+      providerId: BUILTIN_PROVIDER_IDS.orchestration,
       taskId: spawn.externalTaskId,
       spawnId: spawn.id,
       spawnName: spawn.name,
@@ -60,7 +59,12 @@ export function attachOrchestrationRuntime(
     config.providers?.builtin?.orchestration &&
     config.providers?.builtin?.delegation &&
     config.providers?.builtin?.spec
-      ? new AutonomousGoalCoordinator({ hub })
+      ? new AutonomousGoalCoordinator({
+          hub,
+          orchestrationProviderId: BUILTIN_PROVIDER_IDS.orchestration,
+          delegationProviderId: BUILTIN_PROVIDER_IDS.delegation,
+          specProviderId: BUILTIN_PROVIDER_IDS.spec,
+        })
       : undefined;
   void autonomousCoordinator?.start();
 

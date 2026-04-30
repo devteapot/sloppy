@@ -15,8 +15,8 @@ import {
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { OrchestrationProvider } from "../src/providers/builtin/orchestration";
 import { SpecProvider } from "../src/providers/builtin/spec";
-import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 import { OrchestrationScheduler } from "../src/runtime/orchestration";
+import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 
 const tempPaths: string[] = [];
 
@@ -117,70 +117,91 @@ async function harness() {
 
       try {
         if (spawnRole(spawn) === "spec-agent") {
-        const goalId = spawn.name.replace(/^spec-agent:/, "");
-        const created = await hub.invoke("spec", "/specs", "create_spec", {
-          title: `Spec for ${goalId}`,
-          body: "Autonomous smoke spec body.",
-          goal_id: goalId,
-        });
-        if (created.status !== "ok") throw new Error(`create_spec failed: ${created.error?.message}`);
-        const specId = (created.data as { id?: string; spec_id?: string }).id ?? (created.data as { spec_id?: string }).spec_id;
-        if (!specId) throw new Error(`create_spec returned no spec id: ${JSON.stringify(created)}`);
-        await hub.invoke("spec", `/specs/${specId}`, "add_requirement", {
-          text: "Smoke proof is dispatchable.",
-          priority: "must",
-          criterion_kind: "text",
-        });
-        const gate = await hub.invoke("orchestration", "/gates", "open_gate", {
-          gate_type: "spec_accept",
-          resolver: "user",
-          subject_ref: `spec:${specId}:v2`,
-          summary: "Accept autonomous smoke spec.",
-        });
-        if (gate.status !== "ok") throw new Error(`open spec gate failed: ${gate.error?.message}`);
-        const gateId = (gate.data as { id?: string; gate_id?: string }).id ?? (gate.data as { gate_id?: string }).gate_id;
-        if (!gateId) throw new Error(`open spec gate returned no gate id: ${JSON.stringify(gate)}`);
-        const resolved = await hub.invoke("orchestration", `/gates/${gateId}`, "resolve_gate", { status: "accepted" });
-        if (resolved.status !== "ok") throw new Error(`resolve spec gate failed: ${resolved.error?.message}`);
-        const accepted = await hub.invoke("spec", `/specs/${specId}`, "accept_spec", { gate_id: gateId });
-        if (accepted.status !== "ok") throw new Error(`accept spec failed: ${accepted.error?.message}`);
-      }
-
-      if (spawnRole(spawn) === "planner") {
-        const goalId = spawn.name.replace(/^planner:/, "");
-        const specMatch = /# Spec: (\S+) \(v(\d+)\)/.exec(spawn.goal);
-        if (!specMatch) throw new Error(`planner spawn goal missing spec ref: ${spawn.goal}`);
-        const specId = specMatch[1];
-        const specVersion = Number(specMatch[2]);
-        const revision = await hub.invoke("orchestration", "/orchestration", "create_plan_revision", {
-          query: "Autonomous smoke plan",
-          goal_id: goalId,
-          spec_id: specId,
-          spec_version: specVersion,
-          planned_commit: "HEAD",
-          slice_gate_resolver: "policy",
-          slices: [
-            {
-              name: "smoke-dispatch",
-              goal: "Prove the scheduler dispatches the autonomous executor.",
-              spec_refs: ["spec:autonomous-smoke-spec:v1"],
-              acceptance_criteria: ["Executor was dispatched"],
-              structural_assumptions: ["In-process smoke harness"],
-            },
-          ],
-        });
-        if (revision.status !== "ok") {
-          throw new Error(`create_plan_revision failed: ${revision.error?.message}`);
+          const goalId = spawn.name.replace(/^spec-agent:/, "");
+          const created = await hub.invoke("spec", "/specs", "create_spec", {
+            title: `Spec for ${goalId}`,
+            body: "Autonomous smoke spec body.",
+            goal_id: goalId,
+          });
+          if (created.status !== "ok")
+            throw new Error(`create_spec failed: ${created.error?.message}`);
+          const specId =
+            (created.data as { id?: string; spec_id?: string }).id ??
+            (created.data as { spec_id?: string }).spec_id;
+          if (!specId)
+            throw new Error(`create_spec returned no spec id: ${JSON.stringify(created)}`);
+          await hub.invoke("spec", `/specs/${specId}`, "add_requirement", {
+            text: "Smoke proof is dispatchable.",
+            priority: "must",
+            criterion_kind: "text",
+          });
+          const gate = await hub.invoke("orchestration", "/gates", "open_gate", {
+            gate_type: "spec_accept",
+            resolver: "user",
+            subject_ref: `spec:${specId}:v2`,
+            summary: "Accept autonomous smoke spec.",
+          });
+          if (gate.status !== "ok")
+            throw new Error(`open spec gate failed: ${gate.error?.message}`);
+          const gateId =
+            (gate.data as { id?: string; gate_id?: string }).id ??
+            (gate.data as { gate_id?: string }).gate_id;
+          if (!gateId)
+            throw new Error(`open spec gate returned no gate id: ${JSON.stringify(gate)}`);
+          const resolved = await hub.invoke("orchestration", `/gates/${gateId}`, "resolve_gate", {
+            status: "accepted",
+          });
+          if (resolved.status !== "ok")
+            throw new Error(`resolve spec gate failed: ${resolved.error?.message}`);
+          const accepted = await hub.invoke("spec", `/specs/${specId}`, "accept_spec", {
+            gate_id: gateId,
+          });
+          if (accepted.status !== "ok")
+            throw new Error(`accept spec failed: ${accepted.error?.message}`);
         }
-        const planGateId = (revision.data as { gate_id: string }).gate_id;
-        await hub.invoke("orchestration", `/gates/${planGateId}`, "resolve_gate", { status: "accepted" });
-      }
 
-      if (spawnRole(spawn) === "executor" && spawn.externalTaskId) {
-        await hub.invoke("orchestration", `/tasks/${spawn.externalTaskId}`, "start", {});
-      }
+        if (spawnRole(spawn) === "planner") {
+          const goalId = spawn.name.replace(/^planner:/, "");
+          const specMatch = /# Spec: (\S+) \(v(\d+)\)/.exec(spawn.goal);
+          if (!specMatch) throw new Error(`planner spawn goal missing spec ref: ${spawn.goal}`);
+          const specId = specMatch[1];
+          const specVersion = Number(specMatch[2]);
+          const revision = await hub.invoke(
+            "orchestration",
+            "/orchestration",
+            "create_plan_revision",
+            {
+              query: "Autonomous smoke plan",
+              goal_id: goalId,
+              spec_id: specId,
+              spec_version: specVersion,
+              planned_commit: "HEAD",
+              slice_gate_resolver: "policy",
+              slices: [
+                {
+                  name: "smoke-dispatch",
+                  goal: "Prove the scheduler dispatches the autonomous executor.",
+                  spec_refs: ["spec:autonomous-smoke-spec:v1"],
+                  acceptance_criteria: ["Executor was dispatched"],
+                  structural_assumptions: ["In-process smoke harness"],
+                },
+              ],
+            },
+          );
+          if (revision.status !== "ok") {
+            throw new Error(`create_plan_revision failed: ${revision.error?.message}`);
+          }
+          const planGateId = (revision.data as { gate_id: string }).gate_id;
+          await hub.invoke("orchestration", `/gates/${planGateId}`, "resolve_gate", {
+            status: "accepted",
+          });
+        }
 
-      callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
+        if (spawnRole(spawn) === "executor" && spawn.externalTaskId) {
+          await hub.invoke("orchestration", `/tasks/${spawn.externalTaskId}`, "start", {});
+        }
+
+        callbacks.onUpdate({ status: "completed", completed_at: new Date().toISOString() });
       } catch (error) {
         callbacks.onUpdate({
           status: "failed",
@@ -196,9 +217,30 @@ async function harness() {
   });
   const delegation = new DelegationProvider({ maxAgents: 4, runnerFactory });
 
-  await hub.addProvider({ id: "orchestration", name: "Orchestration", kind: "builtin", transport: new InProcessTransport(orchestration.server), transportLabel: "in-process", stop: () => orchestration.stop() });
-  await hub.addProvider({ id: "spec", name: "Spec", kind: "builtin", transport: new InProcessTransport(spec.server), transportLabel: "in-process", stop: () => spec.stop() });
-  await hub.addProvider({ id: "delegation", name: "Delegation", kind: "builtin", transport: new InProcessTransport(delegation.server), transportLabel: "in-process", stop: () => delegation.stop() });
+  await hub.addProvider({
+    id: "orchestration",
+    name: "Orchestration",
+    kind: "builtin",
+    transport: new InProcessTransport(orchestration.server),
+    transportLabel: "in-process",
+    stop: () => orchestration.stop(),
+  });
+  await hub.addProvider({
+    id: "spec",
+    name: "Spec",
+    kind: "builtin",
+    transport: new InProcessTransport(spec.server),
+    transportLabel: "in-process",
+    stop: () => spec.stop(),
+  });
+  await hub.addProvider({
+    id: "delegation",
+    name: "Delegation",
+    kind: "builtin",
+    transport: new InProcessTransport(delegation.server),
+    transportLabel: "in-process",
+    stop: () => delegation.stop(),
+  });
 
   const roleRegistry = new RoleRegistry();
   const attached = attachOrchestrationRuntime(hub, config, {
@@ -235,12 +277,24 @@ describe("autonomous runtime smoke", () => {
           "executor dispatch",
         );
       } catch (error) {
-        const agents = await hub.queryState({ providerId: "delegation", path: "/agents", depth: 2 });
-        const gates = await hub.queryState({ providerId: "orchestration", path: "/gates", depth: 2 });
+        const agents = await hub.queryState({
+          providerId: "delegation",
+          path: "/agents",
+          depth: 2,
+        });
+        const gates = await hub.queryState({
+          providerId: "orchestration",
+          path: "/gates",
+          depth: 2,
+        });
         const specs = await hub.queryState({ providerId: "spec", path: "/specs", depth: 2 });
         throw new Error(
           `${error instanceof Error ? error.message : String(error)}; spawns=${JSON.stringify(
-            observedSpawns.map((spawn) => ({ name: spawn.name, roleId: spawn.roleId, role: spawnRole(spawn) })),
+            observedSpawns.map((spawn) => ({
+              name: spawn.name,
+              roleId: spawn.roleId,
+              role: spawnRole(spawn),
+            })),
           )}; agents=${JSON.stringify(agents.children?.map((child) => child.properties))}; gates=${JSON.stringify(gates)}; specs=${JSON.stringify(specs)}`,
         );
       }

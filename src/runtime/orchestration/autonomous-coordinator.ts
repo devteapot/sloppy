@@ -1,6 +1,7 @@
 import type { SlopNode } from "@slop-ai/consumer/browser";
 import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
+import { BUILTIN_PROVIDER_IDS } from "../../providers/builtin/ids";
 
 /**
  * Watches goal and gate state for autonomous goals, spawning spec-agent and
@@ -20,6 +21,8 @@ export class AutonomousGoalCoordinator {
   private latestGoals: Array<Record<string, unknown>> = [];
   private latestGates: Array<Record<string, unknown>> = [];
   private latestSpecs: Array<Record<string, unknown>> = [];
+  private evaluateQueued = false;
+  private evaluating = false;
 
   constructor(
     private options: {
@@ -31,63 +34,34 @@ export class AutonomousGoalCoordinator {
   ) {}
 
   async start(): Promise<void> {
-    const orchestrationId = this.options.orchestrationProviderId ?? "orchestration";
-    const specIds = this.specProviderIds();
+    const orchestrationId = this.orchestrationProviderId();
+    const specId = this.specProviderId();
 
     this.stops.push(
       await this.options.hub.watchPath(orchestrationId, "/goals", (tree) => {
         this.latestGoals = childProps(tree);
-        void this.evaluate();
+        this.queueEvaluate();
       }),
     );
     this.stops.push(
       await this.options.hub.watchPath(orchestrationId, "/gates", (tree) => {
         this.latestGates = childProps(tree);
-        void this.evaluate();
+        this.queueEvaluate();
       }),
     );
-    for (const specId of specIds) {
-      try {
-        this.stops.push(
-          await this.options.hub.watchPath(specId, "/specs", (tree) => {
-            this.latestSpecs = childProps(tree);
-            void this.evaluate();
-          }),
-        );
-        break;
-      } catch (err) {
-        debug("autonomous", "spec_watch_skipped", {
-          providerId: specId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
     try {
-      const delegationId = this.options.delegationProviderId ?? "delegation";
       this.stops.push(
-        await this.options.hub.watchPath(delegationId, "/agents", () => {
-          void (async () => {
-            await this.refreshGates();
-            await this.refreshSpecs();
-            await this.evaluate();
-          })();
+        await this.options.hub.watchPath(specId, "/specs", (tree) => {
+          this.latestSpecs = childProps(tree);
+          this.queueEvaluate();
         }),
       );
     } catch (err) {
-      debug("autonomous", "delegation_watch_skipped", {
+      debug("autonomous", "spec_watch_skipped", {
+        providerId: specId,
         error: err instanceof Error ? err.message : String(err),
       });
     }
-
-    const poll = setInterval(() => {
-      void (async () => {
-        await this.refreshGates();
-        await this.refreshSpecs();
-        await this.evaluate();
-      })();
-    }, 50);
-    this.stops.push(() => clearInterval(poll));
   }
 
   async stop(): Promise<void> {
@@ -101,8 +75,34 @@ export class AutonomousGoalCoordinator {
     this.stops = [];
   }
 
-  private async evaluate(): Promise<void> {
-    for (const goal of this.latestGoals) {
+  private queueEvaluate(): void {
+    this.evaluateQueued = true;
+    if (!this.evaluating) {
+      void this.drainEvaluateQueue();
+    }
+  }
+
+  private async drainEvaluateQueue(): Promise<void> {
+    this.evaluating = true;
+    try {
+      while (this.evaluateQueued) {
+        this.evaluateQueued = false;
+        await this.evaluateOnce();
+      }
+    } finally {
+      this.evaluating = false;
+      if (this.evaluateQueued) {
+        void this.drainEvaluateQueue();
+      }
+    }
+  }
+
+  private async evaluateOnce(): Promise<void> {
+    const goals = [...this.latestGoals];
+    const gates = [...this.latestGates];
+    const specs = [...this.latestSpecs];
+
+    for (const goal of goals) {
       const goalId = stringProp(goal, "id");
       if (!goalId) continue;
       if (goal.autonomous !== true) continue;
@@ -113,15 +113,23 @@ export class AutonomousGoalCoordinator {
       await this.spawnSpecAgent(goalId, goal);
       await this.refreshGates();
       await this.refreshSpecs();
+      this.queueEvaluate();
     }
 
-    for (const gate of this.latestGates) {
+    for (const gate of gates) {
       debug("autonomous", "evaluate_gate", {
         gateType: gate.gate_type,
         status: gate.status,
         subjectRef: gate.subject_ref,
-        specs: this.latestSpecs.map((entry) => ({ id: stringProp(entry, "id"), goalId: stringProp(entry, "goal_id") })),
-        goals: this.latestGoals.map((entry) => ({ id: stringProp(entry, "id"), autonomous: entry.autonomous, status: entry.status })),
+        specs: specs.map((entry) => ({
+          id: stringProp(entry, "id"),
+          goalId: stringProp(entry, "goal_id"),
+        })),
+        goals: goals.map((entry) => ({
+          id: stringProp(entry, "id"),
+          autonomous: entry.autonomous,
+          status: entry.status,
+        })),
       });
       if (gate.gate_type !== "spec_accept") continue;
       if (gate.status !== "accepted") continue;
@@ -143,16 +151,20 @@ export class AutonomousGoalCoordinator {
       if (!goalId) continue;
       const goal = this.latestGoals.find((entry) => stringProp(entry, "id") === goalId);
       if (!goal || goal.autonomous !== true) continue;
-      const currentSpecVersion = numberProp(spec, "version") ?? acceptedGateVersion;
+      const acceptedSpecVersion = numberProp(spec, "version") ?? acceptedGateVersion;
       this.spawnedPlannerForSpec.add(specId);
-      await this.spawnPlanner(goalId, specId, currentSpecVersion, goal, spec);
+      await this.spawnPlanner(goalId, specId, acceptedSpecVersion, goal, spec);
     }
   }
 
   private async refreshGates(): Promise<void> {
-    const orchestrationId = this.options.orchestrationProviderId ?? "orchestration";
+    const orchestrationId = this.orchestrationProviderId();
     try {
-      const tree = await this.options.hub.queryState({ providerId: orchestrationId, path: "/gates", depth: 1 });
+      const tree = await this.options.hub.queryState({
+        providerId: orchestrationId,
+        path: "/gates",
+        depth: 1,
+      });
       this.latestGates = childProps(tree);
     } catch (err) {
       debug("autonomous", "gate_refresh_skipped", {
@@ -162,45 +174,54 @@ export class AutonomousGoalCoordinator {
   }
 
   private async fetchSpec(specId: string): Promise<Record<string, unknown> | undefined> {
-    for (const providerId of this.specProviderIds()) {
-      try {
-        const tree = await this.options.hub.queryState({ providerId, path: `/specs/${specId}`, depth: 1 });
-        const props = tree?.properties;
-        if (props !== undefined && props !== null && typeof props === "object") {
-          return props as Record<string, unknown>;
-        }
-      } catch (err) {
-        debug("autonomous", "spec_fetch_skipped", {
-          providerId,
-          specId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+    const providerId = this.specProviderId();
+    try {
+      const tree = await this.options.hub.queryState({
+        providerId,
+        path: `/specs/${specId}`,
+        depth: 1,
+      });
+      const props = tree?.properties;
+      if (props !== undefined && props !== null && typeof props === "object") {
+        return props as Record<string, unknown>;
       }
+    } catch (err) {
+      debug("autonomous", "spec_fetch_skipped", {
+        providerId,
+        specId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     return undefined;
   }
 
   private async refreshSpecs(): Promise<void> {
-    for (const providerId of this.specProviderIds()) {
-      try {
-        const tree = await this.options.hub.queryState({ providerId, path: "/specs", depth: 1 });
-        this.latestSpecs = childProps(tree);
-        return;
-      } catch (err) {
-        debug("autonomous", "spec_refresh_skipped", {
-          providerId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    const providerId = this.specProviderId();
+    try {
+      const tree = await this.options.hub.queryState({ providerId, path: "/specs", depth: 1 });
+      this.latestSpecs = childProps(tree);
+    } catch (err) {
+      debug("autonomous", "spec_refresh_skipped", {
+        providerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  private specProviderIds(): string[] {
-    return this.options.specProviderId ? [this.options.specProviderId] : ["spec", "specs"];
+  private orchestrationProviderId(): string {
+    return this.options.orchestrationProviderId ?? BUILTIN_PROVIDER_IDS.orchestration;
+  }
+
+  private delegationProviderId(): string {
+    return this.options.delegationProviderId ?? BUILTIN_PROVIDER_IDS.delegation;
+  }
+
+  private specProviderId(): string {
+    return this.options.specProviderId ?? BUILTIN_PROVIDER_IDS.spec;
   }
 
   private async spawnSpecAgent(goalId: string, goal: Record<string, unknown>): Promise<void> {
-    const delegationId = this.options.delegationProviderId ?? "delegation";
+    const delegationId = this.delegationProviderId();
     const title = stringProp(goal, "title") ?? goalId;
     const intent = stringProp(goal, "intent") ?? "";
     const goalPrompt = [
@@ -237,7 +258,7 @@ export class AutonomousGoalCoordinator {
     goal: Record<string, unknown>,
     spec: Record<string, unknown>,
   ): Promise<void> {
-    const delegationId = this.options.delegationProviderId ?? "delegation";
+    const delegationId = this.delegationProviderId();
     const title = stringProp(goal, "title") ?? goalId;
     const specBody = stringProp(spec, "body") ?? "";
     const plannerPrompt = [
