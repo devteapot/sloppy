@@ -32,9 +32,15 @@ type paneFocus int
 
 type profilePaneFocus int
 
+type orchestrationListEntry struct {
+	Gate   *session.OrchestrationGateEntry
+	Action *session.DigestActionEntry
+}
+
 const (
 	paneTranscript paneFocus = iota
 	paneApprovals
+	paneOrchestration
 	paneTasks
 	paneApps
 	paneActivity
@@ -91,12 +97,13 @@ type App struct {
 	settingsCapturing    bool
 	tuiSettings          TuiSettings
 
-	transcriptCursor int
-	transcriptPinned bool
-	approvalCursor   int
-	taskCursor       int
-	appCursor        int
-	activityCursor   int
+	transcriptCursor    int
+	transcriptPinned    bool
+	approvalCursor      int
+	orchestrationCursor int
+	taskCursor          int
+	appCursor           int
+	activityCursor      int
 }
 
 func NewApp(address string) App {

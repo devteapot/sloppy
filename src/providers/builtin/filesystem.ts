@@ -1,4 +1,5 @@
-import { readdirSync, statSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
@@ -797,7 +798,25 @@ export class FilesystemProvider {
   }
 
   private buildWorkspaceItems(): ItemDescriptor[] {
-    const entries = readdirSync(this.focusPath, { withFileTypes: true });
+    if (!existsSync(this.focusPath)) {
+      debug("filesystem", "focus path missing; returning empty workspace descriptor", {
+        root: this.root,
+        focusPath: this.focusPath,
+      });
+      return [];
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(this.focusPath, { withFileTypes: true });
+    } catch (error) {
+      debug("filesystem", "focus path unavailable; returning empty workspace descriptor", {
+        root: this.root,
+        focusPath: this.focusPath,
+        error,
+      });
+      return [];
+    }
     const sorted = [...entries].sort((left, right) => {
       if (left.isDirectory() && !right.isDirectory()) {
         return -1;

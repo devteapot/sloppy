@@ -55,6 +55,72 @@ export type DashboardHandoff = {
   version: number;
 };
 
+export type DashboardDigestAction = {
+  id: string;
+  kind: string;
+  label: string;
+  targetRef: string;
+  actionPath: string;
+  actionName: string;
+  urgency: "low" | "normal" | "high";
+};
+
+export type DashboardDigest = {
+  id: string;
+  status: string;
+  cadence: string;
+  createdAt: string;
+  actionEnabled: boolean;
+  headline: string[];
+  sourceRefs: string[];
+  actions: DashboardDigestAction[];
+  sections: {
+    escalations: Array<{
+      gateId: string;
+      gateType: string;
+      status: string;
+      subjectRef: string;
+      summary: string;
+    }>;
+    autoResolutionCount: number;
+    nearMisses: Array<{
+      kind: string;
+      ref: string;
+      summary: string;
+    }>;
+    drift: {
+      criteriaTotal: number;
+      criteriaSatisfied: number;
+      criteriaUnknown: number;
+      progressVelocity: number;
+      progressCurrentDistance: number;
+      replanCount: number;
+      failureCount: number;
+      coverageGapCount: number;
+      goalRevisionPressure: number;
+      recentEvents: Array<{
+        id: string;
+        kind: string;
+        severity: string;
+        status: string;
+        summary: string;
+      }>;
+    };
+    budget: {
+      configured: boolean;
+      exceeded: boolean;
+      message: string;
+      exceededLimits: string[];
+    };
+    next: {
+      pendingGateCount: number;
+      nextReadySlices: string[];
+      runningSlices: string[];
+      finalAuditStatus: string;
+    };
+  };
+};
+
 export type FlowEvent = {
   id: string;
   toolUseId?: string;
@@ -90,6 +156,7 @@ export type DashboardState = {
   plan: DashboardPlan;
   tasks: DashboardTask[];
   handoffs: DashboardHandoff[];
+  digest: DashboardDigest | null;
   events: FlowEvent[];
 };
 
@@ -98,6 +165,7 @@ export type DeltaMessage =
   | { kind: "plan"; fields: Partial<DashboardPlan>; updatedAt: string }
   | { kind: "task"; id: string; fields: DashboardTask | null; updatedAt: string }
   | { kind: "handoff"; id: string; fields: DashboardHandoff | null; updatedAt: string }
+  | { kind: "digest"; digest: DashboardDigest | null; updatedAt: string }
   | { kind: "event"; event: FlowEvent };
 
 export type AgentNode = {

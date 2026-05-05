@@ -115,6 +115,15 @@ func (a App) updateSession(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if approval := a.selectedApproval(); approval != nil && approval.CanApprove {
 				return a, approveApprovalCmd(a.manager, approval.ID)
 			}
+		case paneOrchestration:
+			if entry := a.selectedOrchestrationEntry(); entry != nil {
+				if entry.Gate != nil && entry.Gate.CanAccept {
+					return a, acceptOrchestrationGateCmd(a.manager, entry.Gate.ID)
+				}
+				if entry.Action != nil && entry.Action.CanRun {
+					return a, runDigestActionCmd(a.manager, entry.Action.ID)
+				}
+			}
 		case paneTasks:
 			if task := a.selectedTask(); task != nil && task.CanCancel {
 				return a, cancelTaskCmd(a.manager, task.ID)
@@ -347,6 +356,9 @@ func (a App) handleMainLeaderAction(key string) (tea.Model, tea.Cmd) {
 		if approval := a.selectedApproval(); approval != nil && approval.CanApprove && a.focus == paneApprovals {
 			return a, approveApprovalCmd(a.manager, approval.ID)
 		}
+		if entry := a.selectedOrchestrationEntry(); entry != nil && entry.Gate != nil && entry.Gate.CanAccept && a.focus == paneOrchestration {
+			return a, acceptOrchestrationGateCmd(a.manager, entry.Gate.ID)
+		}
 	case "r":
 		if approval := a.selectedApproval(); approval != nil && approval.CanReject && a.focus == paneApprovals {
 			a.rejectApprovalID = approval.ID
@@ -355,12 +367,18 @@ func (a App) handleMainLeaderAction(key string) (tea.Model, tea.Cmd) {
 			a.syncInputs()
 			return a, nil
 		}
+		if entry := a.selectedOrchestrationEntry(); entry != nil && entry.Gate != nil && entry.Gate.CanReject && a.focus == paneOrchestration {
+			return a, rejectOrchestrationGateCmd(a.manager, entry.Gate.ID)
+		}
+	case "d":
+		if entry := a.selectedOrchestrationEntry(); entry != nil && entry.Action != nil && entry.Action.CanRun && a.focus == paneOrchestration {
+			return a, runDigestActionCmd(a.manager, entry.Action.ID)
+		}
 	case "c":
 		if task := a.selectedTask(); task != nil && task.CanCancel && a.focus == paneTasks {
 			return a, cancelTaskCmd(a.manager, task.ID)
 		}
 	}
-
 	return a, nil
 }
 
@@ -490,7 +508,7 @@ func (a App) profileSaveParams() (slop.Params, error) {
 }
 
 func (a *App) moveMainPane(key string) bool {
-	order := []paneFocus{paneTranscript, paneApprovals, paneTasks, paneApps, paneActivity, paneComposer}
+	order := []paneFocus{paneTranscript, paneApprovals, paneOrchestration, paneTasks, paneApps, paneActivity, paneComposer}
 	if a.sessionBodyWidth() < 112 {
 		index := 0
 		for i := range order {
@@ -528,6 +546,15 @@ func (a *App) moveMainPane(key string) bool {
 		case "shift+left":
 			next = paneTranscript
 		case "shift+down":
+			next = paneOrchestration
+		}
+	case paneOrchestration:
+		switch key {
+		case "shift+left":
+			next = paneTranscript
+		case "shift+up":
+			next = paneApprovals
+		case "shift+down":
 			next = paneTasks
 		}
 	case paneTasks:
@@ -535,7 +562,7 @@ func (a *App) moveMainPane(key string) bool {
 		case "shift+left":
 			next = paneTranscript
 		case "shift+up":
-			next = paneApprovals
+			next = paneOrchestration
 		case "shift+down":
 			next = paneApps
 		}
@@ -641,6 +668,8 @@ func (a *App) moveSelection(delta int) {
 		a.transcriptPinned = a.transcriptCursor >= len(a.state.Transcript)-1
 	case paneApprovals:
 		a.approvalCursor = clampRange(a.approvalCursor+delta, len(a.state.Approvals))
+	case paneOrchestration:
+		a.orchestrationCursor = clampRange(a.orchestrationCursor+delta, a.orchestrationEntryCount())
 	case paneTasks:
 		a.taskCursor = clampRange(a.taskCursor+delta, len(a.state.Tasks))
 	case paneApps:
@@ -676,6 +705,30 @@ func (a App) selectedTask() *session.TaskEntry {
 	}
 	index := clampRange(a.taskCursor, len(a.state.Tasks))
 	return &a.state.Tasks[index]
+}
+
+func (a App) orchestrationEntries() []orchestrationListEntry {
+	entries := make([]orchestrationListEntry, 0, len(a.state.Orchestration.Gates)+len(a.state.Orchestration.DigestActions))
+	for index := range a.state.Orchestration.Gates {
+		entries = append(entries, orchestrationListEntry{Gate: &a.state.Orchestration.Gates[index]})
+	}
+	for index := range a.state.Orchestration.DigestActions {
+		entries = append(entries, orchestrationListEntry{Action: &a.state.Orchestration.DigestActions[index]})
+	}
+	return entries
+}
+
+func (a App) orchestrationEntryCount() int {
+	return len(a.state.Orchestration.Gates) + len(a.state.Orchestration.DigestActions)
+}
+
+func (a App) selectedOrchestrationEntry() *orchestrationListEntry {
+	entries := a.orchestrationEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+	index := clampRange(a.orchestrationCursor, len(entries))
+	return &entries[index]
 }
 
 func (a App) selectedProfile() *session.LlmProfileEntry {
@@ -764,6 +817,11 @@ func (a App) applyViewState(next session.ViewState) App {
 	}
 
 	a.approvalCursor = preserveCursor(len(previous.Approvals), len(next.Approvals), a.approvalCursor)
+	a.orchestrationCursor = preserveCursor(
+		len(previous.Orchestration.Gates)+len(previous.Orchestration.DigestActions),
+		len(next.Orchestration.Gates)+len(next.Orchestration.DigestActions),
+		a.orchestrationCursor,
+	)
 	a.taskCursor = preserveCursor(len(previous.Tasks), len(next.Tasks), a.taskCursor)
 	a.appCursor = preserveCursor(len(previous.Apps), len(next.Apps), a.appCursor)
 	a.activityCursor = preserveCursor(len(previous.Activity), len(next.Activity), a.activityCursor)
@@ -775,6 +833,12 @@ func (a App) applyViewState(next session.ViewState) App {
 		}
 		if strings.TrimSpace(a.input.Value()) == "" || a.focus != paneComposer {
 			a.focus = paneApprovals
+		}
+	}
+	if !hasPendingOrchestrationGates(previous.Orchestration.Gates) && hasPendingOrchestrationGates(next.Orchestration.Gates) && !a.rejectPromptOpen() {
+		a.orchestrationCursor = 0
+		if strings.TrimSpace(a.input.Value()) == "" || a.focus != paneComposer {
+			a.focus = paneOrchestration
 		}
 	}
 

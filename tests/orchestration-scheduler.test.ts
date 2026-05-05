@@ -66,7 +66,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 2 },
-    orchestration: { progressTailMaxChars: 2048 },
+    orchestration: { progressTailMaxChars: 2048, finalAuditCommandTimeoutMs: 30000 },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };
@@ -172,6 +172,87 @@ describe("OrchestrationScheduler", () => {
         const task = await consumer.query(`/tasks/${taskId}`, 1);
         expect(task.properties?.status).toBe("running");
       }
+    } finally {
+      consumer.disconnect();
+      scheduler.stop();
+      hub.shutdown();
+      orchestration.stop();
+    }
+  });
+
+  test("plan capacity can reduce scheduler fan-out below provider capacity", async () => {
+    const { consumer, hub, orchestration, scheduler, spawnedTaskIds } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", {
+        query: "build one at a time",
+        strategy: "parallel",
+        max_agents: 1,
+      });
+      const createdResult = await consumer.invoke("/orchestration", "create_tasks", {
+        tasks: [
+          { name: "alpha", client_ref: "alpha", goal: "Do independent task alpha." },
+          { name: "beta", client_ref: "beta", goal: "Do independent task beta." },
+        ],
+      });
+      expect(createdResult.status).toBe("ok");
+
+      await waitFor(() => spawnedTaskIds.length === 1, "one ready task to be spawned");
+      await Bun.sleep(80);
+      expect(spawnedTaskIds.length).toBe(1);
+    } finally {
+      consumer.disconnect();
+      scheduler.stop();
+      hub.shutdown();
+      orchestration.stop();
+    }
+  });
+
+  test("does not let stale running agents for completed tasks consume scheduler capacity", async () => {
+    const { consumer, hub, orchestration, scheduler, spawnedTaskIds } = await harness();
+
+    try {
+      await consumer.invoke("/orchestration", "create_plan", {
+        query: "build dependent tasks with one slot",
+        max_agents: 1,
+      });
+      const createdResult = await consumer.invoke("/orchestration", "create_tasks", {
+        tasks: [
+          { name: "first", client_ref: "first", goal: "Do the first task." },
+          {
+            name: "second",
+            client_ref: "second",
+            goal: "Do the second task after the first.",
+            depends_on: ["first"],
+          },
+        ],
+      });
+      expect(createdResult.status).toBe("ok");
+      const created = (createdResult.data as { created: Array<{ id: string }> }).created;
+      const firstId = created[0]?.id;
+      const secondId = created[1]?.id;
+      if (!firstId || !secondId) {
+        throw new Error("Expected two created tasks.");
+      }
+
+      await waitFor(() => spawnedTaskIds.includes(firstId), "first task to be spawned");
+      expect(spawnedTaskIds).toEqual([firstId]);
+
+      await consumer.invoke(`/tasks/${firstId}`, "record_verification", {
+        status: "not_required",
+        criteria: ["all"],
+        summary: "No external verification needed in scheduler test.",
+      });
+      const complete = await consumer.invoke(`/tasks/${firstId}`, "complete", {
+        result: "first done",
+      });
+      expect(complete.status).toBe("ok");
+
+      await waitFor(
+        () => spawnedTaskIds.includes(secondId),
+        "dependent task to be spawned despite first agent still running",
+      );
+      expect(spawnedTaskIds).toEqual([firstId, secondId]);
     } finally {
       consumer.disconnect();
       scheduler.stop();

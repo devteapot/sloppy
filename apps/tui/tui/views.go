@@ -148,22 +148,24 @@ func (a App) sessionMainView(width int, height int) string {
 
 func (a App) sessionMainNarrowView(width int, height int) string {
 	approvalCount := len(a.state.Approvals)
+	orchestrationCount := a.orchestrationEntryCount()
 	taskCount := len(a.state.Tasks)
 	appCount := len(a.state.Apps)
 	activityCount := len(a.state.Activity)
 
 	approvalMin := paneMinHeight(approvalCount)
+	orchestrationMin := paneMinHeight(orchestrationCount)
 	taskMin := paneMinHeight(taskCount)
 	appMin := paneMinHeight(appCount)
 	activityMin := paneMinHeight(activityCount)
 
-	railMin := approvalMin + taskMin + appMin + activityMin + 3
+	railMin := approvalMin + orchestrationMin + taskMin + appMin + activityMin + 4
 	transcriptHeight := maxInt(height-railMin-1, 8)
 	remainingRail := maxInt(height-transcriptHeight-1, railMin)
 
 	// Distribute rail height among panes, giving extra to non-empty ones.
 	nonEmpty := 0
-	for _, c := range []int{approvalCount, taskCount, appCount, activityCount} {
+	for _, c := range []int{approvalCount, orchestrationCount, taskCount, appCount, activityCount} {
 		if c > 0 {
 			nonEmpty++
 		}
@@ -178,6 +180,10 @@ func (a App) sessionMainNarrowView(width int, height int) string {
 	if approvalCount > 0 {
 		approvalHeight += extraPerPane
 	}
+	orchestrationHeight := orchestrationMin
+	if orchestrationCount > 0 {
+		orchestrationHeight += extraPerPane
+	}
 	taskHeight := taskMin
 	if taskCount > 0 {
 		taskHeight += extraPerPane
@@ -186,15 +192,16 @@ func (a App) sessionMainNarrowView(width int, height int) string {
 	if appCount > 0 {
 		appHeight += extraPerPane
 	}
-	activityHeight := maxInt(remainingRail-approvalHeight-taskHeight-appHeight-3, activityMin)
+	activityHeight := maxInt(remainingRail-approvalHeight-orchestrationHeight-taskHeight-appHeight-4, activityMin)
 
 	transcript := paneStyle(a.focus == paneTranscript, false).Width(width).Height(transcriptHeight).Render(a.transcriptView(width-panePadW, transcriptHeight-panePadH))
 	approvals := paneStyle(a.focus == paneApprovals, true).Width(width).Height(approvalHeight).Render(a.approvalsView(width-panePadW, approvalHeight-panePadH))
+	orchestration := paneStyle(a.focus == paneOrchestration, true).Width(width).Height(orchestrationHeight).Render(a.orchestrationView(width-panePadW, orchestrationHeight-panePadH))
 	tasks := paneStyle(a.focus == paneTasks, true).Width(width).Height(taskHeight).Render(a.tasksView(width-panePadW, taskHeight-panePadH))
 	apps := paneStyle(a.focus == paneApps, true).Width(width).Height(appHeight).Render(a.appsView(width-panePadW, appHeight-panePadH))
 	activity := paneStyle(a.focus == paneActivity, true).Width(width).Height(activityHeight).Render(a.activityView(width-panePadW, activityHeight-panePadH))
 
-	return lipgloss.JoinVertical(lipgloss.Left, transcript, "", approvals, "", tasks, "", apps, "", activity)
+	return lipgloss.JoinVertical(lipgloss.Left, transcript, "", approvals, "", orchestration, "", tasks, "", apps, "", activity)
 }
 
 func (a App) sessionMainWideView(width int, height int) string {
@@ -205,20 +212,22 @@ func (a App) sessionMainWideView(width int, height int) string {
 	rightWidth := maxInt(width-leftWidth-2, 30)
 
 	approvalCount := len(a.state.Approvals)
+	orchestrationCount := a.orchestrationEntryCount()
 	taskCount := len(a.state.Tasks)
 	appCount := len(a.state.Apps)
 	activityCount := len(a.state.Activity)
 
 	approvalMin := paneMinHeight(approvalCount)
+	orchestrationMin := paneMinHeight(orchestrationCount)
 	taskMin := paneMinHeight(taskCount)
 	appMin := paneMinHeight(appCount)
 	activityMin := paneMinHeight(activityCount)
 
-	totalMin := approvalMin + taskMin + appMin + activityMin + 3
+	totalMin := approvalMin + orchestrationMin + taskMin + appMin + activityMin + 4
 	remaining := maxInt(height-totalMin, 0)
 
 	nonEmpty := 0
-	for _, c := range []int{approvalCount, taskCount, appCount, activityCount} {
+	for _, c := range []int{approvalCount, orchestrationCount, taskCount, appCount, activityCount} {
 		if c > 0 {
 			nonEmpty++
 		}
@@ -232,6 +241,10 @@ func (a App) sessionMainWideView(width int, height int) string {
 	if approvalCount > 0 {
 		approvalsHeight += extra
 	}
+	orchestrationHeight := orchestrationMin
+	if orchestrationCount > 0 {
+		orchestrationHeight += extra
+	}
 	tasksHeight := taskMin
 	if taskCount > 0 {
 		tasksHeight += extra
@@ -240,14 +253,15 @@ func (a App) sessionMainWideView(width int, height int) string {
 	if appCount > 0 {
 		appsHeight += extra
 	}
-	activityHeight := maxInt(height-approvalsHeight-tasksHeight-appsHeight-3, activityMin)
+	activityHeight := maxInt(height-approvalsHeight-orchestrationHeight-tasksHeight-appsHeight-4, activityMin)
 
 	transcript := paneStyle(a.focus == paneTranscript, false).Width(leftWidth).Height(height).Render(a.transcriptView(leftWidth-panePadW, height-panePadH))
 	approvals := paneStyle(a.focus == paneApprovals, true).Width(rightWidth).Height(approvalsHeight).Render(a.approvalsView(rightWidth-panePadW, approvalsHeight-panePadH))
+	orchestration := paneStyle(a.focus == paneOrchestration, true).Width(rightWidth).Height(orchestrationHeight).Render(a.orchestrationView(rightWidth-panePadW, orchestrationHeight-panePadH))
 	tasks := paneStyle(a.focus == paneTasks, true).Width(rightWidth).Height(tasksHeight).Render(a.tasksView(rightWidth-panePadW, tasksHeight-panePadH))
 	apps := paneStyle(a.focus == paneApps, true).Width(rightWidth).Height(appsHeight).Render(a.appsView(rightWidth-panePadW, appsHeight-panePadH))
 	activity := paneStyle(a.focus == paneActivity, true).Width(rightWidth).Height(activityHeight).Render(a.activityView(rightWidth-panePadW, activityHeight-panePadH))
-	right := lipgloss.JoinVertical(lipgloss.Left, approvals, "", tasks, "", apps, "", activity)
+	right := lipgloss.JoinVertical(lipgloss.Left, approvals, "", orchestration, "", tasks, "", apps, "", activity)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, transcript, "  ", right)
 }
@@ -319,6 +333,63 @@ func (a App) approvalsView(width int, height int) string {
 	}
 
 	if indicator := scrollIndicator(start, end, len(a.state.Approvals)); indicator != "" {
+		lines = append(lines, indicator)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (a App) orchestrationView(width int, height int) string {
+	entries := a.orchestrationEntries()
+	detail := fmt.Sprintf("%d gates | %d actions", len(a.state.Orchestration.Gates), len(a.state.Orchestration.DigestActions))
+	if a.state.Orchestration.PlanStatus != "" {
+		detail = fmt.Sprintf("%s | %s", strings.ToUpper(a.state.Orchestration.PlanStatus), detail)
+	}
+
+	var lines []string
+	lines = append(lines, paneHeader("Orchestration", a.focus == paneOrchestration, detail))
+	lines = append(lines, "")
+
+	if !a.state.Orchestration.Available {
+		lines = append(lines, ghostTextStyle.Render("No orchestration summary mirrored."))
+		return strings.Join(lines, "\n")
+	}
+	if len(entries) == 0 {
+		summary := fmt.Sprintf("%d active | %d done | %d failed",
+			a.state.Orchestration.ActiveSliceCount,
+			a.state.Orchestration.CompletedSliceCount,
+			a.state.Orchestration.FailedSliceCount,
+		)
+		if a.state.Orchestration.LatestDigestID != "" {
+			summary = joinNonEmpty(" | ", summary, "digest "+a.state.Orchestration.LatestDigestStatus)
+		}
+		if a.state.Orchestration.BlockingDriftEventCount > 0 {
+			summary = joinNonEmpty(" | ", summary, fmt.Sprintf("%d blocking drift", a.state.Orchestration.BlockingDriftEventCount))
+		}
+		if a.state.Orchestration.LatestDigestDeliveryError != "" {
+			summary = joinNonEmpty(" | ", summary, "delivery error")
+		}
+		lines = append(lines, ghostTextStyle.Render(summary))
+		return strings.Join(lines, "\n")
+	}
+
+	visible := maxInt((height-2)/2, 1)
+	if len(entries) > visible {
+		visible = maxInt((height-3)/2, 1)
+	}
+
+	start, end := windowBounds(len(entries), a.orchestrationCursor, visible)
+	for index := start; index < end; index++ {
+		entry := entries[index]
+		selected := index == a.orchestrationCursor
+		if entry.Gate != nil {
+			lines = append(lines, renderOrchestrationGateEntry(*entry.Gate, selected, width))
+		} else if entry.Action != nil {
+			lines = append(lines, renderDigestActionEntry(*entry.Action, selected, width))
+		}
+	}
+
+	if indicator := scrollIndicator(start, end, len(entries)); indicator != "" {
 		lines = append(lines, indicator)
 	}
 

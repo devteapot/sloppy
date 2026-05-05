@@ -83,6 +83,7 @@ html, body {
 /* Floating-pane base look. */
 .stage-body > .hierarchy-rail,
 .stage-body > .registry-pane,
+.stage-body > .control-surface,
 .stage-body > .inspector {
   position: absolute;
   background: rgba(12, 15, 22, 0.82);
@@ -104,6 +105,13 @@ html, body {
   width: 320px;
   overflow-y: auto;
   padding: 0 0 8px;
+}
+.stage-body > .control-surface {
+  left: 304px; bottom: 64px;
+  width: 430px;
+  max-height: min(380px, calc(100% - 96px));
+  overflow-y: auto;
+  padding: 0 0 10px;
 }
 .stage-body > .inspector {
   top: 12px; right: 344px; bottom: 64px;
@@ -438,6 +446,131 @@ html, body {
 .pane-empty {
   padding: 24px 14px; text-align: center;
   color: var(--fg-faint); font-size: 12px;
+}
+
+/* ─── Docs/12 digest controls ───────────────────────────────────────── */
+.digest-body { padding: 10px 14px 12px; }
+.digest-meta { margin-bottom: 8px; }
+.digest-headline {
+  margin: 0 0 10px 0;
+  padding: 0 0 0 16px;
+  color: var(--fg);
+}
+.digest-headline li { margin: 3px 0; }
+.digest-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+}
+.digest-metric {
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+.digest-metric span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.digest-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.digest-section { margin-top: 10px; }
+.digest-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.digest-row > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.digest-empty {
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.severity.warning { color: var(--amber); }
+.severity.blocking, .severity.critical { color: var(--red); }
+.source-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+}
+.source-refs span {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.digest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.digest-action {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--fg);
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.digest-action.high { border-color: rgba(255, 107, 107, 0.45); color: var(--red); }
+.digest-action.normal { border-color: rgba(94, 226, 255, 0.35); }
+.digest-action.low { color: var(--fg-dim); }
+.digest-action:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+.digest-action:disabled {
+  cursor: not-allowed;
+  color: var(--fg-faint);
+  opacity: 0.65;
+}
+.digest-note {
+  margin-top: 8px;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+@media (max-width: 980px) {
+  .stage-body > .control-surface {
+    left: 12px;
+    right: 12px;
+    width: auto;
+  }
+  .digest-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .file-tree {
   list-style: none; margin: 0; padding: 6px 0;

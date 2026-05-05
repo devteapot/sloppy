@@ -8,21 +8,30 @@ It is a design doc, not a state-of-the-code doc. It supersedes earlier informal 
 
 The checked-in implementation has the first HITL substrate in place, additively:
 
-- `/goals`, `/gates`, `/messages`, `/audit`, and `/blobs` are orchestration provider surfaces.
+- `/goals`, `/gates`, `/messages`, `/precedents`, `/audit`, and `/blobs` are orchestration provider surfaces.
 - The public session provider mirrors a bounded pending-gate summary on `/orchestration` and can resolve those HITL gates through `accept_gate` / `reject_gate`.
+- The public session provider exposes `start_spec_driven_goal`, which creates a goal, drafts a spec through the spec-owned surface, opens/optionally resolves the spec gate, and creates plan-revision proposals for accepted specs.
 - `create_plan_revision` writes a proposed complete slice set and opens a `plan_accept` gate; accepting the gate activates the revision and creates schedulable `/tasks` slices.
 - Docs/12 slices keep the public task API but expose `slice_id`, upstream plan/spec version refs, assumptions, attempt metadata, typed evidence claims, and slice-gate state.
 - Legacy `create_plan`, `create_task`, `create_tasks`, `record_verification`, and `complete` remain valid without docs/12 gates.
 - Plan execution rejects scheduling/starting when the referenced spec version is stale.
 - `submit_evidence_claim` stores typed checks/observations and opens a `slice_gate` once criteria are covered by replayable or observed evidence; self-attested evidence is retained but cannot satisfy criteria.
-- Plan revisions can opt slice gates into the first deterministic policy resolver: `slice_gate_resolver: "policy"` auto-accepts a slice gate only after typed evidence covers every criterion and records the policy/evidence refs on the gate.
+- Goal revisions now carry `magnitude`, `reason`, and `evidence_refs`. `propose_goal_revision` writes the `GoalRevision` protocol message and opens the matching `goal_accept` gate; policy can auto-accept only `minor` revisions, while `material` revisions are forced to a user gate.
+- Plan revisions can opt slice gates into the first deterministic policy resolver with `slice_gate_resolver: "policy"`, and provider config can set scoped gate-policy defaults at session/goal/spec/slice scopes. A policy-resolved slice gate auto-accepts only after typed evidence covers every criterion and records the policy/evidence refs on the gate. Policy-resolved `plan_accept` is also implemented narrowly: it only applies when the revision references the same accepted spec version as the active accepted plan and no blocking drift or budget gate is open.
 - `record_verification` is still a compatibility affordance and writes a minimal legacy `EvidenceClaim`.
 - `run_final_audit` replays allowlisted replayable evidence commands against the current workspace, stores audit output as blobs, and HITL plan completion requires a passing final audit.
-- Plan and plan-revision creation can carry configured wall-time and retry-per-slice budgets, including provider-level defaults from config. Digest generation reports budget burn and opens a `budget_exceeded` gate when a plan exceeds its wall-time cap; over-budget `retry_of` replacements are rejected and open a `budget_exceeded` gate for the logical slice.
-- `generate_digest` on `/digests` writes immutable typed digest payloads summarizing headline state, slice changes, escalations, policy auto-resolutions, near-misses, drift metrics, configured wall-time/retry budget state, and next slices.
+- Plan and plan-revision creation can carry configured wall-time, retry-per-slice, token, and USD cost budgets, including provider-level defaults from config. Digest generation reports budget burn and opens a `budget_exceeded` gate when a plan exceeds its wall-time cap; over-budget `retry_of` replacements are rejected and open a `budget_exceeded` gate for the logical slice; `record_budget_usage` persists token/cost usage under `/budget` and opens budget gates when those caps are exceeded; `raise_budget_cap` increases active-plan caps and resolves covered budget gates. The orchestrator role records parent-loop model token usage automatically.
+- `generate_digest` on `/digests` writes immutable typed digest payloads summarizing headline state, slice changes, escalations, policy auto-resolutions, near-misses, persisted drift events/metrics, progress distance/velocity, coherence thresholds/breaches, goal-revision pressure, configured wall-time/retry/token/cost budget state, next slices, in-digest control actions including budget-raise refs, trigger/cadence metadata, and push-delivery outbox records for escalation/final/status-change digests. Provider digest policy can auto-generate escalation/status-change digests for configured cadences, and final digests are emitted when plans complete or halt. Pending digest deliveries can be dispatched through configured generic, Slack, or email transport channels with durable attempt/error metadata.
+- `/precedents` persists lookup/inference precedents and judgment/conflict case records under `.sloppy/precedents/`, validates non-empty structural keys, surfaces deterministic structural matches, tracks use/contradiction, and invalidates overlapping precedents when a spec revision touches referenced sections.
+- `SpecQuestion` protocol messages can opt into precedent auto-resolution. Matching uses the deterministic structural pre-filter plus semantic embeddings when present, falls back to lexical scoring for older records, can invoke an injected or LLM-backed borderline tie-break policy hook, records the precedent use counter, stores the policy/precedent/match refs on the resolved message or escalation attempt, and includes accepted resolutions in typed digests. `SpecQuestion`s of class `judgment` or `conflict` carry structurally-similar past `case_record_matches` on the message metadata so resolvers see prior decisions for similar questions without auto-applying them.
 - The spec provider persists goal-version refs, accepted specs, immutable spec version snapshots, and criterion metadata on requirements.
+- Failure handling on slice failure records `last_failure_class` and `last_failure_decision` on task state — `reprompt`, `respawn`, or `escalate` — derived from the cross-slice consecutive-failure count for the same class plus a `context_health: "degraded"` override that forces respawn. The third same-class failure of a logical slice opens the existing per-slice `drift_escalation` gate (re-prompt → respawn → escalate, per doc § Failure handling).
+- Drift coherence metrics include cross-slice failure clustering: distinct logical slices failing with the same class are tracked as `failure_class_clusters`, and the largest cluster size compared against the configured `failure_cluster_limit`. When the threshold breaches, a plan-scoped `drift_escalation` gate opens (subject `plan:<id>:drift:stuck`); progress budget-projection breaches and evidence regressions also open dispatch-halting drift gates. `startTask`/`scheduleTask` reject with `plan_halted` while a plan-scoped drift gate is open, and resolving it restores dispatch.
+- Intent drift on evidence-claim acceptance flags abstraction emergence: when a slice has spec trace but modifies files outside both its `structural_assumptions` and the `provenance.files_inspected` set, a `warning` `intent_drift` event records the offending paths under `metrics.abstraction_files`.
+- An irreversibility classifier scans `EvidenceCheck.command` strings during evidence-claim normalization and unions deterministically-matched labels (force-push, hard-reset, `rm -rf`, package publish, SQL `DROP`/`TRUNCATE`/`DELETE FROM`, `kubectl delete`, `terraform apply`/`destroy`) into `risk.irreversible_actions`, so the existing irreversible-action gate opens even when the executor did not declare them. Evidence claims also persist `risk.external_calls`, and blast-radius guardrails can cap external calls per slice.
+- Digest payloads now also carry an optional `trends` block when a previous digest exists, with current-snapshot fields and deltas for `current_distance`, `velocity`, open-gate count, slice failed/completed counts, and replan/spec-revision counts. The `near_misses` array additionally surfaces `succeeded_after_retry` (failed slice whose retry completed) and `borderline_precedent_match` (auto-resolved SpecQuestion that landed in the borderline confidence band).
 
-Full scoped policy trees, token/cost budgets, precedents, push delivery for digests, and automated spec/planner runners remain future work.
+Docs/13 overlays, specialist routing, and broader meta-runtime learning remain future work; this document's deterministic HITL substrate is implemented independently of those layers.
 
 ## Engagement levels
 
@@ -147,7 +156,7 @@ Inner scopes override outer. A session may default to autonomous; a high-stakes 
 
 "HITL preset" sets all gates to escalate. "Autonomous preset" sets the auto-resolvable ones to auto. Users can hand-tune per scope.
 
-Current implementation note: the only policy resolver implemented so far is the deterministic slice-gate evidence-complete rule. It records `resolved_by=policy`, `resolution_policy_ref`, and `resolution_evidence_refs` on the gate. All spec, plan, goal, irreversible-action, and generic open gates still require explicit resolution unless future policy layers add narrower rules.
+Current implementation note: scoped gate-policy defaults are configured at the provider boundary and resolved when a gate opens, with explicit per-gate/per-plan resolver choices taking precedence. Automatic policy resolution currently covers deterministic slice-gate evidence completion, `goal_accept` for `minor` `GoalRevision`s, `plan_accept` for same-spec revisions with no blocking drift/budget gates, and opted-in `SpecQuestion` precedent matches, including high-confidence semantic or lexical matches and borderline matches accepted by an injected or LLM-backed tie-break policy hook. Policy gate resolution records `resolved_by=policy`, `resolution_policy_ref`, and `resolution_evidence_refs` on the gate; precedent-backed `SpecQuestion` resolution records the policy ref, precedent id, score, band, score source, structural keys, and answer on the protocol message. Borderline tie-break rejections leave the message open and persist an escalation attempt with the candidate precedent, score, policy ref, and rationale. `spec_accept`, material goal revisions, irreversible actions, budget gates, drift escalations, judgment, and conflict remain user-gated.
 
 ### SpecQuestion classification
 
@@ -327,8 +336,8 @@ A system can be making fast progress (good velocity) on entirely the wrong thing
 
 ### Who computes drift
 
-- **Progress + coherence**: the orchestrator computes synchronously on every `EvidenceClaim` acceptance. Deterministic, cheap.
-- **Intent drift**: a dedicated observer agent subscribes to evidence events and runs LLM-judgement passes asynchronously ("does this code actually map to spec section 3.2?"). Async because it's expensive and not on the critical path.
+- **Progress + coherence**: the orchestrator computes synchronously on every `EvidenceClaim` acceptance and digest generation. Deterministic metrics include total/satisfied/unknown criteria, prior/current distance, velocity, configured stall threshold, projected budget exhaustion, replan/spec-revision/question/failure counters, and threshold breaches.
+- **Intent drift**: the current observer evaluates each typed evidence claim against slice criteria, slice/spec refs, risk declarations (`files_modified`, `deps_added`, `public_surface_delta`), and provenance. Blocking dependency/public-surface drift opens `drift_escalation`; file-only coverage gaps remain warning signals unless they also violate accepted criteria or guardrails. LLM-judgement passes can be layered on the same evidence stream later without changing the event/gate shape.
 
 All three feed off the same typed evidence substrate; drift detection and evidence schema are effectively one design problem.
 
@@ -412,6 +421,8 @@ embedding similarity within candidates  ──── score
 
 The structural pre-filter requires shared `project_id`, `question_class`, ≥1 `spec_sections_referenced`, and ≥1 overlapping `code_area`. Structural keys are deterministic; they don't hallucinate. LLM-judge stays out of the hot path — only invoked in the borderline band.
 
+Current implementation note: `/precedents` implements durable records, deterministic structural pre-filtering, optional persisted `question.embedding`, semantic scoring when both sides have embeddings, lexical fallback for older records, high/borderline/low bands, use counters, contradiction marking, explicit spec-section invalidation, high-confidence opted-in `SpecQuestion` auto-resolution, and injected or LLM-profile-backed tie-break handling for borderline matches.
+
 ### Load-bearing rules
 
 1. **Only `lookup` and `inference` produce precedents.** `judgment` and `conflict` resolutions are context-specific user decisions and don't generalize.
@@ -441,7 +452,7 @@ Middle path: show what's load-bearing for trust, link to everything else.
 
 ### Cadence
 
-Per-goal, not per-session. Configurable in policy (`digest: daily | on_milestone | on_escalation_only | continuous`). Default for long-running goals: daily + on_escalation. Always emit a final digest when a goal completes/halts/aborts. Short goals lean on milestone-driven; long goals lean on time-driven.
+Per-goal, not per-session. Configurable in policy (`digest: daily | on_milestone | on_escalation | continuous`). Default for long-running goals: daily + on_escalation. Always emit a final digest when a goal completes/halts/aborts. Short goals lean on milestone-driven; long goals lean on time-driven.
 
 ### Sections (in order)
 
@@ -467,8 +478,12 @@ Per-goal, not per-session. Configurable in policy (`digest: daily | on_milestone
 
 Both. Push on escalations and goal-status changes by default. Daily push is opt-in. Routine pull avoids notification fatigue, which is the fastest way for the digest to start being ignored. The pull location is a known address per goal so the user can return to it whenever.
 
+Current implementation note: digest generation writes immutable trigger/cadence and delivery metadata on the digest plus durable pending push records under the orchestration store. `/digests` exposes pending-delivery summaries, manual acknowledgement, and `deliver_pending_digests`, which dispatches pending records through provider-configured transport channels and records attempt count, last error, delivery time, and external refs. Built-in Slack and email adapters are opt-in; no network delivery is configured by default. `daily` cadence is configuration-visible but externally triggered until a scheduler/cron runtime is wired.
+
 ### Action surface: in-digest
 
 User actions are taken in the digest itself, not out-of-band. Read digest → act in same context. The cost is a richer rendering layer; the benefit is escalations don't sit unhandled because the user couldn't be bothered to context-switch.
 
-The interactive digest is intended to be hosted in `apps/dashboard/` — that app is already the natural surface for SLOP state visualization. Other renderers (terminal in `apps/tui/`, static markdown for archival, Slack summaries) consume the same typed payload but degrade gracefully: terminal exposes numbered actions, static markdown falls back to copy-pasteable CLI invocations.
+Current implementation note: typed digest payloads include affordance references for open gate acceptance/rejection, precedent contradiction, budget-cap raises through `/budget.raise_budget_cap`, final-audit execution when ready, and plan cancellation. The session provider mirrors the latest digest actions on `/orchestration` and exposes `run_digest_action` so local UIs can invoke them without bypassing provider affordances.
+
+The interactive digest is hosted in `apps/dashboard/`: it reads the latest typed digest from the orchestration store and, when started with a session-provider address, routes action buttons through `/orchestration.run_digest_action`. The Go TUI consumes the same session summary as a terminal fallback for pending orchestration gates, drift state, delivery errors, and latest digest actions. Static markdown, Slack, and email summaries can degrade to links or copy-pasteable invocations.

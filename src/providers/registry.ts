@@ -14,6 +14,8 @@ import { InProcessTransport } from "./builtin/in-process";
 import { MemoryProvider } from "./builtin/memory";
 import { MessagingProvider } from "./builtin/messaging";
 import { OrchestrationProvider } from "./builtin/orchestration";
+import { normalizeGatePolicyInput } from "./builtin/orchestration/gate-policy";
+import { createLlmPrecedentTieBreaker } from "./builtin/orchestration/precedent-tiebreaker";
 import { SkillsProvider } from "./builtin/skills";
 import { SpecProvider } from "./builtin/spec";
 import { TerminalProvider } from "./builtin/terminal";
@@ -222,6 +224,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
           hub,
           hubConfig,
           ctx?.llmProfileManager,
+          ctx?.roleRegistry,
         );
         ctx?.setDelegationHooks?.(hooks);
         return {
@@ -234,9 +237,95 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
   }
 
   if (config.providers.builtin.orchestration) {
+    const orchestrationDelivery = config.providers.orchestration.delivery ?? {
+      slack: {},
+      email: { to: [], headers: {} },
+    };
+    const slackWebhookUrl =
+      orchestrationDelivery.slack.webhookUrl ??
+      (orchestrationDelivery.slack.webhookUrlEnv
+        ? Bun.env[orchestrationDelivery.slack.webhookUrlEnv]
+        : undefined);
+    const emailEndpointUrl =
+      orchestrationDelivery.email.endpointUrl ??
+      (orchestrationDelivery.email.endpointUrlEnv
+        ? Bun.env[orchestrationDelivery.email.endpointUrlEnv]
+        : undefined);
+    const emailApiKey = orchestrationDelivery.email.apiKeyEnv
+      ? Bun.env[orchestrationDelivery.email.apiKeyEnv]
+      : undefined;
     const orchestration = new OrchestrationProvider({
       workspaceRoot: config.providers.filesystem.root,
       progressTailMaxChars: config.providers.orchestration.progressTailMaxChars,
+      finalAuditCommandTimeoutMs: config.providers.orchestration.finalAuditCommandTimeoutMs,
+      digestDeliveryChannel: orchestrationDelivery.channel,
+      digestPolicy: config.providers.orchestration.digest,
+      digestDeliverySlack: slackWebhookUrl
+        ? {
+            webhookUrl: slackWebhookUrl,
+            username: orchestrationDelivery.slack.username,
+            iconEmoji: orchestrationDelivery.slack.iconEmoji,
+          }
+        : undefined,
+      digestDeliveryEmail:
+        emailEndpointUrl &&
+        orchestrationDelivery.email.from &&
+        orchestrationDelivery.email.to.length > 0
+          ? {
+              endpointUrl: emailEndpointUrl,
+              from: orchestrationDelivery.email.from,
+              to: orchestrationDelivery.email.to,
+              apiKey: emailApiKey,
+              subjectPrefix: orchestrationDelivery.email.subjectPrefix,
+              headers: orchestrationDelivery.email.headers,
+            }
+          : undefined,
+      defaultPlanBudget:
+        config.providers.orchestration.budget?.wallTimeMs !== undefined ||
+        config.providers.orchestration.budget?.retriesPerSlice !== undefined ||
+        config.providers.orchestration.budget?.tokenLimit !== undefined ||
+        config.providers.orchestration.budget?.costUsd !== undefined
+          ? {
+              wall_time_ms: config.providers.orchestration.budget.wallTimeMs,
+              retries_per_slice: config.providers.orchestration.budget.retriesPerSlice,
+              token_limit: config.providers.orchestration.budget.tokenLimit,
+              cost_usd: config.providers.orchestration.budget.costUsd,
+            }
+          : undefined,
+      gatePolicy: normalizeGatePolicyInput(config.providers.orchestration.policy),
+      guardrails:
+        config.providers.orchestration.guardrails?.repeatedFailureLimit !== undefined ||
+        config.providers.orchestration.guardrails?.progressStallLimit !== undefined ||
+        config.providers.orchestration.guardrails?.progressProjectionRequiresBudget !== undefined ||
+        config.providers.orchestration.guardrails?.coherenceReplanRateLimit !== undefined ||
+        config.providers.orchestration.guardrails?.coherenceQuestionDensityLimit !== undefined ||
+        config.providers.orchestration.guardrails?.blastRadius?.maxFilesModified !== undefined ||
+        config.providers.orchestration.guardrails?.blastRadius?.maxDepsAdded !== undefined ||
+        config.providers.orchestration.guardrails?.blastRadius?.maxExternalCalls !== undefined ||
+        config.providers.orchestration.guardrails?.blastRadius?.publicSurfaceDeltaRequiresGate !==
+          undefined
+          ? {
+              repeated_failure_limit:
+                config.providers.orchestration.guardrails.repeatedFailureLimit,
+              progress_stall_limit: config.providers.orchestration.guardrails.progressStallLimit,
+              progress_projection_requires_budget:
+                config.providers.orchestration.guardrails.progressProjectionRequiresBudget,
+              coherence_replan_rate_limit:
+                config.providers.orchestration.guardrails.coherenceReplanRateLimit,
+              coherence_question_density_limit:
+                config.providers.orchestration.guardrails.coherenceQuestionDensityLimit,
+              blast_radius: {
+                max_files_modified:
+                  config.providers.orchestration.guardrails.blastRadius?.maxFilesModified,
+                max_deps_added: config.providers.orchestration.guardrails.blastRadius?.maxDepsAdded,
+                max_external_calls:
+                  config.providers.orchestration.guardrails.blastRadius?.maxExternalCalls,
+                public_surface_delta_requires_gate:
+                  config.providers.orchestration.guardrails.blastRadius
+                    ?.publicSurfaceDeltaRequiresGate,
+              },
+            }
+          : undefined,
     });
     providers.push({
       id: "orchestration",
@@ -245,7 +334,12 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(orchestration.server),
       transportLabel: "in-process",
       stop: () => orchestration.stop(),
-      attachRuntime: (hub, hubConfig, ctx) => attachOrchestrationRuntime(hub, hubConfig, ctx),
+      attachRuntime: (hub, hubConfig, ctx) => {
+        if (ctx?.llmProfileManager) {
+          orchestration.setPrecedentTieBreaker(createLlmPrecedentTieBreaker(ctx.llmProfileManager));
+        }
+        return attachOrchestrationRuntime(hub, hubConfig, ctx);
+      },
     });
   }
 

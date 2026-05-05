@@ -50,9 +50,12 @@ export {
 export type { OrchestrationSchedulerEvent } from "./runtime/orchestration";
 export {
   createOrchestratorRole,
+  executorRole,
   OrchestrationScheduler,
   orchestratorRole,
   orchestratorSystemPromptFragment,
+  plannerRole,
+  specAgentRole,
   withOrchestratorBuiltins,
 } from "./runtime/orchestration";
 export type { AgentSessionSnapshot } from "./session";

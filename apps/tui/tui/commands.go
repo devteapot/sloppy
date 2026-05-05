@@ -57,6 +57,30 @@ func cancelTaskCmd(manager *session.Manager, taskID string) tea.Cmd {
 	}
 }
 
+func acceptOrchestrationGateCmd(manager *session.Manager, gateID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.AcceptOrchestrationGate(ctx, gateID)}
+	}
+}
+
+func rejectOrchestrationGateCmd(manager *session.Manager, gateID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.RejectOrchestrationGate(ctx, gateID)}
+	}
+}
+
+func runDigestActionCmd(manager *session.Manager, actionID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return sessionActionMsg{err: manager.RunDigestAction(ctx, actionID)}
+	}
+}
+
 func cancelTurnCmd(manager *session.Manager) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

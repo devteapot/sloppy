@@ -54,7 +54,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 10 },
-    orchestration: { progressTailMaxChars: 2048 },
+    orchestration: { progressTailMaxChars: 2048, finalAuditCommandTimeoutMs: 30000 },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };

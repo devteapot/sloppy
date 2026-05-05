@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
@@ -9,6 +12,8 @@ import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credenti
 import { LlmProfileManager } from "../src/llm/profile-manager";
 import { LlmAbortError } from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { OrchestrationProvider } from "../src/providers/builtin/orchestration";
+import { SpecProvider } from "../src/providers/builtin/spec";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
 import { SessionRuntime } from "../src/session/runtime";
@@ -101,6 +106,7 @@ const TEST_CONFIG: SloppyConfig = {
     },
     orchestration: {
       progressTailMaxChars: 2048,
+      finalAuditCommandTimeoutMs: 30000,
     },
     vision: {
       maxImages: 50,
@@ -658,6 +664,193 @@ function createAppMirrorHarnessFactory() {
   };
 }
 
+type GateSnapshot = {
+  id: string;
+  status: "open" | "accepted" | "rejected" | "cancelled";
+  gate_type: string;
+  summary: string;
+  subject_ref?: string;
+  evidence_refs?: string[];
+  created_at?: string;
+  version?: number;
+  resolve?: boolean;
+};
+
+function createOrchestrationMirrorHarnessFactory() {
+  let callbacks: AgentCallbacks | null = null;
+  const providerInvokes: Array<{
+    providerId: string;
+    path: string;
+    action: string;
+    params?: Record<string, unknown>;
+  }> = [];
+
+  const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
+    callbacks = agentCallbacks;
+    return {
+      start: async () => undefined,
+      chat: async () => ({
+        status: "completed",
+        response: "orchestration updated",
+      }),
+      resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+      invokeProvider: async (providerId, path, action, params) => {
+        providerInvokes.push({ providerId, path, action, params });
+        return { type: "result", id: "inv-orch", status: "ok" };
+      },
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv-orch", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    };
+  };
+
+  return {
+    factory,
+    providerInvokes,
+    emitSnapshots(gates?: GateSnapshot[]) {
+      const gateSnapshots: GateSnapshot[] = gates ?? [
+        {
+          id: "gate-1",
+          status: "accepted",
+          gate_type: "plan_accept",
+          summary: "Accepted plan.",
+          created_at: "2026-01-01T00:00:00.000Z",
+          version: 2,
+        },
+        {
+          id: "gate-2",
+          status: "open",
+          gate_type: "slice_gate",
+          subject_ref: "slice:parser",
+          summary: "Review parser evidence.",
+          evidence_refs: ["evidence:parser"],
+          created_at: "2026-01-01T00:01:00.000Z",
+          version: 7,
+          resolve: true,
+        },
+      ];
+      callbacks?.onProviderSnapshot?.({
+        providerId: "orchestration",
+        path: "/orchestration",
+        tree: {
+          id: "orchestration",
+          type: "context",
+          properties: {
+            plan_id: "plan-1",
+            plan_status: "active",
+            plan_version: 3,
+            task_counts: {
+              scheduled: 1,
+              running: 1,
+              verifying: 1,
+              completed: 2,
+              failed: 1,
+            },
+            drift_metrics: {
+              progress: {
+                criteria_total: 6,
+                criteria_satisfied: 4,
+                criteria_unknown: 2,
+                prior_distance: 3,
+                current_distance: 2,
+                velocity: 1,
+              },
+              coherence: {
+                replan_count: 1,
+                spec_revision_count: 1,
+                question_density: 2,
+                failure_count: 1,
+                thresholds: { question_density_limit: 3 },
+                breaches: ["question_density"],
+              },
+              intent: {
+                goal_revision_pressure: 1,
+                latest_goal_revision_magnitude: "minor",
+              },
+            },
+          },
+        },
+      });
+      callbacks?.onProviderSnapshot?.({
+        providerId: "orchestration",
+        path: "/gates",
+        tree: {
+          id: "gates",
+          type: "collection",
+          children: gateSnapshots.map((gate) => ({
+            id: gate.id,
+            type: "item",
+            properties: {
+              status: gate.status,
+              gate_type: gate.gate_type,
+              subject_ref: gate.subject_ref,
+              summary: gate.summary,
+              evidence_refs: gate.evidence_refs ?? [],
+              created_at: gate.created_at,
+              version: gate.version,
+            },
+            affordances:
+              gate.status === "open" && gate.resolve !== false
+                ? [{ action: "resolve_gate" }]
+                : undefined,
+          })),
+        },
+      });
+      callbacks?.onProviderSnapshot?.({
+        providerId: "orchestration",
+        path: "/audit",
+        tree: {
+          id: "audit",
+          type: "collection",
+          children: [
+            {
+              id: "audit-1",
+              type: "item",
+              properties: {
+                status: "failed",
+              },
+            },
+          ],
+        },
+      });
+      callbacks?.onProviderSnapshot?.({
+        providerId: "orchestration",
+        path: "/digests",
+        tree: {
+          id: "digests",
+          type: "collection",
+          properties: {
+            latest_digest_id: "digest-1",
+            latest_status: "blocked",
+          },
+          children: [
+            {
+              id: "digest-1",
+              type: "item",
+              properties: {
+                actions: [
+                  {
+                    id: "action-gate-2-accept",
+                    kind: "accept_gate",
+                    label: "Accept slice gate",
+                    target_ref: "gate:gate-2",
+                    action_path: "/gates/gate-2",
+                    action_name: "resolve_gate",
+                    params: { status: "accepted" },
+                    urgency: "high",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      });
+    },
+  };
+}
+
 describe("AgentSessionProvider", () => {
   test("session starts without credentials and exposes LLM onboarding state", async () => {
     const runtime = new SessionRuntime({
@@ -1059,6 +1252,551 @@ describe("AgentSessionProvider", () => {
     } finally {
       provider.stop();
       runtime.shutdown();
+    }
+  });
+
+  test("session exposes actionable orchestration summary from mirrored snapshots", async () => {
+    const harness = createOrchestrationMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-orchestration",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-orchestration",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitSnapshots();
+
+      const orchestration = await consumer.query("/orchestration", 2);
+      expect(orchestration.properties?.available).toBe(true);
+      expect(orchestration.properties?.plan_id).toBe("plan-1");
+      expect(orchestration.properties?.plan_status).toBe("active");
+      expect(orchestration.properties?.active_slice_count).toBe(3);
+      expect(orchestration.properties?.completed_slice_count).toBe(2);
+      expect(orchestration.properties?.failed_slice_count).toBe(1);
+      expect(orchestration.properties?.pending_gate_count).toBe(1);
+      expect(orchestration.properties?.latest_blocking_gate_id).toBe("gate-2");
+      expect(orchestration.properties?.latest_blocking_gate_summary).toBe(
+        "Review parser evidence.",
+      );
+      const pendingGates = orchestration.properties?.pending_gates as
+        | Array<Record<string, unknown>>
+        | undefined;
+      expect(pendingGates).toHaveLength(1);
+      expect(pendingGates?.[0]).toMatchObject({
+        id: "gate-orchestration-gate-2",
+        source_gate_id: "gate-2",
+        gate_type: "slice_gate",
+        status: "open",
+        subject_ref: "slice:parser",
+        summary: "Review parser evidence.",
+        evidence_refs: ["evidence:parser"],
+        version: 7,
+        can_accept: true,
+        can_reject: true,
+      });
+      expect(orchestration.properties?.final_audit_id).toBe("audit-1");
+      expect(orchestration.properties?.final_audit_status).toBe("failed");
+      expect(orchestration.properties?.latest_digest_id).toBe("digest-1");
+      expect(orchestration.properties?.latest_digest_status).toBe("blocked");
+      expect(orchestration.properties?.latest_digest_actions).toContainEqual(
+        expect.objectContaining({
+          id: "action-gate-2-accept",
+          kind: "accept_gate",
+          action_path: "/gates/gate-2",
+          action_name: "resolve_gate",
+          params: { status: "accepted" },
+        }),
+      );
+      expect(orchestration.properties?.progress_velocity).toBe(1);
+      expect(orchestration.properties?.progress_current_distance).toBe(2);
+      expect(orchestration.properties?.goal_revision_pressure).toBe(1);
+      expect(orchestration.properties?.latest_goal_revision_magnitude).toBe("minor");
+      expect(orchestration.properties?.coherence_breaches).toEqual(["question_density"]);
+      expect(orchestration.properties?.coherence_thresholds).toEqual({
+        question_density_limit: 3,
+      });
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session caps pending orchestration gates and shares the same mirror with multiple consumers", async () => {
+    const harness = createOrchestrationMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-orchestration-gates",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-orchestration-gates",
+    });
+    const consumerA = new SlopConsumer(new InProcessTransport(provider.server));
+    const consumerB = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumerA.connect();
+      await consumerB.connect();
+      await consumerA.subscribe("/", 5);
+      await consumerB.subscribe("/", 5);
+
+      harness.emitSnapshots(
+        [6, 5, 4, 3, 2, 1, 0].map((index) => ({
+          id: `gate-open-${index}`,
+          status: "open",
+          gate_type: "slice_gate",
+          subject_ref: `slice:${index}`,
+          summary: `Gate ${index}`,
+          created_at: `2026-01-01T00:0${index}:00.000Z`,
+          version: index + 1,
+          resolve: true,
+        })),
+      );
+
+      const first = await consumerA.query("/orchestration", 2);
+      const second = await consumerB.query("/orchestration", 2);
+      const firstGates = first.properties?.pending_gates as Array<Record<string, unknown>>;
+      const secondGates = second.properties?.pending_gates as Array<Record<string, unknown>>;
+
+      expect(first.properties?.pending_gate_count).toBe(7);
+      expect(firstGates).toHaveLength(5);
+      expect(firstGates.map((gate) => gate.source_gate_id)).toEqual([
+        "gate-open-0",
+        "gate-open-1",
+        "gate-open-2",
+        "gate-open-3",
+        "gate-open-4",
+      ]);
+      expect(first.properties?.latest_blocking_gate_id).toBe("gate-open-6");
+      expect(second.properties?.pending_gate_count).toBe(7);
+      expect(secondGates).toEqual(firstGates);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session invokes latest digest actions through the downstream provider", async () => {
+    const harness = createOrchestrationMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-digest-action",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-digest-action",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+      harness.emitSnapshots();
+
+      const invoked = await consumer.invoke("/orchestration", "run_digest_action", {
+        action_id: "action-gate-2-accept",
+      });
+      expect(invoked.status).toBe("ok");
+      expect(harness.providerInvokes).toContainEqual({
+        providerId: "orchestration",
+        path: "/gates/gate-2",
+        action: "resolve_gate",
+        params: { status: "accepted" },
+      });
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session resolves pending orchestration gates through the downstream provider", async () => {
+    const harness = createOrchestrationMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-orchestration-resolve",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-orchestration-resolve",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitSnapshots([
+        {
+          id: "gate-accept",
+          status: "open",
+          gate_type: "plan_accept",
+          subject_ref: "plan:current",
+          summary: "Accept the plan.",
+          created_at: "2026-01-01T00:00:00.000Z",
+          version: 3,
+          resolve: true,
+        },
+        {
+          id: "gate-reject",
+          status: "open",
+          gate_type: "slice_gate",
+          subject_ref: "slice:parser",
+          summary: "Review parser evidence.",
+          created_at: "2026-01-01T00:01:00.000Z",
+          version: 4,
+          resolve: true,
+        },
+      ]);
+
+      const orchestration = await consumer.query("/orchestration", 2);
+      const pendingGates = orchestration.properties?.pending_gates as Array<
+        Record<string, unknown>
+      >;
+
+      const accepted = await consumer.invoke("/orchestration", "accept_gate", {
+        gate_id: pendingGates[0]?.id,
+        resolution: "Looks correct.",
+      });
+      expect(accepted.status).toBe("ok");
+
+      const rejected = await consumer.invoke("/orchestration", "reject_gate", {
+        gate_id: pendingGates[1]?.id,
+        resolution: "Evidence is insufficient.",
+      });
+      expect(rejected.status).toBe("ok");
+
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "orchestration",
+          path: "/gates/gate-accept",
+          action: "resolve_gate",
+          params: {
+            status: "accepted",
+            resolution: "Looks correct.",
+            expected_version: 3,
+          },
+        },
+        {
+          providerId: "orchestration",
+          path: "/gates/gate-reject",
+          action: "resolve_gate",
+          params: {
+            status: "rejected",
+            resolution: "Evidence is insufficient.",
+            expected_version: 4,
+          },
+        },
+      ]);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session gate resolution rejects unknown or non-actionable gates locally", async () => {
+    const harness = createOrchestrationMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-orchestration-reject-local",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-orchestration-reject-local",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitSnapshots([
+        {
+          id: "gate-resolved",
+          status: "accepted",
+          gate_type: "plan_accept",
+          summary: "Already accepted.",
+          created_at: "2026-01-01T00:00:00.000Z",
+          version: 2,
+        },
+      ]);
+
+      const unknown = await consumer.invoke("/orchestration", "accept_gate", {
+        gate_id: "gate-orchestration-gate-resolved",
+      });
+      expect(unknown.status).toBe("error");
+      expect(unknown.error?.message).toContain("Unknown or non-open orchestration gate");
+
+      harness.emitSnapshots([
+        {
+          id: "gate-no-action",
+          status: "open",
+          gate_type: "slice_gate",
+          summary: "No visible resolver.",
+          created_at: "2026-01-01T00:00:00.000Z",
+          version: 1,
+          resolve: false,
+        },
+      ]);
+
+      const nonActionable = await consumer.invoke("/orchestration", "reject_gate", {
+        gate_id: "gate-orchestration-gate-no-action",
+      });
+      expect(nonActionable.status).toBe("error");
+      expect(nonActionable.error?.message).toContain("cannot be rejected");
+      expect(harness.providerInvokes).toEqual([]);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session gate resolution accepts a real docs/12 orchestration gate once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-gate-"));
+    const orchestrationProvider = new OrchestrationProvider({
+      workspaceRoot: root,
+      sessionId: "docs12-session-gate",
+    });
+    const orchestrationConsumer = new SlopConsumer(
+      new InProcessTransport(orchestrationProvider.server),
+    );
+    let callbacks: AgentCallbacks | null = null;
+    const providerInvokes: Array<{
+      providerId: string;
+      path: string;
+      action: string;
+      params?: Record<string, unknown>;
+    }> = [];
+    const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
+      callbacks = agentCallbacks;
+      return {
+        start: async () => undefined,
+        chat: async () => ({ status: "completed", response: "unused" }),
+        resumeWithToolResult: async () => ({ status: "completed", response: "unused" }),
+        invokeProvider: async (providerId, path, action, params) => {
+          providerInvokes.push({ providerId, path, action, params });
+          return orchestrationConsumer.invoke(path, action, params);
+        },
+        resolveApprovalDirect: async () => ({ type: "result", id: "inv", status: "ok" }),
+        rejectApprovalDirect: () => undefined,
+        cancelActiveTurn: () => false,
+        clearPendingApproval: () => undefined,
+        shutdown: () => undefined,
+      };
+    };
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-real-orchestration-gate",
+      agentFactory: factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const sessionProvider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-real-orchestration-gate",
+    });
+    const sessionConsumer = new SlopConsumer(new InProcessTransport(sessionProvider.server));
+    const mirrorGates = async () => {
+      callbacks?.onProviderSnapshot?.({
+        providerId: "orchestration",
+        path: "/gates",
+        tree: await orchestrationConsumer.query("/gates", 2),
+      });
+    };
+
+    try {
+      await orchestrationConsumer.connect();
+      await orchestrationConsumer.subscribe("/", 4);
+      await runtime.start();
+      await sessionConsumer.connect();
+      await sessionConsumer.subscribe("/", 5);
+
+      const opened = await orchestrationConsumer.invoke("/gates", "open_gate", {
+        gate_type: "plan_accept",
+        subject_ref: "plan:current",
+        summary: "Accept the current plan.",
+      });
+      expect(opened.status).toBe("ok");
+      const sourceGateId = (opened.data as { id: string }).id;
+
+      await mirrorGates();
+      const orchestration = await sessionConsumer.query("/orchestration", 2);
+      const pendingGates = orchestration.properties?.pending_gates as Array<
+        Record<string, unknown>
+      >;
+      expect(pendingGates).toHaveLength(1);
+
+      const accepted = await sessionConsumer.invoke("/orchestration", "accept_gate", {
+        gate_id: pendingGates[0]?.id,
+        resolution: "Accepted through session.",
+      });
+      expect(accepted.status).toBe("ok");
+      expect(providerInvokes).toHaveLength(1);
+      expect(providerInvokes[0]).toMatchObject({
+        providerId: "orchestration",
+        path: `/gates/${sourceGateId}`,
+        action: "resolve_gate",
+        params: {
+          status: "accepted",
+          resolution: "Accepted through session.",
+          expected_version: 1,
+        },
+      });
+
+      const gatesAfterAccept = await orchestrationConsumer.query("/gates", 2);
+      const sourceGate = gatesAfterAccept.children?.find((gate) => gate.id === sourceGateId);
+      expect(sourceGate?.properties?.status).toBe("accepted");
+      expect(sourceGate?.properties?.version).toBe(2);
+
+      await mirrorGates();
+      const sessionAfterAccept = await sessionConsumer.query("/orchestration", 2);
+      expect(sessionAfterAccept.properties?.pending_gate_count).toBe(0);
+      expect(sessionAfterAccept.properties?.pending_gates).toEqual([]);
+
+      const duplicate = await sessionConsumer.invoke("/orchestration", "accept_gate", {
+        gate_id: pendingGates[0]?.id,
+      });
+      expect(duplicate.status).toBe("error");
+      expect(providerInvokes).toHaveLength(1);
+    } finally {
+      sessionProvider.stop();
+      runtime.shutdown();
+      orchestrationProvider.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("session starts the spec-driven goal pipeline through provider affordances", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-spec-goal-"));
+    const orchestrationProvider = new OrchestrationProvider({
+      workspaceRoot: root,
+      sessionId: "docs12-session-pipeline",
+    });
+    const specProvider = new SpecProvider({ workspaceRoot: root });
+    const orchestrationConsumer = new SlopConsumer(
+      new InProcessTransport(orchestrationProvider.server),
+    );
+    const specConsumer = new SlopConsumer(new InProcessTransport(specProvider.server));
+    const factory: SessionAgentFactory = (): SessionAgent => ({
+      start: async () => undefined,
+      chat: async () => ({ status: "completed", response: "unused" }),
+      resumeWithToolResult: async () => ({ status: "completed", response: "unused" }),
+      invokeProvider: async (providerId, path, action, params) => {
+        if (providerId === "orchestration") {
+          return orchestrationConsumer.invoke(path, action, params);
+        }
+        if (providerId === "spec") {
+          return specConsumer.invoke(path, action, params);
+        }
+        return {
+          type: "result",
+          id: "unsupported-provider",
+          status: "error",
+          error: { code: "unsupported_provider", message: providerId },
+        };
+      },
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-spec-goal",
+      agentFactory: factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const sessionProvider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-spec-goal",
+    });
+    const sessionConsumer = new SlopConsumer(new InProcessTransport(sessionProvider.server));
+
+    try {
+      await orchestrationConsumer.connect();
+      await specConsumer.connect();
+      await sessionConsumer.connect();
+      await orchestrationConsumer.subscribe("/", 4);
+      await specConsumer.subscribe("/", 5);
+      await sessionConsumer.subscribe("/", 5);
+
+      const started = await sessionConsumer.invoke("/orchestration", "start_spec_driven_goal", {
+        title: "Ship importer",
+        intent: "Import CSV files with validation.",
+        requirements: [
+          {
+            text: "CSV files are parsed into rows.",
+            criterion_kind: "code",
+            verification_hint: "bun test tests/importer.test.ts",
+          },
+        ],
+        slices: [
+          {
+            name: "parser",
+            goal: "Implement CSV parsing.",
+            acceptance_criteria: ["CSV files are parsed into rows"],
+          },
+        ],
+        auto_accept_spec: true,
+        auto_accept_plan: true,
+      });
+      expect(started.status).toBe("ok");
+      const data = started.data as {
+        goal_id: string;
+        goal_version: number;
+        spec_id: string;
+        spec_version: number;
+        spec_gate_id: string;
+        plan_revision_id: string;
+        plan_gate_id: string;
+        task_ids: string[];
+        pending_gate_ids: string[];
+        message_ids: string[];
+      };
+      expect(data.goal_id).toBeString();
+      expect(data.goal_version).toBe(1);
+      expect(data.spec_id).toBeString();
+      expect(data.spec_version).toBe(3);
+      expect(data.spec_gate_id).toBeString();
+      expect(data.plan_revision_id).toBeString();
+      expect(data.plan_gate_id).toBeString();
+      expect(data.task_ids).toHaveLength(1);
+      expect(data.pending_gate_ids).toEqual([]);
+      expect(data.message_ids).toHaveLength(2);
+
+      const spec = await specConsumer.query(`/specs/${data.spec_id}`, 2);
+      expect(spec.properties?.status).toBe("accepted");
+      expect(spec.properties?.goal_id).toBe(data.goal_id);
+
+      const tasks = await orchestrationConsumer.query("/tasks", 2);
+      expect(tasks.children?.[0]?.id).toBe(data.task_ids[0]);
+      expect(tasks.children?.[0]?.properties?.requires_slice_gate).toBe(true);
+      expect(tasks.children?.[0]?.properties?.spec_version).toBe(data.spec_version);
+      const messages = await orchestrationConsumer.query("/messages", 2);
+      expect(messages.children?.map((child) => child.properties?.from_role)).toContain(
+        "spec-agent",
+      );
+      expect(messages.children?.map((child) => child.properties?.from_role)).toContain("planner");
+    } finally {
+      sessionProvider.stop();
+      runtime.shutdown();
+      orchestrationProvider.stop();
+      specProvider.stop();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

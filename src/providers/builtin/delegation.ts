@@ -19,6 +19,13 @@ export type DelegationAgentSpawn = {
    * extensions that recognize it (via a TaskContext factory) interpret it.
    */
   externalTaskId?: string;
+  /**
+   * Optional role id (e.g. "executor", "spec-agent", "planner") to attach to
+   * the spawned sub-agent's session runtime. The runner factory resolves it
+   * via the role registry; unknown role ids are ignored with a debug log.
+   */
+  roleId?: string;
+  idempotencyKey?: string;
 };
 
 export type DelegationAgentUpdate = {
@@ -48,6 +55,8 @@ type DelegationAgent = {
   status: AgentStatus;
   executor?: ExecutorBinding;
   externalTaskId?: string;
+  roleId?: string;
+  idempotencyKey?: string;
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -295,6 +304,8 @@ export class DelegationProvider {
     goal: string,
     externalTaskId?: string,
     executor?: ExecutorBinding,
+    roleId?: string,
+    idempotencyKey?: string,
   ): {
     id: string;
     status: AgentStatus;
@@ -302,6 +313,21 @@ export class DelegationProvider {
     execution_mode: string;
     session_provider_id?: string;
   } {
+    if (idempotencyKey) {
+      const existing = [...this.agents.values()].find(
+        (agent) => agent.idempotencyKey === idempotencyKey,
+      );
+      if (existing) {
+        return {
+          id: existing.id,
+          status: existing.status,
+          created_at: existing.created_at,
+          execution_mode: describeExecutionMode(existing.executor),
+          session_provider_id: existing.session_provider_id,
+        };
+      }
+    }
+
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
     ).length;
@@ -319,6 +345,8 @@ export class DelegationProvider {
       status: "pending",
       executor,
       externalTaskId,
+      roleId,
+      idempotencyKey,
       created_at,
     };
     this.agents.set(id, agent);
@@ -327,10 +355,11 @@ export class DelegationProvider {
       name,
       goal_preview: goal.slice(0, 80),
       executor,
+      idempotencyKey,
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, executor, externalTaskId },
+      { id, name, goal, executor, externalTaskId, roleId, idempotencyKey },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -462,8 +491,20 @@ export class DelegationProvider {
                 timeoutMs: { type: "number", optional: true },
               },
             },
+            role: {
+              type: "string",
+              description:
+                'Optional role id (e.g. "executor", "spec-agent", "planner") attached to the spawned sub-agent. Resolved via the role registry; unknown roles are ignored.',
+              optional: true,
+            },
+            idempotency_key: {
+              type: "string",
+              description:
+                "Optional caller-provided key that makes spawn_agent idempotent. Reusing the same key returns the existing agent instead of spawning another.",
+              optional: true,
+            },
           },
-          async ({ name, goal, task_id, executor }) =>
+          async ({ name, goal, task_id, executor, role, idempotency_key }) =>
             this.spawnAgent(
               name as string,
               goal as string,
@@ -471,6 +512,10 @@ export class DelegationProvider {
               executor === undefined || executor === null
                 ? undefined
                 : executorBindingSchema.parse(executor),
+              typeof role === "string" && role.length > 0 ? role : undefined,
+              typeof idempotency_key === "string" && idempotency_key.length > 0
+                ? idempotency_key
+                : undefined,
             ),
           {
             label: "Spawn Agent",
@@ -498,6 +543,7 @@ export class DelegationProvider {
         execution_mode: describeExecutionMode(agent.executor),
         executor: agent.executor,
         orchestration_task_id: agent.externalTaskId,
+        idempotency_key: agent.idempotencyKey,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,

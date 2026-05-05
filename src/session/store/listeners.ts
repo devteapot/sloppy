@@ -44,6 +44,7 @@ export class ListenerRegistry {
     if (state.approvalsChanged) changedTypes.push("approvals");
     if (state.tasksChanged) changedTypes.push("tasks");
     if (state.appsChanged) changedTypes.push("apps");
+    if (state.orchestrationChanged) changedTypes.push("orchestration");
     if (state.llmChanged) changedTypes.push("llm");
     if (state.sessionChanged) changedTypes.push("session");
 
@@ -62,6 +63,7 @@ export class ListenerRegistry {
     state.approvalsChanged = false;
     state.tasksChanged = false;
     state.appsChanged = false;
+    state.orchestrationChanged = false;
     state.llmChanged = false;
     state.sessionChanged = false;
   }

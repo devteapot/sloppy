@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { createOrchestratorRole } from "../src/runtime/orchestration";
+import type { SloppyConfig } from "../src/config/schema";
+import type { ProviderRuntimeHub } from "../src/core/hub";
+import { orchestratorRoleRule } from "../src/core/policy/rules";
+import { RoleRegistry, type RuntimeContext, type TaskContextFactory } from "../src/core/role";
+import { createOrchestratorRole, plannerRole, specAgentRole } from "../src/runtime/orchestration";
+import { attachOrchestrationRuntime } from "../src/runtime/orchestration/attach";
 import { inferBatchDependencyRefs } from "../src/runtime/orchestration/planning-policy";
 
 describe("planning-policy.inferBatchDependencyRefs", () => {
@@ -89,6 +94,52 @@ describe("planning-policy.inferBatchDependencyRefs", () => {
   });
 });
 
+describe("orchestrator role policy", () => {
+  test("denies direct mutation of sub-agent session providers instead of requiring approval", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "sub-agent-agent-abc123",
+      path: "/tasks/task-xyz",
+      action: "cancel",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("deny");
+    if (decision.kind !== "deny") throw new Error("expected deny decision");
+    expect(decision.reason).toContain("sub-agent");
+    expect(decision.reason).toContain("orchestration");
+  });
+
+  test("denies direct cancellation of delegation agents instead of requiring approval", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "delegation",
+      path: "/agents/agent-abc123",
+      action: "cancel",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("deny");
+    if (decision.kind !== "deny") throw new Error("expected deny decision");
+    expect(decision.reason).toContain("cannot cancel");
+  });
+
+  test("allows orchestrator read-only inspection of sub-agent session providers", async () => {
+    const decision = await orchestratorRoleRule.evaluate({
+      roleId: "orchestrator",
+      providerId: "sub-agent-agent-abc123",
+      path: "/tasks/task-xyz",
+      action: "read",
+      params: {},
+      config: {} as SloppyConfig,
+    });
+
+    expect(decision.kind).toBe("allow");
+  });
+});
+
 describe("orchestrator role transformInvoke", () => {
   test("rewrites create_tasks params with inferred edges referencing client_ref", () => {
     const role = createOrchestratorRole();
@@ -134,5 +185,134 @@ describe("orchestrator role transformInvoke", () => {
       {} as never,
     );
     expect(transformed).toBe(params);
+  });
+});
+
+describe("autonomous specialist role prompts", () => {
+  test("spec-agent prompt requires a single structured spec creation output and recovery on invalid submissions", () => {
+    const prompt = specAgentRole.systemPromptFragment?.({} as never) ?? "";
+
+    expect(prompt).toContain("Output contract");
+    expect(prompt).toContain("Exactly one final artifact");
+    expect(prompt).toContain("/specs.create_spec");
+    expect(prompt).toContain("goal_id");
+    expect(prompt).toContain("If any /specs call is rejected");
+  });
+
+  test("planner prompt requires a complete plan revision and recovery on invalid submissions", () => {
+    const prompt = plannerRole.systemPromptFragment?.({} as never) ?? "";
+
+    expect(prompt).toContain("Output contract");
+    expect(prompt).toContain("Exactly one final artifact");
+    expect(prompt).toContain("/orchestration.create_plan_revision");
+    expect(prompt).toContain("complete slice set");
+    expect(prompt).toContain("If create_plan_revision is rejected");
+  });
+});
+
+describe("orchestration runtime roles", () => {
+  test("registers orchestrator, spec-agent, planner, and executor role factories", () => {
+    const registry = new RoleRegistry();
+    const hub = {
+      addPolicyRule: () => undefined,
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+    };
+
+    const attached = attachOrchestrationRuntime(hub, {} as SloppyConfig, ctx);
+    try {
+      expect(registry.resolve("orchestrator", ctx)?.id).toBe("orchestrator");
+      expect(registry.resolve("spec-agent", ctx)?.id).toBe("spec-agent");
+      expect(registry.resolve("planner", ctx)?.id).toBe("planner");
+      expect(registry.resolve("executor", ctx)?.id).toBe("executor");
+    } finally {
+      attached.stop();
+    }
+
+    expect(registry.has("orchestrator")).toBe(false);
+    expect(registry.has("spec-agent")).toBe(false);
+    expect(registry.has("planner")).toBe(false);
+    expect(registry.has("executor")).toBe(false);
+  });
+
+  test("task context keeps orchestration enabled for executors and skips planning specialists", () => {
+    const registry = new RoleRegistry();
+    let factory: TaskContextFactory = () => undefined;
+    const hub = {
+      addPolicyRule: () => undefined,
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+      delegationHooks: {
+        setTaskContextFactory(next) {
+          factory = next as typeof factory;
+        },
+      },
+    };
+
+    const attached = attachOrchestrationRuntime(hub, {} as SloppyConfig, ctx);
+    try {
+      expect(factory?.({ id: "s", name: "spec", goal: "g", roleId: "spec-agent" })).toBeUndefined();
+      expect(factory?.({ id: "p", name: "plan", goal: "g", roleId: "planner" })).toBeUndefined();
+      const executorContext = factory?.({
+        id: "e",
+        name: "exec",
+        goal: "g",
+        externalTaskId: "task-1",
+        roleId: "executor",
+      });
+      expect(executorContext?.disableBuiltinProviders).toEqual(["spec"]);
+    } finally {
+      attached.stop();
+    }
+  });
+
+  test("attach runtime starts the autonomous goal coordinator when orchestration, delegation, and specs are enabled", async () => {
+    const registry = new RoleRegistry();
+    const watchedPaths: string[] = [];
+    let stopped = 0;
+    const hub = {
+      addPolicyRule: () => undefined,
+      watchPath: async (providerId: string, path: string) => {
+        watchedPaths.push(`${providerId}:${path}`);
+        return () => {
+          stopped += 1;
+        };
+      },
+    } as unknown as ProviderRuntimeHub;
+    const ctx: RuntimeContext = {
+      hub,
+      config: {} as SloppyConfig,
+      publishEvent: () => undefined,
+      roleRegistry: registry,
+    };
+    const config = {
+      providers: {
+        builtin: {
+          orchestration: true,
+          delegation: true,
+          spec: true,
+        },
+      },
+    } as SloppyConfig;
+
+    const attached = attachOrchestrationRuntime(hub, config, ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(watchedPaths).toContain("orchestration:/goals");
+    expect(watchedPaths).toContain("orchestration:/gates");
+    expect(watchedPaths).toContain("spec:/specs");
+
+    attached.stop();
+    expect(stopped).toBe(3);
   });
 });

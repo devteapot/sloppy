@@ -39,6 +39,14 @@ export interface SubAgentRunnerOptions {
   providerIdPrefix?: string;
   taskContext?: TaskContext;
   /**
+   * Optional role id to attach to the child SessionRuntime so role-scoped
+   * system prompts and tool policies apply. The runner factory resolves the
+   * id against the role registry at construction time.
+   */
+  roleId?: string;
+  role?: import("../../core/role").RoleProfile;
+  roleRegistry?: import("../../core/role").RoleRegistry;
+  /**
    * Optional list of builtin provider keys (matching `config.providers.builtin`)
    * to force-disable in the child runtime. Lets callers strip planning-layer
    * planning-layer providers so sub-agents can't recurse, without the
@@ -76,8 +84,8 @@ export class SubAgentRunner {
 
     // Sub-agents do leaf work. Strip planning-layer providers (named by the
     // caller via `disableBuiltinProviders`) so they can't re-enter planning
-    // mode and recurse. The child runtime is constructed with the default
-    // role, so any role-level system prompt and tool policy do not apply.
+    // mode and recurse. A role can be attached via `options.role` /
+    // `options.roleId` so role-scoped system prompts and tool policies apply.
     // The parent hub still federates the child's session tree back via
     // AgentSessionProvider.
     const disableSet = new Set(options.disableBuiltinProviders ?? []);
@@ -108,6 +116,9 @@ export class SubAgentRunner {
       requiresLlmProfile: options.requiresLlmProfile,
       externalAgentState: options.externalAgentState,
       parentActorId: "parent",
+      role: options.role,
+      roleId: options.roleId,
+      roleRegistry: options.roleRegistry,
     });
 
     this.provider = new AgentSessionProvider(this.runtime, {

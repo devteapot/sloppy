@@ -12,6 +12,7 @@ export interface SessionStoreState {
   approvalsChanged: boolean;
   tasksChanged: boolean;
   appsChanged: boolean;
+  orchestrationChanged: boolean;
   llmChanged: boolean;
   sessionChanged: boolean;
 }
@@ -66,6 +67,17 @@ export function createInitialState(options: {
       approvals: [],
       tasks: [],
       apps: [],
+      orchestration: {
+        available: false,
+        pendingGateCount: 0,
+        pendingGates: [],
+        latestDigestActions: [],
+        activeSliceCount: 0,
+        completedSliceCount: 0,
+        failedSliceCount: 0,
+        finalAuditStatus: "none",
+        updatedAt: startedAt,
+      },
     },
     activeAssistantMessageId: null,
     activeModelActivityId: null,
@@ -77,6 +89,7 @@ export function createInitialState(options: {
     approvalsChanged: false,
     tasksChanged: false,
     appsChanged: false,
+    orchestrationChanged: false,
     llmChanged: false,
     sessionChanged: false,
   };
@@ -101,5 +114,18 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
     approvals: snapshot.approvals.map((item) => ({ ...item })),
     tasks: snapshot.tasks.map((task) => ({ ...task })),
     apps: snapshot.apps.map((app) => ({ ...app })),
+    orchestration: {
+      ...snapshot.orchestration,
+      coherenceBreaches: [...(snapshot.orchestration.coherenceBreaches ?? [])],
+      coherenceThresholds: { ...(snapshot.orchestration.coherenceThresholds ?? {}) },
+      pendingGates: snapshot.orchestration.pendingGates.map((gate) => ({
+        ...gate,
+        evidenceRefs: [...gate.evidenceRefs],
+      })),
+      latestDigestActions: snapshot.orchestration.latestDigestActions.map((action) => ({
+        ...action,
+        params: { ...action.params },
+      })),
+    },
   };
 }

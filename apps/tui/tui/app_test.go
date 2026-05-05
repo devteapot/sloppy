@@ -215,6 +215,52 @@ func TestSessionViewRendersAppsPane(t *testing.T) {
 	}
 }
 
+func TestSessionViewRendersOrchestrationPane(t *testing.T) {
+	app := newTestApp()
+	app.mode = "session"
+	app.width = 140
+	app.height = 42
+	app.state = session.ViewState{
+		SessionTitle:  "Nocturnal Session",
+		SessionStatus: "active",
+		TurnState:     "idle",
+		Orchestration: session.OrchestrationSummary{
+			Available:          true,
+			PlanID:             "plan-1",
+			PlanStatus:         "active",
+			LatestDigestID:     "digest-1",
+			LatestDigestStatus: "blocked",
+			Gates: []session.OrchestrationGateEntry{{
+				ID:         "gate-1",
+				Type:       "spec_accept",
+				Status:     "open",
+				SubjectRef: "spec:spec-1",
+				Summary:    "Spec needs acceptance.",
+				CanAccept:  true,
+				CanReject:  true,
+			}},
+			DigestActions: []session.DigestActionEntry{{
+				ID:         "action-gate-1-accept",
+				Kind:       "accept_gate",
+				Label:      "Accept spec_accept",
+				TargetRef:  "gate:gate-1",
+				ActionPath: "/gates/gate-1",
+				ActionName: "resolve_gate",
+				Urgency:    "high",
+				CanRun:     true,
+			}},
+		},
+	}
+
+	view := app.sessionView()
+	if !strings.Contains(view, "Orchestration") {
+		t.Fatalf("expected session view to render orchestration pane, got %q", view)
+	}
+	if !strings.Contains(view, "Spec needs acceptance.") || !strings.Contains(view, "Accept spec_accept") {
+		t.Fatalf("expected orchestration pane to include gates and digest actions, got %q", view)
+	}
+}
+
 func TestTranscriptEntryLinesWrapLongMessages(t *testing.T) {
 	entry := session.TranscriptEntry{
 		Role:   "assistant",

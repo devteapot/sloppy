@@ -308,9 +308,7 @@ export class LlmProfileManager {
       throw new LlmConfigurationError(state.message);
     }
     if (!targetProfile.ready) {
-      throw new LlmConfigurationError(
-        targetProfile.invalidReason ?? state.message,
-      );
+      throw new LlmConfigurationError(targetProfile.invalidReason ?? state.message);
     }
 
     const credential = await this.resolveCredential(targetProfile);

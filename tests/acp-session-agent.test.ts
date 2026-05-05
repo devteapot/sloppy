@@ -90,6 +90,7 @@ const TEST_CONFIG: SloppyConfig = {
     },
     orchestration: {
       progressTailMaxChars: 2048,
+      finalAuditCommandTimeoutMs: 30000,
     },
     vision: {
       maxImages: 50,
@@ -228,7 +229,18 @@ new acp.AgentSideConnection((connection) => new FakeAgent(connection), stream);
   return scriptPath;
 }
 
-function createRuntime(scriptPath: string): SessionRuntime {
+const ALLOW_ALL_ACP_CAPABILITIES = {
+  spawn_allowed: true,
+  shell_allowed: true,
+  network_allowed: true,
+  filesystem_writes_allowed: true,
+  filesystem_reads_allowed: true,
+};
+
+function createRuntime(
+  scriptPath: string,
+  capabilities = ALLOW_ALL_ACP_CAPABILITIES,
+): SessionRuntime {
   return new SessionRuntime({
     config: TEST_CONFIG,
     sessionId: "acp-session",
@@ -245,6 +257,7 @@ function createRuntime(scriptPath: string): SessionRuntime {
         adapterId: "fake",
         adapter: {
           command: ["node", scriptPath],
+          capabilities,
         },
         callbacks,
         workspaceRoot: process.cwd(),
@@ -340,6 +353,33 @@ describe("AcpSessionAgent", () => {
       expect(assistant?.content[0]?.type).toBe("text");
       expect(assistant?.content[0]?.type === "text" ? assistant.content[0].text : "").toContain(
         "approved",
+      );
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("rejects ACP write approvals when adapter capabilities disallow filesystem writes", async () => {
+    const runtime = createRuntime(createFakeAcpAgent(), {
+      ...ALLOW_ALL_ACP_CAPABILITIES,
+      filesystem_writes_allowed: false,
+    });
+    const { provider, consumer } = await connect(runtime);
+
+    try {
+      const sendResult = await consumer.invoke("/composer", "send_message", {
+        text: "needs approval",
+      });
+      expect(sendResult.status).toBe("ok");
+
+      await runtime.waitForIdle();
+      const snapshot = runtime.store.getSnapshot();
+      expect(snapshot.approvals.some((item) => item.status === "pending")).toBe(false);
+      const assistant = snapshot.transcript.find((message) => message.role === "assistant");
+      expect(assistant?.content[0]?.type).toBe("text");
+      expect(assistant?.content[0]?.type === "text" ? assistant.content[0].text : "").toContain(
+        "rejected",
       );
     } finally {
       provider.stop();

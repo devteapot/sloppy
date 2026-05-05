@@ -14,11 +14,20 @@ import type {
 import { LlmAbortError } from "../../llm/types";
 import type { SessionAgent } from "../../session/runtime";
 
+export type AcpAdapterCapabilities = {
+  spawn_allowed: boolean;
+  shell_allowed: boolean;
+  network_allowed: boolean;
+  filesystem_writes_allowed: boolean;
+  filesystem_reads_allowed: boolean;
+};
+
 export type AcpAdapterConfig = {
   command: string[];
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
+  capabilities?: AcpAdapterCapabilities;
 };
 
 export type AcpSessionAgentOptions = {
@@ -132,6 +141,70 @@ function selectPermissionOption(
   };
 }
 
+const DEFAULT_ACP_CAPABILITIES: AcpAdapterCapabilities = {
+  spawn_allowed: false,
+  shell_allowed: false,
+  network_allowed: false,
+  filesystem_writes_allowed: false,
+  filesystem_reads_allowed: true,
+};
+
+function adapterCapabilities(adapter: AcpAdapterConfig): AcpAdapterCapabilities {
+  return { ...DEFAULT_ACP_CAPABILITIES, ...(adapter.capabilities ?? {}) };
+}
+
+function deniedCapabilityReason(
+  capabilities: AcpAdapterCapabilities,
+  toolCall: acp.ToolCall | acp.ToolCallUpdate,
+): string | null {
+  const haystack =
+    `${toolCall.kind ?? ""} ${toolCall.title ?? ""} ${stringifyValue(toolCall.rawInput) ?? ""}`.toLowerCase();
+  if (
+    !capabilities.filesystem_writes_allowed &&
+    /\b(edit|write|modify|patch|delete|remove|rename)\b/.test(haystack)
+  ) {
+    return "filesystem writes are disabled for this ACP adapter";
+  }
+  if (!capabilities.filesystem_reads_allowed && /\b(read|open|cat|view)\b/.test(haystack)) {
+    return "filesystem reads are disabled for this ACP adapter";
+  }
+  if (
+    !capabilities.shell_allowed &&
+    /\b(shell|terminal|exec|command|bash|sh|zsh)\b/.test(haystack)
+  ) {
+    return "shell execution is disabled for this ACP adapter";
+  }
+  if (
+    !capabilities.network_allowed &&
+    /\b(network|fetch|http|https|curl|wget|web)\b/.test(haystack)
+  ) {
+    return "network access is disabled for this ACP adapter";
+  }
+  if (!capabilities.spawn_allowed && /\b(spawn|subagent|agent|process)\b/.test(haystack)) {
+    return "process spawning is disabled for this ACP adapter";
+  }
+  return null;
+}
+
+function rejectPermissionOption(
+  request: acp.RequestPermissionRequest,
+): acp.RequestPermissionResponse {
+  const option = request.options.find((candidate) => candidate.kind.startsWith("reject"));
+  if (!option) {
+    return {
+      outcome: {
+        outcome: "cancelled",
+      },
+    };
+  }
+  return {
+    outcome: {
+      outcome: "selected",
+      optionId: option.optionId,
+    },
+  };
+}
+
 export class AcpSessionAgent implements SessionAgent {
   private readonly adapterId: string;
   private readonly adapter: AcpAdapterConfig;
@@ -176,6 +249,7 @@ export class AcpSessionAgent implements SessionAgent {
       cwd: resolve(this.adapter.cwd ?? this.workspaceRoot),
       env: {
         ...process.env,
+        SLOPPY_ACP_CAPABILITIES: JSON.stringify(adapterCapabilities(this.adapter)),
         ...(this.adapter.env ?? {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -312,6 +386,7 @@ export class AcpSessionAgent implements SessionAgent {
 
   private async initializeSession(): Promise<void> {
     const connection = this.requireConnection();
+    const capabilities = adapterCapabilities(this.adapter);
     await connection.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,
       clientInfo: {
@@ -320,10 +395,10 @@ export class AcpSessionAgent implements SessionAgent {
       },
       clientCapabilities: {
         fs: {
-          readTextFile: false,
-          writeTextFile: false,
+          readTextFile: capabilities.filesystem_reads_allowed,
+          writeTextFile: capabilities.filesystem_writes_allowed,
         },
-        terminal: false,
+        terminal: capabilities.shell_allowed,
       },
     });
     const session = await connection.newSession({
@@ -345,6 +420,17 @@ export class AcpSessionAgent implements SessionAgent {
   ): Promise<acp.RequestPermissionResponse> {
     const approvalId = `approval-${++this.approvalCounter}-${safeToolNameSegment(params.toolCall.toolCallId)}`;
     const invocation = this.invocationFromToolCall(params.toolCall);
+    const deniedReason = deniedCapabilityReason(adapterCapabilities(this.adapter), params.toolCall);
+    if (deniedReason) {
+      this.callbacks.onToolEvent?.({
+        kind: "completed",
+        invocation,
+        summary: this.toolSummary(params.toolCall),
+        status: "error",
+        errorMessage: deniedReason,
+      });
+      return rejectPermissionOption(params);
+    }
     const pending: PendingAcpApproval = {
       id: approvalId,
       createdAt: new Date().toISOString(),

@@ -71,6 +71,7 @@ function applySnapshot(store: DashboardStore, state: DashboardState) {
       for (const handoff of state.handoffs) h[handoff.id] = handoff;
     }),
   );
+  store.setDigest(state.digest);
   for (const event of state.events) ingestEvent(store, event);
 }
 
@@ -99,6 +100,10 @@ function applyDelta(store: DashboardStore, delta: DeltaMessage) {
           else h[delta.id] = delta.fields;
         }),
       );
+      store.setUpdatedAt(delta.updatedAt);
+      return;
+    case "digest":
+      store.setDigest(delta.digest);
       store.setUpdatedAt(delta.updatedAt);
       return;
     case "event":

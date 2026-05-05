@@ -114,6 +114,72 @@ export type ExternalAppSnapshot = {
   lastError?: string;
 };
 
+export type SessionOrchestrationGateStatus = "open" | "accepted" | "rejected" | "cancelled";
+
+export type SessionOrchestrationGate = {
+  id: string;
+  sourceGateId?: string;
+  gateType?: string;
+  status: SessionOrchestrationGateStatus;
+  subjectRef?: string;
+  summary: string;
+  evidenceRefs: string[];
+  createdAt: string;
+  version?: number;
+  canAccept: boolean;
+  canReject: boolean;
+};
+
+export type SessionDigestAction = {
+  id: string;
+  kind?: string;
+  label: string;
+  targetRef?: string;
+  actionPath: string;
+  actionName: string;
+  params: Record<string, unknown>;
+  urgency?: "low" | "normal" | "high";
+};
+
+export type SessionOrchestrationSummary = {
+  available: boolean;
+  provider?: string;
+  planId?: string;
+  planStatus?: string;
+  planVersion?: number;
+  finalAuditId?: string;
+  finalAuditStatus?: "passed" | "failed" | "none";
+  latestDigestId?: string;
+  latestDigestStatus?: string;
+  latestDigestActions: SessionDigestAction[];
+  pendingDigestDeliveryCount?: number;
+  latestDigestDeliveryError?: string;
+  pendingGateCount: number;
+  latestBlockingGateId?: string;
+  latestBlockingGateType?: string;
+  latestBlockingGateSummary?: string;
+  pendingGates: SessionOrchestrationGate[];
+  activeSliceCount: number;
+  completedSliceCount: number;
+  failedSliceCount: number;
+  precedentResolvedCount?: number;
+  semanticPrecedentResolvedCount?: number;
+  precedentEscalatedCount?: number;
+  openDriftEventCount?: number;
+  blockingDriftEventCount?: number;
+  progressCriteriaTotal?: number;
+  progressCriteriaSatisfied?: number;
+  progressCriteriaUnknown?: number;
+  progressPriorDistance?: number;
+  progressCurrentDistance?: number;
+  progressVelocity?: number;
+  goalRevisionPressure?: number;
+  latestGoalRevisionMagnitude?: string;
+  coherenceBreaches?: string[];
+  coherenceThresholds?: Record<string, unknown>;
+  updatedAt: string;
+};
+
 export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 
@@ -190,6 +256,7 @@ export type AgentSessionSnapshot = {
   approvals: ApprovalItem[];
   tasks: SessionTask[];
   apps: ExternalAppSnapshot[];
+  orchestration: SessionOrchestrationSummary;
 };
 
 export type SessionStoreEventType =
@@ -199,6 +266,7 @@ export type SessionStoreEventType =
   | "approvals"
   | "tasks"
   | "apps"
+  | "orchestration"
   | "llm"
   | "session";
 

@@ -116,6 +116,147 @@ export function buildTaskActions(
     );
   }
 
+  if (isRunning || isVerifying) {
+    actions.submit_evidence_claim = action(
+      {
+        attempt_id: {
+          type: "string",
+          description: "Optional executor attempt id.",
+          optional: true,
+        },
+        executor_id: {
+          type: "string",
+          description: "Optional executor id.",
+          optional: true,
+        },
+        at_commit: {
+          type: "string",
+          description: "Optional commit before this slice's diff.",
+          optional: true,
+        },
+        diff_ref: {
+          type: "string",
+          description: "Optional file/blob ref for the diff.",
+          optional: true,
+        },
+        checks: {
+          type: "array",
+          description:
+            "Optional checks: { id?, type?, command, exit_code?, output_ref?, output?, duration_ms?, verification? }.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", optional: true },
+              type: {
+                type: "string",
+                enum: ["test", "typecheck", "lint", "build", "custom"],
+                optional: true,
+              },
+              command: { type: "string" },
+              exit_code: { type: "number", optional: true },
+              output_ref: { type: "string", optional: true },
+              output: { type: "string", optional: true },
+              duration_ms: { type: "number", optional: true },
+              verification: {
+                type: "string",
+                enum: ["replayable", "self_attested"],
+                optional: true,
+              },
+            },
+            required: ["command"],
+            additionalProperties: false,
+          },
+          optional: true,
+        },
+        observations: {
+          type: "array",
+          description:
+            "Optional observations: { id?, type?, description, captured_data_ref?, captured_data?, replay_recipe? }.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", optional: true },
+              type: { type: "string", optional: true },
+              description: { type: "string" },
+              captured_data_ref: { type: "string", optional: true },
+              captured_data: { type: "string", optional: true },
+              replay_recipe: { type: "string", optional: true },
+            },
+            required: ["description"],
+            additionalProperties: false,
+          },
+          optional: true,
+        },
+        criterion_satisfaction: {
+          type: "array",
+          description:
+            "Criterion mappings: { criterion_id, evidence_refs, kind? }. evidence_refs refer to check/observation ids.",
+          items: {
+            type: "object",
+            properties: {
+              criterion_id: { type: "string" },
+              evidence_refs: {
+                type: "array",
+                items: { type: "string" },
+              },
+              kind: {
+                type: "string",
+                enum: ["replayable", "observed"],
+                optional: true,
+              },
+            },
+            required: ["criterion_id", "evidence_refs"],
+            additionalProperties: false,
+          },
+          optional: true,
+        },
+        provenance: {
+          type: "object",
+          description:
+            "Optional provenance with spec_sections_read, clarifications_used, files_inspected, and planner_assumptions.",
+          optional: true,
+        },
+        risk: {
+          type: "object",
+          description:
+            "Optional risk declaration with files_modified, public_surface_delta, irreversible_actions, deps_added, and external_calls.",
+          optional: true,
+        },
+      },
+      async ({
+        attempt_id,
+        executor_id,
+        at_commit,
+        diff_ref,
+        checks,
+        observations,
+        criterion_satisfaction,
+        provenance,
+        risk,
+      }) =>
+        verification.submitEvidenceClaim({
+          task_id: id,
+          attempt_id: typeof attempt_id === "string" ? attempt_id : undefined,
+          executor_id: typeof executor_id === "string" ? executor_id : undefined,
+          at_commit: typeof at_commit === "string" ? at_commit : undefined,
+          diff_ref: typeof diff_ref === "string" ? diff_ref : undefined,
+          checks: Array.isArray(checks) ? checks : undefined,
+          observations: Array.isArray(observations) ? observations : undefined,
+          criterion_satisfaction: Array.isArray(criterion_satisfaction)
+            ? criterion_satisfaction
+            : undefined,
+          provenance,
+          risk,
+        }),
+      {
+        label: "Submit Evidence Claim",
+        description:
+          "Attach typed docs/12 evidence to a running/verifying slice. Complete slice coverage opens a slice_gate.",
+        estimate: "instant",
+      },
+    );
+  }
+
   if (isPending && depsMet) {
     actions.schedule = action(
       { expected_version: OPTIONAL_EXPECTED_VERSION_PARAM },
@@ -239,6 +380,7 @@ export function buildTaskActions(
           expected_version: typeof expected_version === "number" ? expected_version : undefined,
           hasCompletionVerification: (taskId) => verification.hasCompletionVerification(taskId),
           missingAcceptanceCriteria: (taskId) => verification.missingAcceptanceCriteria(taskId),
+          hasAcceptedSliceGate: (taskId) => verification.hasAcceptedSliceGate(taskId),
         }),
       {
         label: "Complete Task",
@@ -253,12 +395,23 @@ export function buildTaskActions(
     actions.fail = action(
       {
         error: "string",
+        context_health: {
+          type: "string",
+          enum: ["ok", "degraded"],
+          description:
+            "Optional caller signal about executor context health. degraded forces a respawn decision regardless of attempt count.",
+          optional: true,
+        },
         expected_version: OPTIONAL_EXPECTED_VERSION_PARAM,
       },
-      async ({ error, expected_version }) =>
+      async ({ error, context_health, expected_version }) =>
         lifecycle.failTask({
           task_id: id,
           error: error as string,
+          context_health:
+            context_health === "degraded" || context_health === "ok"
+              ? (context_health as "ok" | "degraded")
+              : undefined,
           expected_version: typeof expected_version === "number" ? expected_version : undefined,
         }),
       {
@@ -291,6 +444,11 @@ export function buildTasksDescriptor(wiring: DescriptorWiring) {
       props: {
         id,
         plan_id: def?.plan_id,
+        slice_id: def?.slice_id ?? id,
+        plan_version: def?.plan_version,
+        plan_revision_id: def?.plan_revision_id,
+        spec_version: def?.spec_version,
+        executor_binding: def?.executor_binding,
         name: def?.name,
         goal: def?.goal,
         kind: def?.kind,
@@ -302,6 +460,11 @@ export function buildTasksDescriptor(wiring: DescriptorWiring) {
         aliases: def?.aliases,
         client_ref: def?.client_ref,
         retry_of: def?.retry_of,
+        planner_assumptions: def?.planner_assumptions,
+        structural_assumptions: def?.structural_assumptions,
+        attempt_count: def?.attempt_count,
+        requires_slice_gate: def?.requires_slice_gate,
+        slice_gate_resolver: def?.slice_gate_resolver,
         created_at: def?.created_at,
         status: state?.status ?? "unknown",
         iteration: state?.iteration,
@@ -311,6 +474,9 @@ export function buildTasksDescriptor(wiring: DescriptorWiring) {
         verification_started_at: state?.verification_started_at,
         completed_at: state?.completed_at,
         superseded_by: state?.superseded_by,
+        last_failure_class: state?.last_failure_class,
+        last_failure_decision: state?.last_failure_decision,
+        consecutive_failure_count: state?.consecutive_failure_count,
         version,
         progress_preview: truncateText(progress, 400),
         result_preview: repo.loadResultPreview(id),
@@ -333,6 +499,8 @@ export function buildTasksDescriptor(wiring: DescriptorWiring) {
           not_required: verifications.filter((v) => v.status === "not_required").length,
           unknown: verifications.filter((v) => v.status === "unknown").length,
         },
+        evidence_claim_count: repo.listEvidenceClaims(id).length,
+        slice_gate_accepted: verification.hasAcceptedSliceGate(id),
         latest_verification: latestVerification
           ? {
               id: latestVerification.id,

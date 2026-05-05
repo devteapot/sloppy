@@ -1,4 +1,4 @@
-import type { ApprovalItem, SessionTask } from "../types";
+import type { ApprovalItem, SessionOrchestrationSummary, SessionTask } from "../types";
 import { buildId, now, updateActivity } from "./helpers";
 import type { SessionStoreState } from "./state";
 
@@ -92,18 +92,49 @@ export function syncProviderTasks(
   state.tasksChanged = true;
 }
 
+export function syncOrchestrationSummary(
+  state: SessionStoreState,
+  summary: Partial<SessionOrchestrationSummary>,
+): void {
+  const time = now();
+  state.snapshot.orchestration = {
+    ...state.snapshot.orchestration,
+    ...summary,
+    available: summary.available ?? true,
+    updatedAt: summary.updatedAt ?? time,
+  };
+  state.snapshot.session.updatedAt = time;
+  state.orchestrationChanged = true;
+}
+
 export function clearProviderMirrors(state: SessionStoreState, providerId: string): boolean {
   const nextApprovals = state.snapshot.approvals.filter((item) => item.provider !== providerId);
   const nextTasks = state.snapshot.tasks.filter((item) => item.provider !== providerId);
+  const clearsOrchestration = state.snapshot.orchestration.provider === providerId;
   if (
     nextApprovals.length === state.snapshot.approvals.length &&
-    nextTasks.length === state.snapshot.tasks.length
+    nextTasks.length === state.snapshot.tasks.length &&
+    !clearsOrchestration
   ) {
     return false;
   }
 
   state.snapshot.approvals = nextApprovals;
   state.snapshot.tasks = nextTasks;
+  if (clearsOrchestration) {
+    state.snapshot.orchestration = {
+      available: false,
+      pendingGateCount: 0,
+      pendingGates: [],
+      latestDigestActions: [],
+      activeSliceCount: 0,
+      completedSliceCount: 0,
+      failedSliceCount: 0,
+      finalAuditStatus: "none",
+      updatedAt: now(),
+    };
+    state.orchestrationChanged = true;
+  }
   state.snapshot.session.updatedAt = now();
   state.approvalsChanged = true;
   state.tasksChanged = true;

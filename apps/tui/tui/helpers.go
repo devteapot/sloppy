@@ -143,6 +143,15 @@ func firstPendingApprovalIndex(approvals []session.ApprovalEntry) int {
 	return -1
 }
 
+func hasPendingOrchestrationGates(gates []session.OrchestrationGateEntry) bool {
+	for index := range gates {
+		if gates[index].Status == "open" {
+			return true
+		}
+	}
+	return false
+}
+
 func compact(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }

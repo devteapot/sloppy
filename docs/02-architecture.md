@@ -153,7 +153,7 @@ The current implementation supports:
 
 The orchestration provider now exposes the docs/12 HITL artifact layer
 additively beside the legacy task state machine: `/goals`, `/gates`,
-`/messages`, `/audit`, `/blobs`, and `/digests`, plus plan-revision and typed-evidence
+`/messages`, `/precedents`, `/audit`, `/blobs`, and `/digests`, plus plan-revision and typed-evidence
 affordances on `/orchestration` and `/tasks`. Legacy `create_plan`,
 `create_task`, `create_tasks`, `record_verification`, and task completion stay
 available without docs/12 gates. Accepted plan revisions opt into HITL gating:
@@ -162,21 +162,54 @@ spec version, and a passing final audit before plan completion. Final audit
 replays allowlisted replayable evidence commands against the current workspace
 and stores command output as orchestration blobs.
 As a first policy-resolver increment, plan revisions may set
-`slice_gate_resolver: "policy"` so evidence-complete slice gates are accepted
-deterministically with policy and evidence refs recorded on the gate.
+`slice_gate_resolver: "policy"`, and provider config may set scoped gate-policy
+defaults at the session, goal, spec, and slice levels. Evidence-complete slice
+gates using the policy resolver are accepted deterministically with policy and
+evidence refs recorded on the gate.
+Precedents and case records are persisted under `.sloppy/precedents/` with
+deterministic structural keys, optional question embeddings, semantic or lexical
+match bands, use counters, contradiction flags, and explicit invalidation on
+overlapping spec revisions. Opted-in lookup/inference `SpecQuestion` messages
+can auto-resolve from high-confidence precedent matches or from borderline
+matches accepted by an injected or LLM-profile-backed tie-break policy hook,
+with the policy, precedent, score, score source, band, structural keys, and
+answer recorded on the resolved protocol message. Borderline rejections keep the
+question open with a persisted escalation attempt.
 Digests are generated on demand as immutable typed records summarizing headline
-state, escalations, policy auto-resolutions, near-misses, drift metrics,
-configured wall-time/retry budget burn, and next slices for dashboard or terminal
-renderers. When a plan exceeds its configured wall-time budget, digest
+state, escalations, policy auto-resolutions, near-misses, persisted drift events
+and metrics, configured wall-time/retry/token/cost budget burn, next slices, and
+typed control actions for dashboard or terminal renderers, including budget-cap
+raise refs that invoke `/budget.raise_budget_cap`. Escalation, final, and
+status-change digests also create pending push-delivery outbox records under the
+orchestration store; configured generic, Slack, or email transports can dispatch
+those records through `/digests` while the store retains attempt counts, delivery
+errors, and external refs. No network digest delivery is enabled by default.
+When a
+plan exceeds its configured wall-time budget, digest
 generation opens a `budget_exceeded` gate for the resolver. When a retry would
 exceed the configured retry-per-slice cap, the replacement is rejected and a
-`budget_exceeded` gate is opened for that logical slice.
+`budget_exceeded` gate is opened for that logical slice. Token and USD cost
+usage is persisted as budget-usage records, summarized in digests, and opens
+the same gate type when a configured cap is exceeded. Raising covered caps
+updates the active plan budget and resolves matching open budget gates.
+Evidence submission and task completion now run deterministic drift/guardrail
+checks. Evidence regressions, repeated same-class failures, untraced
+dependency/public-surface changes, accepted-criterion mismatches, and
+blast-radius cap violations create blocking `drift_escalation` gates;
+irreversible-action risk declarations always create user gates; blocking drift
+prevents policy auto-accept by forcing the slice gate back to the user resolver.
+File-only coverage gaps are persisted as warning drift events and surfaced in
+provider state and digests.
 
 The spec provider owns spec artifacts and now persists immutable version
 snapshots under `.sloppy/specs/`, with optional `goal_id`/`goal_version` refs and
 criterion metadata on requirements. Spec acceptance is gated through an accepted
 orchestration `spec_accept` gate, while the orchestration provider remains the
 coordination owner for gates and plan execution.
+The session provider exposes `start_spec_driven_goal` as the public docs/12
+entrypoint: it creates/revises the goal, writes spec-agent protocol messages,
+opens the `spec_accept` gate, optionally accepts the spec, writes planner-owned
+plan-revision proposals, and can accept the plan gate into schedulable slices.
 
 ### 7. Agent session provider
 
@@ -376,10 +409,11 @@ Long-running commands are represented as async task nodes under `tasks`.
 ### Orchestration provider
 
 The orchestration provider is a durable planning and verification surface backed
-by `.sloppy/orchestration/`. It is implemented as a directory of focused
+by `.sloppy/orchestration/`, with docs/12 precedents stored under
+`.sloppy/precedents/`. It is implemented as a directory of focused
 modules under `src/providers/builtin/orchestration/` (`types.ts`, `storage.ts`,
-`normalization.ts`, `classifiers.ts`, `dag.ts`, `index.ts` for the class
-facade) rather than a single file.
+`normalization.ts`, `classifiers.ts`, `dag.ts`, `precedents.ts`, and `index.ts`
+for the class facade) rather than a single file.
 
 The provider itself is generic: it validates explicit `depends_on` references,
 rejects dependency cycles, enforces verification/finding gates, and persists
@@ -599,7 +633,7 @@ The central replacement is simple:
 - The initial history strategy is bounded and truncated, not yet summarized by a compaction model call.
 - Provider discovery is live watched and fully reconciles descriptor add, update, and remove events, but unsupported transports are still skipped.
 - The published SLOP npm packages are used directly, but the harness currently relies on the browser-safe consumer entrypoint because the top-level consumer package export is not usable as-is.
-- The session provider mirrors downstream provider-native approvals and async tasks into shared session state, and exposes shallow external app attachment state for TUI/debug visibility.
+- The session provider mirrors downstream provider-native approvals and async tasks into shared session state, exposes shallow external app attachment state for TUI/debug visibility, and mirrors compact orchestration gate/digest controls for dashboard and TUI clients.
 - The broader built-in provider surface is now real, but several providers still use simulated or local-only implementations where external integrations are not wired yet (notably browser, delegation, and vision).
 - Skill discovery exposes both item-level affordances and a session-level `view_skill(name)` fallback because direct item invocation on skills hit a routing quirk during implementation.
 

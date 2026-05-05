@@ -19,6 +19,7 @@ type SchedulerTask = {
   status: SchedulerTaskStatus;
   unmetDependencies: string[];
   version?: number;
+  executorBinding?: Record<string, unknown>;
 };
 
 type SchedulerAgent = {
@@ -30,6 +31,10 @@ type SchedulerAgent = {
 type SchedulerPlan = {
   active: boolean;
   maxAgents?: number;
+  goalId?: string;
+  version?: number;
+  gateMode?: string;
+  finalAuditId?: string;
 };
 
 export type OrchestrationSchedulerEvent =
@@ -69,6 +74,12 @@ export type OrchestrationSchedulerEvent =
     };
 
 const ACTIVE_AGENT_STATUSES = new Set(["pending", "running"]);
+const TERMINAL_TASK_STATUSES = new Set<SchedulerTaskStatus>([
+  "completed",
+  "failed",
+  "cancelled",
+  "superseded",
+]);
 const SCHEDULABLE_TASK_STATUSES = new Set(["pending", "scheduled"]);
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -124,6 +135,10 @@ function parseTasks(tree: SlopNode | null): SchedulerTask[] {
       return [];
     }
 
+    const executorBinding =
+      typeof props.executor_binding === "object" && props.executor_binding !== null
+        ? (props.executor_binding as Record<string, unknown>)
+        : undefined;
     return [
       {
         id,
@@ -132,6 +147,7 @@ function parseTasks(tree: SlopNode | null): SchedulerTask[] {
         status,
         unmetDependencies: stringArrayProp(props, "unmet_dependencies"),
         version: numberProp(props, "version"),
+        executorBinding,
       },
     ];
   });
@@ -153,6 +169,10 @@ function parsePlan(tree: SlopNode | null): SchedulerPlan {
   return {
     active: props.plan_status === "active",
     maxAgents: numberProp(props, "plan_max_agents"),
+    goalId: stringProp(props, "plan_goal_id"),
+    version: numberProp(props, "plan_version"),
+    gateMode: stringProp(props, "gate_mode"),
+    finalAuditId: stringProp(props, "final_audit_id"),
   };
 }
 
@@ -165,9 +185,11 @@ export class OrchestrationScheduler {
   private evaluationQueued = false;
   private evaluating = false;
   private pendingEvaluation = false;
+  private delayedEvaluation: ReturnType<typeof setTimeout> | null = null;
   private inFlightTasks = new Set<string>();
   private unblockedSignatures = new Set<string>();
   private blockedTaskSignatures = new Set<string>();
+  private lifecycleSignatures = new Set<string>();
   private lastIdleSignature: string | null = null;
   private lastBlockedSignature: string | null = null;
 
@@ -226,6 +248,10 @@ export class OrchestrationScheduler {
       }
     }
     this.inFlightTasks.clear();
+    if (this.delayedEvaluation) {
+      clearTimeout(this.delayedEvaluation);
+      this.delayedEvaluation = null;
+    }
   }
 
   private requestEvaluation(): void {
@@ -245,6 +271,14 @@ export class OrchestrationScheduler {
     });
   }
 
+  private requestDelayedEvaluation(delayMs = 25): void {
+    if (this.stopped || this.delayedEvaluation) return;
+    this.delayedEvaluation = setTimeout(() => {
+      this.delayedEvaluation = null;
+      this.requestEvaluation();
+    }, delayMs);
+  }
+
   private async drainEvaluations(): Promise<void> {
     if (this.evaluating || this.stopped) {
       return;
@@ -262,6 +296,7 @@ export class OrchestrationScheduler {
   }
 
   private async evaluateOnce(): Promise<void> {
+    await this.refreshWatchedState();
     const plan = parsePlan(this.planTree);
     if (!plan.active) {
       this.emitIdle("no_active_plan", "Scheduler idle: no active orchestration plan.");
@@ -269,8 +304,19 @@ export class OrchestrationScheduler {
     }
 
     const tasks = parseTasks(this.tasksTree);
+    this.syncAutonomousLifecycle(plan, tasks);
     const agents = parseAgents(this.agentsTree);
-    const activeAgents = agents.filter((agent) => ACTIVE_AGENT_STATUSES.has(agent.status));
+    const taskStatusById = new Map(tasks.map((task) => [task.id, task.status]));
+    const activeAgents = agents.filter((agent) => {
+      if (!ACTIVE_AGENT_STATUSES.has(agent.status)) {
+        return false;
+      }
+      if (!agent.orchestrationTaskId) {
+        return true;
+      }
+      const attachedTaskStatus = taskStatusById.get(agent.orchestrationTaskId);
+      return !attachedTaskStatus || !TERMINAL_TASK_STATUSES.has(attachedTaskStatus);
+    });
     const activeTaskIds = new Set(
       activeAgents
         .map((agent) => agent.orchestrationTaskId)
@@ -318,6 +364,9 @@ export class OrchestrationScheduler {
 
     if (candidates.length === 0) {
       const activeCount = activeAgents.length + this.inFlightTasks.size;
+      if (activeCount > 0) {
+        this.requestDelayedEvaluation();
+      }
       this.emitIdle(
         `no_runnable:${activeCount}:${tasks.length}`,
         activeCount > 0
@@ -337,11 +386,45 @@ export class OrchestrationScheduler {
     }
 
     await Promise.all(
-      candidates.slice(0, availableSlots).map((task) => this.scheduleAndSpawn(task)),
+      candidates.slice(0, availableSlots).map((task) => this.scheduleAndSpawn(task, plan)),
     );
   }
 
-  private async scheduleAndSpawn(task: SchedulerTask): Promise<void> {
+  private async refreshWatchedState(): Promise<void> {
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    const delegationProviderId = this.options.delegationProviderId ?? "delegation";
+    try {
+      const [planTree, tasksTree, agentsTree] = await Promise.all([
+        this.options.hub.queryState({
+          providerId: orchestrationProviderId,
+          path: "/orchestration",
+          depth: 1,
+        }),
+        this.options.hub.queryState({
+          providerId: orchestrationProviderId,
+          path: "/tasks",
+          depth: 2,
+        }),
+        this.options.hub.queryState({
+          providerId: delegationProviderId,
+          path: "/agents",
+          depth: 2,
+        }),
+      ]);
+      this.planTree = planTree;
+      this.tasksTree = tasksTree;
+      this.agentsTree = agentsTree;
+    } catch (error) {
+      this.emit({
+        kind: "scheduler_blocked",
+        reason: "provider_unavailable",
+        detail: error instanceof Error ? error.message : String(error),
+        summary: "Scheduler could not refresh orchestration state.",
+      });
+    }
+  }
+
+  private async scheduleAndSpawn(task: SchedulerTask, plan: SchedulerPlan): Promise<void> {
     const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
     const delegationProviderId = this.options.delegationProviderId ?? "delegation";
     this.inFlightTasks.add(task.id);
@@ -388,15 +471,21 @@ export class OrchestrationScheduler {
         });
       }
 
+      const spawnParams: Record<string, unknown> = {
+        name: task.name,
+        goal: task.goal,
+        task_id: task.id,
+        role: "executor",
+        idempotency_key: `orchestration:executor:${task.id}`,
+      };
+      if (task.executorBinding) {
+        spawnParams.executor = task.executorBinding;
+      }
       const spawnResult = await this.options.hub.invoke(
         delegationProviderId,
         "/session",
         "spawn_agent",
-        {
-          name: task.name,
-          goal: task.goal,
-          task_id: task.id,
-        },
+        spawnParams,
         { actor: "scheduler" },
       );
       if (spawnResult.status === "error") {
@@ -416,11 +505,159 @@ export class OrchestrationScheduler {
         agentId: stringProp(spawnData, "id"),
         summary: `${task.name} was handed to a delegated agent.`,
       });
+      this.persistAutonomousLifecycle(plan.goalId, "executor.spawned", { taskId: task.id });
     } catch (error) {
       this.blockTask(task, "invoke_failed", error instanceof Error ? error.message : String(error));
     } finally {
       this.inFlightTasks.delete(task.id);
     }
+  }
+
+  private syncAutonomousLifecycle(plan: SchedulerPlan, tasks: SchedulerTask[]): void {
+    if (!plan.goalId || tasks.length === 0) return;
+
+    for (const task of tasks) {
+      switch (task.status) {
+        case "running":
+          this.persistAutonomousLifecycle(plan.goalId, "executor.running", { taskId: task.id });
+          break;
+        case "verifying":
+          this.persistAutonomousLifecycle(plan.goalId, "executor.verifying", { taskId: task.id });
+          break;
+        case "completed":
+          this.persistAutonomousLifecycle(plan.goalId, "executor.completed", { taskId: task.id });
+          break;
+        case "failed":
+          this.persistAutonomousLifecycle(plan.goalId, "goal.failed", { taskId: task.id });
+          break;
+        case "cancelled":
+          this.persistAutonomousLifecycle(plan.goalId, "goal.escalated", { taskId: task.id });
+          break;
+      }
+    }
+
+    const terminalTasks = tasks.filter((task) =>
+      ["completed", "failed", "cancelled", "superseded"].includes(task.status),
+    );
+    if (terminalTasks.length !== tasks.length) return;
+
+    const blockingTask = tasks.find(
+      (task) => task.status === "failed" || task.status === "cancelled",
+    );
+    if (blockingTask) {
+      this.persistAutonomousLifecycle(
+        plan.goalId,
+        blockingTask.status === "failed" ? "goal.failed" : "goal.escalated",
+        { taskId: blockingTask.id },
+      );
+      return;
+    }
+
+    if (this.requiresFinalAudit(plan)) {
+      this.runFinalAudit(plan);
+      return;
+    }
+
+    this.persistAutonomousLifecycle(plan.goalId, "goal.completed", {
+      taskIds: tasks.map((task) => task.id).join(","),
+    });
+    this.completeAutonomousPlan(plan);
+  }
+
+  private requiresFinalAudit(plan: SchedulerPlan): boolean {
+    return plan.gateMode === "hitl" && !plan.finalAuditId;
+  }
+
+  private runFinalAudit(plan: SchedulerPlan): void {
+    if (!plan.goalId) return;
+    const signature = `run_final_audit:${plan.goalId}:${plan.version ?? "unknown"}`;
+    if (this.lifecycleSignatures.has(signature)) return;
+    this.lifecycleSignatures.add(signature);
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    void this.options.hub
+      .invoke(orchestrationProviderId, "/audit", "run_final_audit", {}, { actor: "scheduler" })
+      .then((result) => {
+        if (result.status === "error") {
+          debug("scheduler", "run_final_audit_failed", {
+            goalId: plan.goalId,
+            error: result.error?.message,
+          });
+          return;
+        }
+        this.requestEvaluation();
+      })
+      .catch((error: unknown) => {
+        debug("scheduler", "run_final_audit_failed", {
+          goalId: plan.goalId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private completeAutonomousPlan(plan: SchedulerPlan): void {
+    if (!plan.goalId) return;
+    const signature = `complete_plan:${plan.goalId}:${plan.version ?? "unknown"}`;
+    if (this.lifecycleSignatures.has(signature)) return;
+    this.lifecycleSignatures.add(signature);
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    void this.options.hub
+      .invoke(
+        orchestrationProviderId,
+        "/orchestration",
+        "complete_plan",
+        { status: "completed", expected_version: plan.version },
+        { actor: "scheduler" },
+      )
+      .then((result) => {
+        if (result.status === "error") {
+          debug("scheduler", "complete_plan_failed", {
+            goalId: plan.goalId,
+            error: result.error?.message,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        debug("scheduler", "complete_plan_failed", {
+          goalId: plan.goalId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private persistAutonomousLifecycle(
+    goalId: string | undefined,
+    stage: string,
+    refs: Record<string, string>,
+  ): void {
+    if (!goalId) return;
+    const signature = `${goalId}:${stage}:${JSON.stringify(refs)}`;
+    if (this.lifecycleSignatures.has(signature)) return;
+    this.lifecycleSignatures.add(signature);
+    const orchestrationProviderId = this.options.orchestrationProviderId ?? "orchestration";
+    void this.options.hub
+      .invoke(
+        orchestrationProviderId,
+        `/goals/${goalId}`,
+        "update_autonomous_lifecycle",
+        { stage, refs },
+        { actor: "scheduler" },
+      )
+      .then((result) => {
+        if (result.status === "error") {
+          debug("scheduler", "lifecycle_persist_failed", {
+            goalId,
+            stage,
+            error: result.error?.message,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        debug("scheduler", "lifecycle_persist_failed", {
+          goalId,
+          stage,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   private blockTask(task: SchedulerTask, reason: string, detail?: string): void {

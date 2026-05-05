@@ -3,7 +3,13 @@
 import { existsSync, type FSWatcher, readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import {
+  type ClientTransport,
+  SlopConsumer,
+  WebSocketClientTransport,
+} from "@slop-ai/consumer/browser";
 import { SolidPlugin } from "bun-plugin-solid";
+import { NodeSocketClientTransport } from "../../src/providers/node-socket";
 
 type PlanStatus = "active" | "completed" | "cancelled" | "none";
 type TaskStatus =
@@ -60,6 +66,72 @@ type DashboardHandoff = {
   version: number;
 };
 
+type DashboardDigestAction = {
+  id: string;
+  kind: string;
+  label: string;
+  targetRef: string;
+  actionPath: string;
+  actionName: string;
+  urgency: "low" | "normal" | "high";
+};
+
+type DashboardDigest = {
+  id: string;
+  status: string;
+  cadence: string;
+  createdAt: string;
+  actionEnabled: boolean;
+  headline: string[];
+  sourceRefs: string[];
+  actions: DashboardDigestAction[];
+  sections: {
+    escalations: Array<{
+      gateId: string;
+      gateType: string;
+      status: string;
+      subjectRef: string;
+      summary: string;
+    }>;
+    autoResolutionCount: number;
+    nearMisses: Array<{
+      kind: string;
+      ref: string;
+      summary: string;
+    }>;
+    drift: {
+      criteriaTotal: number;
+      criteriaSatisfied: number;
+      criteriaUnknown: number;
+      progressVelocity: number;
+      progressCurrentDistance: number;
+      replanCount: number;
+      failureCount: number;
+      coverageGapCount: number;
+      goalRevisionPressure: number;
+      recentEvents: Array<{
+        id: string;
+        kind: string;
+        severity: string;
+        status: string;
+        summary: string;
+      }>;
+    };
+    budget: {
+      configured: boolean;
+      exceeded: boolean;
+      message: string;
+      exceededLimits: string[];
+    };
+    next: {
+      pendingGateCount: number;
+      nextReadySlices: string[];
+      runningSlices: string[];
+      finalAuditStatus: string;
+    };
+  };
+};
+
 type DashboardFlowEvent = {
   id: string;
   toolUseId?: string;
@@ -95,6 +167,7 @@ type DashboardState = {
   plan: DashboardPlan;
   tasks: DashboardTask[];
   handoffs: DashboardHandoff[];
+  digest: DashboardDigest | null;
   events: DashboardFlowEvent[];
 };
 
@@ -103,6 +176,7 @@ type DeltaMessage =
   | { kind: "plan"; fields: Partial<DashboardPlan>; updatedAt: string }
   | { kind: "task"; id: string; fields: DashboardTask | null; updatedAt: string }
   | { kind: "handoff"; id: string; fields: DashboardHandoff | null; updatedAt: string }
+  | { kind: "digest"; digest: DashboardDigest | null; updatedAt: string }
   | { kind: "event"; event: DashboardFlowEvent };
 
 const appRoot = import.meta.dir;
@@ -131,10 +205,27 @@ function numberProp(record: Record<string, unknown>, key: string, fallback = 0):
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function booleanProp(record: Record<string, unknown>, key: string, fallback = false): boolean {
+  const value = record[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function stringArrayProp(record: Record<string, unknown>, key: string): string[] {
   const value = record[key];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function recordArrayProp(
+  record: Record<string, unknown>,
+  key: string,
+): Array<Record<string, unknown>> {
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): Array<Record<string, unknown>> => {
+    const candidate = asRecord(item);
+    return Object.keys(candidate).length > 0 ? [candidate] : [];
+  });
 }
 
 function readJson(path: string): Record<string, unknown> | null {
@@ -209,6 +300,14 @@ function listHandoffFiles(orchestrationRoot: string): string[] {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => join(handoffsDir, entry.name))
     .sort();
+}
+
+function listDigestFiles(orchestrationRoot: string): string[] {
+  const digestsDir = join(orchestrationRoot, "digests");
+  if (!existsSync(digestsDir)) return [];
+  return readdirSync(digestsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => join(digestsDir, entry.name));
 }
 
 function newestDirectory(paths: string[]): string[] {
@@ -408,6 +507,105 @@ function loadHandoffFromFile(path: string): DashboardHandoff | null {
   };
 }
 
+function digestUrgency(value: string): DashboardDigestAction["urgency"] {
+  if (value === "low" || value === "high") return value;
+  return "normal";
+}
+
+function loadLatestDigest(orchestrationRoot: string): DashboardDigest | null {
+  const candidates = listDigestFiles(orchestrationRoot)
+    .flatMap((path) => {
+      const record = readJson(path);
+      if (!record) return [];
+      const createdAt = stringProp(record, "created_at");
+      return [{ path, record, createdAt }];
+    })
+    .sort((left, right) => {
+      const byCreated = right.createdAt.localeCompare(left.createdAt);
+      if (byCreated !== 0) return byCreated;
+      try {
+        return statSync(right.path).mtimeMs - statSync(left.path).mtimeMs;
+      } catch {
+        return 0;
+      }
+    });
+  const latest = candidates[0]?.record;
+  if (!latest) return null;
+
+  const sections = asRecord(latest.sections);
+  const drift = asRecord(sections.drift_dashboard);
+  const progress = asRecord(drift.progress);
+  const coherence = asRecord(drift.coherence);
+  const intent = asRecord(drift.intent);
+  const budget = asRecord(sections.budget);
+  const next = asRecord(sections.whats_next);
+  const autoResolutions = asRecord(sections.auto_resolutions);
+
+  return {
+    id: stringProp(latest, "id"),
+    status: stringProp(latest, "status"),
+    cadence: stringProp(latest, "cadence"),
+    createdAt: stringProp(latest, "created_at"),
+    actionEnabled: sessionOption !== undefined,
+    headline: stringArrayProp(latest, "headline"),
+    sourceRefs: stringArrayProp(latest, "source_refs").slice(0, 24),
+    actions: recordArrayProp(latest, "actions").map((action) => ({
+      id: stringProp(action, "id"),
+      kind: stringProp(action, "kind"),
+      label: stringProp(action, "label"),
+      targetRef: stringProp(action, "target_ref"),
+      actionPath: stringProp(action, "action_path"),
+      actionName: stringProp(action, "action_name"),
+      urgency: digestUrgency(stringProp(action, "urgency")),
+    })),
+    sections: {
+      escalations: recordArrayProp(sections, "escalations").map((gate) => ({
+        gateId: stringProp(gate, "gate_id"),
+        gateType: stringProp(gate, "gate_type"),
+        status: stringProp(gate, "status"),
+        subjectRef: stringProp(gate, "subject_ref"),
+        summary: stringProp(gate, "summary"),
+      })),
+      autoResolutionCount: numberProp(autoResolutions, "count"),
+      nearMisses: recordArrayProp(sections, "near_misses").map((item) => ({
+        kind: stringProp(item, "kind"),
+        ref: stringProp(item, "ref"),
+        summary: stringProp(item, "summary"),
+      })),
+      drift: {
+        criteriaTotal: numberProp(progress, "criteria_total"),
+        criteriaSatisfied: numberProp(progress, "criteria_satisfied"),
+        criteriaUnknown: numberProp(progress, "criteria_unknown"),
+        progressVelocity: numberProp(progress, "velocity"),
+        progressCurrentDistance: numberProp(progress, "current_distance"),
+        replanCount: numberProp(coherence, "replan_count"),
+        failureCount: numberProp(coherence, "failure_count"),
+        coverageGapCount: numberProp(intent, "coverage_gap_count"),
+        goalRevisionPressure: numberProp(intent, "goal_revision_pressure"),
+        recentEvents: recordArrayProp(drift, "recent_events").map((event) => ({
+          id: stringProp(event, "id"),
+          kind: stringProp(event, "kind"),
+          severity: stringProp(event, "severity"),
+          status: stringProp(event, "status"),
+          summary: stringProp(event, "summary"),
+        })),
+      },
+      budget: {
+        configured: booleanProp(budget, "configured"),
+        exceeded: booleanProp(budget, "exceeded"),
+        message: stringProp(budget, "message"),
+        exceededLimits: stringArrayProp(budget, "exceeded_limits"),
+      },
+      next: {
+        pendingGateCount: numberProp(next, "pending_gate_count"),
+        nextReadySlices: stringArrayProp(next, "next_ready_slices"),
+        runningSlices: stringArrayProp(next, "running_slices"),
+        finalAuditStatus: stringProp(next, "final_audit_status", "none"),
+      },
+    },
+  };
+}
+
 function computeUnmet(tasks: DashboardTask[]): void {
   const byStatus = new Map<string, DashboardTask>();
   for (const t of tasks) byStatus.set(t.id, t);
@@ -462,6 +660,7 @@ function loadLiveState(orchestrationRoot: string): DashboardState | null {
     },
     tasks,
     handoffs,
+    digest: loadLatestDigest(orchestrationRoot),
     events: parseEventBusLogTail(orchestrationRoot),
   };
 }
@@ -511,11 +710,13 @@ function emptyState(source: string): DashboardState {
     },
     tasks: [],
     handoffs: [],
+    digest: null,
     events: [],
   };
 }
 
 const workspaceOption = readOption("--workspace") ?? process.env.SLOPPY_DASHBOARD_WORKSPACE;
+const sessionOption = readOption("--session") ?? process.env.SLOPPY_DASHBOARD_SESSION;
 const workspaceRoot = resolve(workspaceOption ?? repoRoot);
 const port = Number(readOption("--port") ?? process.env.PORT ?? 8787);
 
@@ -734,6 +935,14 @@ function applyFsChange(relPath: string) {
     }
     return;
   }
+
+  if (normalized.match(/^digests\/.+\.json$/)) {
+    broadcast("delta", {
+      kind: "digest",
+      digest: loadLatestDigest(root),
+      updatedAt: iso(),
+    } satisfies DeltaMessage);
+  }
 }
 
 function recomputeAllUnmet() {
@@ -874,9 +1083,69 @@ function eventStream(request: Request): Response {
   });
 }
 
+function sessionTransportForAddress(address: string): ClientTransport {
+  if (address.startsWith("ws://") || address.startsWith("wss://")) {
+    return new WebSocketClientTransport(address);
+  }
+  if (address.startsWith("unix:")) {
+    return new NodeSocketClientTransport(address.slice("unix:".length));
+  }
+  if (address.startsWith("/") || address.startsWith(".")) {
+    return new NodeSocketClientTransport(address);
+  }
+  throw new Error(`Unsupported session provider address: ${address}`);
+}
+
+async function invokeSession(path: string, action: string, params: Record<string, unknown>) {
+  if (!sessionOption) {
+    return Response.json(
+      {
+        ok: false,
+        error: "Start the dashboard with --session <socket-or-ws-url> to enable actions.",
+      },
+      { status: 409 },
+    );
+  }
+
+  const consumer = new SlopConsumer(sessionTransportForAddress(sessionOption));
+  try {
+    await consumer.connect();
+    const result = await consumer.invoke(path, action, params);
+    if (result.status === "error") {
+      return Response.json(
+        { ok: false, error: result.error?.message ?? "Session action failed.", result },
+        { status: 400 },
+      );
+    }
+    return Response.json({ ok: true, result });
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: error instanceof Error ? error.message : String(error) },
+      { status: 502 },
+    );
+  } finally {
+    consumer.disconnect();
+  }
+}
+
+async function digestAction(request: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ ok: false, error: "Expected JSON body." }, { status: 400 });
+  }
+  const actionId =
+    stringProp(asRecord(body), "action_id") || stringProp(asRecord(body), "actionId");
+  if (!actionId) {
+    return Response.json({ ok: false, error: "Missing action_id." }, { status: 400 });
+  }
+  return invokeSession("/orchestration", "run_digest_action", { action_id: actionId });
+}
+
 const server = Bun.serve({
   port,
-  fetch(request) {
+  async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/") {
       return fileResponse(join(appRoot, "index.html"), "text/html; charset=utf-8");
@@ -895,6 +1164,9 @@ const server = Bun.serve({
     if (url.pathname === "/api/events") {
       return eventStream(request);
     }
+    if (url.pathname === "/api/digest-actions" && request.method === "POST") {
+      return digestAction(request);
+    }
     return new Response("Not found", { status: 404 });
   },
 });
@@ -902,5 +1174,6 @@ const server = Bun.serve({
 console.log(`[sloppy-dashboard] http://localhost:${server.port}`);
 console.log(`[sloppy-dashboard] workspace: ${workspaceRoot}`);
 console.log(`[sloppy-dashboard] orchestration: ${watchState.orchestrationRoot}`);
+console.log(`[sloppy-dashboard] session actions: ${sessionOption ?? "disabled"}`);
 
 void relative;
