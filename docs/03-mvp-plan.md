@@ -35,12 +35,15 @@ providers, skills, routes, and agent-to-agent channels.
 
 3. Ship the meta-runtime as an optional provider.
    - Model agent profiles, nodes, channels, routes, capabilities, executor
-     bindings, scheduler policies, skill versions, proposals, and events.
+     bindings, skill versions, topology experiments, evaluations, proposals,
+     and events.
    - Apply safe session changes directly.
    - Require approval for persistent or privileged changes.
-   - Dispatch enabled routes to delegated agents or messaging channels through
-     the provider hub, forwarding capability masks into delegated child runtime
-     policy.
+   - Dispatch typed route envelopes to delegated agents or messaging channels
+     through the provider hub, forwarding capability masks into delegated child
+     runtime policy and supporting fanout when requested.
+   - Promote topology experiments only after recorded evaluations satisfy their
+     criteria; record rollback lineage instead of hiding it in ad hoc proposals.
    - Export merged/global/workspace state and import session/workspace/global
      state with approvals for persistent scopes while preserving storage layer
      boundaries.
@@ -51,6 +54,8 @@ providers, skills, routes, and agent-to-agent channels.
    - Support session, workspace, and global scopes.
    - Refuse persistent skill overwrites and resolve duplicate names by scope
      precedence.
+   - Link meta-runtime `activateSkillVersion` records to skills-provider
+     proposal activation when a topology proposal applies.
 
 5. Keep session routing lightweight.
    - Represent channels and routes as SLOP state.

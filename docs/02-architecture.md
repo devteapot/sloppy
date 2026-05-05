@@ -58,8 +58,9 @@ agent-to-agent structure. It exposes:
 - `/routes`
 - `/capabilities`
 - `/executor-bindings`
-- `/scheduler-policies`
 - `/skill-versions`
+- `/experiments`
+- `/evaluations`
 - `/proposals`
 - `/events`
 - `/approvals`
@@ -74,19 +75,23 @@ The agent changes its internal runtime by proposing typed topology operations:
 - `upsertRoute`
 - `setCapabilityMask`
 - `setExecutorBinding`
-- `setSchedulerPolicy`
 - `activateSkillVersion`
 - `deactivateSkillVersion`
 
 This is a meta-runtime, not arbitrary source-code mutation. The provider schema
-is stable; the graph, routes, policies, capabilities, executor bindings, and
-active skill versions are state.
+is stable; the graph, routes, capabilities, executor bindings, active skill
+versions, and topology experiment records are state.
 
-Enabled routes can be dispatched through the provider hub:
+Enabled routes dispatch typed message envelopes through the provider hub:
 
 - `agent:<id>` targets invoke `delegation.spawn_agent` using the target agent's
   profile instructions, executor binding, and resolved capability masks.
 - `channel:<id>` targets invoke `messaging.channels/{id}.send`.
+
+Dispatch can run in single-target mode or fanout mode. Topology proposals can
+also be attached to experiments, scored by external evaluators, promoted only
+after meeting criteria, and linked to rollback proposals when a topology variant
+is retired.
 
 The meta-runtime provider can also export merged/global/workspace state and
 import session/workspace/global state. Persistent imports are approval-gated.
@@ -109,7 +114,7 @@ ephemeral unless explicitly re-proposed with a persistent scope.
 Temporary non-privileged changes can apply without approval. Session-scoped deny
 capability masks are treated as tightening and can auto-apply. Persistent changes
 and privileged changes require approval, including global/workspace writes,
-allow capability masks, executor bindings, scheduler policies, agent spawns, and
+allow capability masks, executor bindings, agent spawns, and
 skill activation.
 
 ## Skills

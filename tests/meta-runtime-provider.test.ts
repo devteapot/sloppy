@@ -9,6 +9,7 @@ import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { MetaRuntimeProvider } from "../src/providers/builtin/meta-runtime";
+import { SkillsProvider } from "../src/providers/builtin/skills";
 import type { RegisteredProvider } from "../src/providers/registry";
 import { createBuiltinProviders } from "../src/providers/registry";
 
@@ -124,6 +125,18 @@ function messagingStub(): { provider: RegisteredProvider; sent: string[] } {
       stop: () => server.stop(),
     },
     sent,
+  };
+}
+
+function registeredSkillsProvider(provider: SkillsProvider): RegisteredProvider {
+  return {
+    id: "skills",
+    name: "Skills",
+    kind: "builtin",
+    transport: new InProcessTransport(provider.server),
+    transportLabel: "in-process:test",
+    stop: () => provider.stop(),
+    approvals: provider.approvals,
   };
 }
 
@@ -575,9 +588,9 @@ describe("MetaRuntimeProvider", () => {
       });
       expect(dispatched.status).toBe("ok");
       expect(delegation.spawns).toHaveLength(1);
+      expect(String(delegation.spawns[0]?.goal)).toContain("please review the runtime");
       expect(delegation.spawns[0]).toMatchObject({
         name: "Reviewer",
-        goal: "Review carefully.\n\nplease review the runtime",
         executor: { kind: "llm", profileId: "openai-main", modelOverride: "gpt-mini" },
         capabilityMasks: [
           {
@@ -647,6 +660,248 @@ describe("MetaRuntimeProvider", () => {
       });
       expect(dispatched.status).toBe("ok");
       expect(messaging.sent).toEqual(["record this review note"]);
+      stop?.stop();
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("dispatch_route accepts typed envelopes and can fan out to multiple routes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const meta = new MetaRuntimeProvider({
+      globalRoot: join(root, "global"),
+      workspaceRoot: join(root, "workspace"),
+    });
+    const delegation = delegationStub();
+    const messaging = messagingStub();
+    const metaRegistration = registeredMetaProvider(meta);
+    const hub = new ConsumerHub(
+      [metaRegistration, delegation.provider, messaging.provider],
+      TEST_CONFIG,
+    );
+
+    try {
+      await hub.connect();
+      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
+      const consumer = new SlopConsumer(new InProcessTransport(meta.server));
+      await connect(consumer);
+
+      const proposal = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Fan out review messages",
+        ops: [
+          {
+            type: "upsertAgentProfile",
+            profile: { id: "reviewer", name: "Reviewer", instructions: "Review carefully." },
+          },
+          {
+            type: "spawnAgent",
+            agent: {
+              id: "agent-reviewer",
+              profileId: "reviewer",
+              status: "active",
+              channels: [],
+              capabilityMaskIds: [],
+            },
+          },
+          {
+            type: "upsertChannel",
+            channel: {
+              id: "review",
+              topic: "review",
+              participants: ["root", "reviewer"],
+              visibility: "shared",
+            },
+          },
+          {
+            type: "upsertRoute",
+            route: {
+              id: "agent-route",
+              source: "root",
+              match: "review",
+              target: "agent:agent-reviewer",
+              enabled: true,
+              priority: 2,
+            },
+          },
+          {
+            type: "upsertRoute",
+            route: {
+              id: "channel-route",
+              source: "root",
+              match: "review",
+              target: "channel:review",
+              enabled: true,
+              priority: 1,
+            },
+          },
+        ],
+      });
+      const proposalId = (proposal.data as { id: string }).id;
+      const blocked = await consumer.invoke(`/proposals/${proposalId}`, "apply_proposal", {});
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof approvalId).toBe("string");
+      expect((await consumer.invoke(`/approvals/${approvalId}`, "approve", {})).status).toBe("ok");
+
+      const dispatched = await consumer.invoke("/session", "dispatch_route", {
+        source: "root",
+        message: "fallback body",
+        envelope: {
+          id: "msg-1",
+          body: "please review this typed envelope",
+          topic: "audit",
+          metadata: { severity: "high" },
+        },
+        fanout: true,
+      });
+      expect(dispatched.status).toBe("ok");
+      const data = dispatched.data as { routed: boolean; deliveries: Array<{ route_id: string }> };
+      expect(data.routed).toBe(true);
+      expect(data.deliveries.map((delivery) => delivery.route_id)).toEqual([
+        "agent-route",
+        "channel-route",
+      ]);
+      expect(delegation.spawns[0]?.goal).toContain("Route message msg-1 from root:");
+      expect(messaging.sent).toEqual(["please review this typed envelope"]);
+      stop?.stop();
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("records evaluations and promotes topology experiments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
+
+    try {
+      await connect(consumer);
+      const proposed = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Experiment channel",
+        ops: [
+          {
+            type: "upsertChannel",
+            channel: {
+              id: "experiment-review",
+              topic: "experiment-review",
+              participants: ["root"],
+              visibility: "shared",
+            },
+          },
+        ],
+      });
+      const proposalId = (proposed.data as { id: string }).id;
+      const experimentResult = await consumer.invoke("/session", "create_experiment", {
+        proposal_id: proposalId,
+        name: "Review routing trial",
+        objective: "Determine whether a review channel improves handoff quality.",
+        promotion_criteria: {
+          min_score: 0.8,
+          required_evaluations: 1,
+        },
+      });
+      expect(experimentResult.status).toBe("ok");
+      const experimentId = (experimentResult.data as { id: string }).id;
+
+      const premature = await consumer.invoke("/session", "promote_experiment", {
+        experiment_id: experimentId,
+      });
+      expect(premature.status).toBe("error");
+      expect(premature.error?.message).toContain("does not meet promotion criteria");
+
+      const evaluation = await consumer.invoke("/session", "record_evaluation", {
+        experiment_id: experimentId,
+        score: 0.9,
+        summary: "The channel improved review handoff quality.",
+        evaluator: "test",
+      });
+      expect(evaluation.status).toBe("ok");
+      const promoted = await consumer.invoke("/session", "promote_experiment", {
+        experiment_id: experimentId,
+      });
+      expect(promoted.status).toBe("ok");
+      expect((promoted.data as { status: string }).status).toBe("promoted");
+
+      const channels = await consumer.query("/channels", 2);
+      expect(channels.children?.[0]?.id).toBe("experiment-review");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("activates linked skill proposals through the skills provider", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const meta = new MetaRuntimeProvider({
+      globalRoot: join(root, "global"),
+      workspaceRoot: join(root, "workspace"),
+    });
+    const skills = new SkillsProvider({ skillsDir: join(root, "skills") });
+    const metaRegistration = registeredMetaProvider(meta);
+    const hub = new ConsumerHub([metaRegistration, registeredSkillsProvider(skills)], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
+      const metaConsumer = new SlopConsumer(new InProcessTransport(meta.server));
+      const skillsConsumer = new SlopConsumer(new InProcessTransport(skills.server));
+      await connect(metaConsumer);
+      await connect(skillsConsumer);
+      const skillProposal = await skillsConsumer.invoke("/session", "propose_skill", {
+        scope: "session",
+        name: "review-runtime",
+        version: "1.0.0",
+        body: "# Review Runtime\n\nReview topology changes.\n",
+      });
+      const skillProposalId = (skillProposal.data as { id: string }).id;
+
+      const metaProposal = await metaConsumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Activate review skill",
+        ops: [
+          {
+            type: "activateSkillVersion",
+            skillVersion: {
+              id: "review-runtime@1.0.0",
+              skillId: "review-runtime",
+              version: "1.0.0",
+              scope: "session",
+              active: false,
+              proposalId: skillProposalId,
+              activationStatus: "pending",
+            },
+          },
+        ],
+      });
+      const metaProposalId = (metaProposal.data as { id: string }).id;
+      const applied = await metaConsumer.invoke(
+        `/proposals/${metaProposalId}`,
+        "apply_proposal",
+        {},
+      );
+      expect(applied.status).toBe("error");
+      expect(applied.error?.code).toBe("approval_required");
+      const approvals = await metaConsumer.query("/approvals", 2);
+      const approvalId = approvals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof approvalId).toBe("string");
+      expect((await metaConsumer.invoke(`/approvals/${approvalId}`, "approve", {})).status).toBe(
+        "ok",
+      );
+      await sleep(5);
+
+      const skillVersions = await metaConsumer.query("/skill-versions", 2);
+      expect(skillVersions.children?.[0]?.properties?.activationStatus).toBe("active");
+      const proposals = await skillsConsumer.query("/proposals", 2);
+      expect(proposals.children?.[0]?.properties?.status).toBe("active");
       stop?.stop();
     } finally {
       hub.shutdown();

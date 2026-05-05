@@ -22,8 +22,9 @@ workflow engine. It models a mutable graph:
 - route rules
 - capability masks
 - executor bindings
-- scheduler policies
 - active skill versions
+- topology experiments
+- experiment evaluations
 - proposals
 - events
 
@@ -42,8 +43,9 @@ The provider exposes:
 /routes
 /capabilities
 /executor-bindings
-/scheduler-policies
 /skill-versions
+/experiments
+/evaluations
 /proposals
 /events
 /approvals
@@ -53,6 +55,10 @@ The provider exposes:
 
 - `propose_change`
 - `dispatch_route`
+- `create_experiment`
+- `record_evaluation`
+- `promote_experiment`
+- `rollback_experiment`
 - `export_state`
 - `import_state`
 
@@ -104,13 +110,12 @@ Changes are proposed as typed topology operations:
 - `upsertRoute`
 - `setCapabilityMask`
 - `setExecutorBinding`
-- `setSchedulerPolicy`
 - `activateSkillVersion`
 - `deactivateSkillVersion`
 
 Persistent scopes always require approval. Session-scoped changes apply without
 approval only when they are non-privileged. Session allow-masks, spawned agents,
-executor bindings, scheduler policies, and skill activation require approval.
+executor bindings, and skill activation require approval.
 
 Proposals can carry `ttl_ms`. Expired proposals are marked `expired` and cannot
 apply. Before mutation, the provider validates references against a simulated
@@ -125,8 +130,24 @@ agent:<agent-id>
 channel:<channel-id>
 ```
 
-Routes match by exact source or `*`, and by `*` or substring match. If multiple
-routes match, higher `priority` wins, then route id breaks ties.
+Routes dispatch typed envelopes:
+
+```json
+{
+  "id": "msg-1",
+  "source": "root",
+  "body": "please review this change",
+  "topic": "audit",
+  "inReplyTo": "msg-0",
+  "causationId": "proposal-1",
+  "metadata": {}
+}
+```
+
+Routes match by exact source or `*`, and by `*` or substring match on the
+envelope body. If multiple routes match, higher `priority` wins, then route id
+breaks ties. `dispatch_route` can run in single-target mode or `fanout` mode,
+which delivers the same envelope to every matching route.
 
 Agent dispatch invokes `delegation.spawn_agent` with:
 
@@ -140,6 +161,23 @@ channel participant.
 
 Dispatch records `route.dispatched` only after the provider call succeeds. A
 provider error records `route.failed` and returns an unrouted result.
+
+## Experiments
+
+Topology proposals can be attached to experiments. An experiment records:
+
+- the proposal under test
+- the experiment objective
+- optional parent experiment lineage
+- promotion criteria
+- scored evaluations with evidence
+- promotion or rollback status
+
+`promote_experiment` applies the linked proposal only after recorded evaluations
+meet the criteria. `rollback_experiment` records rollback lineage and can link to
+the proposal that restored topology. The provider still does not schedule or
+judge the experiment itself; agents and evaluators supply observations through
+SLOP affordances.
 
 ## Capability Masks
 
@@ -181,6 +219,9 @@ is:
 
 Skill proposals can activate session skills directly. Workspace and global skill
 activation require approval and refuse to overwrite an existing SKILL.md path.
+Meta-runtime `activateSkillVersion` operations may reference a skills-provider
+proposal id; when the topology proposal applies, the meta-runtime invokes the
+skills provider and records activation success or failure on the skill version.
 
 ## Non-Goals
 

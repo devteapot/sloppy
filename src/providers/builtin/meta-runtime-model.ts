@@ -37,6 +37,17 @@ export type RouteRule = {
   priority?: number;
 };
 
+export type RouteMessageEnvelope = {
+  id: string;
+  source: string;
+  body: string;
+  topic?: string;
+  channelId?: string;
+  inReplyTo?: string;
+  causationId?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type ExecutorBinding = {
   id: string;
   kind: "llm" | "acp";
@@ -45,20 +56,45 @@ export type ExecutorBinding = {
   modelOverride?: string;
 };
 
-export type SchedulerPolicy = {
-  id: string;
-  maxConcurrency?: number;
-  debounceMs?: number;
-  priority?: "low" | "normal" | "high";
-};
-
 export type SkillVersion = {
   id: string;
   skillId: string;
   version: string;
   scope: MetaScope;
   active: boolean;
+  proposalId?: string;
+  activationStatus?: "pending" | "active" | "failed";
   notes?: string;
+};
+
+export type ExperimentPromotionCriteria = {
+  minScore?: number;
+  requiredEvaluations?: number;
+};
+
+export type TopologyExperiment = {
+  id: string;
+  scope: MetaScope;
+  name: string;
+  proposalId: string;
+  objective: string;
+  status: "candidate" | "promoted" | "rejected" | "rolled_back";
+  createdAt: string;
+  promotedAt?: string;
+  rolledBackAt?: string;
+  parentExperimentId?: string;
+  rollbackProposalId?: string;
+  promotionCriteria?: ExperimentPromotionCriteria;
+};
+
+export type ExperimentEvaluation = {
+  id: string;
+  experimentId: string;
+  score: number;
+  summary: string;
+  evaluator?: string;
+  evidence?: Record<string, unknown>;
+  createdAt: string;
 };
 
 export type TopologyChange =
@@ -70,7 +106,6 @@ export type TopologyChange =
   | { type: "upsertRoute"; route: RouteRule }
   | { type: "setCapabilityMask"; mask: CapabilityMask }
   | { type: "setExecutorBinding"; binding: ExecutorBinding }
-  | { type: "setSchedulerPolicy"; policy: SchedulerPolicy }
   | { type: "activateSkillVersion"; skillVersion: SkillVersion }
   | { type: "deactivateSkillVersion"; skillVersionId: string };
 
@@ -104,8 +139,9 @@ export type PersistedState = {
   routes?: RouteRule[];
   capabilities?: CapabilityMask[];
   executorBindings?: ExecutorBinding[];
-  schedulerPolicies?: SchedulerPolicy[];
   skillVersions?: SkillVersion[];
+  experiments?: TopologyExperiment[];
+  evaluations?: ExperimentEvaluation[];
   proposals?: Proposal[];
   events?: MetaEvent[];
 };
@@ -117,8 +153,9 @@ export type MetaStateMaps = {
   routes: Map<string, RouteRule>;
   capabilities: Map<string, CapabilityMask>;
   executorBindings: Map<string, ExecutorBinding>;
-  schedulerPolicies: Map<string, SchedulerPolicy>;
   skillVersions: Map<string, SkillVersion>;
+  experiments: Map<string, TopologyExperiment>;
+  evaluations: Map<string, ExperimentEvaluation>;
 };
 
 export type RouteDispatchResult =
@@ -132,6 +169,7 @@ export type RouteDispatchResult =
       target: string;
       provider: string;
       result: unknown;
+      envelope?: RouteMessageEnvelope;
     };
 
 export function putById<T extends { id: string }>(map: Map<string, T>, items?: T[]): void {
@@ -156,8 +194,9 @@ export function createStateMaps(): MetaStateMaps {
     routes: new Map(),
     capabilities: new Map(),
     executorBindings: new Map(),
-    schedulerPolicies: new Map(),
     skillVersions: new Map(),
+    experiments: new Map(),
+    evaluations: new Map(),
   };
 }
 
@@ -168,8 +207,9 @@ export function clearStateMaps(state: MetaStateMaps): void {
   state.routes.clear();
   state.capabilities.clear();
   state.executorBindings.clear();
-  state.schedulerPolicies.clear();
   state.skillVersions.clear();
+  state.experiments.clear();
+  state.evaluations.clear();
 }
 
 export function putState(state: MetaStateMaps, persisted: PersistedState): void {
@@ -179,8 +219,9 @@ export function putState(state: MetaStateMaps, persisted: PersistedState): void 
   putById(state.routes, persisted.routes);
   putById(state.capabilities, persisted.capabilities);
   putById(state.executorBindings, persisted.executorBindings);
-  putById(state.schedulerPolicies, persisted.schedulerPolicies);
   putById(state.skillVersions, persisted.skillVersions);
+  putById(state.experiments, persisted.experiments);
+  putById(state.evaluations, persisted.evaluations);
 }
 
 export function snapshotStateMaps(state: MetaStateMaps): PersistedState {
@@ -191,8 +232,9 @@ export function snapshotStateMaps(state: MetaStateMaps): PersistedState {
     routes: listById(state.routes),
     capabilities: listById(state.capabilities),
     executorBindings: listById(state.executorBindings),
-    schedulerPolicies: listById(state.schedulerPolicies),
     skillVersions: listById(state.skillVersions),
+    experiments: listById(state.experiments),
+    evaluations: listById(state.evaluations),
   };
 }
 

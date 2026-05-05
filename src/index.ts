@@ -31,10 +31,11 @@ export type {
   AgentProfile,
   CapabilityMask,
   ExecutorBinding,
+  RouteMessageEnvelope,
   RouteRule,
-  SchedulerPolicy,
   SkillVersion,
   TopologyChange,
+  TopologyExperiment,
 } from "./providers/builtin/meta-runtime";
 export { MetaRuntimeProvider } from "./providers/builtin/meta-runtime";
 export { SkillsProvider } from "./providers/builtin/skills";

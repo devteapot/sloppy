@@ -19,6 +19,10 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return asStringArray(value, "actions");
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 export function asScope(value: unknown): MetaScope {
   if (value === "global" || value === "workspace" || value === "session") return value;
   return "session";
@@ -43,12 +47,7 @@ export function classifyApproval(scope: MetaScope, ops: TopologyChange[]): boole
     if (op.type === "setCapabilityMask") {
       return op.mask.mode === "allow";
     }
-    return [
-      "spawnAgent",
-      "setExecutorBinding",
-      "setSchedulerPolicy",
-      "activateSkillVersion",
-    ].includes(op.type);
+    return ["spawnAgent", "setExecutorBinding", "activateSkillVersion"].includes(op.type);
   });
 }
 
@@ -158,22 +157,6 @@ export function parseChange(raw: unknown): TopologyChange {
         },
       };
     }
-    case "setSchedulerPolicy": {
-      const policy = record.policy as Record<string, unknown>;
-      return {
-        type,
-        policy: {
-          id: asString(policy?.id, "policy.id"),
-          maxConcurrency: optionalNonNegativeInteger(
-            policy.maxConcurrency,
-            "policy.maxConcurrency",
-          ),
-          debounceMs: optionalNonNegativeInteger(policy.debounceMs, "policy.debounceMs"),
-          priority:
-            policy.priority === "low" || policy.priority === "high" ? policy.priority : "normal",
-        },
-      };
-    }
     case "activateSkillVersion": {
       const skillVersion = record.skillVersion as Record<string, unknown>;
       return {
@@ -184,7 +167,14 @@ export function parseChange(raw: unknown): TopologyChange {
           version: asString(skillVersion?.version, "skillVersion.version"),
           scope: requireScope(skillVersion.scope, "skillVersion.scope"),
           active: skillVersion.active !== false,
-          notes: typeof skillVersion.notes === "string" ? skillVersion.notes : undefined,
+          proposalId: optionalString(skillVersion.proposalId),
+          activationStatus:
+            skillVersion.activationStatus === "pending" ||
+            skillVersion.activationStatus === "active" ||
+            skillVersion.activationStatus === "failed"
+              ? skillVersion.activationStatus
+              : undefined,
+          notes: optionalString(skillVersion.notes),
         },
       };
     }

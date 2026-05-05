@@ -59,7 +59,7 @@ Current checked-in implementation includes:
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
 - canvas + HTML dashboard prototype under `apps/dashboard/`
-- optional meta-runtime provider for agent profiles, nodes, channels, routes, route dispatch, enforced child capability masks, executor bindings, scheduler policies, skill versions, proposals, scoped storage, events, and import/export
+- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout dispatch, enforced child capability masks, executor bindings, skill versions, topology experiments/evaluations, proposals, scoped storage, events, and import/export
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
