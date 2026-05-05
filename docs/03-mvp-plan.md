@@ -67,7 +67,9 @@ providers, skills, routes, and agent-to-agent channels.
 - Add import/export packaging for whole identity/runtime bundles, not just
   provider state JSON.
 - Evolve route matching beyond substring matches when real usage needs richer
-  message envelopes, fanout, or priorities.
+  predicates over typed message envelopes.
+- Add automatic experiment evaluators and rollback synthesis once real runtime
+  evolution loops need more than recorded evidence.
 
 ## Verification
 

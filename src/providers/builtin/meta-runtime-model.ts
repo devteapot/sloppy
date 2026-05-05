@@ -1,4 +1,7 @@
 import type { RuntimeCapabilityMask } from "../../core/capability-policy";
+import type { RouteMessageEnvelope } from "./message-envelope";
+
+export type { RouteMessageEnvelope } from "./message-envelope";
 
 export type MetaScope = "session" | "workspace" | "global";
 export type ProposalStatus = "proposed" | "applied" | "reverted" | "expired";
@@ -35,17 +38,6 @@ export type RouteRule = {
   target: string;
   enabled: boolean;
   priority?: number;
-};
-
-export type RouteMessageEnvelope = {
-  id: string;
-  source: string;
-  body: string;
-  topic?: string;
-  channelId?: string;
-  inReplyTo?: string;
-  causationId?: string;
-  metadata?: Record<string, unknown>;
 };
 
 export type ExecutorBinding = {

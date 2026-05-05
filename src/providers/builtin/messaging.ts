@@ -1,6 +1,7 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { ProviderApprovalManager } from "../approvals";
+import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "./message-envelope";
 
 type Message = {
   id: string;
@@ -10,6 +11,7 @@ type Message = {
   timestamp: string;
   sender: string;
   receiver?: string;
+  envelope?: RouteMessageEnvelope;
 };
 
 type Channel = {
@@ -62,21 +64,28 @@ export class MessagingProvider {
   private sendMessage(
     channelId: string,
     message: string,
-  ): { id: string; channel_id: string; sent_at: string } {
+    envelopeInput?: unknown,
+  ): { id: string; channel_id: string; sent_at: string; envelope_id?: string } {
     const channel = this.channels.get(channelId);
     if (!channel) {
       throw new Error(`Unknown channel: ${channelId}`);
     }
 
+    const envelope = parseOptionalRouteEnvelope(envelopeInput, {
+      fallbackSource: "agent",
+      fallbackBody: message,
+    });
+    const content = envelope?.body ?? message;
     const id = crypto.randomUUID();
     const sent_at = new Date(Date.now()).toISOString();
     const msg: Message = {
       id,
       channel_id: channelId,
       direction: "outbound",
-      content: message,
+      content,
       timestamp: sent_at,
       sender: "agent",
+      envelope,
     };
 
     channel.messages.push(msg);
@@ -85,7 +94,7 @@ export class MessagingProvider {
     }
 
     this.server.refresh();
-    return { id, channel_id: channelId, sent_at };
+    return { id, channel_id: channelId, sent_at, envelope_id: envelope?.id };
   }
 
   private viewHistory(channelId: string, limit?: number): Message[] {
@@ -179,8 +188,15 @@ export class MessagingProvider {
         },
         actions: {
           send: action(
-            { message: "string" },
-            async ({ message }) => this.sendMessage(channel.id, message),
+            {
+              message: "string",
+              envelope: {
+                type: "object",
+                description: "Optional typed route envelope stored with the outbound message.",
+                optional: true,
+              },
+            },
+            async ({ message, envelope }) => this.sendMessage(channel.id, message, envelope),
             {
               label: "Send Message",
               description: "Send an outbound message to this channel.",

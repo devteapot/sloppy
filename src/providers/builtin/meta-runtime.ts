@@ -1,6 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import type { ProviderRuntimeHub } from "../../core/hub";
@@ -46,6 +43,14 @@ import {
   parseChange,
 } from "./meta-runtime-ops";
 import { matchingRoutes, normalizeRouteEnvelope, parseRouteMessage } from "./meta-runtime-routing";
+import { activateLinkedSkills, opsWithActivatedSkills } from "./meta-runtime-skills";
+import {
+  readPersistedMetaState,
+  resolveMetaRuntimeRoot,
+  snapshotMergedMetaState,
+  snapshotMetaScope,
+  writePersistedMetaState,
+} from "./meta-runtime-storage";
 
 export type {
   AgentChannel,
@@ -62,26 +67,6 @@ export type {
 
 function now(): string {
   return new Date().toISOString();
-}
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
-  return path;
-}
-
-function readState(root: string): PersistedState {
-  const path = join(root, "state.json");
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as PersistedState;
-  } catch (error) {
-    throw new Error(
-      `Could not read meta-runtime state at ${path}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
 }
 
 export class MetaRuntimeProvider {
@@ -108,8 +93,8 @@ export class MetaRuntimeProvider {
   private events: MetaEvent[] = [];
 
   constructor(options: { globalRoot?: string; workspaceRoot?: string } = {}) {
-    this.globalRoot = resolve(expandHome(options.globalRoot ?? "~/.sloppy/meta-runtime"));
-    this.workspaceRoot = resolve(expandHome(options.workspaceRoot ?? ".sloppy/meta-runtime"));
+    this.globalRoot = resolveMetaRuntimeRoot(options.globalRoot ?? "~/.sloppy/meta-runtime");
+    this.workspaceRoot = resolveMetaRuntimeRoot(options.workspaceRoot ?? ".sloppy/meta-runtime");
 
     this.server = createSlopServer({
       id: "meta-runtime",
@@ -152,8 +137,8 @@ export class MetaRuntimeProvider {
   }
 
   private load(): void {
-    const global = readState(this.globalRoot);
-    const workspace = readState(this.workspaceRoot);
+    const global = readPersistedMetaState(this.globalRoot);
+    const workspace = readPersistedMetaState(this.workspaceRoot);
     putState(this.layers.global, global);
     putState(this.layers.workspace, workspace);
     putById(this.proposals, global.proposals);
@@ -166,11 +151,9 @@ export class MetaRuntimeProvider {
   private persist(scope: MetaScope): void {
     if (scope === "session") return;
     const root = scope === "global" ? this.globalRoot : this.workspaceRoot;
-    mkdirSync(root, { recursive: true });
-    writeFileSync(
-      join(root, "state.json"),
-      `${JSON.stringify(this.snapshotForScope(scope), null, 2)}\n`,
-      "utf8",
+    writePersistedMetaState(
+      root,
+      snapshotMetaScope(this.layers, this.proposals, this.events, scope),
     );
   }
 
@@ -204,38 +187,17 @@ export class MetaRuntimeProvider {
     };
   }
 
-  private snapshotForScope(scope: Exclude<MetaScope, "session">): PersistedState {
-    return {
-      ...snapshotStateMaps(this.layers[scope]),
-      proposals: listById(this.proposals).filter((proposal) => proposal.scope === scope),
-      events: this.events.filter((event) => event.scope === scope).slice(-200),
-    };
-  }
-
-  private snapshotMergedState(): PersistedState {
-    return {
-      profiles: listByName(this.profiles),
-      agents: listById(this.agents),
-      channels: listById(this.channels),
-      routes: listById(this.routes),
-      capabilities: listById(this.capabilities),
-      executorBindings: listById(this.executorBindings),
-      skillVersions: listById(this.skillVersions),
-      experiments: listById(this.experiments),
-      evaluations: listById(this.evaluations),
-      proposals: listById(this.proposals),
-      events: this.events.slice(-200),
-    };
-  }
-
   private exportState(scope?: MetaScope): PersistedState & { scope: MetaScope | "merged" } {
     if (scope === "global") {
-      return { scope, ...readState(this.globalRoot) };
+      return { scope, ...readPersistedMetaState(this.globalRoot) };
     }
     if (scope === "workspace") {
-      return { scope, ...readState(this.workspaceRoot) };
+      return { scope, ...readPersistedMetaState(this.workspaceRoot) };
     }
-    return { scope: "merged", ...this.snapshotMergedState() };
+    return {
+      scope: "merged",
+      ...snapshotMergedMetaState(this.mergedMaps(), this.proposals, this.events),
+    };
   }
 
   private importState(
@@ -326,7 +288,7 @@ export class MetaRuntimeProvider {
     return proposal;
   }
 
-  private applyProposal(id: string, approved = false): Proposal {
+  private async applyProposal(id: string, approved = false): Promise<Proposal> {
     const proposal = this.proposals.get(id);
     if (!proposal) {
       throw new Error(`Unknown proposal: ${id}`);
@@ -368,11 +330,28 @@ export class MetaRuntimeProvider {
     }
 
     validateTopologyChanges(proposal.ops, this.mergedMaps());
-    for (const op of proposal.ops) {
+    const activatedSkillVersions = await activateLinkedSkills(
+      proposal,
+      this.hub,
+      (skillVersionId, reason) =>
+        this.recordSkillActivationFailure(proposal, skillVersionId, reason),
+    );
+    const ops = opsWithActivatedSkills(proposal.ops, activatedSkillVersions);
+    if (activatedSkillVersions.size > 0) {
+      validateTopologyChanges(ops, this.mergedMaps());
+    }
+    for (const op of ops) {
       applyTopologyChange(this.layers, this.mergedMaps(), proposal.scope, op);
     }
     this.rebuildMergedState();
-    void this.activateLinkedSkills(proposal);
+    for (const skillVersion of activatedSkillVersions.values()) {
+      this.recordEvent({
+        kind: "skill.activated",
+        scope: skillVersion.scope,
+        proposalId: proposal.id,
+        summary: `Skill version ${skillVersion.id} activated through skills provider.`,
+      });
+    }
     proposal.status = "applied";
     proposal.appliedAt = now();
     this.recordEvent({
@@ -386,59 +365,18 @@ export class MetaRuntimeProvider {
     return proposal;
   }
 
-  private async activateLinkedSkills(proposal: Proposal): Promise<void> {
-    const skillOps = proposal.ops.filter((op) => op.type === "activateSkillVersion");
-    if (skillOps.length === 0) return;
-
-    if (!this.hub) {
-      for (const op of skillOps) {
-        this.markSkillActivation(
-          op.skillVersion.id,
-          "failed",
-          "No hub attached for skill activation.",
-        );
-      }
-      return;
-    }
-
-    for (const op of skillOps) {
-      if (!op.skillVersion.proposalId) continue;
-      const result = await this.hub.invoke(
-        "skills",
-        `/proposals/${op.skillVersion.proposalId}`,
-        "activate_skill_proposal",
-      );
-      this.markSkillActivation(
-        op.skillVersion.id,
-        result.status === "error" ? "failed" : "active",
-        result.status === "error" ? result.error?.message : undefined,
-      );
-    }
-  }
-
-  private markSkillActivation(
+  private recordSkillActivationFailure(
+    proposal: Proposal,
     skillVersionId: string,
-    status: "active" | "failed",
-    reason?: string,
+    reason: string,
   ): void {
-    const existing = this.skillVersions.get(skillVersionId);
-    if (!existing) return;
-    const next = {
-      ...existing,
-      activationStatus: status,
-      active: status === "active",
-      notes: reason ?? existing.notes,
-    };
-    this.layers[existing.scope].skillVersions.set(skillVersionId, next);
-    this.rebuildMergedState();
     this.recordEvent({
-      kind: status === "active" ? "skill.activated" : "skill.activation_failed",
-      scope: existing.scope,
-      summary: reason
-        ? `Skill version ${skillVersionId} activation failed: ${reason}.`
-        : `Skill version ${skillVersionId} activated through skills provider.`,
+      kind: "skill.activation_failed",
+      scope: proposal.scope,
+      proposalId: proposal.id,
+      summary: `Skill version ${skillVersionId} activation failed: ${reason}.`,
     });
-    this.persist(existing.scope);
+    this.persist(proposal.scope);
     this.server.refresh();
   }
 
@@ -460,11 +398,28 @@ export class MetaRuntimeProvider {
     return proposal;
   }
 
-  private createExperiment(params: Record<string, unknown>): TopologyExperiment {
+  private createExperiment(params: Record<string, unknown>, approved = false): TopologyExperiment {
     const proposalId = asString(params.proposal_id, "proposal_id");
     const proposal = this.proposals.get(proposalId);
     if (!proposal) {
       throw new Error(`Unknown proposal for experiment: ${proposalId}`);
+    }
+    if (proposal.scope !== "session" && !approved) {
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "create_experiment",
+        reason: `Creating a ${proposal.scope} topology experiment writes persisted meta-runtime metadata.`,
+        paramsPreview: JSON.stringify({
+          proposal_id: proposalId,
+          name: params.name,
+          objective: params.objective,
+        }),
+        dangerous: true,
+        execute: () => this.createExperiment(params, true),
+      });
+      throw createApprovalRequiredError(
+        `Creating experiment for ${proposal.scope} proposal ${proposalId} requires approval via /approvals/${approvalId}.`,
+      );
     }
     const experiment = buildExperiment(proposal.scope, proposal, params);
     this.layers[proposal.scope].experiments.set(experiment.id, experiment);
@@ -480,11 +435,31 @@ export class MetaRuntimeProvider {
     return experiment;
   }
 
-  private recordEvaluation(params: Record<string, unknown>): ExperimentEvaluation {
+  private recordEvaluation(
+    params: Record<string, unknown>,
+    approved = false,
+  ): ExperimentEvaluation {
     const experimentId = asString(params.experiment_id, "experiment_id");
     const experiment = this.experiments.get(experimentId);
     if (!experiment) {
       throw new Error(`Unknown experiment: ${experimentId}`);
+    }
+    if (experiment.scope !== "session" && !approved) {
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "record_evaluation",
+        reason: `Recording an evaluation for ${experiment.scope} experiment ${experimentId} writes persisted meta-runtime metadata.`,
+        paramsPreview: JSON.stringify({
+          experiment_id: experimentId,
+          score: params.score,
+          evaluator: params.evaluator,
+        }),
+        dangerous: true,
+        execute: () => this.recordEvaluation(params, true),
+      });
+      throw createApprovalRequiredError(
+        `Recording evaluation for ${experiment.scope} experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
+      );
     }
     const evaluation = createEvaluation(experimentId, params);
     this.layers[experiment.scope].evaluations.set(evaluation.id, evaluation);
@@ -500,7 +475,10 @@ export class MetaRuntimeProvider {
     return evaluation;
   }
 
-  private promoteExperiment(experimentId: string): TopologyExperiment {
+  private async promoteExperiment(
+    experimentId: string,
+    approved = false,
+  ): Promise<TopologyExperiment> {
     const experiment = this.experiments.get(experimentId);
     if (!experiment) {
       throw new Error(`Unknown experiment: ${experimentId}`);
@@ -520,8 +498,31 @@ export class MetaRuntimeProvider {
         `Experiment ${experimentId} references unknown proposal ${experiment.proposalId}.`,
       );
     }
+    if (proposal.status !== "proposed" && proposal.status !== "applied") {
+      throw new Error(
+        `Experiment ${experimentId} references proposal ${proposal.id}, which is ${proposal.status}.`,
+      );
+    }
+    if ((experiment.scope !== "session" || proposal.requiresApproval) && !approved) {
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "promote_experiment",
+        reason: `Promoting experiment ${experimentId} applies or records privileged meta-runtime state.`,
+        paramsPreview: JSON.stringify({
+          experiment_id: experimentId,
+          proposal_id: proposal.id,
+          proposal_scope: proposal.scope,
+          proposal_ops: proposal.ops.map((op) => op.type),
+        }),
+        dangerous: true,
+        execute: () => this.promoteExperiment(experimentId, true),
+      });
+      throw createApprovalRequiredError(
+        `Promoting experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
+      );
+    }
     if (proposal.status === "proposed") {
-      this.applyProposal(proposal.id, true);
+      await this.applyProposal(proposal.id, true);
     }
     const promoted = { ...experiment, status: "promoted" as const, promotedAt: now() };
     this.layers[experiment.scope].experiments.set(promoted.id, promoted);
@@ -537,16 +538,57 @@ export class MetaRuntimeProvider {
     return promoted;
   }
 
-  private markExperimentRolledBack(params: Record<string, unknown>): TopologyExperiment {
+  private async markExperimentRolledBack(
+    params: Record<string, unknown>,
+    approved = false,
+  ): Promise<TopologyExperiment> {
     const experimentId = asString(params.experiment_id, "experiment_id");
     const experiment = this.experiments.get(experimentId);
     if (!experiment) {
       throw new Error(`Unknown experiment: ${experimentId}`);
     }
+    if (experiment.status !== "promoted") {
+      throw new Error(`Experiment ${experimentId} is ${experiment.status}, not promoted.`);
+    }
     const rollbackProposalId =
       typeof params.rollback_proposal_id === "string" ? params.rollback_proposal_id : undefined;
-    if (rollbackProposalId && !this.proposals.has(rollbackProposalId)) {
+    const rollbackProposal = rollbackProposalId
+      ? this.proposals.get(rollbackProposalId)
+      : undefined;
+    if (rollbackProposalId && !rollbackProposal) {
       throw new Error(`Unknown rollback proposal: ${rollbackProposalId}`);
+    }
+    if (
+      rollbackProposal &&
+      rollbackProposal.status !== "proposed" &&
+      rollbackProposal.status !== "applied"
+    ) {
+      throw new Error(
+        `Rollback proposal ${rollbackProposal.id} is ${rollbackProposal.status}, not proposed or applied.`,
+      );
+    }
+    if (
+      (experiment.scope !== "session" || rollbackProposal?.requiresApproval === true) &&
+      !approved
+    ) {
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "rollback_experiment",
+        reason: `Rolling back experiment ${experimentId} applies or records privileged meta-runtime state.`,
+        paramsPreview: JSON.stringify({
+          experiment_id: experimentId,
+          rollback_proposal_id: rollbackProposalId,
+          experiment_scope: experiment.scope,
+        }),
+        dangerous: true,
+        execute: () => this.markExperimentRolledBack(params, true),
+      });
+      throw createApprovalRequiredError(
+        `Rolling back experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
+      );
+    }
+    if (rollbackProposal?.status === "proposed") {
+      await this.applyProposal(rollbackProposal.id, true);
     }
     const rolledBack = {
       ...experiment,
@@ -632,6 +674,7 @@ export class MetaRuntimeProvider {
         goal,
         ...(executor ? { executor } : {}),
         capabilityMasks,
+        routeEnvelope: envelope,
       });
       if (result.status === "error") {
         this.recordEvent({
@@ -861,7 +904,8 @@ export class MetaRuntimeProvider {
           {
             label: "Rollback Experiment",
             description:
-              "Mark a promoted experiment as rolled back and optionally link the proposal that restored topology.",
+              "Mark a promoted experiment as rolled back, applying a pending rollback proposal when provided.",
+            dangerous: true,
             estimate: "fast",
           },
         ),

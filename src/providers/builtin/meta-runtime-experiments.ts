@@ -82,5 +82,7 @@ export function experimentMeetsCriteria(
   const requiredEvaluations = criteria.requiredEvaluations ?? 1;
   const minScore = criteria.minScore ?? 0;
   if (evaluations.length < requiredEvaluations) return false;
-  return evaluations.some((evaluation) => evaluation.score >= minScore);
+  const averageScore =
+    evaluations.reduce((total, evaluation) => total + evaluation.score, 0) / evaluations.length;
+  return averageScore >= minScore;
 }

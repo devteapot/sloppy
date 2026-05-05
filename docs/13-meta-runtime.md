@@ -153,11 +153,12 @@ Agent dispatch invokes `delegation.spawn_agent` with:
 
 - the target profile name
 - profile instructions plus the routed message
+- the original typed route envelope as `routeEnvelope`
 - the agent executor binding
 - the resolved capability masks from the profile and agent node
 
-Channel dispatch invokes `messaging.channels/<id>.send`. The source must be a
-channel participant.
+Channel dispatch invokes `messaging.channels/<id>.send` with both the envelope
+body and typed envelope. The source must be a channel participant.
 
 Dispatch records `route.dispatched` only after the provider call succeeds. A
 provider error records `route.failed` and returns an unrouted result.
@@ -173,11 +174,13 @@ Topology proposals can be attached to experiments. An experiment records:
 - scored evaluations with evidence
 - promotion or rollback status
 
-`promote_experiment` applies the linked proposal only after recorded evaluations
-meet the criteria. `rollback_experiment` records rollback lineage and can link to
-the proposal that restored topology. The provider still does not schedule or
-judge the experiment itself; agents and evaluators supply observations through
-SLOP affordances.
+`min_score` is evaluated against the average of recorded evaluation scores, not
+against a single best run. `promote_experiment` applies the linked proposal only
+after recorded evaluations meet the criteria and requests approval before
+applying privileged or persistent changes. `rollback_experiment` records
+rollback lineage and applies a provided rollback proposal when it is still
+pending. The provider still does not schedule or judge the experiment itself;
+agents and evaluators supply observations through SLOP affordances.
 
 ## Capability Masks
 
@@ -243,9 +246,8 @@ logic.
 
 The implementation is intentionally lean, but these areas are still open:
 
-- typed route message envelopes instead of plain strings
 - richer route matchers beyond substring matching
-- route fanout when multiple targets should receive a message
-- UI treatment for proposals, route events, and capability masks
-- evaluation loops for skill/runtime variants before promotion
+- UI treatment for proposals, typed envelopes, route events, and capability masks
+- automatic evaluation loops for skill/runtime variants before promotion
+- richer rollback synthesis for failed runtime variants
 - packaged export/import of identity, skills, and runtime state as one bundle

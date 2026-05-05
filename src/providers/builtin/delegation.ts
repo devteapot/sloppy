@@ -6,6 +6,7 @@ import {
   type ExecutorBinding,
   executorBindingSchema,
 } from "../../runtime/delegation/executor-binding";
+import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "./message-envelope";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -15,6 +16,7 @@ export type DelegationAgentSpawn = {
   goal: string;
   executor?: ExecutorBinding;
   capabilityMasks?: RuntimeCapabilityMask[];
+  routeEnvelope?: RouteMessageEnvelope;
 };
 
 export type DelegationAgentUpdate = {
@@ -44,6 +46,7 @@ type DelegationAgent = {
   status: AgentStatus;
   executor?: ExecutorBinding;
   capabilityMasks?: RuntimeCapabilityMask[];
+  routeEnvelope?: RouteMessageEnvelope;
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -291,6 +294,7 @@ export class DelegationProvider {
     goal: string,
     executor?: ExecutorBinding,
     capabilityMasks?: RuntimeCapabilityMask[],
+    routeEnvelope?: RouteMessageEnvelope,
   ): {
     id: string;
     status: AgentStatus;
@@ -315,6 +319,7 @@ export class DelegationProvider {
       status: "pending",
       executor,
       capabilityMasks,
+      routeEnvelope,
       created_at,
     };
     this.agents.set(id, agent);
@@ -326,7 +331,7 @@ export class DelegationProvider {
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, executor, capabilityMasks },
+      { id, name, goal, executor, capabilityMasks, routeEnvelope },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -464,8 +469,13 @@ export class DelegationProvider {
                 "Optional capability masks enforced by child agent hub policy. Shape: [{ id, provider?, path?, actions?, mode: 'allow'|'deny' }].",
               optional: true,
             },
+            routeEnvelope: {
+              type: "object",
+              description: "Optional typed route envelope that caused this delegated agent spawn.",
+              optional: true,
+            },
           },
-          async ({ name, goal, executor, capabilityMasks }) =>
+          async ({ name, goal, executor, capabilityMasks, routeEnvelope }) =>
             this.spawnAgent(
               name as string,
               goal as string,
@@ -475,6 +485,10 @@ export class DelegationProvider {
               Array.isArray(capabilityMasks)
                 ? (capabilityMasks as RuntimeCapabilityMask[])
                 : undefined,
+              parseOptionalRouteEnvelope(routeEnvelope, {
+                fallbackSource: "agent",
+                fallbackBody: goal as string,
+              }),
             ),
           {
             label: "Spawn Agent",
@@ -502,6 +516,7 @@ export class DelegationProvider {
         execution_mode: describeExecutionMode(agent.executor),
         executor: agent.executor,
         capability_masks: agent.capabilityMasks,
+        route_envelope: agent.routeEnvelope,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,

@@ -172,6 +172,51 @@ describe("MessagingProvider", () => {
     }
   });
 
+  test("stores typed route envelopes with outbound messages", async () => {
+    const { provider, consumer } = createMessagingHarness();
+
+    try {
+      await connect(consumer);
+      const channelId = await addChannel(consumer);
+
+      const sendResult = await consumer.invoke(`/channels/${channelId}`, "send", {
+        message: "fallback body",
+        envelope: {
+          id: "msg-typed",
+          source: "root",
+          body: "typed envelope body",
+          topic: "audit",
+          metadata: { severity: "high" },
+        },
+      });
+      expect(sendResult.status).toBe("ok");
+      expect((sendResult.data as { envelope_id?: string }).envelope_id).toBe("msg-typed");
+
+      const historyResult = await consumer.invoke(`/channels/${channelId}`, "view_history", {});
+      expect(historyResult.status).toBe("ok");
+      const history = historyResult.data as Array<{
+        content: string;
+        envelope?: {
+          id: string;
+          source: string;
+          body: string;
+          topic?: string;
+          metadata?: Record<string, unknown>;
+        };
+      }>;
+      expect(history[0]?.content).toBe("typed envelope body");
+      expect(history[0]?.envelope).toEqual({
+        id: "msg-typed",
+        source: "root",
+        body: "typed envelope body",
+        topic: "audit",
+        metadata: { severity: "high" },
+      });
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("limits history results to the requested recent messages", async () => {
     const { provider, consumer } = createMessagingHarness();
 

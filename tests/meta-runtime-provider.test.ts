@@ -71,6 +71,10 @@ function delegationStub(): {
             type: "array",
             optional: true,
           },
+          routeEnvelope: {
+            type: "object",
+            optional: true,
+          },
         },
         async (params) => {
           spawns.push(params);
@@ -93,8 +97,13 @@ function delegationStub(): {
   };
 }
 
-function messagingStub(): { provider: RegisteredProvider; sent: string[] } {
+function messagingStub(): {
+  provider: RegisteredProvider;
+  sent: string[];
+  envelopes: unknown[];
+} {
   const sent: string[] = [];
+  const envelopes: unknown[] = [];
   const server = createSlopServer({ id: "messaging", name: "Messaging" });
   server.register("channels", () => ({
     type: "collection",
@@ -104,9 +113,13 @@ function messagingStub(): { provider: RegisteredProvider; sent: string[] } {
         props: { id: "review", name: "Review" },
         actions: {
           send: action(
-            { message: "string" },
-            async ({ message }) => {
+            {
+              message: "string",
+              envelope: { type: "object", optional: true },
+            },
+            async ({ message, envelope }) => {
               sent.push(String(message));
+              envelopes.push(envelope);
               return { id: "message-1", channel_id: "review" };
             },
             { label: "Send", description: "Send test message.", estimate: "fast" },
@@ -125,6 +138,7 @@ function messagingStub(): { provider: RegisteredProvider; sent: string[] } {
       stop: () => server.stop(),
     },
     sent,
+    envelopes,
   };
 }
 
@@ -591,6 +605,10 @@ describe("MetaRuntimeProvider", () => {
       expect(String(delegation.spawns[0]?.goal)).toContain("please review the runtime");
       expect(delegation.spawns[0]).toMatchObject({
         name: "Reviewer",
+        routeEnvelope: {
+          source: "root",
+          body: "please review the runtime",
+        },
         executor: { kind: "llm", profileId: "openai-main", modelOverride: "gpt-mini" },
         capabilityMasks: [
           {
@@ -660,6 +678,10 @@ describe("MetaRuntimeProvider", () => {
       });
       expect(dispatched.status).toBe("ok");
       expect(messaging.sent).toEqual(["record this review note"]);
+      expect(messaging.envelopes[0]).toMatchObject({
+        source: "root",
+        body: "record this review note",
+      });
       stop?.stop();
     } finally {
       hub.shutdown();
@@ -768,7 +790,21 @@ describe("MetaRuntimeProvider", () => {
         "channel-route",
       ]);
       expect(delegation.spawns[0]?.goal).toContain("Route message msg-1 from root:");
+      expect(delegation.spawns[0]?.routeEnvelope).toEqual({
+        id: "msg-1",
+        source: "root",
+        body: "please review this typed envelope",
+        topic: "audit",
+        metadata: { severity: "high" },
+      });
       expect(messaging.sent).toEqual(["please review this typed envelope"]);
+      expect(messaging.envelopes[0]).toEqual({
+        id: "msg-1",
+        source: "root",
+        body: "please review this typed envelope",
+        topic: "audit",
+        metadata: { severity: "high" },
+      });
       stop?.stop();
     } finally {
       hub.shutdown();
@@ -804,7 +840,7 @@ describe("MetaRuntimeProvider", () => {
         objective: "Determine whether a review channel improves handoff quality.",
         promotion_criteria: {
           min_score: 0.8,
-          required_evaluations: 1,
+          required_evaluations: 2,
         },
       });
       expect(experimentResult.status).toBe("ok");
@@ -823,6 +859,32 @@ describe("MetaRuntimeProvider", () => {
         evaluator: "test",
       });
       expect(evaluation.status).toBe("ok");
+      const oneEvaluation = await consumer.invoke("/session", "promote_experiment", {
+        experiment_id: experimentId,
+      });
+      expect(oneEvaluation.status).toBe("error");
+      expect(oneEvaluation.error?.message).toContain("does not meet promotion criteria");
+
+      const weakEvaluation = await consumer.invoke("/session", "record_evaluation", {
+        experiment_id: experimentId,
+        score: 0.6,
+        summary: "The channel also added some coordination overhead.",
+        evaluator: "test",
+      });
+      expect(weakEvaluation.status).toBe("ok");
+      const weakAverage = await consumer.invoke("/session", "promote_experiment", {
+        experiment_id: experimentId,
+      });
+      expect(weakAverage.status).toBe("error");
+      expect(weakAverage.error?.message).toContain("does not meet promotion criteria");
+
+      const strongEvaluation = await consumer.invoke("/session", "record_evaluation", {
+        experiment_id: experimentId,
+        score: 1,
+        summary: "The adjusted channel consistently improved handoff quality.",
+        evaluator: "test",
+      });
+      expect(strongEvaluation.status).toBe("ok");
       const promoted = await consumer.invoke("/session", "promote_experiment", {
         experiment_id: experimentId,
       });
@@ -831,6 +893,161 @@ describe("MetaRuntimeProvider", () => {
 
       const channels = await consumer.query("/channels", 2);
       expect(channels.children?.[0]?.id).toBe("experiment-review");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("approval-gates persistent experiment metadata writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const workspaceRoot = join(root, "workspace");
+    const { provider, consumer } = harness(join(root, "global"), workspaceRoot);
+
+    try {
+      await connect(consumer);
+      const proposed = await consumer.invoke("/session", "propose_change", {
+        scope: "workspace",
+        summary: "Persistent experiment channel",
+        ops: [
+          {
+            type: "upsertChannel",
+            channel: {
+              id: "persistent-experiment",
+              topic: "persistent-experiment",
+              participants: ["root"],
+              visibility: "shared",
+            },
+          },
+        ],
+      });
+      const proposalId = (proposed.data as { id: string }).id;
+      const blockedExperiment = await consumer.invoke("/session", "create_experiment", {
+        proposal_id: proposalId,
+        name: "Persistent trial",
+        objective: "Verify persistent experiment approval.",
+      });
+      expect(blockedExperiment.status).toBe("error");
+      expect(blockedExperiment.error?.code).toBe("approval_required");
+
+      const approvals = await consumer.query("/approvals", 2);
+      const createApprovalId = approvals.children?.find(
+        (child) => child.properties?.action === "create_experiment",
+      )?.id;
+      expect(typeof createApprovalId).toBe("string");
+      const approvedExperiment = await consumer.invoke(
+        `/approvals/${createApprovalId}`,
+        "approve",
+        {},
+      );
+      expect(approvedExperiment.status).toBe("ok");
+      const experimentId = (approvedExperiment.data as { id: string }).id;
+
+      const blockedEvaluation = await consumer.invoke("/session", "record_evaluation", {
+        experiment_id: experimentId,
+        score: 1,
+        summary: "Persistent evaluation.",
+      });
+      expect(blockedEvaluation.status).toBe("error");
+      expect(blockedEvaluation.error?.code).toBe("approval_required");
+      const refreshedApprovals = await consumer.query("/approvals", 2);
+      const evaluationApprovalId = refreshedApprovals.children?.find(
+        (child) =>
+          child.properties?.action === "record_evaluation" &&
+          child.properties?.status === "pending",
+      )?.id;
+      expect(typeof evaluationApprovalId).toBe("string");
+      const approvedEvaluation = await consumer.invoke(
+        `/approvals/${evaluationApprovalId}`,
+        "approve",
+        {},
+      );
+      expect(approvedEvaluation.status).toBe("ok");
+
+      const persisted = JSON.parse(await readFile(join(workspaceRoot, "state.json"), "utf8")) as {
+        experiments: Array<{ id: string }>;
+        evaluations: Array<{ experimentId: string }>;
+      };
+      expect(persisted.experiments.map((experiment) => experiment.id)).toContain(experimentId);
+      expect(persisted.evaluations.map((evaluation) => evaluation.experimentId)).toContain(
+        experimentId,
+      );
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("rollback_experiment applies a pending rollback proposal before recording rollback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
+
+    try {
+      await connect(consumer);
+      const proposed = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Experiment channel",
+        ops: [
+          {
+            type: "upsertChannel",
+            channel: {
+              id: "rollback-review",
+              topic: "rollback-review",
+              participants: ["root"],
+              visibility: "shared",
+            },
+          },
+        ],
+      });
+      const proposalId = (proposed.data as { id: string }).id;
+      const experimentResult = await consumer.invoke("/session", "create_experiment", {
+        proposal_id: proposalId,
+        name: "Rollback trial",
+        objective: "Exercise rollback proposal application.",
+        promotion_criteria: {
+          min_score: 0,
+          required_evaluations: 1,
+        },
+      });
+      const experimentId = (experimentResult.data as { id: string }).id;
+      expect(
+        (
+          await consumer.invoke("/session", "record_evaluation", {
+            experiment_id: experimentId,
+            score: 1,
+            summary: "Ready to promote.",
+          })
+        ).status,
+      ).toBe("ok");
+      expect(
+        (await consumer.invoke("/session", "promote_experiment", { experiment_id: experimentId }))
+          .status,
+      ).toBe("ok");
+
+      const rollbackProposal = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Remove reviewer from rollback channel",
+        ops: [
+          {
+            type: "rewireChannel",
+            channelId: "rollback-review",
+            participants: [],
+          },
+        ],
+      });
+      const rollbackProposalId = (rollbackProposal.data as { id: string }).id;
+      const rollback = await consumer.invoke("/session", "rollback_experiment", {
+        experiment_id: experimentId,
+        rollback_proposal_id: rollbackProposalId,
+      });
+      expect(rollback.status).toBe("ok");
+      expect((rollback.data as { status: string }).status).toBe("rolled_back");
+
+      const channels = await consumer.query("/channels", 2);
+      const channel = channels.children?.find((child) => child.id === "rollback-review");
+      expect(channel?.properties?.participants).toEqual([]);
+      const appliedRollback = await consumer.query(`/proposals/${rollbackProposalId}`, 1);
+      expect(appliedRollback.properties?.status).toBe("applied");
     } finally {
       provider.stop();
     }
@@ -896,7 +1113,6 @@ describe("MetaRuntimeProvider", () => {
       expect((await metaConsumer.invoke(`/approvals/${approvalId}`, "approve", {})).status).toBe(
         "ok",
       );
-      await sleep(5);
 
       const skillVersions = await metaConsumer.query("/skill-versions", 2);
       expect(skillVersions.children?.[0]?.properties?.activationStatus).toBe("active");
@@ -905,6 +1121,53 @@ describe("MetaRuntimeProvider", () => {
       stop?.stop();
     } finally {
       hub.shutdown();
+    }
+  });
+
+  test("does not apply linked skill topology when activation fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
+
+    try {
+      await connect(consumer);
+      const metaProposal = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Activate missing skill",
+        ops: [
+          {
+            type: "activateSkillVersion",
+            skillVersion: {
+              id: "missing@1.0.0",
+              skillId: "missing",
+              version: "1.0.0",
+              scope: "session",
+              active: false,
+              proposalId: "skill-proposal-missing",
+              activationStatus: "pending",
+            },
+          },
+        ],
+      });
+      const metaProposalId = (metaProposal.data as { id: string }).id;
+      const blocked = await consumer.invoke(`/proposals/${metaProposalId}`, "apply_proposal", {});
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof approvalId).toBe("string");
+      const approved = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approved.status).toBe("error");
+      expect(approved.error?.message).toContain("No hub attached for skill activation");
+
+      const skillVersions = await consumer.query("/skill-versions", 2);
+      expect(skillVersions.properties?.count).toBe(0);
+      const proposal = await consumer.query(`/proposals/${metaProposalId}`, 1);
+      expect(proposal.properties?.status).toBe("proposed");
+    } finally {
+      provider.stop();
     }
   });
 

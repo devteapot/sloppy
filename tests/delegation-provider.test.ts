@@ -172,6 +172,54 @@ describe("DelegationProvider", () => {
     }
   });
 
+  test("stores typed route envelopes and passes them to the runner factory", async () => {
+    let capturedRouteEnvelope: unknown;
+    const { provider, consumer } = createDelegationHarness({
+      runnerFactory: (spawn, callbacks) => {
+        capturedRouteEnvelope = spawn.routeEnvelope;
+        return {
+          async start() {
+            callbacks.onUpdate({ status: "running" });
+          },
+          async cancel() {
+            callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+          },
+        };
+      },
+    });
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "route-worker",
+        goal: "Handle routed message",
+        routeEnvelope: {
+          id: "msg-route",
+          source: "root",
+          body: "Handle routed message",
+          topic: "audit",
+          metadata: { severity: "high" },
+        },
+      });
+      expect(result.status).toBe("ok");
+      const agentId = (result.data as { id: string }).id;
+      expect(capturedRouteEnvelope).toEqual({
+        id: "msg-route",
+        source: "root",
+        body: "Handle routed message",
+        topic: "audit",
+        metadata: { severity: "high" },
+      });
+
+      const agent = await consumer.query(`/agents/${agentId}`, 2);
+      expect(agent.properties?.route_envelope).toEqual(capturedRouteEnvelope);
+
+      await consumer.invoke(`/agents/${agentId}`, "cancel", {});
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("rejects malformed executor bindings", async () => {
     const { provider, consumer } = createDelegationHarness();
 
