@@ -16,6 +16,8 @@ Checked in now:
   `spec`, `vision`, `meta-runtime`
 - session provider and headless session server
 - ACP-backed delegated child sessions behind the same session-provider boundary
+- runtime smoke harness (`bun run runtime:smoke`) covering provider-level
+  meta-runtime routing plus native and ACP delegated-child modes
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from
@@ -81,6 +83,7 @@ bun test tests/meta-runtime-provider.test.ts
 bun test tests/skills-provider.test.ts
 bun test tests/delegation-provider.test.ts
 bun test tests/kernel-boundary.test.ts
+bun test tests/runtime-smoke.test.ts
 ```
 
 Run `bun run test` after touching shared runtime, provider registry, session, or

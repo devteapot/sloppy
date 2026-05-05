@@ -228,18 +228,14 @@ function buildTopologyOps(options: {
     return ops;
   }
 
-  const bindingId = options.mode === "acp" ? "smoke-acp" : "smoke-llm";
-  ops.push(
-    {
-      type: "upsertAgentProfile",
-      profile: {
-        id: "smoke-worker",
-        name: "Smoke Worker",
-        instructions:
-          "Reply with a concise confirmation that the runtime smoke message was received.",
-      },
-    },
-    {
+  const bindingId =
+    options.mode === "acp" || options.profileId || options.modelOverride
+      ? options.mode === "acp"
+        ? "smoke-acp"
+        : "smoke-llm"
+      : undefined;
+  if (bindingId) {
+    ops.push({
       type: "setExecutorBinding",
       binding:
         options.mode === "acp"
@@ -254,6 +250,18 @@ function buildTopologyOps(options: {
               profileId: options.profileId,
               modelOverride: options.modelOverride,
             },
+    });
+  }
+
+  ops.push(
+    {
+      type: "upsertAgentProfile",
+      profile: {
+        id: "smoke-worker",
+        name: "Smoke Worker",
+        instructions:
+          "Reply with a concise confirmation that the runtime smoke message was received.",
+      },
     },
     {
       type: "spawnAgent",
@@ -316,12 +324,8 @@ export async function runRuntimeSmoke(
   const workspaceRoot = resolve(options.workspaceRoot ?? tempRoot ?? process.cwd());
   const baseConfig = options.config ?? DEFAULT_CONFIG;
   const profile = mode === "native" ? activeProfile(baseConfig, options.profileId) : undefined;
-  if (mode === "native" && !profile) {
-    throw new LlmConfigurationError(
-      options.profileId
-        ? `LLM profile '${options.profileId}' is not configured.`
-        : "Native smoke mode requires at least one configured LLM profile.",
-    );
+  if (mode === "native" && options.profileId && !profile) {
+    throw new LlmConfigurationError(`LLM profile '${options.profileId}' is not configured.`);
   }
   if (mode === "acp" && !options.acpAdapterId) {
     throw new Error("ACP smoke mode requires --acp-adapter <id>.");

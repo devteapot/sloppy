@@ -245,6 +245,35 @@ The dashboard serves `http://localhost:8787` by default. It is currently a
 developer prototype and should move toward consuming the public session/provider
 surface directly.
 
+Run the runtime smoke harness:
+
+```sh
+bun run runtime:smoke
+```
+
+By default this creates a temporary workspace, wires `meta-runtime`, `messaging`,
+`delegation`, `skills`, and `filesystem`, applies a session topology proposal,
+dispatches a typed route envelope, and verifies that the message lands in a SLOP
+channel. Native and ACP delegated-child paths can be checked explicitly:
+
+```sh
+bun run runtime:smoke -- --mode native
+bun run runtime:smoke -- --mode acp --acp-adapter claude
+```
+
+Native mode uses the active LLM profile selected by the LLM profile manager
+unless `--profile <id>` is provided. For a local OpenAI-compatible router, point
+the run at that endpoint with the normal one-shot LLM environment overrides, for
+example:
+
+```sh
+SLOPPY_LLM_PROVIDER=openai \
+SLOPPY_MODEL=<model> \
+SLOPPY_LLM_BASE_URL=http://sloppy-mba.local:8001/v1 \
+OPENAI_API_KEY=<router-key-or-dummy> \
+bun run runtime:smoke -- --mode native
+```
+
 ## Config
 
 Sloppy reads configuration from:

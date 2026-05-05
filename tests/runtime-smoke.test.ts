@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { SloppyConfig } from "../src/config/schema";
+import type { LlmProfileManager, LlmStateSnapshot } from "../src/llm/profile-manager";
+import type { LlmAdapter } from "../src/llm/types";
 import { runRuntimeSmoke } from "../src/runtime/smoke-runner";
 
 const TEST_CONFIG: SloppyConfig = {
@@ -94,6 +97,88 @@ const TEST_CONFIG: SloppyConfig = {
   },
 };
 
+const READY_LLM_STATE: LlmStateSnapshot = {
+  status: "ready" as const,
+  message: "ready",
+  activeProfileId: "stub",
+  selectedProvider: "openai",
+  selectedModel: "stub-model",
+  secureStoreKind: "keychain",
+  secureStoreStatus: "available",
+  profiles: [
+    {
+      id: "stub",
+      label: "Stub",
+      provider: "openai" as const,
+      model: "stub-model",
+      apiKeyEnv: "STUB_KEY",
+      baseUrl: undefined,
+      isDefault: true,
+      hasKey: true,
+      keySource: "env" as const,
+      ready: true,
+      managed: true,
+      origin: "managed" as const,
+      canDeleteProfile: false,
+      canDeleteApiKey: false,
+    },
+  ],
+};
+
+async function createFakeAcpAgent(workspaceRoot: string): Promise<string> {
+  const scriptPath = join(workspaceRoot, "fake-acp-agent.mjs");
+  const sdkUrl = pathToFileURL(
+    join(process.cwd(), "node_modules", "@agentclientprotocol", "sdk", "dist", "acp.js"),
+  ).href;
+  await writeFile(
+    scriptPath,
+    `
+import * as acp from ${JSON.stringify(sdkUrl)};
+import { Readable, Writable } from "node:stream";
+
+class FakeAgent {
+  constructor(connection) {
+    this.connection = connection;
+  }
+
+  async initialize() {
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: false,
+      },
+    };
+  }
+
+  async newSession() {
+    return { sessionId: "fake-session" };
+  }
+
+  async prompt(params) {
+    const text = params.prompt.find((block) => block.type === "text")?.text ?? "";
+    await this.connection.sessionUpdate({
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: \`acp received: \${text}\` },
+      },
+    });
+    return { stopReason: "end_turn" };
+  }
+
+  async cancel() {}
+}
+
+const stream = acp.ndJsonStream(
+  Writable.toWeb(process.stdout),
+  Readable.toWeb(process.stdin),
+);
+new acp.AgentSideConnection((connection) => new FakeAgent(connection), stream);
+`,
+  );
+  return scriptPath;
+}
+
 describe("runtime smoke runner", () => {
   test("runs provider-level meta-runtime routing end-to-end", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-test-"));
@@ -119,6 +204,87 @@ describe("runtime smoke runner", () => {
           metadata: { mode: "providers" },
         },
       });
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("runs native delegated-agent smoke with an injected LLM profile manager", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-native-"));
+    const config = TEST_CONFIG;
+    const manager = {
+      ensureReady: async () => READY_LLM_STATE,
+      getState: async () => READY_LLM_STATE,
+      getConfig: () => config,
+      updateConfig: () => undefined,
+      createAdapter: async () =>
+        ({
+          async chat(options) {
+            const lastUser = [...options.messages]
+              .reverse()
+              .find((message) => message.role === "user");
+            const text =
+              lastUser?.content.find((block) => block.type === "text")?.text ?? "missing goal";
+            options.onText?.(`native received: ${text}`);
+            return {
+              content: [{ type: "text", text: `native received: ${text}` }],
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        }) satisfies LlmAdapter,
+    } satisfies Partial<LlmProfileManager> as unknown as LlmProfileManager;
+
+    try {
+      const result = await runRuntimeSmoke({
+        config,
+        llmProfileManager: manager,
+        mode: "native",
+        workspaceRoot,
+      });
+
+      expect(result.mode).toBe("native");
+      expect(result.delegatedAgent?.id).toStartWith("agent-");
+      expect(result.delegatedAgent?.status).toBe("completed");
+      expect(result.delegatedAgent?.resultPreview).toContain("native received:");
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("runs ACP delegated-agent smoke through a configured adapter", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-acp-"));
+    try {
+      const scriptPath = await createFakeAcpAgent(workspaceRoot);
+      const config: SloppyConfig = {
+        ...TEST_CONFIG,
+        providers: {
+          ...TEST_CONFIG.providers,
+          delegation: {
+            ...TEST_CONFIG.providers.delegation,
+            acp: {
+              enabled: true,
+              adapters: {
+                fake: {
+                  command: ["node", scriptPath],
+                },
+              },
+            },
+          },
+        },
+      };
+
+      const result = await runRuntimeSmoke({
+        acpAdapterId: "fake",
+        config,
+        mode: "acp",
+        workspaceRoot,
+      });
+
+      expect(result.mode).toBe("acp");
+      expect(result.delegatedAgent?.id).toStartWith("agent-");
+      expect(result.delegatedAgent?.status).toBe("completed");
+      expect(result.delegatedAgent?.resultPreview).toContain("acp received:");
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

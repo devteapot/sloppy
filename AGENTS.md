@@ -36,6 +36,7 @@ bun install
 bun run build
 bun run dashboard:serve
 bun run lint
+bun run runtime:smoke
 bun run session:serve
 bun run typecheck
 bun run test
@@ -49,6 +50,7 @@ bun test
 bun test tests/filesystem-provider.test.ts
 bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 bun test tests/agent-session-provider.test.ts
+bun test tests/runtime-smoke.test.ts
 bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
 bun test tests/gemini-adapter.test.ts
