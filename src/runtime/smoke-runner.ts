@@ -2,7 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { defaultConfigPromise } from "../config/load";
+import {
+  defaultConfigPromise,
+  getHomeConfigPath,
+  getWorkspaceConfigPath,
+  loadConfigFromPaths,
+} from "../config/load";
 import type { LlmProfileConfig, SloppyConfig } from "../config/schema";
 import { ConsumerHub } from "../core/consumer";
 import { RoleRegistry } from "../core/role";
@@ -72,6 +77,7 @@ function buildSmokeConfig(
     workspaceRoot: string;
     profileId?: string;
     acpAdapterId?: string;
+    timeoutMs?: number;
   },
 ): SloppyConfig {
   const workspaceRoot = resolve(options.workspaceRoot);
@@ -125,7 +131,8 @@ function buildSmokeConfig(
               ...baseConfig.providers.delegation,
               acp: {
                 enabled: true,
-                defaultTimeoutMs: baseConfig.providers.delegation.acp?.defaultTimeoutMs,
+                defaultTimeoutMs:
+                  options.timeoutMs ?? baseConfig.providers.delegation.acp?.defaultTimeoutMs,
                 adapters: baseConfig.providers.delegation.acp?.adapters ?? {},
               },
             }
@@ -322,7 +329,11 @@ export async function runRuntimeSmoke(
     ? undefined
     : await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-"));
   const workspaceRoot = resolve(options.workspaceRoot ?? tempRoot ?? process.cwd());
-  const baseConfig = options.config ?? DEFAULT_CONFIG;
+  const baseConfig =
+    options.config ??
+    (options.workspaceRoot
+      ? await loadConfigFromPaths(getHomeConfigPath(), getWorkspaceConfigPath(workspaceRoot))
+      : DEFAULT_CONFIG);
   const profile = mode === "native" ? activeProfile(baseConfig, options.profileId) : undefined;
   if (mode === "native" && options.profileId && !profile) {
     throw new LlmConfigurationError(`LLM profile '${options.profileId}' is not configured.`);
@@ -336,6 +347,7 @@ export async function runRuntimeSmoke(
     workspaceRoot,
     profileId: profile?.id,
     acpAdapterId: options.acpAdapterId,
+    timeoutMs: options.timeoutMs,
   });
   const providers = createBuiltinProviders(config);
   const hub = new ConsumerHub(providers, config);

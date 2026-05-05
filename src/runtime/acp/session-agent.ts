@@ -48,6 +48,8 @@ type ActivePrompt = {
   responseText: string;
 };
 
+const DEFAULT_STARTUP_TIMEOUT_MS = 15000;
+
 function createDeferred<T>(): Deferred<T> {
   let resolveValue!: (value: T | PromiseLike<T>) => void;
   let rejectValue!: (error: unknown) => void;
@@ -203,8 +205,13 @@ export class AcpSessionAgent implements SessionAgent {
       });
     });
 
-    await Promise.race([this.initializeSession(), exitError]);
-    this.started = true;
+    try {
+      await Promise.race([this.withStartupTimeout(this.initializeSession()), exitError]);
+      this.started = true;
+    } catch (error) {
+      this.shutdown();
+      throw error;
+    }
   }
 
   async chat(userMessage: string): Promise<AgentRunResult> {
@@ -547,6 +554,27 @@ export class AcpSessionAgent implements SessionAgent {
     }, this.timeoutMs);
 
     return prompt.finally(() => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    });
+  }
+
+  private withStartupTimeout(startup: Promise<void>): Promise<void> {
+    const timeoutMs = this.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(
+          new Error(
+            `ACP adapter '${this.adapterId}' did not complete startup within ${timeoutMs}ms.`,
+          ),
+        );
+      }, timeoutMs);
+    });
+
+    return Promise.race([startup, timeoutPromise]).finally(() => {
       if (timeout) {
         clearTimeout(timeout);
         timeout = null;

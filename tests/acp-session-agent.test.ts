@@ -226,6 +226,19 @@ new acp.AgentSideConnection((connection) => new FakeAgent(connection), stream);
   return scriptPath;
 }
 
+function createHangingAcpAgent(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sloppy-acp-hang-test-"));
+  tempDirs.push(dir);
+  const scriptPath = join(dir, "hanging-agent.mjs");
+  writeFileSync(
+    scriptPath,
+    `
+setInterval(() => {}, 1000);
+`,
+  );
+  return scriptPath;
+}
+
 function createRuntime(scriptPath: string): SessionRuntime {
   return new SessionRuntime({
     config: TEST_CONFIG,
@@ -277,6 +290,26 @@ async function waitFor<T>(check: () => T | null, timeoutMs = 5000, intervalMs = 
 }
 
 describe("AcpSessionAgent", () => {
+  test("fails startup when an adapter process never completes the ACP handshake", async () => {
+    const agent = new AcpSessionAgent({
+      adapterId: "hanging",
+      adapter: {
+        command: ["node", createHangingAcpAgent()],
+        timeoutMs: 100,
+      },
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      await expect(agent.start()).rejects.toThrow(
+        "ACP adapter 'hanging' did not complete startup within 100ms.",
+      );
+    } finally {
+      agent.shutdown();
+    }
+  });
+
   test("streams ACP text through the session provider without LLM credentials", async () => {
     const runtime = createRuntime(createFakeAcpAgent());
     const { provider, consumer } = await connect(runtime);

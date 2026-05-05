@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -256,27 +256,23 @@ describe("runtime smoke runner", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-acp-"));
     try {
       const scriptPath = await createFakeAcpAgent(workspaceRoot);
-      const config: SloppyConfig = {
-        ...TEST_CONFIG,
-        providers: {
-          ...TEST_CONFIG.providers,
-          delegation: {
-            ...TEST_CONFIG.providers.delegation,
-            acp: {
-              enabled: true,
-              adapters: {
-                fake: {
-                  command: ["node", scriptPath],
-                },
-              },
-            },
-          },
-        },
-      };
+      await mkdir(join(workspaceRoot, ".sloppy"), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, ".sloppy", "config.yaml"),
+        [
+          "providers:",
+          "  delegation:",
+          "    acp:",
+          "      enabled: true",
+          "      adapters:",
+          "        fake:",
+          `          command: ["node", ${JSON.stringify(scriptPath)}]`,
+          "",
+        ].join("\n"),
+      );
 
       const result = await runRuntimeSmoke({
         acpAdapterId: "fake",
-        config,
         mode: "acp",
         workspaceRoot,
       });
