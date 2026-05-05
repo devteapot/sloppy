@@ -4,7 +4,6 @@ import { action, createSlopServer } from "@slop-ai/server";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { PolicyDeniedError } from "../src/core/policy";
-import { orchestratorRoleRule } from "../src/core/policy/rules";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import type { RegisteredProvider } from "../src/providers/registry";
 
@@ -38,7 +37,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
-      orchestration: false,
+      metaRuntime: false,
       spec: false,
       vision: false,
     },
@@ -60,7 +59,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 10 },
-    orchestration: { progressTailMaxChars: 2048 },
+    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };
@@ -120,7 +119,7 @@ function createFsProvider(): RegisteredProvider {
 }
 
 describe("policy metadata isolation", () => {
-  test("orchestrator metadata does not leak from one invoke to the next", async () => {
+  test("role metadata does not leak from one invoke to the next", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
     const { provider: delegationProvider, spawnCount } = createDelegationProvider();
     const fsProvider = createFsProvider();
@@ -129,17 +128,22 @@ describe("policy metadata isolation", () => {
       await hub.connect();
       await hub.addProvider(delegationProvider);
       await hub.addProvider(fsProvider);
-      hub.addPolicyRule(orchestratorRoleRule);
+      hub.addPolicyRule({
+        evaluate: (ctx) => {
+          if (ctx.roleId === "meta-manager") {
+            return { kind: "deny", reason: "meta-manager cannot invoke this action in test." };
+          }
+          return { kind: "allow" };
+        },
+      });
 
-      // Orchestrator-tagged invoke that the role rule would deny — confirms
-      // the rule sees the per-call metadata when supplied.
+      // Role-tagged invoke that the rule denies confirms the rule sees
+      // per-call metadata when supplied.
       await expect(
-        hub.invoke("filesystem", "/workspace", "edit", {}, { roleId: "orchestrator" }),
+        hub.invoke("filesystem", "/workspace", "edit", {}, { roleId: "meta-manager" }),
       ).rejects.toBeInstanceOf(PolicyDeniedError);
 
-      // Immediately after, a scheduler-shaped invoke (no roleId) must NOT
-      // inherit "orchestrator" — pre-fix, hub-wide metadata leaked here and
-      // delegation.spawn_agent was wrongly denied.
+      // Immediately after, an actor-only invoke must not inherit roleId.
       const result = await hub.invoke(
         "delegation",
         "/session",
@@ -150,14 +154,14 @@ describe("policy metadata isolation", () => {
       expect(result.status).toBe("ok");
       expect(spawnCount()).toBe(1);
 
-      // And explicitly: spawn_agent with roleId orchestrator IS still denied.
+      // And explicitly: spawn_agent with the denied roleId is still denied.
       await expect(
         hub.invoke(
           "delegation",
           "/session",
           "spawn_agent",
           { name: "n", goal: "g", task_id: "task-2" },
-          { roleId: "orchestrator" },
+          { roleId: "meta-manager" },
         ),
       ).rejects.toBeInstanceOf(PolicyDeniedError);
       expect(spawnCount()).toBe(1);

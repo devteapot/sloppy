@@ -35,7 +35,7 @@ export interface RunLoopHooks {
   /**
    * Optional id of the role driving this loop iteration. When set, the loop
    * passes this id as per-call metadata to `hub.invoke` so hub policy rules
-   * (e.g. `orchestratorRoleRule`) can scope themselves by role. The metadata
+   * can scope themselves by role. The metadata
    * is per-invocation; it does NOT leak to other callers (scheduler, UI).
    */
   roleId?: string;

@@ -1,5 +1,5 @@
 // Narrow consumer-side hub interface that external callers (loop, agent,
-// runtime/orchestration, runtime/delegation, providers) should depend on
+// runtime/delegation, providers) should depend on
 // instead of the concrete `ConsumerHub` class. The class implements this
 // interface; keeping the surface small is what enforces the "thin core, fat
 // providers" boundary documented in CLAUDE.md and docs/02-architecture.md.

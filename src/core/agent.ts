@@ -32,9 +32,9 @@ import {
   type RunLoopResult,
   runLoop,
 } from "./loop";
+import type { InvokePolicy } from "./policy";
 import { dangerousActionRule, terminalSafetyRule } from "./policy/rules";
 import {
-  type DelegationRuntimeHooks,
   defaultRole,
   type RoleProfile,
   RoleRegistry,
@@ -99,8 +99,8 @@ export class Agent {
   private roleId?: string;
   private roleRegistry: RoleRegistry;
   private publishEventCallback?: (event: RuntimeEvent) => void;
-  private delegationHooks: DelegationRuntimeHooks | null = null;
   private mirrorProviderPaths: string[];
+  private policyRules: InvokePolicy[];
   private runtimeStops: Array<{ stop(): void }> = [];
   private systemPromptFragments: string[] = [];
 
@@ -116,6 +116,7 @@ export class Agent {
       roleRegistry?: RoleRegistry;
       publishEvent?: (event: RuntimeEvent) => void;
       mirrorProviderPaths?: string[];
+      policyRules?: InvokePolicy[];
     } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
@@ -142,6 +143,7 @@ export class Agent {
     this.roleRegistry = options?.roleRegistry ?? new RoleRegistry();
     this.publishEventCallback = options?.publishEvent;
     this.mirrorProviderPaths = options?.mirrorProviderPaths ?? [];
+    this.policyRules = options?.policyRules ?? [];
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
@@ -181,18 +183,11 @@ export class Agent {
     this.hub = hub;
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
-    const self = this;
     const runtimeCtx: RuntimeContext = {
       hub,
       config: this.config,
-      publishEvent: (event) => self.publishEventCallback?.(event),
+      publishEvent: (event) => this.publishEventCallback?.(event),
       roleRegistry: this.roleRegistry,
-      get delegationHooks() {
-        return self.delegationHooks ?? undefined;
-      },
-      setDelegationHooks: (hooks) => {
-        self.delegationHooks = hooks;
-      },
       llmProfileManager: this.llmProfileManager,
     };
 
@@ -222,11 +217,11 @@ export class Agent {
       this.runtimeStops.push(roleRuntime);
     }
 
-    // Install hub-wide safety rules. Order matters: orchestrator role rules
-    // (added during provider/role attach) run first so role-scoped denials
-    // short-circuit before generic destructive-command and dangerous-action
-    // checks. The safety rules run only when the role layer allows the
-    // invocation through.
+    // Install hub-wide safety rules after providers attach so descriptor
+    // metadata has been observed by the dangerous-action registry.
+    for (const policyRule of this.policyRules) {
+      hub.addPolicyRule(policyRule);
+    }
     hub.addPolicyRule(terminalSafetyRule);
     hub.addPolicyRule(
       dangerousActionRule((providerId, path, action) =>
@@ -277,7 +272,10 @@ export class Agent {
 
     this.history.addUserText(userMessage);
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter(this.llmProfileId, this.llmModelOverride);
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -323,7 +321,10 @@ export class Agent {
     });
 
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter(this.llmProfileId, this.llmModelOverride);
+      const llm = await this.llmProfileManager.createAdapter(
+        this.llmProfileId,
+        this.llmModelOverride,
+      );
       return this.executeLoop(
         await runLoop({
           config: this.config,

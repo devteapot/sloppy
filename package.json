@@ -14,7 +14,6 @@
     "dev": "bun --watch src/cli.ts",
     "session:serve": "bun run src/session/server.ts",
     "dashboard:serve": "bun run apps/dashboard/server.ts",
-    "demo:orchestrate": "bun run scripts/demo-orchestrate.ts",
     "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/session/server.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write .",

@@ -1486,7 +1486,7 @@ describe("SessionService — multi-session support", () => {
           cron: false,
           messaging: false,
           delegation: false,
-          orchestration: false,
+          metaRuntime: false,
           spec: false,
           vision: false,
         },
@@ -1508,7 +1508,10 @@ describe("SessionService — multi-session support", () => {
         cron: { maxJobs: 16 },
         messaging: { maxMessages: 100 },
         delegation: { maxAgents: 4 },
-        orchestration: { progressTailMaxChars: 2000 },
+        metaRuntime: {
+          globalRoot: "~/.sloppy/meta-runtime",
+          workspaceRoot: ".sloppy/meta-runtime",
+        },
         vision: { maxImages: 16, defaultWidth: 512, defaultHeight: 512 },
       },
     } as unknown as SloppyConfig;

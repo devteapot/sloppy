@@ -152,6 +152,11 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
   const filesystemFocus = config.providers.filesystem.focus
     ? resolve(filesystemRoot, expandHomePath(config.providers.filesystem.focus))
     : filesystemRoot;
+  const metaRuntimeGlobalRoot = resolve(expandHomePath(config.providers.metaRuntime.globalRoot));
+  const metaRuntimeWorkspaceRoot = resolve(
+    filesystemRoot,
+    expandHomePath(config.providers.metaRuntime.workspaceRoot),
+  );
 
   return {
     ...config,
@@ -174,6 +179,11 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
       skills: {
         ...config.providers.skills,
         skillsDir: resolve(expandHomePath(config.providers.skills.skillsDir)),
+      },
+      metaRuntime: {
+        ...config.providers.metaRuntime,
+        globalRoot: metaRuntimeGlobalRoot,
+        workspaceRoot: metaRuntimeWorkspaceRoot,
       },
     },
   };

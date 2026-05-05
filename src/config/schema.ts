@@ -75,12 +75,12 @@ export const sloppyConfigSchema = z.object({
           filesystem: z.boolean().default(true),
           memory: z.boolean().default(true),
           skills: z.boolean().default(true),
+          metaRuntime: z.boolean().default(false),
           web: z.boolean().default(false),
           browser: z.boolean().default(false),
           cron: z.boolean().default(false),
           messaging: z.boolean().default(false),
           delegation: z.boolean().default(false),
-          orchestration: z.boolean().default(false),
           spec: z.boolean().default(false),
           vision: z.boolean().default(false),
         })
@@ -89,12 +89,12 @@ export const sloppyConfigSchema = z.object({
           filesystem: true,
           memory: true,
           skills: true,
+          metaRuntime: false,
           web: false,
           browser: false,
           cron: false,
           messaging: false,
           delegation: false,
-          orchestration: false,
           spec: false,
           vision: false,
         }),
@@ -154,6 +154,15 @@ export const sloppyConfigSchema = z.object({
         .default({
           skillsDir: "~/.hermes/skills",
         }),
+      metaRuntime: z
+        .object({
+          globalRoot: z.string().default("~/.sloppy/meta-runtime"),
+          workspaceRoot: z.string().default(".sloppy/meta-runtime"),
+        })
+        .default({
+          globalRoot: "~/.sloppy/meta-runtime",
+          workspaceRoot: ".sloppy/meta-runtime",
+        }),
       web: z
         .object({
           historyLimit: z.number().int().min(1).default(20),
@@ -192,13 +201,6 @@ export const sloppyConfigSchema = z.object({
         .default({
           maxAgents: 10,
         }),
-      orchestration: z
-        .object({
-          progressTailMaxChars: z.number().int().min(128).default(2048),
-        })
-        .default({
-          progressTailMaxChars: 2048,
-        }),
       vision: z
         .object({
           maxImages: z.number().int().min(1).default(50),
@@ -217,12 +219,12 @@ export const sloppyConfigSchema = z.object({
         filesystem: true,
         memory: true,
         skills: true,
+        metaRuntime: false,
         web: false,
         browser: false,
         cron: false,
         messaging: false,
         delegation: false,
-        orchestration: false,
         spec: false,
         vision: false,
       },
@@ -251,6 +253,10 @@ export const sloppyConfigSchema = z.object({
       skills: {
         skillsDir: "~/.hermes/skills",
       },
+      metaRuntime: {
+        globalRoot: "~/.sloppy/meta-runtime",
+        workspaceRoot: ".sloppy/meta-runtime",
+      },
       web: {
         historyLimit: 20,
       },
@@ -266,9 +272,6 @@ export const sloppyConfigSchema = z.object({
       },
       delegation: {
         maxAgents: 10,
-      },
-      orchestration: {
-        progressTailMaxChars: 2048,
       },
       vision: {
         maxImages: 50,

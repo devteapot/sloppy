@@ -37,7 +37,7 @@ const HUB_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
-      orchestration: false,
+      metaRuntime: false,
       spec: false,
       vision: false,
     },
@@ -59,7 +59,7 @@ const HUB_CONFIG: SloppyConfig = {
     cron: { maxJobs: 16 },
     messaging: { maxMessages: 100 },
     delegation: { maxAgents: 4 },
-    orchestration: { progressTailMaxChars: 2000 },
+    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
     vision: { maxImages: 16, defaultWidth: 1024, defaultHeight: 768 },
   },
 } as unknown as SloppyConfig;

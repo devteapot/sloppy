@@ -12,6 +12,7 @@ import {
   type RoleProfile,
 } from "../core/agent";
 import type { ExternalProviderState } from "../core/consumer";
+import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
   LlmConfigurationError,
@@ -285,6 +286,7 @@ function createDefaultSessionAgent(
     publishEvent?: (event: Record<string, unknown> & { kind: string }) => void;
     llmProfileId?: string;
     llmModelOverride?: string;
+    policyRules?: InvokePolicy[];
   },
 ): SessionAgent {
   return new Agent({
@@ -298,6 +300,7 @@ function createDefaultSessionAgent(
     roleRegistry: extras?.roleRegistry,
     publishEvent: extras?.publishEvent,
     mirrorProviderPaths: ["/approvals", "/tasks"],
+    policyRules: extras?.policyRules,
     ...callbacks,
   });
 }
@@ -343,6 +346,7 @@ export class SessionRuntime {
     externalAgentState?: ExternalSessionAgentState;
     llmProfileId?: string;
     llmModelOverride?: string;
+    policyRules?: InvokePolicy[];
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
@@ -463,6 +467,7 @@ export class SessionRuntime {
             publishEvent,
             llmProfileId: options?.llmProfileId,
             llmModelOverride: options?.llmModelOverride,
+            policyRules: options?.policyRules,
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);

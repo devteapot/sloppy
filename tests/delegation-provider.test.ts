@@ -305,7 +305,7 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("task-linked completed agents rely on pushed orchestration results", async () => {
+  test("deprecated task_id does not change completed agent result retrieval", async () => {
     const { provider, consumer } = createDelegationHarness();
 
     try {
@@ -325,16 +325,14 @@ describe("DelegationProvider", () => {
       expect(completed.properties).toMatchObject({
         id: agentId,
         status: "completed",
-        orchestration_task_id: "task-1234abcd",
         result_preview: 'Agent "task-worker" completed goal: Produce a final answer',
       });
-      expect((completed.affordances ?? []).map((affordance) => affordance.action)).not.toContain(
+      expect((completed.affordances ?? []).map((affordance) => affordance.action)).toContain(
         "get_result",
       );
 
       const retrieval = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
-      expect(retrieval.status).toBe("error");
-      expect(retrieval.error?.message).toContain(`No handler for get_result at /agents/${agentId}`);
+      expect(retrieval.status).toBe("ok");
     } finally {
       provider.stop();
     }

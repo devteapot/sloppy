@@ -1,10 +1,10 @@
+import { join } from "node:path";
 import type { ClientTransport } from "@slop-ai/consumer/browser";
 import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type { ProviderRuntimeHub } from "../core/hub";
 import type { RuntimeContext } from "../core/role";
 import { attachSubAgentRunnerFactory } from "../runtime/delegation";
-import { attachOrchestrationRuntime } from "../runtime/orchestration/attach";
 import type { ProviderApprovalManager } from "./approvals";
 import { BrowserProvider } from "./builtin/browser";
 import { CronProvider } from "./builtin/cron";
@@ -13,7 +13,7 @@ import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
 import { MemoryProvider } from "./builtin/memory";
 import { MessagingProvider } from "./builtin/messaging";
-import { OrchestrationProvider } from "./builtin/orchestration";
+import { MetaRuntimeProvider } from "./builtin/meta-runtime";
 import { SkillsProvider } from "./builtin/skills";
 import { SpecProvider } from "./builtin/spec";
 import { TerminalProvider } from "./builtin/terminal";
@@ -122,6 +122,8 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
   if (config.providers.builtin.skills) {
     const skills = new SkillsProvider({
       skillsDir: config.providers.skills.skillsDir,
+      globalSkillsDir: join(config.providers.metaRuntime.globalRoot, "skills"),
+      workspaceSkillsDir: join(config.providers.metaRuntime.workspaceRoot, "skills"),
     });
     providers.push({
       id: "skills",
@@ -131,6 +133,30 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => skills.stop(),
       approvals: skills.approvals,
+    });
+  }
+
+  if (config.providers.builtin.metaRuntime) {
+    const metaRuntime = new MetaRuntimeProvider({
+      globalRoot: config.providers.metaRuntime.globalRoot,
+      workspaceRoot: config.providers.metaRuntime.workspaceRoot,
+    });
+    providers.push({
+      id: "meta-runtime",
+      name: "Meta Runtime",
+      kind: "builtin",
+      transport: new InProcessTransport(metaRuntime.server),
+      transportLabel: "in-process",
+      stop: () => metaRuntime.stop(),
+      approvals: metaRuntime.approvals,
+      attachRuntime: (hub) => {
+        metaRuntime.setHub(hub);
+        return {
+          stop() {
+            metaRuntime.setHub(null);
+          },
+        };
+      },
     });
   }
 
@@ -217,35 +243,11 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => delegation.stop(),
       attachRuntime: (hub, hubConfig, ctx) => {
-        const hooks = attachSubAgentRunnerFactory(
-          delegation,
-          hub,
-          hubConfig,
-          ctx?.llmProfileManager,
-        );
-        ctx?.setDelegationHooks?.(hooks);
+        attachSubAgentRunnerFactory(delegation, hub, hubConfig, ctx?.llmProfileManager);
         return {
-          stop() {
-            ctx?.setDelegationHooks?.(null);
-          },
+          stop() {},
         };
       },
-    });
-  }
-
-  if (config.providers.builtin.orchestration) {
-    const orchestration = new OrchestrationProvider({
-      workspaceRoot: config.providers.filesystem.root,
-      progressTailMaxChars: config.providers.orchestration.progressTailMaxChars,
-    });
-    providers.push({
-      id: "orchestration",
-      name: "Orchestration",
-      kind: "builtin",
-      transport: new InProcessTransport(orchestration.server),
-      transportLabel: "in-process",
-      stop: () => orchestration.stop(),
-      attachRuntime: (hub, hubConfig, ctx) => attachOrchestrationRuntime(hub, hubConfig, ctx),
     });
   }
 

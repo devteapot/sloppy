@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -32,6 +32,13 @@ async function createSkill(
 
 function createHarness(skillsDir: string) {
   const provider = new SkillsProvider({ skillsDir });
+  const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+  return { provider, consumer };
+}
+
+function createLayeredHarness(skillsDir: string, workspaceSkillsDir: string) {
+  const provider = new SkillsProvider({ skillsDir, workspaceSkillsDir });
   const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
   return { provider, consumer };
@@ -92,6 +99,31 @@ tags: [demo]
     }
   });
 
+  test("uses scope precedence when skill names collide", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const imported = join(root, "imported");
+    const workspace = join(root, "workspace");
+    await createSkill(imported, "shared", "---\nname: shared-skill\n---", "# Imported Skill\n");
+    await createSkill(workspace, "shared", "---\nname: shared-skill\n---", "# Workspace Skill\n");
+
+    const { provider, consumer } = createLayeredHarness(imported, workspace);
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const skills = await consumer.query("/skills", 2);
+      const shared = skills.children?.filter((child) => child.properties?.name === "shared-skill");
+      expect(shared?.map((child) => child.properties?.scope)).toEqual(["workspace", "imported"]);
+
+      const viewed = await consumer.invoke("/session", "view_skill", { name: "shared-skill" });
+      expect(viewed.status).toBe("ok");
+      expect((viewed.data as { content: string }).content).toContain("# Workspace Skill");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("exposes session counts, installed names, and refresh affordance", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);
@@ -111,6 +143,7 @@ tags: [demo]
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
         "refresh_skills",
         "view_skill",
+        "propose_skill",
       ]);
     } finally {
       provider.stop();
@@ -250,6 +283,126 @@ related_skills: [helper-skill]
       const skills = await consumer.query("/skills", 2);
       expect(skills.properties?.count).toBe(0);
       expect(skills.children ?? []).toEqual([]);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("activates session skill proposals without approval", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const { provider, consumer } = createHarness(root);
+
+    try {
+      await connectAndRefresh(consumer);
+      const proposed = await consumer.invoke("/session", "propose_skill", {
+        scope: "session",
+        name: "session-skill",
+        version: "1.0.0",
+        body: "---\nname: session-skill\nversion: 1.0.0\n---\n# Session Skill\n",
+      });
+      expect(proposed.status).toBe("ok");
+      const proposalId = (proposed.data as { id: string }).id;
+      const activated = await consumer.invoke(
+        `/proposals/${proposalId}`,
+        "activate_skill_proposal",
+        {},
+      );
+      expect(activated.status).toBe("ok");
+
+      const skills = await consumer.query("/skills", 2);
+      expect(skills.children?.map((child) => child.properties?.name)).toEqual(["session-skill"]);
+      const viewed = await consumer.invoke("/session", "view_skill", { name: "session-skill" });
+      expect(viewed.status).toBe("ok");
+      expect((viewed.data as { content: string }).content).toContain("# Session Skill");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("approval-gates workspace skill proposals before writing SKILL.md", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const imported = join(root, "imported");
+    const workspace = join(root, "workspace");
+    const { provider, consumer } = createLayeredHarness(imported, workspace);
+
+    try {
+      await connectAndRefresh(consumer);
+      const body = "---\nname: workspace-skill\nversion: 1.0.0\n---\n# Workspace Skill\n";
+      const proposed = await consumer.invoke("/session", "propose_skill", {
+        scope: "workspace",
+        name: "workspace-skill",
+        version: "1.0.0",
+        body,
+      });
+      expect(proposed.status).toBe("ok");
+      const proposalId = (proposed.data as { id: string }).id;
+
+      const blocked = await consumer.invoke(
+        `/proposals/${proposalId}`,
+        "activate_skill_proposal",
+        {},
+      );
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+      const approved = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approved.status).toBe("ok");
+
+      expect(await readFile(join(workspace, "workspace-skill", "SKILL.md"), "utf8")).toBe(body);
+      await consumer.invoke("/session", "refresh_skills", {});
+      const skills = await consumer.query("/skills", 2);
+      expect(skills.children?.[0]?.properties?.scope).toBe("workspace");
+      expect(skills.children?.[0]?.properties?.name).toBe("workspace-skill");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("refuses to overwrite an existing persistent skill", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const imported = join(root, "imported");
+    const workspace = join(root, "workspace");
+    await createSkill(
+      workspace,
+      "existing-skill",
+      "---\nname: existing-skill\n---",
+      "# Original Skill\n",
+    );
+    const { provider, consumer } = createLayeredHarness(imported, workspace);
+
+    try {
+      await connectAndRefresh(consumer);
+      const proposed = await consumer.invoke("/session", "propose_skill", {
+        scope: "workspace",
+        name: "existing-skill",
+        version: "2.0.0",
+        body: "---\nname: existing-skill\nversion: 2.0.0\n---\n# Replacement Skill\n",
+      });
+      expect(proposed.status).toBe("ok");
+      const proposalId = (proposed.data as { id: string }).id;
+
+      const blocked = await consumer.invoke(
+        `/proposals/${proposalId}`,
+        "activate_skill_proposal",
+        {},
+      );
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+      const approved = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approved.status).toBe("error");
+      expect(approved.error?.message).toContain("Refusing to overwrite existing workspace skill");
+      expect(await readFile(join(workspace, "existing-skill", "SKILL.md"), "utf8")).toContain(
+        "# Original Skill",
+      );
     } finally {
       provider.stop();
     }

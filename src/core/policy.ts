@@ -17,7 +17,7 @@ export interface InvokeContext {
   /** SLOP path the affordance is being invoked on. */
   path: string;
   params: Record<string, unknown>;
-  /** Optional id of the role driving this invocation (e.g. "orchestrator"). */
+  /** Optional id of the role driving this invocation. */
   roleId?: string;
   /**
    * True when the hub is re-invoking after an approval has already been
@@ -33,11 +33,11 @@ export interface InvokeContext {
 /**
  * Per-invocation metadata threaded through `ConsumerHub.invoke` and forwarded
  * to policy rules via `InvokeContext`. Scoped per call (NOT hub-wide) so that
- * background callers like the orchestration scheduler, approval re-invokes,
- * or UI/dashboard calls do not inherit a previous caller's role/actor.
+ * background callers, approval re-invokes, or UI/dashboard calls do not inherit
+ * a previous caller's role/actor.
  */
 export interface InvocationMetadata {
-  /** Optional id of the role driving this invocation (e.g. "orchestrator"). */
+  /** Optional id of the role driving this invocation. */
   roleId?: string;
   /**
    * Optional free-form actor tag for telemetry (e.g. "scheduler", "ui").
@@ -67,7 +67,7 @@ export const allowAllPolicy: InvokePolicy = {
  * Composes an ordered list of `InvokePolicy` rules. Returns the first
  * non-`allow` decision; if all rules allow, the composite allows. Rules can
  * be added incrementally via `add` to support extensions that register their
- * own policies at runtime (e.g. role-scoped rules).
+ * own policies at runtime.
  */
 export class CompositePolicy implements InvokePolicy {
   private rules: InvokePolicy[];

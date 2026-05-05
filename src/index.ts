@@ -25,7 +25,18 @@ export { FilesystemProvider } from "./providers/builtin/filesystem";
 export { InProcessTransport } from "./providers/builtin/in-process";
 export { MemoryProvider } from "./providers/builtin/memory";
 export { MessagingProvider } from "./providers/builtin/messaging";
-export { OrchestrationProvider } from "./providers/builtin/orchestration";
+export type {
+  AgentChannel,
+  AgentNode,
+  AgentProfile,
+  CapabilityMask,
+  ExecutorBinding,
+  RouteRule,
+  SchedulerPolicy,
+  SkillVersion,
+  TopologyChange,
+} from "./providers/builtin/meta-runtime";
+export { MetaRuntimeProvider } from "./providers/builtin/meta-runtime";
 export { SkillsProvider } from "./providers/builtin/skills";
 export { SpecProvider } from "./providers/builtin/spec";
 export { TerminalProvider } from "./providers/builtin/terminal";
@@ -47,13 +58,5 @@ export {
   createAwaitChildrenHook,
   SubAgentRunner,
 } from "./runtime/delegation";
-export type { OrchestrationSchedulerEvent } from "./runtime/orchestration";
-export {
-  createOrchestratorRole,
-  OrchestrationScheduler,
-  orchestratorRole,
-  orchestratorSystemPromptFragment,
-  withOrchestratorBuiltins,
-} from "./runtime/orchestration";
 export type { AgentSessionSnapshot } from "./session";
 export { AgentSessionProvider, SessionRuntime, SessionService, SessionStore } from "./session";

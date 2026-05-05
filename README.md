@@ -33,12 +33,12 @@ Current checked-in implementation includes:
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native Gemini support
 - consumer hub for built-in and live-discovered SLOP providers
-- twelve built-in in-process providers:
+- built-in in-process providers:
   - `terminal`
   - `filesystem`
-  - `orchestration`
   - `memory`
   - `skills`
+  - `meta-runtime`
   - `browser`
   - `web`
   - `cron`
@@ -58,8 +58,8 @@ Current checked-in implementation includes:
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
-- canvas + HTML dashboard prototype under `apps/dashboard/` for visualizing orchestration files
-- durable orchestration tasks with batch DAG creation, cycle rejection, plan-scoped task visibility, spec refs, audit findings, typed handoffs, scoped child work packets, parallel-friendly coding-task dependency inference, scheduler-claimed ready tasks, pushed child results, and verification-gated completion
+- canvas + HTML dashboard prototype under `apps/dashboard/`
+- optional meta-runtime provider for agent profiles, nodes, channels, routes, route dispatch, enforced child capability masks, executor bindings, scheduler policies, skill versions, proposals, scoped storage, events, and import/export
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -124,13 +124,13 @@ The runtime now ships with a broader first-party provider surface beyond termina
 These providers are currently implemented as in-process SLOP providers:
 
 - `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
-- `skills` for discovering installed skills and reading skill content
+- `skills` for discovering installed skills, proposing new skill versions, activating session/workspace/global skill artifacts, and preventing persistent skill overwrites
+- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels with scoped persistence and child capability-mask enforcement
 - `browser` for tab state, navigation history, and simulated screenshots
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
 - `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
-- `orchestration` for durable plans, task DAGs, typed handoffs, verification, audit findings, and scoped child work packets
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 
@@ -241,12 +241,9 @@ Run the dashboard prototype:
 bun run dashboard:serve
 ```
 
-The dashboard serves `http://localhost:8787` by default. It reads active live e2e
-workspaces under the system temp directory, `.sloppy/orchestration/` from the current
-workspace, then `.sloppy-demo/.sloppy/orchestration/`. If none exist, it shows an
-empty waiting state. When a run writes `debug.log` with `SLOPPY_DEBUG=loop,orchestration,sub-agent`
-or `SLOPPY_DEBUG=all`, the dashboard also visualizes model turns, tool calls,
-provider state updates, sub-agent transitions, and filesystem read/write flow.
+The dashboard serves `http://localhost:8787` by default. It is currently a
+developer prototype and should move toward consuming the public session/provider
+surface directly.
 
 ## Config
 
@@ -276,7 +273,7 @@ tui:
     leader: ctrl+x
 ```
 
-Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `orchestration`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
+Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
 
 ```yaml
 providers:
@@ -284,10 +281,12 @@ providers:
     web: true
     browser: true
     vision: true
-    # orchestrator role bundle:
     delegation: true
-    orchestration: true
+    metaRuntime: true
     spec: true
+  metaRuntime:
+    globalRoot: ~/.sloppy/meta-runtime
+    workspaceRoot: .sloppy/meta-runtime
 ```
 
 Delegation can also launch configured Agent Client Protocol agents as child sessions while preserving the same SLOP session surface:
@@ -306,8 +305,6 @@ providers:
 
 Then use `execution_mode: "acp:gemini"` on `delegation.spawn_agent`; omitted execution mode still uses the native Sloppy sub-agent.
 
-When using the orchestrator role programmatically, the `withOrchestratorBuiltins(config)` helper flips `delegation`, `orchestration`, and `spec` on for you.
-
 Provider defaults:
 
 - `anthropic` -> `ANTHROPIC_API_KEY`
@@ -320,8 +317,7 @@ You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `S
 
 The agent loop defaults to 32 model/tool iterations. For longer runs, set
 `agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
-run. The orchestration demo uses at least 60 iterations because multi-agent
-plans naturally need more turns than a normal chat.
+run.
 
 Managed profile metadata is stored in `~/.sloppy/config.yaml`.
 
@@ -331,7 +327,7 @@ API keys are not written to YAML:
 - Linux stores them in Secret Service via `secret-tool`
 - environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
-- one-shot orchestration entrypoints that are explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
+- one-shot runs explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
 
 The current TUI uses the session provider's `/llm` state to onboard and manage profiles, and its `/apps` state to surface external provider attachment status.
 

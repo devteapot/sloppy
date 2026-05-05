@@ -32,7 +32,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
-      orchestration: false,
+      metaRuntime: false,
       spec: false,
       vision: false,
     },
@@ -54,7 +54,7 @@ const TEST_CONFIG: SloppyConfig = {
     cron: { maxJobs: 50 },
     messaging: { maxMessages: 500 },
     delegation: { maxAgents: 10 },
-    orchestration: { progressTailMaxChars: 2048 },
+    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
     vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
   },
 };
@@ -99,8 +99,8 @@ const stubLlmProfileManager = {
   }),
 } as unknown as import("../src/llm/profile-manager").LlmProfileManager;
 
-describe("kernel boundary: sub-agent runs without orchestration provider", () => {
-  test("SubAgentRunner runs without a TaskContext when orchestration is not registered", async () => {
+describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
+  test("SubAgentRunner passes the delegated goal through unchanged", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-boundary-"));
     try {
       const config: SloppyConfig = {
@@ -124,7 +124,6 @@ describe("kernel boundary: sub-agent runs without orchestration provider", () =>
         parentHub: hub,
         parentConfig: config,
         llmProfileManager: stubLlmProfileManager,
-        // No taskContext - should run cleanly with the bare goal as prompt.
         agentFactory: (callbacks) => ({
           async start() {},
           async chat(userMessage: string) {
@@ -163,7 +162,6 @@ describe("kernel boundary: sub-agent runs without orchestration provider", () =>
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
 
-      // Bare goal should be passed through unchanged when no TaskContext.
       expect(capturedPrompt).toBe("boundary goal");
       expect(observed).toContain("completed");
       expect(observed).not.toContain("failed");

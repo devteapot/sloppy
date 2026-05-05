@@ -27,6 +27,7 @@ function buildConfig(overrides?: {
       filesystem: {} as SloppyConfig["providers"]["filesystem"],
       memory: {} as SloppyConfig["providers"]["memory"],
       skills: {} as SloppyConfig["providers"]["skills"],
+      metaRuntime: {} as SloppyConfig["providers"]["metaRuntime"],
       web: {} as SloppyConfig["providers"]["web"],
       browser: {} as SloppyConfig["providers"]["browser"],
       cron: {} as SloppyConfig["providers"]["cron"],
@@ -35,7 +36,6 @@ function buildConfig(overrides?: {
         maxAgents: 10,
         acp: overrides?.acp,
       },
-      orchestration: {} as SloppyConfig["providers"]["orchestration"],
       vision: {} as SloppyConfig["providers"]["vision"],
     },
   } as SloppyConfig;
@@ -64,9 +64,9 @@ describe("ExecutorResolver", () => {
 
   test("llm binding with unknown profileId throws", () => {
     const resolver = new ExecutorResolver({ config: buildConfig() });
-    expect(() =>
-      resolver.resolve({ kind: "llm", profileId: "missing" }),
-    ).toThrow(LlmConfigurationError);
+    expect(() => resolver.resolve({ kind: "llm", profileId: "missing" })).toThrow(
+      LlmConfigurationError,
+    );
   });
 
   test("acp binding resolves to adapter when enabled", () => {

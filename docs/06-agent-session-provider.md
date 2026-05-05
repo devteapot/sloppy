@@ -7,9 +7,8 @@ Define the public SLOP shape for one running Sloppy agent session.
 This provider is the boundary that first-party and third-party UIs should consume.
 
 Current first-party consumers are the Go TUI under `apps/tui/` and a read-only
-canvas/HTML dashboard prototype under `apps/dashboard/`. The dashboard currently
-visualizes `.sloppy/orchestration/` files directly and should move to this
-provider plus the orchestration provider surface when the browser bridge lands.
+canvas/HTML dashboard prototype under `apps/dashboard/`. The dashboard should
+move toward consuming this provider plus public provider surfaces directly.
 
 It is intentionally session-scoped:
 
@@ -66,7 +65,6 @@ The root tree should expose these top-level children:
 - `/activity`
 - `/approvals`
 - `/tasks`
-- `/orchestration`
 - `/apps`
 
 These paths are intentionally small and human-meaningful so UIs can subscribe shallowly and deepen only where needed.
@@ -95,7 +93,6 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
     [item] approval-1 (status="pending", provider="terminal", path="/session", action="execute", reason="Command marked dangerous")  actions: {approve, reject}
   [collection] tasks
     [item] task-1 (status="running", provider="terminal", provider_task_id="task-123", message="Running tests")  actions: {cancel}
-  [status] orchestration (available=true, plan_status="active", pending_gate_count=1, pending_gates=[...], final_audit_status="failed", active_slice_count=2)  actions: {accept_gate, reject_gate}
   [collection] apps
     [item] native-notes (name="Native Notes", transport="unix:/tmp/slop/native-notes.sock", status="connected", last_error=null)
 ```
@@ -485,64 +482,6 @@ Rules:
 - session task ids may differ from downstream provider task ids
 - if the downstream invoke returned `accepted`, a task node should appear promptly so UIs can subscribe and render progress
 
-### `/orchestration`
-
-Node type: `status`
-
-Purpose:
-
-- expose an actionable summary of docs/12 orchestration state without mirroring every artifact collection
-- let UIs see whether a plan is active, gates are pending, slices are moving, and the final audit is blocked or failed
-
-Required props:
-
-- `available`: boolean indicating whether orchestration state is currently mirrored
-- `pending_gate_count`: number
-- `pending_gates`: first 5 open gates mirrored from orchestration `/gates`, sorted by `created_at`
-- `active_slice_count`: number
-- `completed_slice_count`: number
-- `failed_slice_count`: number
-- `final_audit_status`: `passed | failed | none`
-- `updated_at`: ISO timestamp
-
-Optional props:
-
-- `provider`: downstream orchestration provider id
-- `plan_id`
-- `plan_status`
-- `plan_version`
-- `final_audit_id`
-- `latest_blocking_gate_id`
-- `latest_blocking_gate_type`
-- `latest_blocking_gate_summary`
-
-Each `pending_gates` entry:
-
-- `id`: session-scoped gate id to pass to `accept_gate` or `reject_gate`
-- `source_gate_id`: downstream orchestration gate id
-- `gate_type`
-- `status`: currently `open`
-- `subject_ref`
-- `summary`
-- `evidence_refs`
-- `created_at`
-- `version`: downstream gate version when available
-- `can_accept`
-- `can_reject`
-
-Affordances:
-
-- `accept_gate(gate_id, resolution?)`
-- `reject_gate(gate_id, resolution?)`
-
-Rules:
-
-- this is a compact session summary, not a full `/goals`, `/gates`, `/messages`, or `/audit` mirror
-- gate resolution forwards to `/gates/{source_gate_id}.resolve_gate` on the mirrored orchestration provider and includes `expected_version` when available
-- UIs that need full artifact details, historical gates beyond the first 5 open entries, messages, audit records, or blobs should query the orchestration provider directly
-
----
-
 ## Affordance Contracts
 
 ### `send_message`
@@ -592,21 +531,6 @@ Behavior:
 1. forward cancellation to the downstream provider task when supported
 2. patch the task item as the downstream provider reports progress
 
-### `accept_gate` and `reject_gate`
-
-Target path:
-
-- `/orchestration`
-
-Behavior:
-
-1. look up the session-scoped gate id in `pending_gates`
-2. invoke downstream `/gates/{source_gate_id}.resolve_gate`
-3. pass `status=accepted` or `status=rejected`, optional `resolution`, and `expected_version` when mirrored
-4. return an error without invoking downstream if the gate is unknown, no longer open, missing a downstream provider, missing a source id, or not currently actionable
-
----
-
 ## Lifecycle Rules
 
 ### Turn lifecycle
@@ -645,7 +569,7 @@ This provider is intentionally shared across all consumers attached to the same 
 
 That means:
 
-- all consumers see the same transcript, turn state, approvals, activity, tasks, and orchestration summary
+- all consumers see the same transcript, turn state, approvals, activity, and tasks
 - actions invoked by one consumer are reflected to all others through patches
 - no client gets a private draft or pane state inside the session tree
 
@@ -654,7 +578,6 @@ Concurrency rules for v1:
 - only one active turn at a time per session
 - `send_message` during an active turn should return an error instead of queueing
 - if two clients race to approve or reject the same approval, only the first successful resolution should win
-- if two clients race to resolve the same orchestration gate, the downstream gate version decides the winner
 
 Authentication and authorization policy are intentionally left outside this document. The provider shape should work whether all attached clients are trusted or an outer layer enforces access control.
 

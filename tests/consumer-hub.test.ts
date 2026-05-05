@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { createSlopServer } from "@slop-ai/server";
+import { action, createSlopServer } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
@@ -47,7 +47,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
-      orchestration: false,
+      metaRuntime: false,
       spec: false,
       vision: false,
     },
@@ -93,9 +93,7 @@ const TEST_CONFIG: SloppyConfig = {
     delegation: {
       maxAgents: 10,
     },
-    orchestration: {
-      progressTailMaxChars: 2048,
-    },
+    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
     vision: {
       maxImages: 50,
       defaultWidth: 512,
@@ -236,7 +234,25 @@ describe("ConsumerHub", () => {
 
     try {
       await hub.connect();
-      await hub.addProvider(createProvider("demo", "Demo"));
+      const server = createSlopServer({ id: "demo", name: "Demo" });
+      server.register("workspace", () => ({
+        type: "collection",
+        actions: {
+          noop: action(async () => ({ ok: true }), {
+            label: "Noop",
+            description: "No-op test action.",
+            estimate: "instant",
+          }),
+        },
+      }));
+      await hub.addProvider({
+        id: "demo",
+        name: "Demo",
+        kind: "external",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process:test",
+        stop: () => server.stop(),
+      });
 
       const { CompositePolicy, PolicyDeniedError } = await import("../src/core/policy");
 
@@ -283,6 +299,46 @@ describe("ConsumerHub", () => {
     } finally {
       hub.shutdown();
     }
+  });
+
+  test("capability mask policy enforces allow and deny masks", async () => {
+    const { capabilityMaskRule } = await import("../src/core/capability-policy");
+    const baseContext = {
+      providerId: "demo",
+      path: "/workspace",
+      params: {},
+      config: TEST_CONFIG,
+    };
+
+    const allowRule = capabilityMaskRule([
+      {
+        id: "allow-demo-noop",
+        provider: "demo",
+        actions: ["noop"],
+        mode: "allow",
+      },
+    ]);
+    expect(await allowRule.evaluate({ ...baseContext, action: "noop" })).toEqual({
+      kind: "allow",
+    });
+    expect(await allowRule.evaluate({ ...baseContext, action: "missing" })).toMatchObject({
+      kind: "deny",
+      reason:
+        "No capability mask allows demo:missing on /workspace. Active allow masks: demo:noop /*.",
+    });
+
+    const denyRule = capabilityMaskRule([
+      {
+        id: "deny-demo-noop",
+        provider: "demo",
+        actions: ["noop"],
+        mode: "deny",
+      },
+    ]);
+    expect(await denyRule.evaluate({ ...baseContext, action: "noop" })).toMatchObject({
+      kind: "deny",
+      reason: "Capability mask deny-demo-noop denies demo:noop on /workspace.",
+    });
   });
 
   test("records dangerous affordances into the registry as trees are observed", async () => {

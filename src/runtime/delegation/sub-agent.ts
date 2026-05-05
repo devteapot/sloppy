@@ -1,7 +1,7 @@
 import type { SloppyConfig } from "../../config/schema";
+import { capabilityMaskRule, type RuntimeCapabilityMask } from "../../core/capability-policy";
 import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import type { TaskContext } from "../../core/role";
 import type { LlmProfileManager } from "../../llm/profile-manager";
 import { InProcessTransport } from "../../providers/builtin/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
@@ -36,13 +36,11 @@ export interface SubAgentRunnerOptions {
   llmModelOverride?: string;
   requiresLlmProfile?: boolean;
   externalAgentState?: ExternalSessionAgentState;
+  capabilityMasks?: RuntimeCapabilityMask[];
   providerIdPrefix?: string;
-  taskContext?: TaskContext;
   /**
    * Optional list of builtin provider keys (matching `config.providers.builtin`)
-   * to force-disable in the child runtime. Lets callers strip planning-layer
-   * planning-layer providers so sub-agents can't recurse, without the
-   * kernel naming any specific planner.
+   * to force-disable in the child runtime.
    */
   disableBuiltinProviders?: string[];
 }
@@ -63,7 +61,6 @@ export class SubAgentRunner {
   private errorMessage?: string;
   private completedAt?: string;
   private registered = false;
-  private taskContext?: TaskContext;
   private sawTurnInFlight = false;
 
   constructor(options: SubAgentRunnerOptions) {
@@ -71,15 +68,12 @@ export class SubAgentRunner {
     this.name = options.name;
     this.goal = options.goal;
     this.parentHub = options.parentHub;
-    this.taskContext = options.taskContext;
     this.sessionProviderId = `${options.providerIdPrefix ?? "sub-agent"}-${options.id}`;
 
     // Sub-agents do leaf work. Strip planning-layer providers (named by the
-    // caller via `disableBuiltinProviders`) so they can't re-enter planning
-    // mode and recurse. The child runtime is constructed with the default
-    // role, so any role-level system prompt and tool policy do not apply.
-    // The parent hub still federates the child's session tree back via
-    // AgentSessionProvider.
+    // caller via `disableBuiltinProviders`) when a parent wants a narrower
+    // child runtime. The child runtime is constructed with the default role,
+    // and the parent hub federates its session tree back via AgentSessionProvider.
     const disableSet = new Set(options.disableBuiltinProviders ?? []);
     // The delegation provider is always disabled to prevent recursive spawning.
     disableSet.add("delegation");
@@ -107,6 +101,10 @@ export class SubAgentRunner {
       llmModelOverride: options.llmModelOverride,
       requiresLlmProfile: options.requiresLlmProfile,
       externalAgentState: options.externalAgentState,
+      policyRules:
+        options.capabilityMasks && options.capabilityMasks.length > 0
+          ? [capabilityMaskRule(options.capabilityMasks)]
+          : undefined,
       parentActorId: "parent",
     });
 
@@ -160,23 +158,11 @@ export class SubAgentRunner {
         registered: added,
       });
 
-      if (this.taskContext) {
-        await this.taskContext.ensureTask();
-        // Record the task-level start BEFORE kicking off the turn so that a
-        // fast-completing child doesn't race ahead of the lifecycle gate.
-        await this.taskContext.recordTransition("start");
-      }
       this.transition("running");
-      const prompt = this.taskContext
-        ? await this.taskContext.buildInitialPrompt(this.goal)
-        : this.goal;
-      await this.runtime.sendMessage(prompt);
+      await this.runtime.sendMessage(this.goal);
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error);
       this.completedAt = new Date().toISOString();
-      if (this.taskContext) {
-        await this.taskContext.recordFailure(this.errorMessage);
-      }
       this.transition("failed");
     }
   }
@@ -193,9 +179,6 @@ export class SubAgentRunner {
     }
 
     this.completedAt = new Date().toISOString();
-    if (this.taskContext) {
-      await this.taskContext.recordTransition("cancel");
-    }
     this.transition("cancelled");
     this.teardown();
   }
@@ -250,9 +233,6 @@ export class SubAgentRunner {
     if (turnState === "error") {
       this.errorMessage = snapshot.turn.lastError ?? "Sub-agent turn failed.";
       this.completedAt = new Date().toISOString();
-      if (this.taskContext) {
-        void this.taskContext.recordFailure(this.errorMessage);
-      }
       this.transition("failed");
       this.teardown();
       return;
@@ -276,9 +256,6 @@ export class SubAgentRunner {
       }
 
       this.completedAt = new Date().toISOString();
-      if (this.taskContext) {
-        void this.taskContext.recordCompletion(this.resultText);
-      }
       this.transition("completed");
       this.teardown();
     }

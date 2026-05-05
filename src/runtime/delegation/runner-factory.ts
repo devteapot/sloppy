@@ -1,6 +1,5 @@
 import type { SloppyConfig } from "../../config/schema";
 import type { ProviderRuntimeHub } from "../../core/hub";
-import type { DelegationRuntimeHooks, TaskContextFactory } from "../../core/role";
 import type { LlmProfileManager } from "../../llm/profile-manager";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";
@@ -13,11 +12,10 @@ export function attachSubAgentRunnerFactory(
   hub: ProviderRuntimeHub,
   config: SloppyConfig,
   llmProfileManager?: LlmProfileManager,
-): DelegationRuntimeHooks {
+): void {
   delegation.setParentHub(hub);
 
   const resolver = new ExecutorResolver({ config });
-  let taskContextFactory: TaskContextFactory | null = null;
 
   delegation.setRunnerFactory((spawn, callbacks) => {
     const executor = resolver.resolve(spawn.executor);
@@ -53,12 +51,6 @@ export function attachSubAgentRunnerFactory(
       llmModelOverride = executor.modelOverride;
     }
 
-    const taskContext = taskContextFactory?.({
-      id: spawn.id,
-      name: spawn.name,
-      goal: spawn.goal,
-      externalTaskId: spawn.externalTaskId,
-    });
     const runner = new SubAgentRunner({
       id: spawn.id,
       name: spawn.name,
@@ -71,10 +63,7 @@ export function attachSubAgentRunnerFactory(
       llmModelOverride,
       requiresLlmProfile,
       externalAgentState,
-      taskContext,
-      disableBuiltinProviders: taskContext?.disableBuiltinProviders
-        ? [...taskContext.disableBuiltinProviders]
-        : undefined,
+      capabilityMasks: spawn.capabilityMasks,
     });
     const unsubscribe = runner.onChange((event) => {
       callbacks.onUpdate({
@@ -101,10 +90,4 @@ export function attachSubAgentRunnerFactory(
       },
     };
   });
-
-  return {
-    setTaskContextFactory(factory) {
-      taskContextFactory = factory;
-    },
-  };
 }

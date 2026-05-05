@@ -51,7 +51,7 @@ const TEST_CONFIG: SloppyConfig = {
       cron: false,
       messaging: false,
       delegation: false,
-      orchestration: false,
+      metaRuntime: false,
       spec: false,
       vision: false,
     },
@@ -97,9 +97,7 @@ const TEST_CONFIG: SloppyConfig = {
     delegation: {
       maxAgents: 10,
     },
-    orchestration: {
-      progressTailMaxChars: 2048,
-    },
+    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
     vision: {
       maxImages: 50,
       defaultWidth: 512,

@@ -23,8 +23,8 @@
 - State observation is primary; affordance invocation is secondary.
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes built-in `terminal`, `filesystem`, `orchestration`, `spec`, and `delegation` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, an optional ACP-backed `SessionAgent` path for delegated third-party child agents, and a managed LLM-profile layer with secure credential storage for macOS and Linux. The orchestration provider supports durable plan-scoped task DAGs, cycle rejection, spec refs, audit findings, typed handoffs, scoped child work packets, parallel-friendly dependency inference for common coding plans, scheduler-claimed ready tasks, pushed child results, and verification-gated completion.
-- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, a Go TUI under `apps/tui/` that can onboard/manage LLM profiles and inspect external app attachment state, and a read-only canvas/HTML dashboard prototype under `apps/dashboard/` that visualizes orchestration files.
+- The current implementation includes built-in `terminal`, `filesystem`, `memory`, `skills`, `meta-runtime`, `spec`, and `delegation` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, an optional ACP-backed `SessionAgent` path for delegated third-party child agents, and a managed LLM-profile layer with secure credential storage for macOS and Linux. The `meta-runtime` provider supports typed proposals for agent profiles, nodes, channels, routes, capability masks, executor bindings, scheduler policies, and skill versions, with scoped global/workspace/session storage and capability-mask enforcement in delegated child runtimes.
+- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, a Go TUI under `apps/tui/` that can onboard/manage LLM profiles and inspect external app attachment state, and a canvas/HTML dashboard prototype under `apps/dashboard/`.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -82,7 +82,6 @@ src/
   runtime/
     acp/
     delegation/
-    orchestration/
   session/
 tests/
 docs/
@@ -92,6 +91,8 @@ docs/
 - Everything is a SLOP provider.
 - Prefer state-first design over tool-first design.
 - Keep the core small; push capability-specific logic into providers.
+- Do not add built-in orchestration DAGs, schedulers, or task-lifecycle hooks to core.
+- Model agent-to-agent restructuring through SLOP provider state such as `meta-runtime`, not privileged runtime branches.
 - Prefer live subscriptions and patches over repeated polling.
 - Use protocol vocabulary consistently: `provider`, `consumer`, `state tree`, `affordance`, `snapshot`, `patch`, `query`, `invoke`, `salience`, `summary`.
 - Do not reintroduce MCP-style flat tool catalogs into the core architecture.

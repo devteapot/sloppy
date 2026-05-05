@@ -1,4 +1,5 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+import type { RuntimeCapabilityMask } from "../../core/capability-policy";
 import { debug } from "../../core/debug";
 import type { ProviderRuntimeHub } from "../../core/hub";
 import {
@@ -13,12 +14,7 @@ export type DelegationAgentSpawn = {
   name: string;
   goal: string;
   executor?: ExecutorBinding;
-  /**
-   * Opaque external task id supplied by whoever requested the spawn (e.g. an
-   * orchestrator). The delegation provider passes it through unchanged; only
-   * extensions that recognize it (via a TaskContext factory) interpret it.
-   */
-  externalTaskId?: string;
+  capabilityMasks?: RuntimeCapabilityMask[];
 };
 
 export type DelegationAgentUpdate = {
@@ -47,7 +43,7 @@ type DelegationAgent = {
   goal: string;
   status: AgentStatus;
   executor?: ExecutorBinding;
-  externalTaskId?: string;
+  capabilityMasks?: RuntimeCapabilityMask[];
   result?: string;
   error?: string;
   session_provider_id?: string;
@@ -293,8 +289,8 @@ export class DelegationProvider {
   private spawnAgent(
     name: string,
     goal: string,
-    externalTaskId?: string,
     executor?: ExecutorBinding,
+    capabilityMasks?: RuntimeCapabilityMask[],
   ): {
     id: string;
     status: AgentStatus;
@@ -318,7 +314,7 @@ export class DelegationProvider {
       goal,
       status: "pending",
       executor,
-      externalTaskId,
+      capabilityMasks,
       created_at,
     };
     this.agents.set(id, agent);
@@ -330,7 +326,7 @@ export class DelegationProvider {
     });
 
     const runner = this.runnerFactory(
-      { id, name, goal, executor, externalTaskId },
+      { id, name, goal, executor, capabilityMasks },
       {
         onUpdate: (update) => {
           const current = this.agents.get(id);
@@ -446,7 +442,7 @@ export class DelegationProvider {
             task_id: {
               type: "string",
               description:
-                "Optional orchestration task id (e.g. task-abcd1234) to attach to. If set, the sub-agent updates that task's lifecycle instead of creating a new one. Use this to execute a task you already planned via /orchestration.create_task.",
+                "Deprecated compatibility field. Delegation no longer attaches sub-agents to runtime-owned task records.",
               optional: true,
             },
             executor: {
@@ -462,15 +458,23 @@ export class DelegationProvider {
                 timeoutMs: { type: "number", optional: true },
               },
             },
+            capabilityMasks: {
+              type: "array",
+              description:
+                "Optional capability masks enforced by child agent hub policy. Shape: [{ id, provider?, path?, actions?, mode: 'allow'|'deny' }].",
+              optional: true,
+            },
           },
-          async ({ name, goal, task_id, executor }) =>
+          async ({ name, goal, executor, capabilityMasks }) =>
             this.spawnAgent(
               name as string,
               goal as string,
-              typeof task_id === "string" ? task_id : undefined,
               executor === undefined || executor === null
                 ? undefined
                 : executorBindingSchema.parse(executor),
+              Array.isArray(capabilityMasks)
+                ? (capabilityMasks as RuntimeCapabilityMask[])
+                : undefined,
             ),
           {
             label: "Spawn Agent",
@@ -497,7 +501,7 @@ export class DelegationProvider {
         model: describeExecutorModel(agent.executor),
         execution_mode: describeExecutionMode(agent.executor),
         executor: agent.executor,
-        orchestration_task_id: agent.externalTaskId,
+        capability_masks: agent.capabilityMasks,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
@@ -506,7 +510,7 @@ export class DelegationProvider {
         pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
       },
       actions: {
-        ...(agent.status === "completed" && !agent.externalTaskId
+        ...(agent.status === "completed"
           ? {
               get_result: action(async () => this.getResult(agent.id), {
                 label: "Get Result",

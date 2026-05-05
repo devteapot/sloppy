@@ -16,48 +16,6 @@ export type RuntimeEvent = {
 };
 
 /**
- * Hooks provided by the delegation runtime so other extensions (e.g. the
- * orchestration provider) can wire task-aware behavior into spawned
- * sub-agents without the delegation runtime needing to know about them.
- */
-export interface DelegationRuntimeHooks {
-  setTaskContextFactory(factory: TaskContextFactory | null): void;
-}
-
-/**
- * Minimal metadata about an upcoming sub-agent spawn that an extension can
- * use to decide whether to attach a `TaskContext`.
- */
-export interface TaskContextSpawnInfo {
-  id: string;
-  name: string;
-  goal: string;
-  externalTaskId?: string;
-}
-
-/**
- * Optional context an extension provides to a sub-agent spawn. The sub-agent
- * runner uses this to build the initial prompt and report lifecycle
- * transitions back to whatever owns the task (e.g. an orchestrator).
- */
-export interface TaskContext {
-  buildInitialPrompt(goal: string): Promise<string>;
-  recordTransition(action: "start" | "cancel" | "start_verification"): Promise<void>;
-  recordCompletion(result: string | undefined): Promise<void>;
-  recordFailure(error: string): Promise<void>;
-  ensureTask(): Promise<void>;
-  /**
-   * Optional list of builtin provider keys to disable in the spawned
-   * sub-agent's child config. Lets the extension owning the task (e.g. an
-   * orchestrator) strip planning-layer providers so the child can't recurse,
-   * without the kernel sub-agent runner naming any specific planner.
-   */
-  disableBuiltinProviders?: readonly string[];
-}
-
-export type TaskContextFactory = (spawn: TaskContextSpawnInfo) => TaskContext | undefined;
-
-/**
  * Context passed to extensions' `attachRuntime` hooks. Provides the kernel
  * services an extension may need without coupling the kernel to any specific
  * extension type.
@@ -69,10 +27,6 @@ export interface RuntimeContext {
   publishEvent: (event: RuntimeEvent) => void;
   /** Registry where extensions can register role factories by id. */
   roleRegistry: RoleRegistry;
-  /** Hooks exposed by the delegation runtime, when present. */
-  delegationHooks?: DelegationRuntimeHooks;
-  /** Setter delegation runtime uses to expose its hooks. */
-  setDelegationHooks?: (hooks: DelegationRuntimeHooks | null) => void;
   /**
    * The agent's LlmProfileManager. Exposed so providers (e.g. delegation) can
    * construct executor resolvers and spawn sub-agents bound to a specific

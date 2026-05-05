@@ -62,13 +62,13 @@ describe("createAgentEventBus", () => {
     expect(records[1].paramsPreview).toBe(records[0].paramsPreview);
   });
 
-  test("logs task state transitions from task snapshots once per version", async () => {
+  test("logs task state transitions from provider task snapshots once per version", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-events-"));
     tempPaths.push(root);
     const logPath = join(root, "events.jsonl");
     const eventBus = createAgentEventBus({
       logPath,
-      actor: { id: "orchestrator", name: "Orchestrator", kind: "orchestrator" },
+      actor: { id: "agent-1", name: "Agent", kind: "agent" },
     });
 
     const snapshot = {
@@ -89,12 +89,12 @@ describe("createAgentEventBus", () => {
     };
 
     eventBus.callbacks.onProviderSnapshot?.({
-      providerId: "orchestration",
+      providerId: "delegation",
       path: "/tasks",
       tree: snapshot,
     });
     eventBus.callbacks.onProviderSnapshot?.({
-      providerId: "orchestration",
+      providerId: "delegation",
       path: "/tasks",
       tree: snapshot,
     });
@@ -107,7 +107,7 @@ describe("createAgentEventBus", () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       kind: "task_state",
-      providerId: "orchestration",
+      providerId: "delegation",
       taskId: "task-12345678",
       taskName: "build",
       status: "verifying",
@@ -121,7 +121,7 @@ describe("createAgentEventBus", () => {
     const logPath = join(root, "events.jsonl");
     const eventBus = createAgentEventBus({
       logPath,
-      actor: { id: "orchestrator", name: "Orchestrator", kind: "orchestrator" },
+      actor: { id: "meta-manager", name: "Meta Manager", kind: "agent" },
     });
 
     eventBus.publish({
