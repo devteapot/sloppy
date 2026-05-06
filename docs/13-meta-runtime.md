@@ -47,6 +47,7 @@ The provider exposes:
 /experiments
 /evaluations
 /proposals
+/patterns
 /events
 /approvals
 ```
@@ -55,10 +56,18 @@ The provider exposes:
 
 - `propose_change`
 - `dispatch_route`
+- `analyze_runtime_trace`
+- `prepare_architect_brief`
+- `start_architect_cycle`
+- `derive_proposals_from_events`
+- `start_evolution_cycle`
 - `create_experiment`
 - `record_evaluation`
+- `record_experiment_evidence`
 - `promote_experiment`
 - `rollback_experiment`
+- `archive_topology_pattern`
+- `propose_from_pattern`
 - `export_state`
 - `import_state`
 
@@ -149,6 +158,12 @@ envelope body. If multiple routes match, higher `priority` wins, then route id
 breaks ties. `dispatch_route` can run in single-target mode or `fanout` mode,
 which delivers the same envelope to every matching route.
 
+Routes may also include `traffic.sampleRate` between `0` and `1`. The matcher
+uses a deterministic bucket from route id and envelope id, so agents can propose
+session canary routes without adding a scheduler or privileged runtime branch.
+`traffic.experimentId` is optional metadata that links a canary route to the
+experiment it is intended to evaluate.
+
 Agent dispatch invokes `delegation.spawn_agent` with:
 
 - the target profile name
@@ -161,7 +176,24 @@ Channel dispatch invokes `messaging.channels/<id>.send` with both the envelope
 body and typed envelope. The source must be a channel participant.
 
 Dispatch records `route.dispatched` only after the provider call succeeds. A
-provider error records `route.failed` and returns an unrouted result.
+provider error or invalid target records `route.failed` and returns an unrouted
+result. `derive_proposals_from_events` inspects recent events and creates normal
+topology proposals for recognized failure patterns. It can repair channel
+membership, retarget a failing agent route to a generated fallback specialist,
+create a triage specialist for repeated unmatched traffic, or quarantine a route
+when no targeted repair is recognized. `start_evolution_cycle` runs the same
+trace-derived synthesis and attaches each proposal to a session experiment. This
+is deliberately not a privileged repair loop: the derived change still goes
+through proposal, approval, and experiment affordances like any other topology
+mutation.
+
+The more general self-evolution path is agent-authored. `analyze_runtime_trace`
+returns coordination smells from recent SLOP events. `prepare_architect_brief`
+turns that trace analysis into a prompt and affordance map for a normal agent.
+`start_architect_cycle` spawns that runtime architect through the `delegation`
+provider; the child agent must use the ordinary SLOP affordances to propose
+topology changes and create experiments. The meta-runtime remains a validator,
+event log, and proposal/experiment host rather than a hidden orchestrator.
 
 ## Experiments
 
@@ -179,8 +211,19 @@ against a single best run. `promote_experiment` applies the linked proposal only
 after recorded evaluations meet the criteria and requests approval before
 applying privileged or persistent changes. `rollback_experiment` records
 rollback lineage and applies a provided rollback proposal when it is still
-pending. The provider still does not schedule or judge the experiment itself;
-agents and evaluators supply observations through SLOP affordances.
+pending. `start_evolution_cycle` can create candidate experiments from recent
+runtime traces. `record_experiment_evidence` can also score a candidate from
+observed route events before and after the proposal pivot. Agents may still
+record richer external evidence through `record_evaluation`.
+
+## Topology Patterns
+
+Promoted experiments can be archived as reusable topology patterns with
+`archive_topology_pattern`. A pattern stores the applied proposal operations,
+the source experiment/proposal, tags, and the latest recorded evidence. Agents
+can call `propose_from_pattern` to instantiate the pattern as a normal topology
+proposal in a chosen scope. Pattern reuse does not bypass validation, approvals,
+or experiment promotion.
 
 ## Capability Masks
 

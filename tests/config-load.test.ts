@@ -181,4 +181,39 @@ describe("loadConfig", () => {
 
     expect(config.agent.maxIterations).toBe(80);
   });
+
+  test("loads ACP adapter capabilities with conservative defaults", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  delegation:",
+        "    acp:",
+        "      enabled: true",
+        "      adapters:",
+        "        fake:",
+        '          command: ["fake-acp"]',
+        "          capabilities:",
+        "            shell_allowed: true",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.delegation.acp?.adapters.fake.capabilities).toEqual({
+      spawn_allowed: false,
+      shell_allowed: true,
+      network_allowed: false,
+      filesystem_reads_allowed: true,
+      filesystem_writes_allowed: false,
+    });
+  });
 });

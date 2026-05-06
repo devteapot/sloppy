@@ -38,6 +38,10 @@ export type RouteRule = {
   target: string;
   enabled: boolean;
   priority?: number;
+  traffic?: {
+    sampleRate?: number;
+    experimentId?: string;
+  };
 };
 
 export type ExecutorBinding = {
@@ -78,6 +82,20 @@ export type TopologyExperiment = {
   parentExperimentId?: string;
   rollbackProposalId?: string;
   promotionCriteria?: ExperimentPromotionCriteria;
+};
+
+export type TopologyPattern = {
+  id: string;
+  scope: MetaScope;
+  name: string;
+  summary?: string;
+  sourceExperimentId: string;
+  sourceProposalId: string;
+  ops: TopologyChange[];
+  tags?: string[];
+  evidence?: Record<string, unknown>;
+  createdAt: string;
+  usageCount?: number;
 };
 
 export type ExperimentEvaluation = {
@@ -121,7 +139,9 @@ export type MetaEvent = {
   kind: string;
   scope: MetaScope;
   proposalId?: string;
+  routeId?: string;
   summary: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 };
 
@@ -136,6 +156,7 @@ export type PersistedState = {
   experiments?: TopologyExperiment[];
   evaluations?: ExperimentEvaluation[];
   proposals?: Proposal[];
+  patterns?: TopologyPattern[];
   events?: MetaEvent[];
 };
 

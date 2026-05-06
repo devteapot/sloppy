@@ -5,6 +5,7 @@ import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";
 import { AcpSessionAgent } from "../acp";
 import { CliSessionAgent } from "../cli";
+import { assertAcpSpawnAllowed } from "./acp-capabilities";
 import { ExecutorResolver } from "./executor-resolver";
 import { SubAgentRunner } from "./sub-agent";
 
@@ -31,6 +32,12 @@ export function attachSubAgentRunnerFactory(
       const adapter = executor.adapter;
       const adapterId = executor.adapterId;
       const adapterTimeoutMs = executor.timeoutMs ?? executor.defaultTimeoutMs;
+      assertAcpSpawnAllowed({
+        adapterId,
+        adapter,
+        capabilityMasks: spawn.capabilityMasks,
+        routeEnvelope: spawn.routeEnvelope,
+      });
       agentFactory = (agentCallbacks) =>
         new AcpSessionAgent({
           adapterId,

@@ -16,8 +16,20 @@ providers:
       adapters:
         claude:
           command: ["claude-agent-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
         codex:
           command: ["codex-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
     cli:
       enabled: true
       defaultTimeoutMs: 600000

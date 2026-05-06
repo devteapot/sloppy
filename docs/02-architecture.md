@@ -62,6 +62,7 @@ agent-to-agent structure. It exposes:
 - `/experiments`
 - `/evaluations`
 - `/proposals`
+- `/patterns`
 - `/events`
 - `/approvals`
 
@@ -88,10 +89,17 @@ Enabled routes dispatch typed message envelopes through the provider hub:
   profile instructions, executor binding, and resolved capability masks.
 - `channel:<id>` targets invoke `messaging.channels/{id}.send`.
 
-Dispatch can run in single-target mode or fanout mode. Topology proposals can
-also be attached to experiments, scored by external evaluators, promoted only
-after meeting criteria, and linked to rollback proposals when a topology variant
-is retired.
+Dispatch can run in single-target mode or fanout mode. Routes can carry
+`traffic.sampleRate` metadata for deterministic canary delivery without adding a
+core scheduler. Recent route events can also drive `start_evolution_cycle`, a
+SLOP affordance that synthesizes trace-backed topology proposals and attaches
+them to session experiments. The more general path is agent-authored:
+`analyze_runtime_trace` and `prepare_architect_brief` expose coordination smells
+and a SLOP affordance map, while `start_architect_cycle` delegates the actual
+proposal authoring to a runtime architect agent. Topology proposals can be
+scored by external evaluators or by `record_experiment_evidence`, promoted only
+after meeting criteria, archived as reusable topology patterns, and linked to
+rollback proposals when a topology variant is retired.
 
 The meta-runtime provider can also export merged/global/workspace state and
 import session/workspace/global state. Persistent imports are approval-gated.

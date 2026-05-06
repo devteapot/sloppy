@@ -373,6 +373,12 @@ describe("runtime smoke runner", () => {
           "      adapters:",
           "        fake:",
           `          command: ["node", ${JSON.stringify(scriptPath)}]`,
+          "          capabilities:",
+          "            spawn_allowed: true",
+          "            shell_allowed: true",
+          "            network_allowed: true",
+          "            filesystem_reads_allowed: true",
+          "            filesystem_writes_allowed: true",
           "",
         ].join("\n"),
       );

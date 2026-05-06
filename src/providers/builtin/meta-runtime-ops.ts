@@ -41,6 +41,14 @@ export function optionalNonNegativeInteger(value: unknown, field: string): numbe
   return value;
 }
 
+function optionalFraction(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${field} must be a number between 0 and 1.`);
+  }
+  return value;
+}
+
 export function classifyApproval(scope: MetaScope, ops: TopologyChange[]): boolean {
   if (scope !== "session") return true;
   return ops.some((op) => {
@@ -115,6 +123,10 @@ export function parseChange(raw: unknown): TopologyChange {
       };
     case "upsertRoute": {
       const route = record.route as Record<string, unknown>;
+      const traffic =
+        route?.traffic && typeof route.traffic === "object" && !Array.isArray(route.traffic)
+          ? (route.traffic as Record<string, unknown>)
+          : undefined;
       return {
         type,
         route: {
@@ -124,6 +136,12 @@ export function parseChange(raw: unknown): TopologyChange {
           target: asString(route?.target, "route.target"),
           enabled: route.enabled !== false,
           priority: optionalNonNegativeInteger(route.priority, "route.priority"),
+          traffic: traffic
+            ? {
+                sampleRate: optionalFraction(traffic.sampleRate, "route.traffic.sampleRate"),
+                experimentId: optionalString(traffic.experimentId),
+              }
+            : undefined,
         },
       };
     }

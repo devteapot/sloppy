@@ -278,7 +278,17 @@ Use this for testing.
   });
 
   test("DelegationProvider spawns agents and allows cancellation", async () => {
-    const provider = new DelegationProvider({ maxAgents: 2 });
+    const provider = new DelegationProvider({
+      maxAgents: 2,
+      runnerFactory: (_spawn, callbacks) => ({
+        async start() {
+          callbacks.onUpdate({ status: "running" });
+        },
+        async cancel() {
+          callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+        },
+      }),
+    });
     const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {

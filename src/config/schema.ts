@@ -22,6 +22,15 @@ const acpDelegationConfigSchema = z.object({
         cwd: z.string().optional(),
         env: z.record(z.string(), z.string()).optional(),
         timeoutMs: z.number().int().min(1000).optional(),
+        capabilities: z
+          .object({
+            spawn_allowed: z.boolean().default(false),
+            shell_allowed: z.boolean().default(false),
+            network_allowed: z.boolean().default(false),
+            filesystem_reads_allowed: z.boolean().default(true),
+            filesystem_writes_allowed: z.boolean().default(false),
+          })
+          .optional(),
       }),
     )
     .default({}),

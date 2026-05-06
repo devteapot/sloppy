@@ -30,7 +30,7 @@ The SLOP architecture already implements the conceptual foundation for this:
 
 3. **Provider registry:** Every built-in capability (terminal, filesystem, memory, skills, browser, web, cron, messaging, delegation, vision) is a SLOP provider. The architecture says "everything is a provider."
 
-4. **Delegation provider scaffold:** A simulated delegation provider exists (`src/providers/builtin/delegation.ts`) with agent lifecycle management (spawn, push-observed state, cancel, and completed-result retrieval for standalone agents). Task-linked agents push results through the orchestration task and do not advertise `get_result`, keeping orchestrated runs patch-driven. It is the logical home for multi-agent orchestration.
+4. **Delegation provider:** `src/providers/builtin/delegation.ts` owns agent lifecycle state (spawn, push-observed state, cancel, and completed-result retrieval for standalone agents). Real execution is supplied by a registered `runnerFactory`; an unwired provider fails spawns loudly instead of simulating completion. Task-linked agents push results through the orchestration task and do not advertise `get_result`, keeping orchestrated runs patch-driven. It is the logical home for multi-agent orchestration.
 
 5. **Two-level subscription model:** Shallow overview subscriptions for presence/context, deeper focused subscriptions for specific subtrees.
 
@@ -244,9 +244,10 @@ For orchestration, we extend it to also expose:
 
 ### 5.2 Delegation Provider Evolution
 
-The delegation provider (`src/providers/builtin/delegation.ts`) carries a
-simulation path for tests but in real runs is wired to a `SubAgentRunner`
-through the registry's `runnerFactory`. It evolves along **two axes simultaneously**:
+The delegation provider (`src/providers/builtin/delegation.ts`) is wired to a
+`SubAgentRunner` through the registry's `runnerFactory` in real runs. Without a
+registered runner factory, spawns fail before any agent is inserted into state.
+It evolves along **two axes simultaneously**:
 
 - **Durable axis — filesystem-backed state.** Task definitions, progress logs, results, and handoffs are files under `.sloppy/orchestration/tasks/`. This is what survives a crash and what a human can `git diff`.
 - **Live axis — session provider per sub-agent.** Each spawned sub-agent runs a real `Agent` loop and exposes its own `/session`, `/turn`, `/transcript`, `/activity`, and `/approvals` state (the same shape first-party UIs already consume — see `docs/06-agent-session-provider.md`). The orchestrator's `ConsumerHub` subscribes to the sub-agent's session provider just like any other provider.
@@ -254,11 +255,11 @@ through the registry's `runnerFactory`. It evolves along **two axes simultaneous
 Concretely:
 
 ```
-DelegationProvider (current, simulated)
+DelegationProvider (current lifecycle surface)
   └── agents: Map<string, DelegationAgent>
-  └── spawnAgent: in-memory setTimeout simulation
+  └── spawnAgent: requires a registered runnerFactory
 
-DelegationProvider (proposed, real)
+DelegationProvider (real execution)
   ├── Durable layer (filesystem):
   │     spawnAgent    → writes tasks/{id}/definition.json (patch pushed)
   │     cancel        → writes tasks/{id}/cancel signal
@@ -356,7 +357,7 @@ The provider does not classify tasks or invent dependency edges. The coding-doma
 Version + `expected_version` CAS live on every file node. Range reads (`start_line`/`end_line`) avoid loading full files into agent context. Drift detection bumps version on external edits.
 
 ### Phase 3: Real Sub-Agent Delegation *(shipped)*
-- **Live:** `SubAgentRunner` registers each sub-agent's `AgentSessionProvider` into the parent hub via `onHubReady`. Pluggable `runnerFactory` on `DelegationProvider` keeps the simulated path for tests.
+- **Live:** `SubAgentRunner` registers each sub-agent's `AgentSessionProvider` into the parent hub via `onHubReady`. Pluggable `runnerFactory` on `DelegationProvider` is mandatory for real spawns, which keeps unwired delegation from masquerading as working execution.
 - **Durable:** when `OrchestrationProvider` is present, `SubAgentRunner` auto-creates + transitions a task per spawn through `running → verifying`; the orchestrator records verification and completes the task, so crash-recovery and git-diffable progress come for free without marking unverified work done.
 - **Scoped:** scheduled children receive a generated work packet containing only the attached task, acceptance criteria, dependency result previews, linked findings, and spec requirements cited by `spec_refs`. Child runtimes disable orchestration, delegation, and spec providers so plan/spec mutation stays parent-owned.
 

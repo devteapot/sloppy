@@ -8,6 +8,7 @@ import type {
   MetaStateMaps,
   PersistedState,
   Proposal,
+  TopologyPattern,
 } from "./meta-runtime-model";
 import { listById, listByName, snapshotStateMaps } from "./meta-runtime-model";
 
@@ -43,12 +44,14 @@ export function writePersistedMetaState(root: string, state: PersistedState): vo
 export function snapshotMetaScope(
   layers: Record<MetaScope, MetaStateMaps>,
   proposals: Map<string, Proposal>,
+  patterns: Map<string, TopologyPattern>,
   events: MetaEvent[],
   scope: Exclude<MetaScope, "session">,
 ): PersistedState {
   return {
     ...snapshotStateMaps(layers[scope]),
     proposals: listById(proposals).filter((proposal) => proposal.scope === scope),
+    patterns: listByName(patterns).filter((pattern) => pattern.scope === scope),
     events: events.filter((event) => event.scope === scope).slice(-200),
   };
 }
@@ -56,6 +59,7 @@ export function snapshotMetaScope(
 export function snapshotMergedMetaState(
   state: MetaStateMaps,
   proposals: Map<string, Proposal>,
+  patterns: Map<string, TopologyPattern>,
   events: MetaEvent[],
 ): PersistedState {
   return {
@@ -69,6 +73,7 @@ export function snapshotMergedMetaState(
     experiments: listById(state.experiments),
     evaluations: listById(state.evaluations),
     proposals: listById(proposals),
+    patterns: listByName(patterns),
     events: events.slice(-200),
   };
 }

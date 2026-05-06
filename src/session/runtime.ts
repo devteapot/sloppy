@@ -7,11 +7,9 @@ import {
   type AgentCallbacks,
   type AgentRunResult,
   type AgentToolEvent,
-  type AgentToolInvocation,
   type ResolvedApprovalToolResult,
   type RoleProfile,
 } from "../core/agent";
-import type { ExternalProviderState } from "../core/consumer";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
@@ -23,9 +21,20 @@ import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
-import { parseApprovalsTree, parseTasksTree } from "./provider-mirrors";
+import {
+  type ExternalSessionAgentState,
+  toExternalAgentLlmState,
+  toSessionLlmState,
+} from "./llm-state";
+import {
+  type PendingApprovalMirror,
+  syncExternalProviderStatesToSession,
+  syncProviderSnapshotToSession,
+} from "./mirror-sync";
 import { SessionStore } from "./store";
-import type { ApprovalItem, ExternalAppSnapshot, LlmStateSnapshot } from "./types";
+import type { ApprovalItem } from "./types";
+
+export type { ExternalSessionAgentState } from "./llm-state";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 
@@ -70,82 +79,6 @@ export type SessionAgentFactory = (
   llmProfileManager: LlmProfileManager,
 ) => SessionAgent;
 
-export type ExternalSessionAgentState = {
-  provider: string;
-  model: string;
-  profileId?: string;
-  label?: string;
-  message?: string;
-};
-
-function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnapshot {
-  return {
-    status: state.status,
-    message: state.message,
-    activeProfileId: state.activeProfileId,
-    selectedProvider: state.selectedProvider,
-    selectedModel: state.selectedModel,
-    secureStoreKind: state.secureStoreKind,
-    secureStoreStatus: state.secureStoreStatus,
-    profiles: state.profiles.map((profile) => ({
-      id: profile.id,
-      label: profile.label,
-      provider: profile.provider,
-      model: profile.model,
-      apiKeyEnv: profile.apiKeyEnv,
-      baseUrl: profile.baseUrl,
-      isDefault: profile.isDefault,
-      hasKey: profile.hasKey,
-      keySource: profile.keySource,
-      ready: profile.ready,
-      managed: profile.managed,
-      origin: profile.origin,
-      canDeleteProfile: profile.canDeleteProfile,
-      canDeleteApiKey: profile.canDeleteApiKey,
-    })),
-  };
-}
-
-function toExternalAgentLlmState(agent: ExternalSessionAgentState): LlmStateSnapshot {
-  const profileId = agent.profileId ?? `external-${agent.provider}`;
-  const label = agent.label ?? `${agent.provider} ${agent.model}`;
-  return {
-    status: "ready",
-    message: agent.message ?? `Ready to chat with ${label}.`,
-    activeProfileId: profileId,
-    selectedProvider: agent.provider,
-    selectedModel: agent.model,
-    secureStoreKind: "none",
-    secureStoreStatus: "unsupported",
-    profiles: [
-      {
-        id: profileId,
-        label,
-        provider: agent.provider,
-        model: agent.model,
-        isDefault: true,
-        hasKey: false,
-        keySource: "not_required",
-        ready: true,
-        managed: false,
-        origin: "fallback",
-        canDeleteProfile: false,
-        canDeleteApiKey: false,
-      },
-    ],
-  };
-}
-
-function toSessionApps(states: ExternalProviderState[]): ExternalAppSnapshot[] {
-  return states.map((state) => ({
-    id: state.id,
-    name: state.name,
-    transport: state.transport,
-    status: state.status,
-    lastError: state.lastError,
-  }));
-}
-
 function createDefaultSessionAgent(
   callbacks: AgentCallbacks,
   config: SloppyConfig,
@@ -189,14 +122,7 @@ export class SessionRuntime {
   private started = false;
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
-  private pendingApproval: {
-    turnId: string;
-    invocation: AgentToolInvocation;
-    /** Hub approval id, known synchronously when the event fires. */
-    sourceApprovalId: string;
-    /** Mirrored session-scoped approval id; populated when /approvals syncs. */
-    sessionApprovalId?: string;
-  } | null = null;
+  private pendingApproval: PendingApprovalMirror | null = null;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -264,40 +190,10 @@ export class SessionRuntime {
         this.handleToolEvent(this.currentTurnId, event);
       },
       onProviderSnapshot: (update) => {
-        if (update.path === "/approvals") {
-          const approvals = parseApprovalsTree(
-            update.providerId,
-            update.tree,
-            this.pendingApproval,
-          );
-          const matchedApproval = approvals.find(
-            (approval) => approval.turnId === this.pendingApproval?.turnId,
-          );
-          if (matchedApproval && this.pendingApproval && !this.pendingApproval.sessionApprovalId) {
-            this.pendingApproval.sessionApprovalId = matchedApproval.id;
-          }
-          this.store.syncProviderApprovals(update.providerId, approvals);
-          return;
-        }
-
-        this.store.syncProviderTasks(
-          update.providerId,
-          parseTasksTree(update.providerId, update.tree),
-        );
+        syncProviderSnapshotToSession(this.store, update, this.pendingApproval);
       },
       onExternalProviderStates: (states) => {
-        const currentApps = this.store.getSnapshot().apps;
-        const nextConnectedAppIds = new Set(
-          states.filter((state) => state.status === "connected").map((state) => state.id),
-        );
-
-        for (const app of currentApps) {
-          if (app.status === "connected" && !nextConnectedAppIds.has(app.id)) {
-            this.store.clearProviderMirrors(app.id);
-          }
-        }
-
-        this.store.syncApps(toSessionApps(states));
+        syncExternalProviderStatesToSession(this.store, states);
       },
     };
 

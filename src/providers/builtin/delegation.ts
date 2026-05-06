@@ -79,35 +79,13 @@ function resultPreview(result: string, maxChars = 200): string {
   return `${result.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
-function createSimulatedRunner(
-  spawn: DelegationAgentSpawn,
-  callbacks: { onUpdate: (update: DelegationAgentUpdate) => void },
+function createUnconfiguredRunner(
+  _spawn: DelegationAgentSpawn,
+  _callbacks: { onUpdate: (update: DelegationAgentUpdate) => void },
 ): DelegationRunner {
-  let cancelled = false;
-  let runningTimeout: ReturnType<typeof setTimeout> | null = null;
-  let completeTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  return {
-    async start() {
-      runningTimeout = setTimeout(() => {
-        if (cancelled) return;
-        callbacks.onUpdate({ status: "running" });
-        completeTimeout = setTimeout(() => {
-          if (cancelled) return;
-          callbacks.onUpdate({
-            status: "completed",
-            result: `Agent "${spawn.name}" completed goal: ${spawn.goal}`,
-            completed_at: new Date().toISOString(),
-          });
-        }, 3000);
-      }, 500);
-    },
-    async cancel() {
-      cancelled = true;
-      if (runningTimeout) clearTimeout(runningTimeout);
-      if (completeTimeout) clearTimeout(completeTimeout);
-    },
-  };
+  throw new Error(
+    "No delegation runner factory is configured. Attach the runtime runner factory before spawning delegated agents.",
+  );
 }
 
 export type ChildApprovalSnapshot = {
@@ -136,7 +114,7 @@ export class DelegationProvider {
     } = {},
   ) {
     this.maxAgents = options.maxAgents ?? 10;
-    this.runnerFactory = options.runnerFactory ?? createSimulatedRunner;
+    this.runnerFactory = options.runnerFactory ?? createUnconfiguredRunner;
 
     this.server = createSlopServer({
       id: "delegation",
@@ -313,17 +291,6 @@ export class DelegationProvider {
 
     const id = buildAgentId();
     const created_at = new Date().toISOString();
-    const agent: DelegationAgent = {
-      id,
-      name,
-      goal,
-      status: "pending",
-      executor,
-      capabilityMasks,
-      routeEnvelope,
-      created_at,
-    };
-    this.agents.set(id, agent);
     debug("delegation", "spawn_agent", {
       id,
       name,
@@ -358,7 +325,18 @@ export class DelegationProvider {
         },
       },
     );
-    agent.runner = runner;
+    const agent: DelegationAgent = {
+      id,
+      name,
+      goal,
+      status: "pending",
+      executor,
+      capabilityMasks,
+      routeEnvelope,
+      created_at,
+      runner,
+    };
+    this.agents.set(id, agent);
     this.server.refresh();
 
     void runner.start().catch((error) => {

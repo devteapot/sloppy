@@ -3,10 +3,20 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 import type { ProviderRuntimeHub } from "../../core/hub";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
 import {
-  createExperiment as buildExperiment,
-  createEvaluation,
-  experimentMeetsCriteria,
-} from "./meta-runtime-experiments";
+  analyzeRuntimeTrace as analyzeRuntimeTraceWithContext,
+  type MetaRuntimeArchitectContext,
+  prepareArchitectBrief as prepareArchitectBriefWithContext,
+  recordExperimentEvidence as recordExperimentEvidenceWithContext,
+  startRuntimeArchitectCycle,
+} from "./meta-runtime-architect-controller";
+import { dispatchMetaRuntimeRoute } from "./meta-runtime-dispatch";
+import {
+  createTopologyExperiment,
+  type MetaRuntimeExperimentContext,
+  markTopologyExperimentRolledBack,
+  promoteTopologyExperiment,
+  recordTopologyExperimentEvaluation,
+} from "./meta-runtime-experiment-controller";
 import type {
   AgentChannel,
   AgentNode,
@@ -19,11 +29,10 @@ import type {
   MetaStateMaps,
   PersistedState,
   Proposal,
-  RouteDispatchResult,
-  RouteMessageEnvelope,
   RouteRule,
   SkillVersion,
   TopologyExperiment,
+  TopologyPattern,
 } from "./meta-runtime-model";
 import {
   clearStateMaps,
@@ -42,7 +51,14 @@ import {
   optionalNonNegativeInteger,
   parseChange,
 } from "./meta-runtime-ops";
-import { matchingRoutes, normalizeRouteEnvelope, parseRouteMessage } from "./meta-runtime-routing";
+import {
+  archiveTopologyPattern as archiveTopologyPatternWithContext,
+  type MetaRuntimePatternContext,
+  proposeFromPattern as proposeFromPatternWithContext,
+} from "./meta-runtime-pattern-controller";
+import { deriveRuntimeEvolutionProposals } from "./meta-runtime-reflection";
+import { parseRouteMessage } from "./meta-runtime-routing";
+import { buildMetaRuntimeSessionDescriptor } from "./meta-runtime-session-descriptor";
 import { activateLinkedSkills, opsWithActivatedSkills } from "./meta-runtime-skills";
 import {
   readPersistedMetaState,
@@ -63,6 +79,7 @@ export type {
   SkillVersion,
   TopologyChange,
   TopologyExperiment,
+  TopologyPattern,
 } from "./meta-runtime-model";
 
 function now(): string {
@@ -90,6 +107,7 @@ export class MetaRuntimeProvider {
   private experiments = new Map<string, TopologyExperiment>();
   private evaluations = new Map<string, ExperimentEvaluation>();
   private proposals = new Map<string, Proposal>();
+  private patterns = new Map<string, TopologyPattern>();
   private events: MetaEvent[] = [];
 
   constructor(options: { globalRoot?: string; workspaceRoot?: string } = {}) {
@@ -124,6 +142,7 @@ export class MetaRuntimeProvider {
       this.collection("evaluations", listById(this.evaluations)),
     );
     this.server.register("proposals", () => this.buildProposalsDescriptor());
+    this.server.register("patterns", () => this.buildPatternsDescriptor());
     this.server.register("events", () => this.collection("events", this.events));
     this.server.register("approvals", () => this.approvals.buildDescriptor());
   }
@@ -143,6 +162,8 @@ export class MetaRuntimeProvider {
     putState(this.layers.workspace, workspace);
     putById(this.proposals, global.proposals);
     putById(this.proposals, workspace.proposals);
+    putById(this.patterns, global.patterns);
+    putById(this.patterns, workspace.patterns);
     this.events.push(...(global.events ?? []), ...(workspace.events ?? []));
     this.events = this.events.slice(-200);
     this.rebuildMergedState();
@@ -153,7 +174,7 @@ export class MetaRuntimeProvider {
     const root = scope === "global" ? this.globalRoot : this.workspaceRoot;
     writePersistedMetaState(
       root,
-      snapshotMetaScope(this.layers, this.proposals, this.events, scope),
+      snapshotMetaScope(this.layers, this.proposals, this.patterns, this.events, scope),
     );
   }
 
@@ -196,7 +217,7 @@ export class MetaRuntimeProvider {
     }
     return {
       scope: "merged",
-      ...snapshotMergedMetaState(this.mergedMaps(), this.proposals, this.events),
+      ...snapshotMergedMetaState(this.mergedMaps(), this.proposals, this.patterns, this.events),
     };
   }
 
@@ -233,10 +254,16 @@ export class MetaRuntimeProvider {
           this.proposals.delete(proposal.id);
         }
       }
+      for (const pattern of [...this.patterns.values()]) {
+        if (pattern.scope === scope) {
+          this.patterns.delete(pattern.id);
+        }
+      }
       this.events = this.events.filter((event) => event.scope !== scope);
     }
     putState(this.layers[scope], state);
     putById(this.proposals, state.proposals);
+    putById(this.patterns, state.patterns);
     this.events.push(...(state.events ?? []));
     this.recordEvent({
       kind: "state.imported",
@@ -398,570 +425,239 @@ export class MetaRuntimeProvider {
     return proposal;
   }
 
+  private experimentContext(): MetaRuntimeExperimentContext {
+    return {
+      approvals: this.approvals,
+      hub: this.hub,
+      layers: this.layers,
+      proposals: this.proposals,
+      experiments: this.experiments,
+      evaluations: this.evaluations,
+      rebuildMergedState: () => this.rebuildMergedState(),
+      applyProposal: (id, approved) => this.applyProposal(id, approved),
+      recordEvent: (event) => this.recordEvent(event),
+      persist: (scope) => this.persist(scope),
+      refresh: () => this.server.refresh(),
+    };
+  }
+
   private createExperiment(params: Record<string, unknown>, approved = false): TopologyExperiment {
-    const proposalId = asString(params.proposal_id, "proposal_id");
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) {
-      throw new Error(`Unknown proposal for experiment: ${proposalId}`);
-    }
-    if (proposal.scope !== "session" && !approved) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "create_experiment",
-        reason: `Creating a ${proposal.scope} topology experiment writes persisted meta-runtime metadata.`,
-        paramsPreview: JSON.stringify({
-          proposal_id: proposalId,
-          name: params.name,
-          objective: params.objective,
-        }),
-        dangerous: true,
-        execute: () => this.createExperiment(params, true),
-      });
-      throw createApprovalRequiredError(
-        `Creating experiment for ${proposal.scope} proposal ${proposalId} requires approval via /approvals/${approvalId}.`,
-      );
-    }
-    const experiment = buildExperiment(proposal.scope, proposal, params);
-    this.layers[proposal.scope].experiments.set(experiment.id, experiment);
-    this.rebuildMergedState();
-    this.recordEvent({
-      kind: "experiment.created",
-      scope: experiment.scope,
-      proposalId,
-      summary: `Created topology experiment ${experiment.name}.`,
-    });
-    this.persist(experiment.scope);
-    this.server.refresh();
-    return experiment;
+    return createTopologyExperiment(this.experimentContext(), params, approved);
   }
 
   private recordEvaluation(
     params: Record<string, unknown>,
     approved = false,
   ): ExperimentEvaluation {
-    const experimentId = asString(params.experiment_id, "experiment_id");
-    const experiment = this.experiments.get(experimentId);
-    if (!experiment) {
-      throw new Error(`Unknown experiment: ${experimentId}`);
-    }
-    if (experiment.scope !== "session" && !approved) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "record_evaluation",
-        reason: `Recording an evaluation for ${experiment.scope} experiment ${experimentId} writes persisted meta-runtime metadata.`,
-        paramsPreview: JSON.stringify({
-          experiment_id: experimentId,
-          score: params.score,
-          evaluator: params.evaluator,
-        }),
-        dangerous: true,
-        execute: () => this.recordEvaluation(params, true),
-      });
-      throw createApprovalRequiredError(
-        `Recording evaluation for ${experiment.scope} experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
-      );
-    }
-    const evaluation = createEvaluation(experimentId, params);
-    this.layers[experiment.scope].evaluations.set(evaluation.id, evaluation);
-    this.rebuildMergedState();
-    this.recordEvent({
-      kind: "experiment.evaluated",
-      scope: experiment.scope,
-      proposalId: experiment.proposalId,
-      summary: `Recorded evaluation ${evaluation.id} for ${experiment.name}.`,
-    });
-    this.persist(experiment.scope);
-    this.server.refresh();
-    return evaluation;
+    return recordTopologyExperimentEvaluation(this.experimentContext(), params, approved);
   }
 
   private async promoteExperiment(
     experimentId: string,
     approved = false,
   ): Promise<TopologyExperiment> {
-    const experiment = this.experiments.get(experimentId);
-    if (!experiment) {
-      throw new Error(`Unknown experiment: ${experimentId}`);
-    }
-    if (experiment.status !== "candidate") {
-      throw new Error(`Experiment ${experimentId} is already ${experiment.status}.`);
-    }
-    const evaluations = listById(this.evaluations).filter(
-      (evaluation) => evaluation.experimentId === experiment.id,
-    );
-    if (!experimentMeetsCriteria(experiment, evaluations)) {
-      throw new Error(`Experiment ${experimentId} does not meet promotion criteria.`);
-    }
-    const proposal = this.proposals.get(experiment.proposalId);
-    if (!proposal) {
-      throw new Error(
-        `Experiment ${experimentId} references unknown proposal ${experiment.proposalId}.`,
-      );
-    }
-    if (proposal.status !== "proposed" && proposal.status !== "applied") {
-      throw new Error(
-        `Experiment ${experimentId} references proposal ${proposal.id}, which is ${proposal.status}.`,
-      );
-    }
-    if ((experiment.scope !== "session" || proposal.requiresApproval) && !approved) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "promote_experiment",
-        reason: `Promoting experiment ${experimentId} applies or records privileged meta-runtime state.`,
-        paramsPreview: JSON.stringify({
-          experiment_id: experimentId,
-          proposal_id: proposal.id,
-          proposal_scope: proposal.scope,
-          proposal_ops: proposal.ops.map((op) => op.type),
-        }),
-        dangerous: true,
-        execute: () => this.promoteExperiment(experimentId, true),
-      });
-      throw createApprovalRequiredError(
-        `Promoting experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
-      );
-    }
-    if (proposal.status === "proposed") {
-      await this.applyProposal(proposal.id, true);
-    }
-    const promoted = { ...experiment, status: "promoted" as const, promotedAt: now() };
-    this.layers[experiment.scope].experiments.set(promoted.id, promoted);
-    this.rebuildMergedState();
-    this.recordEvent({
-      kind: "experiment.promoted",
-      scope: promoted.scope,
-      proposalId: promoted.proposalId,
-      summary: `Promoted topology experiment ${promoted.name}.`,
-    });
-    this.persist(promoted.scope);
-    this.server.refresh();
-    return promoted;
+    return promoteTopologyExperiment(this.experimentContext(), experimentId, approved);
   }
 
   private async markExperimentRolledBack(
     params: Record<string, unknown>,
     approved = false,
   ): Promise<TopologyExperiment> {
-    const experimentId = asString(params.experiment_id, "experiment_id");
-    const experiment = this.experiments.get(experimentId);
-    if (!experiment) {
-      throw new Error(`Unknown experiment: ${experimentId}`);
-    }
-    if (experiment.status !== "promoted") {
-      throw new Error(`Experiment ${experimentId} is ${experiment.status}, not promoted.`);
-    }
-    const rollbackProposalId =
-      typeof params.rollback_proposal_id === "string" ? params.rollback_proposal_id : undefined;
-    const rollbackProposal = rollbackProposalId
-      ? this.proposals.get(rollbackProposalId)
-      : undefined;
-    if (rollbackProposalId && !rollbackProposal) {
-      throw new Error(`Unknown rollback proposal: ${rollbackProposalId}`);
-    }
-    if (
-      rollbackProposal &&
-      rollbackProposal.status !== "proposed" &&
-      rollbackProposal.status !== "applied"
-    ) {
-      throw new Error(
-        `Rollback proposal ${rollbackProposal.id} is ${rollbackProposal.status}, not proposed or applied.`,
-      );
-    }
-    if (
-      (experiment.scope !== "session" || rollbackProposal?.requiresApproval === true) &&
-      !approved
-    ) {
-      const approvalId = this.approvals.request({
-        path: "/session",
-        action: "rollback_experiment",
-        reason: `Rolling back experiment ${experimentId} applies or records privileged meta-runtime state.`,
-        paramsPreview: JSON.stringify({
-          experiment_id: experimentId,
-          rollback_proposal_id: rollbackProposalId,
-          experiment_scope: experiment.scope,
-        }),
-        dangerous: true,
-        execute: () => this.markExperimentRolledBack(params, true),
-      });
-      throw createApprovalRequiredError(
-        `Rolling back experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
-      );
-    }
-    if (rollbackProposal?.status === "proposed") {
-      await this.applyProposal(rollbackProposal.id, true);
-    }
-    const rolledBack = {
-      ...experiment,
-      status: "rolled_back" as const,
-      rolledBackAt: now(),
-      rollbackProposalId,
-    };
-    this.layers[experiment.scope].experiments.set(rolledBack.id, rolledBack);
-    this.rebuildMergedState();
-    this.recordEvent({
-      kind: "experiment.rolled_back",
-      scope: rolledBack.scope,
-      proposalId: rolledBack.proposalId,
-      summary: `Marked topology experiment ${rolledBack.name} as rolled back.`,
-    });
-    this.persist(rolledBack.scope);
-    this.server.refresh();
-    return rolledBack;
+    return markTopologyExperimentRolledBack(this.experimentContext(), params, approved);
   }
 
-  private async dispatchRoute(
-    source: string,
-    message: string | RouteMessageEnvelope,
-    fanout = false,
-  ): Promise<RouteDispatchResult | { routed: boolean; deliveries: RouteDispatchResult[] }> {
-    const envelope = normalizeRouteEnvelope(source, message);
-    const routes = matchingRoutes(listById(this.routes), envelope, fanout);
-    if (routes.length === 0) {
-      return { routed: false, reason: `No enabled route matched source "${envelope.source}".` };
-    }
-    if (!this.hub) {
-      return { routed: false, reason: "Meta-runtime provider is not attached to a hub." };
-    }
-
-    const deliveries: RouteDispatchResult[] = [];
-    for (const route of routes) {
-      deliveries.push(await this.dispatchSingleRoute(route, envelope));
-    }
-
-    if (fanout) {
-      return { routed: deliveries.some((delivery) => delivery.routed), deliveries };
-    }
-
-    return deliveries[0] ?? { routed: false, reason: "No route deliveries were attempted." };
-  }
-
-  private async dispatchSingleRoute(
-    route: RouteRule,
-    envelope: RouteMessageEnvelope,
-  ): Promise<RouteDispatchResult> {
-    if (!this.hub) {
-      return { routed: false, reason: "Meta-runtime provider is not attached to a hub." };
-    }
-
-    if (route.target.startsWith("agent:")) {
-      const agentId = route.target.slice("agent:".length);
-      const agent = this.agents.get(agentId);
-      if (!agent) return { routed: false, reason: `Unknown target agent: ${agentId}` };
-      if (agent.status !== "active") {
-        return { routed: false, reason: `Target agent ${agentId} is ${agent.status}, not active.` };
-      }
-      const profile = this.profiles.get(agent.profileId);
-      if (!profile) return { routed: false, reason: `Target agent ${agentId} has no profile.` };
-      const executor = agent.executorBindingId
-        ? this.executorBindings.get(agent.executorBindingId)
-        : undefined;
-      if (agent.executorBindingId && !executor) {
-        return {
-          routed: false,
-          reason: `Target agent ${agentId} references unknown executor binding ${agent.executorBindingId}.`,
-        };
-      }
-      const capabilityMasks = this.resolveAgentCapabilityMasks(agent, profile);
-      const goal = [
-        profile?.instructions,
-        `Route message ${envelope.id} from ${envelope.source}:`,
-        envelope.body,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      const result = await this.hub.invoke("delegation", "/session", "spawn_agent", {
-        name: profile.name,
-        goal,
-        ...(executor ? { executor } : {}),
-        capabilityMasks,
-        routeEnvelope: envelope,
-      });
-      if (result.status === "error") {
-        this.recordEvent({
-          kind: "route.failed",
-          scope: "session",
-          summary: `Route ${route.id} failed while dispatching to agent ${agent.id}: ${result.error?.message ?? "unknown error"}.`,
-        });
-        this.server.refresh();
-        return {
-          routed: false,
-          reason: result.error?.message ?? `Route ${route.id} failed while dispatching.`,
-        };
-      }
-      this.recordEvent({
-        kind: "route.dispatched",
-        scope: "session",
-        summary: `Dispatched route ${route.id} to agent ${agent.id}.`,
-      });
-      this.server.refresh();
-      return {
-        routed: true,
-        route_id: route.id,
-        target: route.target,
-        provider: "delegation",
-        result,
-        envelope,
-      };
-    }
-
-    if (route.target.startsWith("channel:")) {
-      const channelId = route.target.slice("channel:".length);
-      const channel = this.channels.get(channelId);
-      if (!channel) return { routed: false, reason: `Unknown target channel: ${channelId}` };
-      if (!channel.participants.includes(envelope.source)) {
-        return {
-          routed: false,
-          reason: `Source ${envelope.source} is not a participant in channel ${channelId}.`,
-        };
-      }
-      const result = await this.hub.invoke("messaging", `/channels/${channelId}`, "send", {
-        message: envelope.body,
-        envelope,
-      });
-      if (result.status === "error") {
-        this.recordEvent({
-          kind: "route.failed",
-          scope: "session",
-          summary: `Route ${route.id} failed while dispatching to channel ${channel.id}: ${result.error?.message ?? "unknown error"}.`,
-        });
-        this.server.refresh();
-        return {
-          routed: false,
-          reason: result.error?.message ?? `Route ${route.id} failed while dispatching.`,
-        };
-      }
-      this.recordEvent({
-        kind: "route.dispatched",
-        scope: "session",
-        summary: `Dispatched route ${route.id} to channel ${channel.id}.`,
-      });
-      this.server.refresh();
-      return {
-        routed: true,
-        route_id: route.id,
-        target: route.target,
-        provider: "messaging",
-        result,
-        envelope,
-      };
-    }
+  private architectContext(): MetaRuntimeArchitectContext {
     return {
-      routed: false,
-      reason: `Unsupported route target "${route.target}". Use agent:<id> or channel:<id>.`,
+      hub: this.hub,
+      events: this.events,
+      routes: this.routes,
+      channels: this.channels,
+      agents: this.agents,
+      proposals: this.proposals,
+      experiments: this.experiments,
+      evaluations: this.evaluations,
+      recordEvaluation: (params, approved) => this.recordEvaluation(params, approved),
+      recordEvent: (event) => this.recordEvent(event),
+      refresh: () => this.server.refresh(),
     };
   }
 
-  private resolveAgentCapabilityMasks(agent: AgentNode, profile: AgentProfile): CapabilityMask[] {
-    const ids = [...(profile.defaultCapabilities ?? []), ...agent.capabilityMaskIds];
-    return ids.map((id) => {
-      const mask = this.capabilities.get(id);
-      if (!mask) {
-        throw new Error(`Agent ${agent.id} references unknown capability mask ${id}.`);
-      }
-      return mask;
+  private analyzeRuntimeTrace(params: Record<string, unknown>) {
+    return analyzeRuntimeTraceWithContext(this.architectContext(), params);
+  }
+
+  private prepareArchitectBrief(params: Record<string, unknown>) {
+    return prepareArchitectBriefWithContext(this.architectContext(), params);
+  }
+
+  private async startArchitectCycle(params: Record<string, unknown>) {
+    return startRuntimeArchitectCycle(this.architectContext(), params);
+  }
+
+  private recordExperimentEvidence(
+    params: Record<string, unknown>,
+    approved = false,
+  ): ExperimentEvaluation {
+    return recordExperimentEvidenceWithContext(this.architectContext(), params, approved);
+  }
+
+  private patternContext(): MetaRuntimePatternContext {
+    return {
+      approvals: this.approvals,
+      patterns: this.patterns,
+      proposals: this.proposals,
+      experiments: this.experiments,
+      evaluations: this.evaluations,
+      proposeChange: (params) => this.proposeChange(params),
+      recordEvent: (event) => this.recordEvent(event),
+      persist: (scope) => this.persist(scope),
+      refresh: () => this.server.refresh(),
+    };
+  }
+
+  private archiveTopologyPattern(
+    params: Record<string, unknown>,
+    approved = false,
+  ): TopologyPattern {
+    return archiveTopologyPatternWithContext(this.patternContext(), params, approved);
+  }
+
+  private proposeFromPattern(params: Record<string, unknown>): Proposal {
+    return proposeFromPatternWithContext(this.patternContext(), params);
+  }
+
+  private deriveProposalsFromEvents(params: Record<string, unknown>): {
+    count: number;
+    proposals: Array<{ proposal: Proposal; source_event_ids: string[] }>;
+  } {
+    const scope = asScope(params.scope);
+    const minEvents = Math.max(
+      optionalNonNegativeInteger(params.min_events ?? params.min_failures, "min_events") ?? 2,
+      1,
+    );
+    const limit = Math.max(optionalNonNegativeInteger(params.limit, "limit") ?? 100, 1);
+    const drafts = deriveRuntimeEvolutionProposals({
+      events: this.events,
+      routes: listById(this.routes),
+      channels: listById(this.channels),
+      agents: listById(this.agents),
+      proposals: listById(this.proposals),
+      minEvents,
+      limit,
     });
+    const proposals = drafts.map((draft) => ({
+      proposal: this.proposeChange({
+        scope,
+        summary: draft.summary,
+        rationale: `${draft.rationale} Source events: ${draft.sourceEventIds.join(", ")}.`,
+        ops: draft.ops,
+      }),
+      source_event_ids: draft.sourceEventIds,
+    }));
+    return { count: proposals.length, proposals };
+  }
+
+  private startEvolutionCycle(params: Record<string, unknown>): {
+    count: number;
+    items: Array<{
+      proposal: Proposal;
+      experiment: TopologyExperiment;
+      source_event_ids: string[];
+    }>;
+  } {
+    const scope = asScope(params.scope);
+    if (scope !== "session") {
+      throw new Error("start_evolution_cycle currently supports session scope only.");
+    }
+    const minEvents = Math.max(
+      optionalNonNegativeInteger(params.min_events ?? params.min_failures, "min_events") ?? 2,
+      1,
+    );
+    const limit = Math.max(optionalNonNegativeInteger(params.limit, "limit") ?? 100, 1);
+    const drafts = deriveRuntimeEvolutionProposals({
+      events: this.events,
+      routes: listById(this.routes),
+      channels: listById(this.channels),
+      agents: listById(this.agents),
+      proposals: listById(this.proposals),
+      minEvents,
+      limit,
+    });
+    const items = drafts.map((draft) => {
+      const proposal = this.proposeChange({
+        scope,
+        summary: draft.summary,
+        rationale: `${draft.rationale} Source events: ${draft.sourceEventIds.join(", ")}.`,
+        ops: draft.ops,
+      });
+      const experiment = this.createExperiment({
+        proposal_id: proposal.id,
+        name: draft.experiment.name,
+        objective: draft.experiment.objective,
+        promotion_criteria: draft.experiment.promotionCriteria,
+      });
+      return {
+        proposal,
+        experiment,
+        source_event_ids: draft.sourceEventIds,
+      };
+    });
+    return { count: items.length, items };
+  }
+
+  private dispatchRoute(params: Record<string, unknown>) {
+    const { source, message, envelope, fanout } = params;
+    return dispatchMetaRuntimeRoute(
+      {
+        hub: this.hub,
+        routes: listById(this.routes),
+        agents: this.agents,
+        profiles: this.profiles,
+        channels: this.channels,
+        capabilities: this.capabilities,
+        executorBindings: this.executorBindings,
+        recordEvent: (event) => this.recordEvent(event),
+        refresh: () => this.server.refresh(),
+      },
+      String(source),
+      envelope === undefined ? String(message) : parseRouteMessage(envelope),
+      fanout === true,
+    );
   }
 
   private buildSessionDescriptor() {
-    return {
-      type: "context",
-      props: {
-        agents_count: this.agents.size,
-        profiles_count: this.profiles.size,
-        channels_count: this.channels.size,
-        routes_count: this.routes.size,
-        experiments_count: this.experiments.size,
-        proposals_count: this.proposals.size,
-        pending_proposals_count: [...this.proposals.values()].filter(
+    return buildMetaRuntimeSessionDescriptor({
+      counts: {
+        agents: this.agents.size,
+        profiles: this.profiles.size,
+        channels: this.channels.size,
+        routes: this.routes.size,
+        experiments: this.experiments.size,
+        proposals: this.proposals.size,
+        patterns: this.patterns.size,
+        pendingProposals: [...this.proposals.values()].filter(
           (proposal) => proposal.status === "proposed",
         ).length,
-        global_root: this.globalRoot,
-        workspace_root: this.workspaceRoot,
       },
-      summary:
-        "Meta-runtime topology: agent graph, channels, routes, skills, experiments, and proposals.",
-      actions: {
-        propose_change: action(
-          {
-            summary: "string",
-            scope: {
-              type: "string",
-              enum: ["session", "workspace", "global"],
-              optional: true,
-            },
-            rationale: {
-              type: "string",
-              optional: true,
-            },
-            ttl_ms: {
-              type: "number",
-              optional: true,
-            },
-            ops: {
-              type: "array",
-              description: "Typed TopologyChange operations.",
-            },
-          },
-          (params) => this.proposeChange(params),
-          {
-            label: "Propose Change",
-            description: "Record a proposed change to the agent communication topology.",
-            estimate: "fast",
-          },
-        ),
-        dispatch_route: action(
-          {
-            source: "string",
-            message: "string",
-            envelope: {
-              type: "object",
-              description:
-                "Optional typed route envelope: { id?, source?, body, topic?, channelId?, inReplyTo?, causationId?, metadata? }.",
-              optional: true,
-            },
-            fanout: {
-              type: "boolean",
-              optional: true,
-            },
-          },
-          async ({ source, message, envelope, fanout }) =>
-            this.dispatchRoute(
-              String(source),
-              envelope === undefined ? String(message) : parseRouteMessage(envelope),
-              fanout === true,
-            ),
-          {
-            label: "Dispatch Route",
-            description:
-              "Route a typed message envelope through active meta-runtime routes to delegated agents or messaging channels.",
-            estimate: "fast",
-          },
-        ),
-        create_experiment: action(
-          {
-            proposal_id: "string",
-            name: "string",
-            objective: "string",
-            parent_experiment_id: {
-              type: "string",
-              optional: true,
-            },
-            promotion_criteria: {
-              type: "object",
-              optional: true,
-            },
-          },
-          (params) => this.createExperiment(params),
-          {
-            label: "Create Experiment",
-            description: "Attach a topology proposal to an evaluable experiment before promotion.",
-            estimate: "fast",
-          },
-        ),
-        record_evaluation: action(
-          {
-            experiment_id: "string",
-            score: "number",
-            summary: "string",
-            evaluator: {
-              type: "string",
-              optional: true,
-            },
-            evidence: {
-              type: "object",
-              optional: true,
-            },
-          },
-          (params) => this.recordEvaluation(params),
-          {
-            label: "Record Evaluation",
-            description: "Record scored evidence for a topology experiment.",
-            estimate: "fast",
-          },
-        ),
-        promote_experiment: action(
-          {
-            experiment_id: "string",
-          },
-          ({ experiment_id }) => this.promoteExperiment(String(experiment_id)),
-          {
-            label: "Promote Experiment",
-            description:
-              "Promote an experiment whose evaluations satisfy its criteria, applying its proposal if needed.",
-            dangerous: true,
-            estimate: "fast",
-          },
-        ),
-        rollback_experiment: action(
-          {
-            experiment_id: "string",
-            rollback_proposal_id: {
-              type: "string",
-              optional: true,
-            },
-          },
-          (params) => this.markExperimentRolledBack(params),
-          {
-            label: "Rollback Experiment",
-            description:
-              "Mark a promoted experiment as rolled back, applying a pending rollback proposal when provided.",
-            dangerous: true,
-            estimate: "fast",
-          },
-        ),
-        export_state: action(
-          {
-            scope: {
-              type: "string",
-              enum: ["merged", "workspace", "global"],
-              optional: true,
-            },
-          },
-          ({ scope }) =>
-            this.exportState(scope === "workspace" || scope === "global" ? scope : undefined),
-          {
-            label: "Export State",
-            description: "Export merged, workspace, or global meta-runtime state.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
-        import_state: action(
-          {
-            scope: {
-              type: "string",
-              enum: ["session", "workspace", "global"],
-            },
-            mode: {
-              type: "string",
-              enum: ["merge", "replace"],
-              optional: true,
-            },
-            state: {
-              type: "object",
-              description: "Meta-runtime state previously returned by export_state.",
-            },
-          },
-          ({ scope, mode, state }) =>
-            this.importState(
-              asScope(scope),
-              (state && typeof state === "object" ? state : {}) as PersistedState,
-              mode === "replace" ? "replace" : "merge",
-            ),
-          {
-            label: "Import State",
-            description:
-              "Import meta-runtime state. Persistent scopes require approval before writing.",
-            dangerous: true,
-            estimate: "fast",
-          },
-        ),
-      },
-      meta: {
-        focus: true,
-        salience: 0.85,
-      },
-    };
+      globalRoot: this.globalRoot,
+      workspaceRoot: this.workspaceRoot,
+      proposeChange: (params) => this.proposeChange(params),
+      dispatchRoute: (params) => this.dispatchRoute(params),
+      analyzeRuntimeTrace: (params) => this.analyzeRuntimeTrace(params),
+      prepareArchitectBrief: (params) => this.prepareArchitectBrief(params),
+      startArchitectCycle: (params) => this.startArchitectCycle(params),
+      deriveProposalsFromEvents: (params) => this.deriveProposalsFromEvents(params),
+      startEvolutionCycle: (params) => this.startEvolutionCycle(params),
+      createExperiment: (params) => this.createExperiment(params),
+      recordEvaluation: (params) => this.recordEvaluation(params),
+      recordExperimentEvidence: (params) => this.recordExperimentEvidence(params),
+      promoteExperiment: (experimentId) => this.promoteExperiment(experimentId),
+      rollbackExperiment: (params) => this.markExperimentRolledBack(params),
+      archiveTopologyPattern: (params) => this.archiveTopologyPattern(params),
+      proposeFromPattern: (params) => this.proposeFromPattern(params),
+      exportState: (scope) => this.exportState(scope),
+      importState: (scope, state, mode) => this.importState(scope, state, mode),
+    });
   }
 
   private buildProposalsDescriptor() {
@@ -999,6 +695,51 @@ export class MetaRuntimeProvider {
         count: items.length,
       },
       summary: "Pending and resolved meta-runtime topology proposals.",
+      items,
+    };
+  }
+
+  private buildPatternsDescriptor() {
+    const items: ItemDescriptor[] = listByName(this.patterns).map((pattern) => ({
+      id: pattern.id,
+      props: pattern,
+      summary: pattern.summary ?? pattern.name,
+      actions: {
+        propose_from_pattern: action(
+          {
+            scope: {
+              type: "string",
+              enum: ["session", "workspace", "global"],
+              optional: true,
+            },
+            summary: {
+              type: "string",
+              optional: true,
+            },
+            rationale: {
+              type: "string",
+              optional: true,
+            },
+          },
+          (params) => this.proposeFromPattern({ ...params, pattern_id: pattern.id }),
+          {
+            label: "Propose From Pattern",
+            description: "Create a topology proposal from this archived pattern.",
+            estimate: "fast",
+          },
+        ),
+      },
+      meta: {
+        salience: 0.55,
+      },
+    }));
+
+    return {
+      type: "collection",
+      props: {
+        count: items.length,
+      },
+      summary: "Reusable topology patterns archived from promoted experiments.",
       items,
     };
   }

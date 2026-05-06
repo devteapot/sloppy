@@ -1,14 +1,46 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { DelegationProvider } from "../src/providers/builtin/delegation";
+import {
+  DelegationProvider,
+  type DelegationRunnerFactory,
+} from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+
+const fastTestRunnerFactory: DelegationRunnerFactory = (spawn, callbacks) => {
+  let cancelled = false;
+  let runningTimeout: ReturnType<typeof setTimeout> | null = null;
+  let completeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  return {
+    async start() {
+      runningTimeout = setTimeout(() => {
+        if (cancelled) return;
+        callbacks.onUpdate({ status: "running" });
+        completeTimeout = setTimeout(() => {
+          if (cancelled) return;
+          callbacks.onUpdate({
+            status: "completed",
+            result: `Agent "${spawn.name}" completed goal: ${spawn.goal}`,
+            completed_at: new Date().toISOString(),
+          });
+        }, 50);
+      }, 250);
+    },
+    async cancel() {
+      cancelled = true;
+      if (runningTimeout) clearTimeout(runningTimeout);
+      if (completeTimeout) clearTimeout(completeTimeout);
+    },
+  };
+};
 
 function createDelegationHarness(
   options: ConstructorParameters<typeof DelegationProvider>[0] = {},
 ) {
   const provider = new DelegationProvider({
     maxAgents: 10,
+    runnerFactory: fastTestRunnerFactory,
     ...options,
   });
   const consumer = new SlopConsumer(new InProcessTransport(provider.server));
@@ -126,6 +158,27 @@ describe("DelegationProvider", () => {
       });
 
       await consumer.invoke(`/agents/${agentId}`, "cancel", {});
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("fails loudly when no runner factory is configured", async () => {
+    const provider = new DelegationProvider({ maxAgents: 3 });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "unwired",
+        goal: "Should not be simulated",
+      });
+      expect(result.status).toBe("error");
+      expect(result.error?.message).toContain("No delegation runner factory is configured");
+
+      const agents = await consumer.query("/agents", 2);
+      expect(agents.properties?.count).toBe(0);
+      expect(agents.children ?? []).toEqual([]);
     } finally {
       provider.stop();
     }
@@ -272,6 +325,30 @@ describe("DelegationProvider", () => {
         executor: { kind: "llm" },
       });
       expect(result.status).toBe("error");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("does not store an agent when runner creation fails", async () => {
+    const { provider, consumer } = createDelegationHarness({
+      runnerFactory: () => {
+        throw new Error("runner misconfigured");
+      },
+    });
+
+    try {
+      await connect(consumer);
+      const result = await consumer.invoke("/session", "spawn_agent", {
+        name: "broken-runner",
+        goal: "Should not remain pending",
+      });
+      expect(result.status).toBe("error");
+      expect(result.error?.message).toContain("runner misconfigured");
+
+      const agents = await consumer.query("/agents", 2);
+      expect(agents.properties?.count).toBe(0);
+      expect(agents.children ?? []).toEqual([]);
     } finally {
       provider.stop();
     }

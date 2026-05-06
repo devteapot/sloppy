@@ -95,16 +95,20 @@ providers:
         claude-code:
           command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
           timeoutMs: 60000
-          capabilities:                 # NEW — see §3
+          capabilities:                 # See §3
             spawn_allowed: false
             shell_allowed: true
             network_allowed: false
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: false
         pi-mono:
           command: ["pi", "--acp"]
           capabilities:
             spawn_allowed: false
             shell_allowed: false
             network_allowed: false
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: false
     cli:
       adapters:
         codex:
@@ -112,9 +116,10 @@ providers:
           timeoutMs: 600000
 ```
 
-The current `LlmProfile`, `AcpAdapter`, and `CliAdapter` schemas exist; the remaining additions are:
+The current `LlmProfile`, `AcpAdapter`, and `CliAdapter` schemas exist; ACP
+adapter capabilities are enforced for routed or allow-masked ACP spawns. The
+remaining addition is:
 
-- `acp.adapters[id].capabilities` — see §3.
 - An optional `executor.defaults` block that maps role ids to bindings (the role-default home from §1.1).
 
 ```yaml
@@ -350,7 +355,7 @@ Out of scope for this doc, listed so future contributors don't reinvent them ad 
 - `src/runtime/delegation/runner-factory.ts` — current ACP dispatch; becomes the ACP half of `ExecutorResolver`.
 - `src/core/role.ts` — `RoleProfile` gains `defaultExecutor`.
 - `src/providers/builtin/orchestration/descriptor-tasks.ts` — task artifact gains `executor`.
-- `src/config/schema.ts` — `executor.defaults` block; `acp.adapters[id].capabilities` block.
+- `src/config/schema.ts` — `executor.defaults` block; ACP adapter capability declarations.
 
 ### External — load-bearing references
 
