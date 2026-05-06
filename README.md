@@ -284,6 +284,21 @@ bun run runtime:doctor \
   --cli-adapter codex
 ```
 
+If the LiteLLM check fails before HTTP, verify local name resolution first:
+
+```sh
+dscacheutil -q host -a name sloppy-mba.local
+ping -c 1 sloppy-mba.local
+```
+
+If `.local` mDNS is not available from the current host, use the router's direct
+IP address in `--litellm-url` and `SLOPPY_LLM_BASE_URL`.
+
+If the ACP check fails for Claude, confirm that the installed command actually
+speaks Agent Client Protocol over stdio. `claude mcp ...` is MCP server support,
+not ACP agent mode; configure `providers.delegation.acp.adapters.<id>.command`
+with the real ACP adapter command.
+
 CLI mode runs a configured subprocess-backed child session. It is intended for
 tools such as Codex CLI or local custom agents that can complete from one prompt:
 
