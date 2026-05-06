@@ -9,19 +9,17 @@ selection now belongs to the lean delegation/meta-runtime boundary.
 
 ## Current State
 
-Checked-in code supports three delegated child execution paths:
+Checked-in code supports two delegated child execution paths:
 
 - native Sloppy child agents through the local LLM adapter stack
 - ACP-backed child agents through configured ACP adapters
-- CLI-backed child agents through configured one-shot subprocess adapters
 
 `meta-runtime` can store executor bindings:
 
 ```ts
 type ExecutorBinding =
   | { kind: "llm"; profileId: string; modelOverride?: string }
-  | { kind: "acp"; adapterId: string; modelOverride?: string; timeoutMs?: number }
-  | { kind: "cli"; adapterId: string; modelOverride?: string; timeoutMs?: number };
+  | { kind: "acp"; adapterId: string; modelOverride?: string; timeoutMs?: number };
 ```
 
 A routed `agent:<id>` dispatch passes the target agent's executor binding to
@@ -29,7 +27,7 @@ A routed `agent:<id>` dispatch passes the target agent's executor binding to
 
 When no executor binding is supplied, the child uses the active session LLM
 profile. That profile can be native (`anthropic`, `openai`, `openrouter`,
-`ollama`, `gemini`) or external (`acp`, `cli`).
+`ollama`, `gemini`) or external (`acp`).
 
 ## Safety Boundary
 

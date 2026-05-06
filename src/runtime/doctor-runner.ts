@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { getHomeConfigPath, getWorkspaceConfigPath, loadConfigFromPaths } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import { AcpSessionAgent } from "./acp";
-import { CliSessionAgent } from "./cli";
 
 export type RuntimeDoctorCheck = {
   id: string;
@@ -17,7 +16,6 @@ export type RuntimeDoctorOptions = {
   config?: SloppyConfig;
   litellmUrl?: string;
   acpAdapterId?: string;
-  cliAdapterId?: string;
   timeoutMs?: number;
 };
 
@@ -28,6 +26,10 @@ export type RuntimeDoctorResult = {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function isOpenAiCompatibleDoctorProvider(provider: SloppyConfig["llm"]["provider"]): boolean {
+  return provider === "openai" || provider === "openrouter" || provider === "ollama";
 }
 
 async function loadDoctorConfig(
@@ -146,68 +148,19 @@ async function checkAcpAdapter(
   }
 }
 
-async function checkCliAdapter(
-  config: SloppyConfig,
-  workspaceRoot: string,
-  adapterId: string | undefined,
-  timeoutMs: number,
-): Promise<RuntimeDoctorCheck> {
-  if (!adapterId) {
-    return {
-      id: "cli",
-      status: "skipped",
-      summary: "No CLI adapter id provided.",
-    };
-  }
-
-  const cliConfig = config.providers.delegation.cli;
-  const adapter = cliConfig?.adapters[adapterId];
-  if (!cliConfig?.enabled || !adapter) {
-    return {
-      id: "cli",
-      status: "error",
-      summary: `CLI adapter '${adapterId}' is not enabled or configured.`,
-    };
-  }
-
-  const agent = new CliSessionAgent({
-    adapterId,
-    adapter: { ...adapter, timeoutMs: adapter.timeoutMs ?? timeoutMs },
-    callbacks: {},
-    workspaceRoot,
-    defaultTimeoutMs: timeoutMs,
-  });
-  try {
-    await agent.start();
-    return {
-      id: "cli",
-      status: "ok",
-      summary: `CLI adapter '${adapterId}' command is configured.`,
-    };
-  } catch (error) {
-    return {
-      id: "cli",
-      status: "error",
-      summary: `CLI adapter '${adapterId}' failed startup.`,
-      detail: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    agent.shutdown();
-  }
-}
-
 export async function runRuntimeDoctor(
   options: RuntimeDoctorOptions = {},
 ): Promise<RuntimeDoctorResult> {
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const config = await loadDoctorConfig(workspaceRoot, options.config);
   const timeoutMs = options.timeoutMs ?? 5000;
-  const litellmUrl = options.litellmUrl ?? config.llm.baseUrl;
+  const litellmUrl =
+    options.litellmUrl ??
+    (isOpenAiCompatibleDoctorProvider(config.llm.provider) ? config.llm.baseUrl : undefined);
 
   const checks = await Promise.all([
     checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
     checkAcpAdapter(config, workspaceRoot, options.acpAdapterId, timeoutMs),
-    checkCliAdapter(config, workspaceRoot, options.cliAdapterId, timeoutMs),
   ]);
 
   return {

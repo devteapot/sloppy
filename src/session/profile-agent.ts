@@ -16,7 +16,6 @@ import {
   type LlmProfileState,
 } from "../llm/profile-manager";
 import { AcpSessionAgent } from "../runtime/acp";
-import { CliSessionAgent } from "../runtime/cli";
 import type { SessionAgent } from "./runtime";
 
 type ProfileSessionAgentOptions = {
@@ -180,18 +179,6 @@ export class ProfileSessionAgent implements SessionAgent {
         adapterFingerprint(adapter),
       ].join(":");
     }
-    if (profile.provider === "cli") {
-      const adapterId = adapterIdFor(profile);
-      const adapter = this.config.providers.delegation.cli?.adapters[adapterId];
-      return [
-        profile.provider,
-        profile.id,
-        adapterId,
-        model,
-        this.config.providers.delegation.cli?.defaultTimeoutMs ?? "",
-        adapterFingerprint(adapter),
-      ].join(":");
-    }
     return [profile.provider, profile.id, model].join(":");
   }
 
@@ -218,30 +205,6 @@ export class ProfileSessionAgent implements SessionAgent {
         callbacks: this.callbacks,
         workspaceRoot: this.config.providers.filesystem.root,
         defaultTimeoutMs: acpConfig.defaultTimeoutMs,
-      });
-    }
-
-    if (profile.provider === "cli") {
-      const adapterId = adapterIdFor(profile);
-      const cliConfig = this.config.providers.delegation.cli;
-      if (!cliConfig?.enabled) {
-        throw new LlmConfigurationError(
-          `CLI adapter profile '${profile.id}' requires providers.delegation.cli.enabled to be true.`,
-        );
-      }
-      const adapter = cliConfig.adapters[adapterId];
-      if (!adapter) {
-        throw new LlmConfigurationError(
-          `CLI adapter profile '${profile.id}' references unknown adapter '${adapterId}'.`,
-        );
-      }
-      return new CliSessionAgent({
-        adapterId,
-        adapter,
-        modelOverride,
-        callbacks: this.callbacks,
-        workspaceRoot: this.config.providers.filesystem.root,
-        defaultTimeoutMs: cliConfig.defaultTimeoutMs,
       });
     }
 

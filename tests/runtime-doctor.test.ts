@@ -62,12 +62,6 @@ const TEST_CONFIG: SloppyConfig = {
     messaging: { maxMessages: 500 },
     delegation: {
       maxAgents: 10,
-      cli: {
-        enabled: true,
-        adapters: {
-          fake: { command: ["node", "--version"] },
-        },
-      },
     },
     metaRuntime: {
       globalRoot: "~/.sloppy/meta-runtime",
@@ -87,12 +81,11 @@ afterEach(() => {
 });
 
 describe("runtime doctor", () => {
-  test("reports skipped optional checks and validates configured CLI adapter", async () => {
+  test("reports skipped optional checks when no ACP adapter is requested", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-"));
     try {
       const result = await runRuntimeDoctor({
         config: TEST_CONFIG,
-        cliAdapterId: "fake",
         workspaceRoot,
       });
 
@@ -106,11 +99,6 @@ describe("runtime doctor", () => {
         id: "acp",
         status: "skipped",
         summary: "No ACP adapter id provided.",
-      });
-      expect(result.checks).toContainEqual({
-        id: "cli",
-        status: "ok",
-        summary: "CLI adapter 'fake' command is configured.",
       });
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -149,6 +137,39 @@ describe("runtime doctor", () => {
         summary:
           "Router responded at http://sloppy-mba.local:8001/v1/models using LITELLM_API_KEY.",
         detail: JSON.stringify({ data: [{ id: "local-model" }] }),
+      });
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("does not treat native OpenAI Codex base URL as an OpenAI-compatible router", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-codex-"));
+    const fetchCalls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      fetchCalls.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    try {
+      const result = await runRuntimeDoctor({
+        config: {
+          ...TEST_CONFIG,
+          llm: {
+            ...TEST_CONFIG.llm,
+            provider: "openai-codex",
+            model: "gpt-5.5",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+          },
+        },
+        workspaceRoot,
+      });
+
+      expect(fetchCalls).toEqual([]);
+      expect(result.checks).toContainEqual({
+        id: "litellm",
+        status: "skipped",
+        summary: "No OpenAI-compatible base URL provided.",
       });
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });

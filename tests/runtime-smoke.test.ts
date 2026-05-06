@@ -219,18 +219,6 @@ new acp.AgentSideConnection((connection) => new FakeAgent(connection), stream);
   return scriptPath;
 }
 
-async function createFakeCliAgent(workspaceRoot: string): Promise<string> {
-  const scriptPath = join(workspaceRoot, "fake-cli-agent.mjs");
-  await writeFile(
-    scriptPath,
-    `
-const prompt = process.argv.slice(2).join(" ");
-process.stdout.write(\`cli received: \${prompt}\`);
-`,
-  );
-  return scriptPath;
-}
-
 describe("runtime smoke runner", () => {
   test("runs provider-level meta-runtime routing end-to-end", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-test-"));
@@ -399,40 +387,6 @@ describe("runtime smoke runner", () => {
       expect(result.delegatedAgent?.id).toStartWith("agent-");
       expect(result.delegatedAgent?.status).toBe("completed");
       expect(result.delegatedAgent?.resultPreview).toContain("acp received:");
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-
-  test("runs CLI delegated-agent smoke through a configured adapter", async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-cli-"));
-    try {
-      const scriptPath = await createFakeCliAgent(workspaceRoot);
-      await mkdir(join(workspaceRoot, ".sloppy"), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, ".sloppy", "config.yaml"),
-        [
-          "providers:",
-          "  delegation:",
-          "    cli:",
-          "      enabled: true",
-          "      adapters:",
-          "        fake:",
-          `          command: ["node", ${JSON.stringify(scriptPath)}]`,
-          "",
-        ].join("\n"),
-      );
-
-      const result = await runRuntimeSmoke({
-        cliAdapterId: "fake",
-        mode: "cli",
-        workspaceRoot,
-      });
-
-      expect(result.mode).toBe("cli");
-      expect(result.delegatedAgent?.id).toStartWith("agent-");
-      expect(result.delegatedAgent?.status).toBe("completed");
-      expect(result.delegatedAgent?.resultPreview).toContain("cli received:");
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

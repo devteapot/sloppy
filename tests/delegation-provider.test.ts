@@ -225,47 +225,6 @@ describe("DelegationProvider", () => {
     }
   });
 
-  test("passes CLI executor binding through spawn state and runner factory", async () => {
-    let capturedExecutor: unknown;
-    const { provider, consumer } = createDelegationHarness({
-      runnerFactory: (spawn, callbacks) => {
-        capturedExecutor = spawn.executor;
-        return {
-          async start() {
-            callbacks.onUpdate({ status: "running" });
-          },
-          async cancel() {
-            callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
-          },
-        };
-      },
-    });
-
-    try {
-      await connect(consumer);
-      const result = await consumer.invoke("/session", "spawn_agent", {
-        name: "codex-worker",
-        goal: "Run through Codex CLI",
-        executor: { kind: "cli", adapterId: "codex" },
-      });
-      expect(result.status).toBe("ok");
-      const data = result.data as { id: string; execution_mode: string };
-      expect(data.execution_mode).toBe("cli:codex");
-      expect(capturedExecutor).toEqual({ kind: "cli", adapterId: "codex" });
-
-      const agent = await consumer.query(`/agents/${data.id}`, 2);
-      expect(agent.properties).toMatchObject({
-        id: data.id,
-        execution_mode: "cli:codex",
-        executor: { kind: "cli", adapterId: "codex" },
-      });
-
-      await consumer.invoke(`/agents/${data.id}`, "cancel", {});
-    } finally {
-      provider.stop();
-    }
-  });
-
   test("stores typed route envelopes and passes them to the runner factory", async () => {
     let capturedRouteEnvelope: unknown;
     const { provider, consumer } = createDelegationHarness({

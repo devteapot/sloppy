@@ -193,7 +193,7 @@ Optional profile item props:
 
 - `label`: display label
 - `reasoning_effort`: optional OpenAI-style reasoning effort for providers that expose it
-- `adapter_id`: ACP/CLI adapter id when the profile runs through an external session agent
+- `adapter_id`: ACP adapter id when the profile runs through an external session agent
 - `api_key_env`: environment variable name that can satisfy the profile for this process
 - `base_url`: provider base URL override
 
@@ -210,7 +210,7 @@ Rules:
 - `api_key` is write-only input for secure persistence
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
 - `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
-- ACP/CLI profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
+- ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
 - the session should remain attachable even when `status=needs_credentials`
 
 ### `/composer`

@@ -447,24 +447,24 @@ describe("LlmProfileManager", () => {
     expect(store.secrets.get(managedProfile?.id ?? "")).toBe("secret-key");
   });
 
-  test("treats CLI adapter profiles as ready model profiles without API keys", async () => {
+  test("treats ACP adapter profiles as ready model profiles without API keys", async () => {
     const manager = new LlmProfileManager({
       config: {
         ...TEST_CONFIG,
         llm: {
           ...TEST_CONFIG.llm,
-          provider: "cli",
-          model: "gpt-5.5",
-          adapterId: "codex",
+          provider: "acp",
+          model: "sonnet",
+          adapterId: "claude",
           apiKeyEnv: undefined,
-          defaultProfileId: "codex-gpt55",
+          defaultProfileId: "claude-sonnet",
           profiles: [
             {
-              id: "codex-gpt55",
-              label: "Codex GPT-5.5",
-              provider: "cli",
-              model: "gpt-5.5",
-              adapterId: "codex",
+              id: "claude-sonnet",
+              label: "Claude Sonnet",
+              provider: "acp",
+              model: "sonnet",
+              adapterId: "claude",
             },
           ],
         },
@@ -476,9 +476,9 @@ describe("LlmProfileManager", () => {
     const state = await manager.getState();
 
     expect(state.status).toBe("ready");
-    expect(state.selectedProvider).toBe("cli");
-    expect(state.selectedModel).toBe("gpt-5.5");
-    expect(state.profiles[0]?.adapterId).toBe("codex");
+    expect(state.selectedProvider).toBe("acp");
+    expect(state.selectedModel).toBe("sonnet");
+    expect(state.profiles[0]?.adapterId).toBe("claude");
     expect(state.profiles[0]?.keySource).toBe("not_required");
     expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
   });
@@ -557,17 +557,17 @@ describe("LlmProfileManager", () => {
     });
 
     const state = await manager.saveProfile({
-      label: "Codex GPT-5.5",
-      provider: "cli",
-      model: "gpt-5.5",
-      adapterId: "codex",
+      label: "Claude Sonnet",
+      provider: "acp",
+      model: "sonnet",
+      adapterId: "claude",
       makeDefault: true,
     });
 
     expect(state.status).toBe("ready");
-    expect(state.profiles[0]?.provider).toBe("cli");
-    expect(state.profiles[0]?.adapterId).toBe("codex");
-    expect(persistedAdapterId).toBe("codex");
+    expect(state.profiles[0]?.provider).toBe("acp");
+    expect(state.profiles[0]?.adapterId).toBe("claude");
+    expect(persistedAdapterId).toBe("claude");
   });
 
   test("marks invalid OpenRouter keys as not ready before a model turn starts", async () => {

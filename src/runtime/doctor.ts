@@ -9,7 +9,6 @@ function usage(): string {
     "Options:",
     "  --litellm-url <url>    OpenAI-compatible base URL to check",
     "  --acp-adapter <id>     configured ACP adapter id to check",
-    "  --cli-adapter <id>     configured CLI adapter id to check",
     "  --workspace <path>     workspace/config root; defaults to cwd",
     "  --timeout-ms <ms>      check timeout; default 5000",
     "  -h, --help             show this help",
@@ -29,7 +28,6 @@ function parseArgs(args: string[]) {
   const options: {
     litellmUrl?: string;
     acpAdapterId?: string;
-    cliAdapterId?: string;
     workspaceRoot?: string;
     timeoutMs?: number;
     help?: boolean;
@@ -48,10 +46,6 @@ function parseArgs(args: string[]) {
         break;
       case "--acp-adapter":
         options.acpAdapterId = takeValue(args, index, arg);
-        index += 1;
-        break;
-      case "--cli-adapter":
-        options.cliAdapterId = takeValue(args, index, arg);
         index += 1;
         break;
       case "--workspace":

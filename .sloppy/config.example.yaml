@@ -7,10 +7,6 @@ llm:
   # provider: openai-codex
   # model: gpt-5.5
   # reasoningEffort: low
-  # To use Codex CLI as a fallback external session model instead:
-  # provider: cli
-  # model: gpt-5.5
-  # adapterId: codex
 
 providers:
   builtin:
@@ -38,9 +34,3 @@ providers:
             network_allowed: true
             filesystem_reads_allowed: true
             filesystem_writes_allowed: true
-    cli:
-      enabled: true
-      defaultTimeoutMs: 600000
-      adapters:
-        codex:
-          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]

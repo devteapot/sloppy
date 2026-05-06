@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
@@ -24,20 +25,73 @@ class MemoryCredentialStore implements CredentialStore {
   async delete(): Promise<void> {}
 }
 
+async function createFakeAcpAgent(workspaceRoot: string): Promise<string> {
+  const scriptPath = join(workspaceRoot, "fake-acp-agent.mjs");
+  const sdkUrl = pathToFileURL(
+    join(process.cwd(), "node_modules", "@agentclientprotocol", "sdk", "dist", "acp.js"),
+  ).href;
+  await writeFile(
+    scriptPath,
+    `
+import * as acp from ${JSON.stringify(sdkUrl)};
+import { Readable, Writable } from "node:stream";
+
+class FakeAgent {
+  async initialize() {
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: false,
+      },
+    };
+  }
+
+  async newSession() {
+    return { sessionId: "fake-profile-session" };
+  }
+
+  async prompt(params) {
+    const text = params.prompt.find((block) => block.type === "text")?.text ?? "";
+    await connection.sessionUpdate({
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "main " + process.env.MODEL + ": " + text },
+      },
+    });
+    return { stopReason: "end_turn" };
+  }
+}
+
+let connection;
+const stream = acp.ndJsonStream(
+  Writable.toWeb(process.stdout),
+  Readable.toWeb(process.stdin),
+);
+new acp.AgentSideConnection((clientConnection) => {
+  connection = clientConnection;
+  return new FakeAgent();
+}, stream);
+`,
+    "utf8",
+  );
+  return scriptPath;
+}
+
 function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
   return {
     llm: {
-      provider: "cli",
-      model: "gpt-5.5",
-      adapterId: "codex",
-      defaultProfileId: "codex-gpt55",
+      provider: "acp",
+      model: "sonnet",
+      adapterId: "fake",
+      defaultProfileId: "fake-acp",
       profiles: [
         {
-          id: "codex-gpt55",
-          label: "Codex GPT-5.5",
-          provider: "cli",
-          model: "gpt-5.5",
-          adapterId: "codex",
+          id: "fake-acp",
+          label: "Fake ACP",
+          provider: "acp",
+          model: "sonnet",
+          adapterId: "fake",
         },
       ],
       maxTokens: 4096,
@@ -88,11 +142,14 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
       messaging: { maxMessages: 500 },
       delegation: {
         maxAgents: 10,
-        cli: {
+        acp: {
           enabled: true,
           adapters: {
-            codex: {
-              command: ["node", scriptPath, "{model}", "{prompt}"],
+            fake: {
+              command: ["node", scriptPath],
+              env: {
+                MODEL: "{model}",
+              },
             },
           },
         },
@@ -107,23 +164,16 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
 }
 
 describe("ProfileSessionAgent", () => {
-  test("runs CLI adapter profiles as the main session model", async () => {
+  test("runs ACP adapter profiles as the main session model", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-agent-"));
     try {
-      const scriptPath = join(workspaceRoot, "agent.mjs");
-      await writeFile(
-        scriptPath,
-        `
-const [model, prompt] = process.argv.slice(2);
-process.stdout.write("main " + model + ": " + prompt);
-`,
-        "utf8",
-      );
+      const scriptPath = await createFakeAcpAgent(workspaceRoot);
+      const config = buildConfig(workspaceRoot, scriptPath);
       const runtime = new SessionRuntime({
-        config: buildConfig(workspaceRoot, scriptPath),
-        sessionId: "profile-cli",
+        config,
+        sessionId: "profile-acp",
         llmProfileManager: new LlmProfileManager({
-          config: buildConfig(workspaceRoot, scriptPath),
+          config,
           credentialStore: new MemoryCredentialStore(),
           writeConfig: async () => undefined,
         }),
@@ -136,12 +186,12 @@ process.stdout.write("main " + model + ": " + prompt);
 
         const snapshot = runtime.store.getSnapshot();
         expect(snapshot.llm.status).toBe("ready");
-        expect(snapshot.llm.selectedProvider).toBe("cli");
-        expect(snapshot.llm.selectedModel).toBe("gpt-5.5");
+        expect(snapshot.llm.selectedProvider).toBe("acp");
+        expect(snapshot.llm.selectedModel).toBe("sonnet");
         const lastBlock = snapshot.transcript.at(-1)?.content[0];
         expect(lastBlock?.type).toBe("text");
         expect(lastBlock?.type === "text" ? lastBlock.text : undefined).toBe(
-          "main gpt-5.5: hello from main",
+          "main sonnet: hello from main",
         );
       } finally {
         runtime.shutdown();

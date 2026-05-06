@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { affordancesToTools, type LlmTool, type SlopNode } from "@slop-ai/consumer/browser";
 
+import { debug } from "./debug";
 import { buildVisibleTree, type ProviderTreeView } from "./subscriptions";
 
 const TOOL_NAME_LIMIT = 64;
@@ -26,33 +27,59 @@ export interface RuntimeToolSet {
 
 type JsonObject = Record<string, unknown>;
 
+type SchemaNormalizationContext = {
+  providerId: string;
+  providerKind: ProviderTreeView["kind"];
+  toolName: string;
+  schemaPath: string;
+};
+
 function isRecord(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isOptionalParameter(schema: unknown): boolean {
   if (!isRecord(schema)) return false;
+  if (schema.optional === true) return true;
   const description = typeof schema.description === "string" ? schema.description : "";
   return /\boptional\b/i.test(description);
 }
 
-function normalizeJsonSchema(schema: unknown): JsonObject {
+function childSchemaContext(
+  context: SchemaNormalizationContext | undefined,
+  segment: string,
+): SchemaNormalizationContext | undefined {
+  if (!context) return undefined;
+  return {
+    ...context,
+    schemaPath: `${context.schemaPath}.${segment}`,
+  };
+}
+
+function normalizeJsonSchema(schema: unknown, context?: SchemaNormalizationContext): JsonObject {
   const source = isRecord(schema) ? schema : {};
   const normalized: JsonObject = { ...source };
+  delete normalized.optional;
   const properties = isRecord(source.properties) ? source.properties : undefined;
 
   if (source.type === "object" || properties) {
     const normalizedProperties: JsonObject = {};
+    const optionalProperties = new Set<string>();
     for (const [key, propertySchema] of Object.entries(properties ?? {})) {
-      normalizedProperties[key] = normalizeJsonSchema(propertySchema);
+      if (isOptionalParameter(propertySchema)) {
+        optionalProperties.add(key);
+      }
+      normalizedProperties[key] = normalizeJsonSchema(
+        propertySchema,
+        childSchemaContext(context, `properties.${key}`),
+      );
     }
 
     const existingRequired = Array.isArray(source.required)
       ? source.required.filter((item): item is string => typeof item === "string")
       : Object.keys(normalizedProperties);
     const required = existingRequired.filter(
-      (key) =>
-        Object.hasOwn(normalizedProperties, key) && !isOptionalParameter(normalizedProperties[key]),
+      (key) => Object.hasOwn(normalizedProperties, key) && !optionalProperties.has(key),
     );
 
     normalized.type = "object";
@@ -62,8 +89,15 @@ function normalizeJsonSchema(schema: unknown): JsonObject {
       typeof source.additionalProperties === "boolean" ? source.additionalProperties : false;
   }
 
-  if (source.type === "array" && source.items !== undefined) {
-    normalized.items = normalizeJsonSchema(source.items);
+  if (source.type === "array") {
+    if (source.items === undefined && context?.providerKind === "external") {
+      debug("tool-schema", "array_items_synthesized", {
+        providerId: context.providerId,
+        toolName: context.toolName,
+        schemaPath: context.schemaPath,
+      });
+    }
+    normalized.items = normalizeJsonSchema(source.items, childSchemaContext(context, "items"));
   }
 
   return normalized;
@@ -235,7 +269,12 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         continue;
       }
 
-      const parameters = normalizeJsonSchema(tool.function.parameters);
+      const parameters = normalizeJsonSchema(tool.function.parameters, {
+        providerId: view.providerId,
+        providerKind: view.kind,
+        toolName: prefixedName,
+        schemaPath: "$",
+      });
       const description = withParameterContractDescription(tool.function.description, parameters);
 
       resolutions.set(prefixedName, {

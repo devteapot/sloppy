@@ -268,7 +268,7 @@ export class AgentSessionProvider {
             },
             adapter_id: {
               type: "string",
-              description: "Optional ACP/CLI adapter id for external-agent profiles.",
+              description: "Optional ACP adapter id for external-agent profiles.",
             },
             base_url: {
               type: "string",

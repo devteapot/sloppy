@@ -66,6 +66,7 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           ops: {
             type: "array",
             description: "Typed TopologyChange operations.",
+            items: { type: "object", additionalProperties: true },
           },
         },
         (params) => context.proposeChange(params),
@@ -187,12 +188,14 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           },
           tags: {
             type: "array",
+            items: { type: "string" },
             optional: true,
           },
           ops: {
             type: "array",
             description:
               "Explicit typed TopologyChange operations to archive. Supply these from a topology-pattern skill; they are not inferred from the source proposal.",
+            items: { type: "object", additionalProperties: true },
           },
         },
         (params) => context.archiveTopologyPattern(params),
@@ -227,6 +230,7 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
             type: "array",
             description:
               "Explicit typed TopologyChange operations adapted from the pattern for the current graph.",
+            items: { type: "object", additionalProperties: true },
           },
         },
         (params) => context.proposeFromPattern(params),

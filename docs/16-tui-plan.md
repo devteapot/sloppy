@@ -351,7 +351,7 @@ and disabled composer, with the setup panel focused:
 
 - provider picker
 - model field with provider defaults
-- adapter id field for ACP/CLI profiles
+- adapter id field for ACP profiles
 - base URL field for OpenAI-compatible profiles
 - API key secret input
 - save profile

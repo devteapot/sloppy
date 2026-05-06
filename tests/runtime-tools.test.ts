@@ -1,7 +1,31 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SlopNode } from "@slop-ai/consumer/browser";
 
+import { reloadDebugFromEnv } from "../src/core/debug";
 import { buildRuntimeToolSet } from "../src/core/tools";
+
+const originalDebug = process.env.SLOPPY_DEBUG;
+let originalStderrWrite: typeof process.stderr.write;
+let capturedStderr: string[] = [];
+
+beforeEach(() => {
+  capturedStderr = [];
+  originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown) => {
+    capturedStderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+});
+
+afterEach(() => {
+  process.stderr.write = originalStderrWrite;
+  if (originalDebug === undefined) {
+    delete process.env.SLOPPY_DEBUG;
+  } else {
+    process.env.SLOPPY_DEBUG = originalDebug;
+  }
+  reloadDebugFromEnv();
+});
 
 describe("buildRuntimeToolSet", () => {
   test("adds observation tools and prefixes affordance tools by provider", () => {
@@ -176,6 +200,134 @@ describe("buildRuntimeToolSet", () => {
           },
         },
       },
+    });
+  });
+
+  test("fills missing array item schemas and honors optional markers", () => {
+    const optionalStringSchema = { type: "string", optional: true } as unknown as {
+      type: "string";
+    };
+    const overviewTree: SlopNode = {
+      id: "memory",
+      type: "root",
+      children: [
+        {
+          id: "session",
+          type: "context",
+          affordances: [
+            {
+              action: "add_memory",
+              description: "Store a memory.",
+              params: {
+                type: "object",
+                properties: {
+                  content: { type: "string" },
+                  tags: {
+                    type: "array",
+                    description: "Categorization tags.",
+                  },
+                  ttl: optionalStringSchema,
+                },
+                required: ["content", "tags", "ttl"],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const toolSet = buildRuntimeToolSet([
+      {
+        providerId: "memory",
+        providerName: "Memory",
+        kind: "builtin",
+        overviewTree,
+      },
+    ]);
+    const addMemoryTool = toolSet.tools.find(
+      (tool) => tool.function.name === "memory__session__add_memory",
+    );
+
+    expect(addMemoryTool?.function.parameters).toMatchObject({
+      type: "object",
+      required: ["content", "tags"],
+      additionalProperties: false,
+      properties: {
+        tags: {
+          type: "array",
+          items: {},
+        },
+        ttl: {
+          type: "string",
+        },
+      },
+    });
+    expect(
+      (
+        addMemoryTool?.function.parameters.properties as
+          | Record<string, Record<string, unknown>>
+          | undefined
+      )?.ttl?.optional,
+    ).toBeUndefined();
+  });
+
+  test("debug-logs synthesized array items for external providers only", () => {
+    process.env.SLOPPY_DEBUG = "tool-schema";
+    reloadDebugFromEnv();
+
+    const overviewTree: SlopNode = {
+      id: "external-app",
+      type: "root",
+      children: [
+        {
+          id: "session",
+          type: "context",
+          affordances: [
+            {
+              action: "batch",
+              description: "Run a batch.",
+              params: {
+                type: "object",
+                properties: {
+                  values: {
+                    type: "array",
+                    description: "Values to process.",
+                  },
+                },
+                required: ["values"],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    buildRuntimeToolSet([
+      {
+        providerId: "external-app",
+        providerName: "External App",
+        kind: "external",
+        overviewTree,
+      },
+    ]);
+
+    buildRuntimeToolSet([
+      {
+        providerId: "builtin-app",
+        providerName: "Builtin App",
+        kind: "builtin",
+        overviewTree,
+      },
+    ]);
+
+    expect(capturedStderr).toHaveLength(1);
+    const event = JSON.parse(capturedStderr[0]?.trim() ?? "{}") as Record<string, unknown>;
+    expect(event).toMatchObject({
+      scope: "tool-schema",
+      event: "array_items_synthesized",
+      providerId: "external-app",
+      toolName: "external-app__session__batch",
+      schemaPath: "$.properties.values",
     });
   });
 });

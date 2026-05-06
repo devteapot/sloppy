@@ -601,6 +601,7 @@ export class MetaRuntimeProvider {
               type: "array",
               description:
                 "Explicit typed TopologyChange operations adapted from this pattern for the current graph.",
+              items: { type: "object", additionalProperties: true },
             },
           },
           (params) => this.proposeFromPattern({ ...params, pattern_id: pattern.id }),

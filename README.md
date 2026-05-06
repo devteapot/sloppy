@@ -56,7 +56,7 @@ Current checked-in implementation includes:
 - idle session startup without an API key
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
-- ACP and CLI adapter profiles as first-class session model profiles, so a main session can run through a configured external agent such as Codex CLI instead of only native API adapters
+- ACP adapter profiles as first-class session model profiles, so a main session can run through a configured external agent instead of only native API adapters
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
@@ -85,7 +85,7 @@ This means the agent process is expected to act both as:
 ## Architecture at a glance
 
 ```text
-Session agent profile (native LLM adapter, ACP adapter, or CLI adapter)
+Session agent profile (native LLM adapter or ACP adapter)
         |
         v
 RuntimeToolSet
@@ -132,7 +132,7 @@ These providers are currently implemented as in-process SLOP providers:
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
-- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP/CLI-backed child execution
+- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 
@@ -263,12 +263,11 @@ bun run runtime:smoke
 By default this creates a temporary workspace, wires `meta-runtime`, `messaging`,
 `delegation`, `skills`, and `filesystem`, applies a session topology proposal,
 dispatches a typed route envelope, and verifies that the message lands in a SLOP
-channel. Native, ACP, and CLI delegated-child paths can be checked explicitly:
+channel. Native and ACP delegated-child paths can be checked explicitly:
 
 ```sh
 bun run runtime:smoke -- --mode native
 bun run runtime:smoke -- --mode acp --acp-adapter claude
-bun run runtime:smoke -- --mode cli --cli-adapter codex
 ```
 
 Native mode uses the active LLM profile selected by the LLM profile manager
@@ -289,12 +288,11 @@ Check live runtime dependencies before a smoke run:
 ```sh
 bun run runtime:doctor \
   --litellm-url http://sloppy-mba.local:8001/v1 \
-  --acp-adapter claude \
-  --cli-adapter codex
+  --acp-adapter claude
 ```
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
-Claude ACP and Codex CLI adapters. Copy those adapter blocks into
+Claude and Codex ACP adapters. Copy those adapter blocks into
 `.sloppy/config.yaml` and set the LiteLLM model/base URL for your machine.
 
 If the LiteLLM check fails before HTTP, verify local name resolution first:
@@ -314,44 +312,27 @@ not ACP agent mode; Zed uses a dedicated adapter, so configure
 such as `["bunx", "@agentclientprotocol/claude-agent-acp"]` or an installed
 `claude-agent-acp` binary.
 
-CLI mode runs a configured subprocess-backed child session. It is intended for
-tools such as Codex CLI or local custom agents that can complete from one prompt.
-Use `{prompt}` and `{model}` placeholders when the subprocess needs the user
-prompt or selected model as argv/env/cwd text:
-
-```yaml
-providers:
-  delegation:
-    cli:
-      enabled: true
-      defaultTimeoutMs: 600000
-      adapters:
-        codex:
-          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]
-```
-
-ACP and CLI adapters are not limited to sub-agents. They can be selected as the
+ACP adapters are not limited to sub-agents. They can be selected as the
 main session model profile through the same `/llm` state used for native API
 providers:
 
 ```yaml
 llm:
-  provider: cli
-  model: gpt-5.5
-  adapterId: codex
-  defaultProfileId: codex-gpt55
+  provider: acp
+  model: sonnet
+  adapterId: claude
+  defaultProfileId: claude-acp
   profiles:
-    - id: codex-gpt55
-      label: Codex GPT-5.5
-      provider: cli
-      model: gpt-5.5
-      adapterId: codex
+    - id: claude-acp
+      label: Claude ACP
+      provider: acp
+      model: sonnet
+      adapterId: claude
 ```
 
 For Codex subscription models, prefer the native `openai-codex` provider when
-you want Sloppy to keep its own model/tool loop instead of delegating the whole
-turn to `codex exec`. It reads the existing Codex CLI auth store, so run
-`codex login` first:
+you want Sloppy to keep its own model/tool loop. It reads the existing Codex CLI
+auth store, so run `codex login` first:
 
 ```yaml
 llm:
@@ -466,27 +447,6 @@ adapter is published as `@zed-industries/codex-acp` and exposes the
 Routed or allow-masked ACP spawns require the adapter `capabilities` block so the
 runtime can reject child bindings that exceed the adapter's declared surface.
 
-Delegation can also launch trusted CLI subprocesses as child sessions. The
-runtime streams stdout into the child transcript and exposes the result through
-the same delegated-agent state:
-
-```yaml
-providers:
-  builtin:
-    delegation: true
-  delegation:
-    cli:
-      enabled: true
-      adapters:
-        codex:
-          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
-```
-
-Then pass `{ kind: "cli", adapterId: "codex", modelOverride: "gpt-5.5" }` to
-`delegation.spawn_agent`, or create the same shape as a meta-runtime executor
-binding. `modelOverride` is optional; if present it expands `{model}` in the
-adapter command.
-
 Provider defaults:
 
 - `anthropic` -> `ANTHROPIC_API_KEY`
@@ -494,7 +454,7 @@ Provider defaults:
 - `openrouter` -> `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`
 - `gemini` -> `GEMINI_API_KEY`
 - `ollama` -> `http://localhost:11434/v1` and no API key by default
-- `acp` and `cli` -> configured adapter profiles and no API key by default
+- `acp` -> configured adapter profiles and no API key by default
 
 You can override the provider, model, adapter id, or base URL with
 `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, and
@@ -521,7 +481,7 @@ Useful TUI slash commands:
 
 - `/profile openai gpt-5.4 --base-url <url>` saves a profile without a key.
 - `/profile-secret openai gpt-5.4` opens masked API-key entry.
-- `/profile cli gpt-5.5 --adapter codex` saves an ACP/CLI adapter-backed profile.
+- `/profile acp sonnet --adapter claude` saves an ACP adapter-backed profile.
 - `/default <profile-id>`, `/delete-profile <profile-id>`, and `/delete-key <profile-id>` manage exposed profiles.
 - `/query /llm 2` inspects the session provider; `/query <app-id>:/ 2` inspects a connected external provider listed under `/apps`.
 - `/invoke [app-id:]<path> <action> <json-object>` invokes a contextual affordance from the explicit inspector path.

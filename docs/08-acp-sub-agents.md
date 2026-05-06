@@ -1,17 +1,14 @@
-# CLI And ACP Child Agents
+# ACP Child Agents
 
 ## Status
 
-ACP-backed and CLI-backed session-agent paths are checked in. They can run
-delegated children behind the `delegation` provider and can also be selected as
-the main session's LLM profile. This document replaces the older
-orchestration-oriented draft that assumed a parent orchestrator, `/tasks`, and
-durable task handoff.
+ACP-backed session-agent paths are checked in. They can run delegated children
+behind the `delegation` provider and can also be selected as the main session's
+LLM profile. The older subprocess-backed CLI adapter path has been removed.
 
 Current source areas:
 
 - `src/runtime/acp/`
-- `src/runtime/cli/`
 - `src/runtime/delegation/`
 - `src/providers/builtin/delegation.ts`
 - `src/session/`
@@ -37,16 +34,15 @@ Supported execution shapes:
 
 - native child agent through Sloppy's LLM adapters
 - ACP child agent through a configured stdio ACP adapter
-- CLI child agent through a configured one-shot subprocess adapter
 
-The same adapter configs are usable from `llm.profiles` with provider `acp` or
-`cli`. In that shape, `adapterId` selects the configured adapter and `model`
+The same ACP adapter configs are usable from `llm.profiles` with provider
+`acp`. In that shape, `adapterId` selects the configured adapter and `model`
 remains the selected model identifier exposed through `/llm`.
 
 For ChatGPT/Codex subscription models, `openai-codex` is the native provider.
 It reads the Codex CLI auth store created by `codex login` and keeps Sloppy's
-own model/tool loop. The `cli` Codex adapter remains useful as a conservative
-fallback when you want the official Codex CLI to own the whole turn.
+own model/tool loop. Codex can also be exposed through a configured ACP adapter
+such as `codex-acp` when the desired boundary is an external ACP agent.
 
 ## Delegation Boundary
 
@@ -55,7 +51,6 @@ runtime creates a child `SessionAgent` implementation:
 
 - native `SessionAgent` for local LLM-backed children
 - `AcpSessionAgent` for ACP adapters
-- `CliSessionAgent` for CLI adapters
 
 The child session is registered into the parent hub as a provider so the parent
 and UIs can subscribe to child state.
@@ -80,29 +75,21 @@ providers:
             network_allowed: true
             filesystem_reads_allowed: true
             filesystem_writes_allowed: true
-```
-
-CLI adapters use the parallel shape:
-
-```yaml
-providers:
-  builtin:
-    delegation: true
-  delegation:
-    cli:
-      enabled: true
-      adapters:
         codex:
-          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]
-          timeoutMs: 600000
+          command: ["codex-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
 ```
 
 Meta-runtime executor bindings can route an agent to these adapters with
-`{ kind: "acp", adapterId: "claude", modelOverride: "sonnet" }` or
-`{ kind: "cli", adapterId: "codex", modelOverride: "gpt-5.5" }`.
-`modelOverride` is optional and expands `{model}` in adapter commands.
+`{ kind: "acp", adapterId: "claude", modelOverride: "sonnet" }`.
+`modelOverride` is optional and is passed to the ACP session agent.
 
-Main-session profile example:
+Main-session profile examples:
 
 ```yaml
 llm:
@@ -116,22 +103,11 @@ llm:
       provider: openai-codex
       model: gpt-5.5
       reasoningEffort: low
-```
-
-CLI fallback profile example:
-
-```yaml
-llm:
-  provider: cli
-  model: gpt-5.5
-  adapterId: codex
-  defaultProfileId: codex-gpt55
-  profiles:
-    - id: codex-gpt55
-      label: Codex GPT-5.5
-      provider: cli
-      model: gpt-5.5
-      adapterId: codex
+    - id: claude-acp
+      label: Claude ACP
+      provider: acp
+      model: sonnet
+      adapterId: claude
 ```
 
 ## Safety
@@ -141,25 +117,18 @@ configured adapters should declare capabilities. Routed or allow-masked ACP
 spawns are rejected when the adapter declaration does not satisfy the requested
 child surface.
 
-CLI adapters are trusted local subprocesses. They should be configured
-deliberately, with sandbox flags where the CLI supports them. Their stdout is
-streamed into the child transcript; per-tool-call observability depends on the
-CLI's own output format.
-
 ## Non-Goals
 
 - no task artifact coupling
 - no orchestration-provider handoff
 - no parent-owned scheduler
 - no automatic workspace merge strategy
-- no generic permission parser for arbitrary CLIs
 
 Those concerns can be added later as optional providers or adapter-specific
 features without changing the child session boundary.
 
 ## Open Questions
 
-- should CLI children get isolated worktrees by default?
 - should adapter manifests become discoverable providers instead of config only?
 - what is the best UI for child approval forwarding?
-- how should spawn-time skill resolution interact with ACP and CLI children?
+- how should spawn-time skill resolution interact with ACP children?

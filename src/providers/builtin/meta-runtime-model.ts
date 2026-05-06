@@ -48,7 +48,7 @@ export type RouteRule = {
 
 export type ExecutorBinding = {
   id: string;
-  kind: "llm" | "acp" | "cli";
+  kind: "llm" | "acp";
   profileId?: string;
   adapterId?: string;
   modelOverride?: string;

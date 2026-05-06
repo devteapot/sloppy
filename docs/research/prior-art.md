@@ -137,9 +137,9 @@ CLI auth store created by `codex login` instead of implementing Sloppy-owned
 device-code or browser OAuth.
 
 That means Sloppy owns the model/tool loop and SLOP affordance projection while
-Codex CLI owns only the current login lifecycle. The existing `cli` provider
-path remains as the fallback when the desired behavior is for the official Codex
-CLI to own the whole turn.
+Codex CLI owns only the current login lifecycle. The old subprocess-backed `cli`
+provider path has been removed from the runtime so Codex support goes through
+native `openai-codex` or an explicit ACP adapter, not an opaque CLI wrapper.
 
 Likely next steps:
 

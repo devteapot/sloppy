@@ -19,15 +19,14 @@ Checked in now:
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
   agent-session provider socket
 - ACP-backed delegated child sessions behind the same session-provider boundary
-- CLI-backed delegated child sessions for Codex CLI or custom one-shot agents
-- ACP and CLI adapters selectable as first-class main-session LLM profiles
-  behind the same session-provider boundary
+- ACP adapters selectable as first-class main-session LLM profiles behind the
+  same session-provider boundary
 - native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
   by the Codex CLI auth store created by `codex login`
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
-  meta-runtime routing plus native, ACP, and CLI delegated-child modes
+  meta-runtime routing plus native and ACP delegated-child modes
 - runtime doctor (`bun run runtime:doctor`) for checking live OpenAI-compatible
-  routers and configured ACP/CLI adapters before a smoke run
+  routers and configured ACP adapters before a smoke run
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from

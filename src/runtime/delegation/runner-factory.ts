@@ -4,7 +4,6 @@ import type { LlmProfileManager } from "../../llm/profile-manager";
 import type { DelegationProvider } from "../../providers/builtin/delegation";
 import type { SessionAgentFactory } from "../../session/runtime";
 import { AcpSessionAgent } from "../acp";
-import { CliSessionAgent } from "../cli";
 import { assertAcpSpawnAllowed } from "./acp-capabilities";
 import { ExecutorResolver } from "./executor-resolver";
 import { SubAgentRunner } from "./sub-agent";
@@ -55,28 +54,6 @@ export function attachSubAgentRunnerFactory(
         profileId: `acp-${adapterId}`,
         label: `ACP ${adapterId}`,
         message: `Ready to chat with ACP adapter ${adapterId}.`,
-      };
-    } else if (executor.kind === "cli") {
-      const adapter = executor.adapter;
-      const adapterId = executor.adapterId;
-      const adapterTimeoutMs = executor.timeoutMs ?? executor.defaultTimeoutMs;
-      agentFactory = (agentCallbacks) =>
-        new CliSessionAgent({
-          adapterId,
-          adapter,
-          modelOverride: executor.modelOverride,
-          callbacks: agentCallbacks,
-          workspaceRoot: config.providers.filesystem.root,
-          defaultTimeoutMs: adapterTimeoutMs,
-        });
-      requiresLlmProfile = false;
-      externalAgentState = {
-        provider: "cli",
-        model: executor.modelOverride ?? adapterId,
-        adapterId,
-        profileId: `cli-${adapterId}`,
-        label: `CLI ${adapterId}`,
-        message: `Ready to chat with CLI adapter ${adapterId}.`,
       };
     } else {
       llmProfileId = executor.profileId;

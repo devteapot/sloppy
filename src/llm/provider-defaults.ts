@@ -37,10 +37,6 @@ export const DEFAULT_LLM_PROVIDER_CONFIG: Record<LlmProvider, ProviderDefault> =
     model: "default",
     adapterId: "default",
   },
-  cli: {
-    model: "default",
-    adapterId: "default",
-  },
 };
 
 export function getProviderDefaults(provider: LlmProvider): ProviderDefault {
@@ -48,9 +44,7 @@ export function getProviderDefaults(provider: LlmProvider): ProviderDefault {
 }
 
 export function providerRequiresApiKey(provider: LlmProvider): boolean {
-  return (
-    provider !== "ollama" && provider !== "acp" && provider !== "cli" && provider !== "openai-codex"
-  );
+  return provider !== "ollama" && provider !== "acp" && provider !== "openai-codex";
 }
 
 export function providerUsesCodexAuth(provider: LlmProvider): boolean {

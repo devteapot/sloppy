@@ -105,6 +105,7 @@ export class MemoryProvider {
             tags: {
               type: "array",
               description: "Categorization tags for this memory.",
+              items: { type: "string" },
             },
             weight: {
               type: "number",
@@ -135,6 +136,7 @@ export class MemoryProvider {
             tags: {
               type: "array",
               description: "Restrict results to memories containing all of these tags.",
+              items: { type: "string" },
             },
             limit: {
               type: "number",
@@ -235,6 +237,7 @@ export class MemoryProvider {
               tags: {
                 type: "array",
                 description: "Replacement tag list.",
+                items: { type: "string" },
               },
               weight: {
                 type: "number",

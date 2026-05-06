@@ -7,7 +7,6 @@ import { ExecutorResolver } from "../src/runtime/delegation/executor-resolver";
 function buildConfig(overrides?: {
   profiles?: SloppyConfig["llm"]["profiles"];
   acp?: SloppyConfig["providers"]["delegation"]["acp"];
-  cli?: SloppyConfig["providers"]["delegation"]["cli"];
 }): SloppyConfig {
   return {
     llm: {
@@ -36,7 +35,6 @@ function buildConfig(overrides?: {
       delegation: {
         maxAgents: 10,
         acp: overrides?.acp,
-        cli: overrides?.cli,
       },
       vision: {} as SloppyConfig["providers"]["vision"],
     },
@@ -138,45 +136,6 @@ describe("ExecutorResolver", () => {
   test("acp binding when no acp config at all throws", () => {
     const resolver = new ExecutorResolver({ config: buildConfig() });
     expect(() => resolver.resolve({ kind: "acp", adapterId: "fake" })).toThrow(
-      LlmConfigurationError,
-    );
-  });
-
-  test("cli binding resolves to adapter when enabled", () => {
-    const resolver = new ExecutorResolver({
-      config: buildConfig({
-        cli: {
-          enabled: true,
-          defaultTimeoutMs: 5000,
-          adapters: {
-            codex: { command: ["codex", "exec"], timeoutMs: 1000 },
-          },
-        },
-      }),
-    });
-    const resolved = resolver.resolve({
-      kind: "cli",
-      adapterId: "codex",
-      modelOverride: "gpt-5.5",
-    });
-    expect(resolved).toMatchObject({
-      kind: "cli",
-      adapterId: "codex",
-      modelOverride: "gpt-5.5",
-      defaultTimeoutMs: 5000,
-    });
-    if (resolved.kind === "cli") {
-      expect(resolved.adapter.command).toEqual(["codex", "exec"]);
-    }
-  });
-
-  test("cli binding when CLI delegation disabled throws", () => {
-    const resolver = new ExecutorResolver({
-      config: buildConfig({
-        cli: { enabled: false, adapters: { codex: { command: ["codex", "exec"] } } },
-      }),
-    });
-    expect(() => resolver.resolve({ kind: "cli", adapterId: "codex" })).toThrow(
       LlmConfigurationError,
     );
   });
