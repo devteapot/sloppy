@@ -35,6 +35,15 @@ Explicit non-goals for v1:
 
 If richer inspection is needed later, it should be added as an explicit extension rather than by turning the session provider into a mirror of all downstream providers.
 
+Multi-session lifecycle is handled by a separate public session-supervisor
+provider. The supervisor exposes active session metadata, running
+session-provider sockets, configured workspace/project scopes, and
+create/switch/stop affordances. Its `/sessions` items include compact live
+turn, goal, queue, pending approval, running task, and last-activity summary
+fields so UIs can compare supervised sessions without reading runtime internals.
+Each supervised session still exposes the single-session contract described in
+this document.
+
 ---
 
 ## Session Model
@@ -61,6 +70,7 @@ The root tree should expose these top-level children:
 - `/session`
 - `/llm`
 - `/turn`
+- `/goal`
 - `/composer`
 - `/queue`
 - `/transcript`
@@ -81,6 +91,7 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
   [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_provider="openai", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
     [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
+  [control] goal (exists=true, status="active", objective="Ship the runtime", total_tokens=12000, token_budget=200000, elapsed_ms=900000)  actions: {create_goal, pause_goal, complete_goal, clear_goal}
   [control] composer (accepts_attachments=false, max_attachments=0, ready=false, queued_count=1, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
   [collection] queue (count=1)
     [item] queued-1 (status="queued", position=1, text="then run the focused test")
@@ -227,6 +238,57 @@ Rules:
 - ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
 - the session should remain attachable even when `status=needs_credentials`
 
+### `/goal`
+
+Node type: `control`
+
+Required props:
+
+- `exists`: boolean
+- `status`: `none | active | paused | budget_limited | complete`
+- `message`: short status note
+
+When `exists=true`, additional props:
+
+- `goal_id`: stable goal id
+- `objective`: user-provided objective
+- `created_at`: ISO timestamp
+- `updated_at`: ISO timestamp
+- `completed_at`: ISO timestamp when complete
+- `token_budget`: optional total token budget
+- `input_tokens`: accounted model input tokens
+- `output_tokens`: accounted model output tokens
+- `total_tokens`: input plus output tokens
+- `elapsed_ms`: accounted wall-clock time across goal turns
+- `continuation_count`: number of automatic continuation turns
+- `last_turn_id`: latest turn accounted to the goal
+- `evidence`: latest concrete evidence strings reported by the model or UI
+- `update_source`: `user | model | runtime`
+- `completion_source`: `user | model | runtime` when complete
+
+Affordances:
+
+- `create_goal(objective, token_budget?)`
+- `pause_goal(message?)`
+- `resume_goal(message?)`
+- `complete_goal(message?)`
+- `clear_goal`
+
+Rules:
+
+- creating a goal starts the first goal turn immediately when idle, otherwise
+  queues it behind the active turn
+- queued user input takes priority over automatic goal continuation
+- goal continuation is session-runtime behavior, not provider-specific planning
+  policy
+- continuation stops when the goal is paused, complete, budget-limited, or when
+  a continuation turn completes without tool activity
+- native model-driven goal turns expose a local `slop_goal_update` tool while a
+  goal is active. It is not a provider affordance and does not appear in the
+  public session tree; it lets the model report `progress`, `blocked`, or
+  `complete` with evidence. `blocked` pauses the goal, and `complete` records
+  `completion_source=model`.
+
 ### `/composer`
 
 Node type: `control`
@@ -331,11 +393,18 @@ Optional item props:
 
 - `last_error`: latest connection or transport error summary
 
+Affordances:
+
+- `query_provider(provider_id, path, depth?, max_nodes?, window?)`
+- `invoke_provider(provider_id, path, action, params?)`
+- `reconnect_provider(provider_id)`
+
 Rules:
 
 - this path is a shallow attachment/debugging summary, not a proxied subtree of downstream provider state
 - item ids should match the external provider ids used by the runtime consumer hub
 - disconnected or failed attachments may remain visible with `last_error` while their descriptor is still present
+- `reconnect_provider` explicitly retries a disconnected or errored attachment and updates `/apps`; it does not add background orchestration or hidden restart policy
 
 ### `/transcript`
 
@@ -653,6 +722,21 @@ state-first rather than a hidden replay engine:
 
 This keeps restarts explicit and inspectable without adding a privileged task
 orchestration layer to the session provider.
+
+On disk, new snapshots are written as a versioned envelope:
+
+```json
+{
+  "kind": "sloppy.session.snapshot",
+  "schema_version": 1,
+  "saved_at": "2026-05-06T00:00:00.000Z",
+  "snapshot": {}
+}
+```
+
+Legacy raw snapshot files are still accepted and rewritten as versioned envelopes
+on the next successful persist. Unsupported envelope kinds or schema versions
+fail closed instead of being treated as session state.
 
 ---
 

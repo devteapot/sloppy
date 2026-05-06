@@ -21,6 +21,7 @@
     "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/session/server.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write .",
+    "preflight": "bun run lint && bun run typecheck && bun run tui:typecheck && bun run test && bun run build",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },
@@ -30,6 +31,7 @@
     "@anthropic-ai/sdk": "0.82.0",
     "@dagrejs/dagre": "^3.0.0",
     "@google/genai": "1.48.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@opentui/core": "^0.2.3",
     "@opentui/solid": "^0.2.3",
     "@slop-ai/consumer": "0.2.0",

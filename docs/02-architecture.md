@@ -14,7 +14,7 @@ The default runtime includes:
 
 - `Agent` loop and LLM adapters
 - `ConsumerHub` for state subscriptions, query, invoke, and policy checks
-- session provider for UI and API consumers
+- session provider and session supervisor providers for UI and API consumers
 - durable public session snapshots with explicit stale-turn recovery
 - provider discovery
 - approval queue and generic dangerous-action policy
@@ -36,7 +36,86 @@ Everything visible to the agent is a provider state tree with affordances:
 
 Built-in capabilities are providers, not privileged runtime branches. Optional
 providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,
-`spec`, and `meta-runtime`.
+`spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
+
+## MCP Compatibility
+
+MCP support is an optional provider, not a second runtime architecture. The
+`mcp` provider connects to configured MCP servers through the official
+TypeScript SDK and projects their tools, resources, resource templates, and
+prompts into SLOP state under `/servers`.
+
+The model observes MCP servers the same way it observes every other capability:
+status, inventory, errors, and server metadata appear first, while affordances
+such as `refresh`, `call_tool`, `read_resource`, prompt retrieval, and
+per-tool `call` remain secondary. Dangerous MCP tool annotations are preserved
+on the projected SLOP affordance so the hub-level approval policy can see them.
+
+This keeps MCP useful as ecosystem compatibility while preserving the
+SLOP-native provider/state boundary for first-party runtime design.
+
+## A2A Interoperability
+
+A2A support is also an optional provider, not the internal agent-to-agent
+architecture. The `a2a` provider fetches configured Agent Cards, selects the
+first supported JSON-RPC interface, and projects remote agent capabilities into
+SLOP state:
+
+- `/agents` lists configured external agents, selected interface URLs,
+  capability flags, default input/output modes, and declared skills.
+- `/agents/<id>/skills` exposes Agent Card skills as state before the model
+  sends work to that agent.
+- `/tasks` tracks remote A2A tasks observed through `SendMessage`, `GetTask`,
+  `ListTasks`, and `CancelTask`.
+
+The provider sends `A2A-Version` headers, supports env-backed bearer/API-key
+credentials, and keeps remote protocol errors visible as provider state. It
+does not replace `meta-runtime`, `delegation`, or `messaging`; those remain the
+SLOP-native substrate for internal topology, capability masks, child sessions,
+and state-rich routing.
+
+## Workspace And Project Scopes
+
+The optional `workspaces` provider exposes a registry of folder-bound
+workspaces and projects. It is state, not a privileged session manager:
+
+- `/workspaces` lists configured workspace roots and workspace config paths.
+- `/projects` lists projects for the active workspace.
+- `/config` reports the active config layer order: global, workspace, project.
+
+Selecting a workspace or project changes the provider's active scope and returns
+the config layers a scoped session should load. This gives UIs and future
+session orchestration a public SLOP boundary for project selection without
+adding multi-session scheduling or provider rewiring to core.
+
+The session launcher uses the same layer model. A scoped launch merges home,
+workspace, and project config files in that order, then pins terminal and
+filesystem roots to the selected workspace/project folder before provider
+normalization. Workspace/project-scoped MCP servers, A2A agents, skills, and
+meta-runtime storage therefore remain ordinary provider config rather than
+special runtime branches.
+
+## Session Supervisor
+
+The session supervisor is a public SLOP provider for managing multiple ordinary
+agent sessions. It is separate from the per-session provider:
+
+- `/session` reports the active session id/socket and exposes `create_session`
+  and `set_active_session`.
+- `/sessions` lists running session-provider sockets and exposes per-session
+  `set_active` and `stop` affordances.
+- `/scopes` lists configured workspace/project scopes that can launch new
+  scoped sessions.
+
+Managed TUI mode starts a supervisor first, then attaches to the active
+session's public provider socket. Switching sessions changes the TUI's socket;
+it does not collapse multiple sessions into one provider tree. Each child
+session still loads config through the normal scoped launcher and still exposes
+the standard `/session`, `/llm`, `/turn`, `/goal`, `/composer`, `/queue`,
+`/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps` surface.
+
+The supervisor owns lifecycle bookkeeping only. It does not schedule work,
+route tasks, mutate provider wiring, or become a privileged orchestrator.
 
 ## LLM Context Tail
 
@@ -103,6 +182,8 @@ Enabled routes dispatch typed message envelopes through the provider hub:
 - `channel:<id>` targets invoke `messaging.channels/{id}.send`.
 
 Dispatch can run in single-target mode or fanout mode. Routes can carry
+`matchField`, `matchMode`, and `caseSensitive` metadata for typed envelope
+matching over body, topic, channel id, or metadata paths. They can also carry
 `traffic.sampleRate` metadata for deterministic canary delivery without adding a
 core scheduler.
 
@@ -190,6 +271,8 @@ boundary:
 
 - session provider for transcript, turn state, approvals, activity, tasks, and
   app/provider attachment state
+- session supervisor for multi-session listing, scoped creation, switching, and
+  stopping
 - direct provider query/invoke for deeper capability-specific surfaces
 - no privileged in-process UI integration
 

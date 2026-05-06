@@ -40,7 +40,10 @@ export function syncProviderSnapshotToSession(
     return;
   }
 
-  store.syncProviderTasks(update.providerId, parseTasksTree(update.providerId, update.tree));
+  if (update.path === "/tasks") {
+    store.syncProviderTasks(update.providerId, parseTasksTree(update.providerId, update.tree));
+    return;
+  }
 }
 
 export function syncExternalProviderStatesToSession(

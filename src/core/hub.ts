@@ -18,6 +18,7 @@ export interface ProviderRuntimeHub {
   // Provider lifecycle
   addProvider(registeredProvider: RegisteredProvider): Promise<boolean>;
   removeProvider(providerId: string): void;
+  retryProvider(providerId: string): Promise<boolean>;
   shutdown(): void;
 
   // State queries / subscriptions

@@ -14,10 +14,15 @@ Checked in now:
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - default built-ins: `terminal`, `filesystem`, `memory`, `skills`
 - optional built-ins: `web`, `browser`, `cron`, `messaging`, `delegation`,
-  `spec`, `vision`, `meta-runtime`
+  `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
 - session provider and headless session server
+- public session supervisor for scoped session creation, active-session
+  switching, and stopping while keeping each session on its own provider socket
+- public session `/goal` state with persistent objective controls, usage
+  accounting, and automatic continuation while active
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
-  agent-session provider socket
+  agent-session provider socket, can attach through the session supervisor, and
+  exposes a runtime route for meta-runtime proposal review/apply/revert
 - ACP-backed delegated child sessions behind the same session-provider boundary
 - ACP adapters selectable as first-class main-session LLM profiles behind the
   same session-provider boundary
@@ -26,7 +31,8 @@ Checked in now:
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native and ACP delegated-child modes
 - runtime doctor (`bun run runtime:doctor`) for checking live OpenAI-compatible
-  routers and configured ACP adapters before a smoke run
+  routers, configured ACP adapters, startup subprocess commands, persistence,
+  audit, socket, and workspace-path readiness before a smoke run
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from
@@ -54,6 +60,11 @@ providers, skills, routes, and agent-to-agent channels.
      through the provider hub, forwarding capability masks into delegated child
      runtime policy and supporting fanout or sampled canary routes when
      requested.
+   - Match routes against envelope body, topic, channel id, or metadata paths
+     with explicit substring/exact/prefix/regex/exists modes while preserving
+     the older body-substring default.
+   - Export and import portable runtime bundles that include meta-runtime state
+     and active skill-version contents while excluding secrets.
    - Require routed agent targets to have explicit capability masks rather than
      inheriting the parent's whole provider surface.
    - Keep trace analysis, repair tactics, runtime architect prompts, automatic
@@ -96,19 +107,49 @@ providers, skills, routes, and agent-to-agent channels.
    - Represent channels and routes as SLOP state.
    - Do not add a daemon, external chat bridge, or sandbox worker fleet in MVP.
 
+6. Keep MCP as compatibility.
+   - Expose configured MCP servers through an optional SLOP provider.
+   - Preserve MCP tool/resource/prompt inventories as provider state before
+     exposing invocation affordances.
+   - Do not let MCP reintroduce a flat tool-catalog architecture into core.
+
+7. Keep A2A as external interoperability.
+   - Expose configured Agent Cards, declared skills, selected JSON-RPC
+     interfaces, and remote task lifecycle through an optional SLOP provider.
+   - Use A2A for collaboration with opaque external agents.
+   - Keep internal agent-to-agent topology in `meta-runtime`, `delegation`, and
+     `messaging` so state observation, capability masks, and skill-led
+     self-evolution remain first-class.
+
+8. Make workspace/project scope observable.
+   - Expose configured workspace and project roots as optional provider state.
+   - Show global/workspace/project config layer order before a scoped session
+     is launched.
+   - Load scoped session config layers for `session:serve` and managed TUI
+     launches, pinning terminal/filesystem roots to the selected scope.
+   - Expose a public session supervisor for scoped session creation/switching
+     without adding scheduling or provider rewiring to core.
+
 ## Remaining Non-MVP Work
 
-- Build richer UI treatment for meta-runtime proposals and approvals.
-- Add import/export packaging for whole identity/runtime bundles, not just
-  provider state JSON.
-- Evolve route matching beyond substring matches when real usage needs richer
-  predicates over typed message envelopes.
+- Add a first-class identity provider if persona/preferences/role memory need a
+  durable home beyond the current meta-runtime bundle substrate.
 - Add autonomous scheduling or identity-level review around the existing
   `skill-curator` workflow before enabling broad autonomous skill growth.
+- Add richer side-by-side session detail views if supervised workflows need
+  transcript comparison beyond the current supervisor-published turn/goal
+  summary state.
 
 ## Verification
 
 Required checks for architecture-sensitive changes:
+
+```sh
+bun run preflight
+```
+
+For targeted runtime work, use the narrower checks that match the touched
+surface:
 
 ```sh
 bunx tsc --noEmit

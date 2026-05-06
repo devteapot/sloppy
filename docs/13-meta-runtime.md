@@ -113,10 +113,38 @@ workspace proposal writes only workspace-owned topology, workspace proposals, an
 workspace events. It does not copy global or session state into the workspace
 file.
 
+New state files are written as versioned envelopes:
+
+```json
+{
+  "kind": "sloppy.meta-runtime.state",
+  "schema_version": 1,
+  "saved_at": "2026-05-06T00:00:00.000Z",
+  "state": {}
+}
+```
+
+Legacy raw topology-state files are still read for compatibility. Unknown
+envelope kinds or schema versions are rejected before state is loaded.
+
 `export_state` can return a merged view or the exact persisted global/workspace
 file. `import_state` can merge or replace a single target layer. Replacing the
 workspace layer removes only workspace-owned records, so any shadowed global
 records become visible again.
+
+`export_bundle` returns a portable bundle with meta-runtime topology state plus
+content for active skill versions loaded through the skills provider. API keys,
+secure-store values, and other secrets are never included. Exported skill
+entries include SHA-256 hashes for `SKILL.md` content and supporting files.
+`import_bundle` verifies any bundled hashes before writing skills or topology,
+and rejects mismatches as malformed bundle content.
+
+`import_bundle` restores meta-runtime state and can install bundled skills
+through `skill_manage`. By default bundled skills install as session skills;
+explicit workspace/global skill imports still go through the skills provider's
+approval rules. `dry_run=true` parses and validates the bundle, reports which
+skills would be created, skipped, or fail preflight, and leaves both topology
+and skill state unchanged.
 
 ## Proposal Rules
 
@@ -164,10 +192,21 @@ Routes dispatch typed envelopes:
 }
 ```
 
-Routes match by exact source or `*`, and by `*` or substring match on the
-envelope body. If multiple routes match, higher `priority` wins, then route id
-breaks ties. `dispatch_route` can run in single-target mode or `fanout` mode,
-which delivers the same envelope to every matching route.
+Routes match by exact source or `*`. The existing `match` field remains the
+route's match value and defaults to case-sensitive substring matching against
+the envelope body, preserving older route records. New route records can also
+set:
+
+- `matchField`: `body`, `topic`, `channelId`, or `metadata.<path>`
+- `matchMode`: `substring`, `exact`, `prefix`, `regex`, or `exists`
+- `caseSensitive`: `false` for case-insensitive string matching
+
+`match="*"` matches any value on the selected field. `matchMode="exists"`
+matches when the selected field is present, ignoring the `match` value. Invalid
+regex matchers are rejected before a proposal is stored. If multiple routes
+match, higher `priority` wins, then route id breaks ties. `dispatch_route` can
+run in single-target mode or `fanout` mode, which delivers the same envelope to
+every matching route.
 
 Routes may include `traffic.sampleRate` between `0` and `1`. The matcher uses a
 deterministic bucket from route id and envelope id, so agents can propose
@@ -342,6 +381,5 @@ Preferred migration order:
 
 ## Remaining Work
 
-- richer route matchers beyond substring matching
-- UI treatment for proposals, typed envelopes, route events, and capability masks
-- packaged export/import of identity, skills, and runtime state as one bundle
+- optional first-class `/identity` provider for persona/preferences/role memory
+  beyond the checked-in meta-runtime bundle substrate

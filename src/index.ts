@@ -67,4 +67,11 @@ export {
   SubAgentRunner,
 } from "./runtime/delegation";
 export type { AgentSessionSnapshot } from "./session";
-export { AgentSessionProvider, SessionRuntime, SessionService, SessionStore } from "./session";
+export {
+  AgentSessionProvider,
+  SessionRuntime,
+  SessionService,
+  SessionStore,
+  SessionSupervisorProvider,
+  startSessionSupervisor,
+} from "./session";

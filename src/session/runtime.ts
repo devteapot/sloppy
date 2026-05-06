@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 
-import type { ResultMessage } from "@slop-ai/consumer/browser";
+import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
 import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
@@ -8,6 +8,7 @@ import type {
   AgentCallbacks,
   AgentRunResult,
   AgentToolEvent,
+  LocalRuntimeTool,
   ResolvedApprovalToolResult,
   RoleProfile,
 } from "../core/agent";
@@ -88,6 +89,144 @@ function buildToolResultBlock(toolUseId: string, result: ResultMessage): ToolRes
   };
 }
 
+const PARAMS_PREVIEW_BYTE_LIMIT = 1500;
+const PARAMS_PREVIEW_LINE_LIMIT = 24;
+
+// Compact a tool's params into a multi-line preview for the activity feed.
+// Edit-shaped actions (write/edit/patch) put the new content/hunks first so
+// the TUI can render a diff-like block; everything else falls back to a
+// stable JSON dump capped at PARAMS_PREVIEW_BYTE_LIMIT.
+function previewToolParams(action: string, params: Record<string, unknown>): string | undefined {
+  if (!params || Object.keys(params).length === 0) {
+    return undefined;
+  }
+  const lower = action.toLowerCase();
+  if (lower.includes("write") || lower.includes("edit") || lower.includes("patch")) {
+    const diff = renderEditDiff(params);
+    if (diff) return clampPreview(diff);
+    const preferred = ["new_string", "content", "patch", "diff"];
+    for (const key of preferred) {
+      const value = params[key];
+      if (typeof value === "string" && value.length > 0) {
+        return clampPreview(value);
+      }
+    }
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(params, null, 2);
+  } catch {
+    return undefined;
+  }
+  return clampPreview(json);
+}
+
+// Render `{oldText, newText}` / `{old_string, new_string}` pairs (single
+// or arrayed under `edits`) as a unified-style diff so the TUI's diff
+// colorizer (lines starting with `+` / `-`) lights up.
+function renderEditDiff(params: Record<string, unknown>): string | undefined {
+  const pairs = collectEditPairs(params);
+  if (pairs.length === 0) return undefined;
+  const blocks: string[] = [];
+  pairs.forEach((pair, index) => {
+    if (index > 0) blocks.push("@@");
+    for (const line of pair.oldText.split(/\r?\n/)) blocks.push(`-${line}`);
+    for (const line of pair.newText.split(/\r?\n/)) blocks.push(`+${line}`);
+  });
+  return blocks.join("\n");
+}
+
+function collectEditPairs(
+  params: Record<string, unknown>,
+): Array<{ oldText: string; newText: string }> {
+  const pairs: Array<{ oldText: string; newText: string }> = [];
+  const single = readEditPair(params);
+  if (single) pairs.push(single);
+  const list = params["edits"];
+  if (Array.isArray(list)) {
+    for (const entry of list) {
+      if (entry && typeof entry === "object") {
+        const pair = readEditPair(entry as Record<string, unknown>);
+        if (pair) pairs.push(pair);
+      }
+    }
+  }
+  return pairs;
+}
+
+function readEditPair(
+  source: Record<string, unknown>,
+): { oldText: string; newText: string } | null {
+  const oldText = pickString(source, ["oldText", "old_string", "old", "search"]);
+  const newText = pickString(source, ["newText", "new_string", "new", "replace"]);
+  if (oldText === null || newText === null) return null;
+  return { oldText, newText };
+}
+
+function pickString(source: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+function clampPreview(value: string): string {
+  const lines = value.split(/\r?\n/);
+  let truncatedLines = lines;
+  if (lines.length > PARAMS_PREVIEW_LINE_LIMIT) {
+    truncatedLines = [
+      ...lines.slice(0, PARAMS_PREVIEW_LINE_LIMIT),
+      `… +${lines.length - PARAMS_PREVIEW_LINE_LIMIT} lines`,
+    ];
+  }
+  const out = truncatedLines.join("\n");
+  if (out.length <= PARAMS_PREVIEW_BYTE_LIMIT) {
+    return out;
+  }
+  return `${out.slice(0, PARAMS_PREVIEW_BYTE_LIMIT)}…`;
+}
+
+function buildGoalStartPrompt(objective: string): string {
+  return [
+    "Start working toward this persistent session goal.",
+    "",
+    objective,
+    "",
+    "Continue until the objective is genuinely complete or you are blocked. Keep the core runtime lean: use existing SLOP provider state and affordances, and prefer reusable skill updates over hardcoded runtime policy when the work discovers a repeatable procedure.",
+    "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence.",
+  ].join("\n");
+}
+
+function buildGoalContinuationPrompt(goal: {
+  objective: string;
+  totalTokens: number;
+  tokenBudget?: number;
+}): string {
+  const budget =
+    goal.tokenBudget === undefined
+      ? "No token budget is configured."
+      : `Token usage so far is ${goal.totalTokens}/${goal.tokenBudget}.`;
+  return [
+    "Continue the active persistent session goal from the current runtime state.",
+    "",
+    goal.objective,
+    "",
+    budget,
+    "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence. If the goal is now complete, mark it complete before your concise completion summary. If work remains, take the next concrete action. If you are blocked, report the blocker.",
+  ].join("\n");
+}
+
+function compactEvidence(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value
+    .flatMap((item) => (typeof item === "string" ? [item.trim()] : []))
+    .filter((item) => item.length > 0)
+    .slice(0, 12);
+}
+
 export interface SessionAgent {
   start(): Promise<void>;
   chat(userMessage: string): Promise<AgentRunResult>;
@@ -98,6 +237,16 @@ export interface SessionAgent {
     action: string,
     params?: Record<string, unknown>,
   ): Promise<ResultMessage>;
+  queryProvider?(
+    providerId: string,
+    path: string,
+    options?: {
+      depth?: number;
+      maxNodes?: number;
+      window?: [number, number];
+    },
+  ): Promise<SlopNode>;
+  retryProvider?(providerId: string): Promise<boolean>;
   resolveApprovalDirect(approvalId: string): Promise<ResultMessage>;
   rejectApprovalDirect(approvalId: string, reason?: string): void;
   cancelActiveTurn(): boolean;
@@ -129,6 +278,7 @@ function createDefaultSessionAgent(
     llmProfileId?: string;
     llmModelOverride?: string;
     policyRules?: InvokePolicy[];
+    localTools?: () => LocalRuntimeTool[];
   },
 ): SessionAgent {
   return new ProfileSessionAgent({
@@ -143,6 +293,7 @@ function createDefaultSessionAgent(
     publishEvent: extras?.publishEvent,
     mirrorProviderPaths: ["/approvals", "/tasks"],
     policyRules: extras?.policyRules,
+    localTools: extras?.localTools,
     callbacks,
   });
 }
@@ -160,6 +311,10 @@ export class SessionRuntime {
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
   private pendingApproval: PendingApprovalMirror | null = null;
+  private currentTurnStartedAt = 0;
+  private currentTurnUsedTools = false;
+  private currentTurnContinuation = false;
+  private currentTurnGoalId: string | null = null;
   private readonly startedRuntimeConfigFingerprint: string;
 
   constructor(options?: {
@@ -203,6 +358,8 @@ export class SessionRuntime {
         model: this.config.llm.model,
         title: options?.title,
         workspaceRoot: this.config.providers.filesystem.root,
+        workspaceId: this.config.workspaces?.activeWorkspaceId,
+        projectId: this.config.workspaces?.activeProjectId,
         persistencePath: resolveSessionPersistencePath(
           this.config,
           sessionId,
@@ -233,6 +390,9 @@ export class SessionRuntime {
           return;
         }
 
+        if (event.kind === "started") {
+          this.currentTurnUsedTools = true;
+        }
         this.handleToolEvent(this.currentTurnId, event);
       },
       onProviderSnapshot: (update) => {
@@ -282,6 +442,7 @@ export class SessionRuntime {
             llmProfileId: options?.llmProfileId,
             llmModelOverride: options?.llmModelOverride,
             policyRules: options?.policyRules,
+            localTools: () => this.buildLocalTools(),
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
@@ -295,6 +456,146 @@ export class SessionRuntime {
     await this.agent.start();
     await this.refreshLlmState();
     this.started = true;
+  }
+
+  private buildLocalTools(): LocalRuntimeTool[] {
+    const goal = this.store.getSnapshot().goal;
+    if (!goal || goal.status === "complete" || goal.goalId !== this.currentTurnGoalId) {
+      return [];
+    }
+
+    return [
+      {
+        tool: {
+          type: "function",
+          function: {
+            name: "slop_goal_update",
+            description:
+              "Report progress for the active persistent session goal. Use status=progress for evidence of forward movement, status=blocked when work cannot continue, and status=complete only when the objective is genuinely achieved.",
+            parameters: {
+              type: "object",
+              properties: {
+                status: {
+                  type: "string",
+                  enum: ["progress", "blocked", "complete"],
+                  description: "Goal report status.",
+                },
+                message: {
+                  type: "string",
+                  description: "Concise progress, blocker, or completion message.",
+                },
+                evidence: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "Optional concrete evidence such as file paths changed, tests run, audit logs, or blockers observed.",
+                },
+              },
+              required: ["status", "message"],
+              additionalProperties: false,
+            },
+          },
+        },
+        execute: (params) => this.reportGoalUpdate(params, goal.goalId),
+      },
+    ];
+  }
+
+  private reportGoalUpdate(
+    params: Record<string, unknown>,
+    expectedGoalId: string,
+  ): {
+    status: "ok" | "error";
+    summary: string;
+    content: unknown;
+    isError?: boolean;
+  } {
+    const goal = this.store.getSnapshot().goal;
+    if (!goal || goal.goalId !== expectedGoalId || this.currentTurnGoalId !== expectedGoalId) {
+      return {
+        status: "error",
+        summary: "Goal update no longer matches the active goal turn.",
+        content: {
+          status: "error",
+          error: {
+            code: "goal_mismatch",
+            message:
+              "The goal update was produced by a stale goal turn and was not applied to the current goal.",
+          },
+        },
+        isError: true,
+      };
+    }
+
+    const reportStatus = typeof params.status === "string" ? params.status : "";
+    if (reportStatus !== "progress" && reportStatus !== "blocked" && reportStatus !== "complete") {
+      return {
+        status: "error",
+        summary: "Goal update status must be progress, blocked, or complete.",
+        content: {
+          status: "error",
+          error: {
+            code: "invalid_goal_status",
+            message: "Goal update status must be progress, blocked, or complete.",
+          },
+        },
+        isError: true,
+      };
+    }
+
+    const message = typeof params.message === "string" ? params.message.trim() : "";
+    if (!message) {
+      return {
+        status: "error",
+        summary: "Goal update message cannot be empty.",
+        content: {
+          status: "error",
+          error: {
+            code: "invalid_goal_message",
+            message: "Goal update message cannot be empty.",
+          },
+        },
+        isError: true,
+      };
+    }
+
+    const evidence = compactEvidence(params.evidence);
+    if (reportStatus === "progress") {
+      this.store.updateGoalStatus("active", {
+        message,
+        evidence,
+        source: "model",
+      });
+    } else if (reportStatus === "blocked") {
+      this.store.updateGoalStatus("paused", {
+        message: `Blocked: ${message}`,
+        evidence,
+        source: "model",
+      });
+    } else {
+      this.store.updateGoalStatus("complete", {
+        message,
+        evidence,
+        source: "model",
+      });
+    }
+
+    const updated = this.store.getSnapshot().goal;
+    return {
+      status: "ok",
+      summary: `Goal ${reportStatus}: ${message}`,
+      content: {
+        status: "ok",
+        data: {
+          goal_id: updated?.goalId,
+          status: updated?.status,
+          message: updated?.message,
+          evidence_count: updated?.evidence?.length ?? 0,
+          update_source: updated?.updateSource,
+          completion_source: updated?.completionSource,
+        },
+      },
+    };
   }
 
   async sendMessage(text: string): Promise<SendMessageResult> {
@@ -311,6 +612,12 @@ export class SessionRuntime {
       const queued = this.store.enqueueMessage(trimmed);
       const position =
         this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
+      this.audit({
+        kind: "turn_queued",
+        queuedMessageId: queued.id,
+        position,
+        source: "user",
+      });
       return {
         status: "queued",
         queuedMessageId: queued.id,
@@ -323,6 +630,7 @@ export class SessionRuntime {
 
   cancelQueuedMessage(queuedMessageId: string): { queuedMessageId: string; status: string } {
     this.store.removeQueuedMessage(queuedMessageId);
+    this.audit({ kind: "turn_queue_cancelled", queuedMessageId });
     return {
       queuedMessageId,
       status: "cancelled",
@@ -331,9 +639,139 @@ export class SessionRuntime {
 
   private startTurn(userMessage: string): { status: "started"; turnId: string } {
     const turnId = this.store.beginTurn(userMessage);
+    this.currentTurnStartedAt = Date.now();
+    this.currentTurnUsedTools = false;
+    this.currentTurnContinuation = false;
+    this.currentTurnGoalId = null;
     this.currentTurnId = turnId;
+    this.audit({
+      kind: "turn_started",
+      turnId,
+      source: "user",
+      continuation: false,
+    });
     this.activeTurnPromise = this.runTurn(turnId, userMessage);
     return { status: "started", turnId };
+  }
+
+  private startGoalTurn(
+    userMessage: string,
+    continuation: boolean,
+    goalId = this.store.getSnapshot().goal?.goalId,
+  ): { status: "started"; turnId: string } {
+    const turnId = this.store.beginTurn(userMessage, {
+      role: continuation ? "system" : "user",
+      author: continuation ? "goal" : "user",
+    });
+    this.currentTurnStartedAt = Date.now();
+    this.currentTurnUsedTools = false;
+    this.currentTurnContinuation = continuation;
+    this.currentTurnGoalId = goalId ?? null;
+    this.currentTurnId = turnId;
+    this.audit({
+      kind: "turn_started",
+      turnId,
+      source: "goal",
+      goalId,
+      continuation,
+    });
+    this.activeTurnPromise = this.runTurn(turnId, userMessage);
+    return { status: "started", turnId };
+  }
+
+  async createGoal(params: Record<string, unknown>): Promise<{
+    status: "started" | "queued";
+    goalId: string;
+    turnId?: string;
+    queuedMessageId?: string;
+    position?: number;
+  }> {
+    const objective = typeof params.objective === "string" ? params.objective.trim() : "";
+    if (!objective) {
+      throw new Error("Goal objective cannot be empty.");
+    }
+
+    const tokenBudget =
+      typeof params.token_budget === "number" && Number.isFinite(params.token_budget)
+        ? Math.max(1, Math.floor(params.token_budget))
+        : undefined;
+
+    await this.start();
+    if (this.requiresLlmProfile) {
+      await this.refreshLlmState({ requireReady: true });
+    }
+
+    const goalId = this.store.createGoal({
+      objective,
+      tokenBudget,
+      message: "Goal active.",
+    });
+    this.audit({
+      kind: "goal_created",
+      goalId,
+      tokenBudget,
+    });
+    const prompt = buildGoalStartPrompt(objective);
+
+    if (this.currentTurnId) {
+      const queued = this.store.enqueueMessage(prompt, {
+        author: "goal",
+        goalId,
+        continuation: false,
+      });
+      const position =
+        this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
+      this.audit({
+        kind: "turn_queued",
+        queuedMessageId: queued.id,
+        position,
+        source: "goal",
+        goalId,
+        continuation: false,
+      });
+      return {
+        status: "queued",
+        goalId,
+        queuedMessageId: queued.id,
+        position,
+      };
+    }
+
+    const started = this.startGoalTurn(prompt, false, goalId);
+    return {
+      status: "started",
+      goalId,
+      turnId: started.turnId,
+    };
+  }
+
+  pauseGoal(message?: string): { status: string } {
+    const goalId = this.store.getSnapshot().goal?.goalId;
+    this.store.updateGoalStatus("paused", { message, source: "user" });
+    this.audit({ kind: "goal_status", goalId, status: "paused", source: "user" });
+    return { status: "paused" };
+  }
+
+  resumeGoal(message?: string): { status: string } {
+    const goalId = this.store.getSnapshot().goal?.goalId;
+    this.store.updateGoalStatus("active", { message, source: "user" });
+    this.audit({ kind: "goal_status", goalId, status: "active", source: "user" });
+    this.startNextQueuedTurn();
+    return { status: "active" };
+  }
+
+  completeGoal(message?: string): { status: string } {
+    const goalId = this.store.getSnapshot().goal?.goalId;
+    this.store.updateGoalStatus("complete", { message, source: "user" });
+    this.audit({ kind: "goal_status", goalId, status: "complete", source: "user" });
+    return { status: "complete" };
+  }
+
+  clearGoal(): { status: string } {
+    const goalId = this.store.getSnapshot().goal?.goalId;
+    this.store.clearGoal();
+    this.audit({ kind: "goal_cleared", goalId });
+    return { status: "cleared" };
   }
 
   async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
@@ -543,6 +981,43 @@ export class SessionRuntime {
     };
   }
 
+  async queryProviderState(
+    providerId: string,
+    path: string,
+    options?: {
+      depth?: number;
+      maxNodes?: number;
+      window?: [number, number];
+    },
+  ): Promise<SlopNode> {
+    await this.start();
+    if (!this.agent.queryProvider) {
+      throw new Error("Provider state query is not available for this session agent.");
+    }
+    return this.agent.queryProvider(providerId, path, options);
+  }
+
+  async invokeProviderAction(
+    providerId: string,
+    path: string,
+    action: string,
+    params?: Record<string, unknown>,
+  ): Promise<ResultMessage> {
+    await this.start();
+    return this.agent.invokeProvider(providerId, path, action, params);
+  }
+
+  async retryProvider(providerId: string): Promise<{ providerId: string; connected: boolean }> {
+    await this.start();
+    if (!this.agent.retryProvider) {
+      throw new Error("Provider reconnect is not available for this session agent.");
+    }
+    return {
+      providerId,
+      connected: await this.agent.retryProvider(providerId),
+    };
+  }
+
   canCancelTurn(): boolean {
     const snapshot = this.store.getSnapshot();
     if (!this.currentTurnId) {
@@ -588,6 +1063,16 @@ export class SessionRuntime {
         approvalId: pendingApproval.sessionApprovalId,
         approvalStatus,
       });
+      this.audit({
+        kind: "turn_cancelled",
+        turnId,
+        reason: "user",
+        sourceApprovalId: pendingApproval.sourceApprovalId,
+        sessionApprovalId: pendingApproval.sessionApprovalId,
+        approvalStatus,
+      });
+      this.pauseActiveGoal("Goal paused after turn cancellation.");
+      this.currentTurnGoalId = null;
       this.startNextQueuedTurn();
       return {
         status: "cancelled",
@@ -599,6 +1084,7 @@ export class SessionRuntime {
       throw new Error("Turn cancellation is not available in the current phase.");
     }
 
+    this.audit({ kind: "turn_cancel_requested", turnId, reason: "user" });
     return {
       status: "cancelling",
       turnId,
@@ -618,6 +1104,12 @@ export class SessionRuntime {
     this.pendingApproval = null;
     this.activeTurnPromise = null;
     this.store.close();
+    this.eventBus?.stop();
+    this.eventBus = null;
+  }
+
+  private audit(event: Record<string, unknown> & { kind: string }): void {
+    this.eventBus?.publish(event);
   }
 
   private handleToolEvent(turnId: string, event: AgentToolEvent): void {
@@ -629,6 +1121,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          paramsPreview: previewToolParams(event.invocation.action, event.invocation.params),
         });
         break;
       }
@@ -741,19 +1234,42 @@ export class SessionRuntime {
           `Agent reported waiting_approval without a pending approval record (turn ${turnId}).`,
         );
       }
+      this.audit({
+        kind: "turn_waiting_approval",
+        turnId,
+        sourceApprovalId: this.pendingApproval.sourceApprovalId,
+        sessionApprovalId: this.pendingApproval.sessionApprovalId,
+        toolUseId: this.pendingApproval.invocation.toolUseId,
+      });
       return;
     }
 
+    const goalId = this.currentTurnGoalId;
+    const continuation = this.currentTurnContinuation;
+    this.accountGoalTurn(turnId, result);
     this.pendingApproval = null;
     this.currentTurnId = null;
+    this.currentTurnGoalId = null;
     this.store.completeTurn(turnId, result.response);
+    this.audit({
+      kind: "turn_completed",
+      turnId,
+      goalId,
+      continuation,
+      inputTokens: result.usage?.inputTokens,
+      outputTokens: result.usage?.outputTokens,
+    });
     this.startNextQueuedTurn();
   }
 
   private failTurn(turnId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
     this.pendingApproval = null;
     this.currentTurnId = null;
-    this.store.failTurn(turnId, error instanceof Error ? error.message : String(error));
+    this.store.failTurn(turnId, message);
+    this.audit({ kind: "turn_failed", turnId, errorMessage: message });
+    this.pauseActiveGoal(`Goal paused after turn failure: ${message}`);
+    this.currentTurnGoalId = null;
     this.startNextQueuedTurn();
   }
 
@@ -764,6 +1280,9 @@ export class SessionRuntime {
       this.store.cancelTurn(turnId, {
         message: "Turn cancelled by user.",
       });
+      this.audit({ kind: "turn_cancelled", turnId, reason: "llm_abort" });
+      this.pauseActiveGoal("Goal paused after turn cancellation.");
+      this.currentTurnGoalId = null;
       this.startNextQueuedTurn();
       return;
     }
@@ -777,9 +1296,59 @@ export class SessionRuntime {
     }
     const next = this.store.dequeueMessage();
     if (!next) {
+      this.startGoalContinuationTurn();
+      return;
+    }
+    if (next.author === "goal") {
+      const goal = this.store.getSnapshot().goal;
+      if (goal && goal.status === "active" && goal.goalId === next.goalId) {
+        this.startGoalTurn(next.text, next.continuation === true, next.goalId);
+        return;
+      }
+      this.startNextQueuedTurn();
       return;
     }
     this.startTurn(next.text);
+  }
+
+  private startGoalContinuationTurn(): void {
+    if (this.currentTurnId) {
+      return;
+    }
+    const goal = this.store.getSnapshot().goal;
+    if (!goal || goal.status !== "active") {
+      return;
+    }
+    this.startGoalTurn(buildGoalContinuationPrompt(goal), true, goal.goalId);
+  }
+
+  private pauseActiveGoal(message: string): void {
+    const goal = this.store.getSnapshot().goal;
+    if (goal?.status === "active" && goal.goalId === this.currentTurnGoalId) {
+      this.store.updateGoalStatus("paused", { message, source: "runtime" });
+      this.audit({
+        kind: "goal_status",
+        goalId: goal.goalId,
+        status: "paused",
+        source: "runtime",
+      });
+    }
+  }
+
+  private accountGoalTurn(turnId: string, result: AgentRunResult): void {
+    const goal = this.store.getSnapshot().goal;
+    if (!goal || goal.goalId !== this.currentTurnGoalId) {
+      return;
+    }
+    const elapsedMs = this.currentTurnStartedAt > 0 ? Date.now() - this.currentTurnStartedAt : 0;
+    this.store.accountGoalTurn({
+      turnId,
+      inputTokens: result.usage?.inputTokens,
+      outputTokens: result.usage?.outputTokens,
+      elapsedMs,
+      continuation: this.currentTurnContinuation,
+      usedTools: this.currentTurnUsedTools,
+    });
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {

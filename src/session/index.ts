@@ -2,6 +2,8 @@ export { AgentSessionProvider } from "./provider";
 export { SessionRuntime } from "./runtime";
 export { SessionService } from "./service";
 export { SessionStore } from "./store";
+export type { SessionRecord, SessionScopeInput } from "./supervisor";
+export { SessionSupervisorProvider, startSessionSupervisor } from "./supervisor";
 export type {
   ActivityItem,
   ActivityKind,

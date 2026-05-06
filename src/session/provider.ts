@@ -110,6 +110,7 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
       approval_id: item.approvalId,
       task_id: item.taskId,
       tool_use_id: item.toolUseId,
+      params_preview: item.paramsPreview,
     },
     summary: item.summary,
   };
@@ -153,6 +154,28 @@ function buildAppItem(app: ExternalAppSnapshot): ItemDescriptor {
   };
 }
 
+function optionalPositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function optionalWindow(value: unknown): [number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return undefined;
+  }
+  const start = optionalPositiveInteger(value[0]);
+  const count = optionalPositiveInteger(value[1]);
+  return start !== undefined && count !== undefined ? [start, count] : undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export class AgentSessionProvider {
   readonly server: SlopServer;
 
@@ -174,6 +197,7 @@ export class AgentSessionProvider {
     this.server.register("session", () => this.buildSessionDescriptor());
     this.server.register("llm", () => this.buildLlmDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
+    this.server.register("goal", () => this.buildGoalDescriptor());
     this.server.register("composer", () => this.buildComposerDescriptor());
     this.server.register("queue", () => this.buildQueueDescriptor());
     this.server.register("transcript", () => this.buildTranscriptDescriptor());
@@ -207,6 +231,8 @@ export class AgentSessionProvider {
         client_count: snapshot.session.clientCount,
         title: snapshot.session.title,
         workspace_root: snapshot.session.workspaceRoot,
+        workspace_id: snapshot.session.workspaceId,
+        project_id: snapshot.session.projectId,
         last_error: snapshot.session.lastError,
         config_requires_restart: snapshot.session.configRequiresRestart === true,
         config_restart_reason: snapshot.session.configRestartReason,
@@ -239,6 +265,133 @@ export class AgentSessionProvider {
             }),
           }
         : undefined,
+    };
+  }
+
+  private buildGoalDescriptor(): NodeDescriptor {
+    const goal = this.runtime.store.getSnapshot().goal;
+    const baseActions = {
+      create_goal: action(
+        {
+          objective: "string",
+          token_budget: {
+            type: "number",
+            optional: true,
+            description: "Optional total token budget for this goal.",
+          },
+        },
+        async (params) => this.runtime.createGoal(params),
+        {
+          label: "Create Goal",
+          description:
+            "Create or replace the persistent session goal and start or queue the first goal turn.",
+          estimate: "instant",
+        },
+      ),
+    };
+
+    if (!goal) {
+      return {
+        type: "control",
+        props: {
+          exists: false,
+          status: "none",
+          message: "No active goal.",
+        },
+        summary: "Persistent session goal state.",
+        actions: baseActions,
+      };
+    }
+
+    return {
+      type: "control",
+      props: {
+        exists: true,
+        goal_id: goal.goalId,
+        objective: goal.objective,
+        status: goal.status,
+        created_at: goal.createdAt,
+        updated_at: goal.updatedAt,
+        completed_at: goal.completedAt,
+        token_budget: goal.tokenBudget,
+        input_tokens: goal.inputTokens,
+        output_tokens: goal.outputTokens,
+        total_tokens: goal.totalTokens,
+        elapsed_ms: goal.elapsedMs,
+        continuation_count: goal.continuationCount,
+        last_turn_id: goal.lastTurnId,
+        message: goal.message,
+        evidence: goal.evidence ?? [],
+        update_source: goal.updateSource,
+        completion_source: goal.completionSource,
+      },
+      summary: goal.objective,
+      actions: {
+        ...baseActions,
+        ...(goal.status === "active"
+          ? {
+              pause_goal: action(
+                {
+                  message: {
+                    type: "string",
+                    description: "Optional pause reason.",
+                  },
+                },
+                async ({ message }) =>
+                  this.runtime.pauseGoal(typeof message === "string" ? message : undefined),
+                {
+                  label: "Pause Goal",
+                  description: "Pause automatic goal continuation.",
+                  estimate: "instant",
+                },
+              ),
+            }
+          : {}),
+        ...(goal.status === "paused" || goal.status === "budget_limited"
+          ? {
+              resume_goal: action(
+                {
+                  message: {
+                    type: "string",
+                    description: "Optional resume note.",
+                  },
+                },
+                async ({ message }) =>
+                  this.runtime.resumeGoal(typeof message === "string" ? message : undefined),
+                {
+                  label: "Resume Goal",
+                  description: "Resume automatic goal continuation.",
+                  estimate: "instant",
+                },
+              ),
+            }
+          : {}),
+        ...(goal.status !== "complete"
+          ? {
+              complete_goal: action(
+                {
+                  message: {
+                    type: "string",
+                    description: "Optional completion note.",
+                  },
+                },
+                async ({ message }) =>
+                  this.runtime.completeGoal(typeof message === "string" ? message : undefined),
+                {
+                  label: "Complete Goal",
+                  description: "Mark the persistent session goal complete.",
+                  estimate: "instant",
+                },
+              ),
+            }
+          : {}),
+        clear_goal: action(async () => this.runtime.clearGoal(), {
+          label: "Clear Goal",
+          description: "Remove the persistent session goal state.",
+          dangerous: true,
+          estimate: "instant",
+        }),
+      },
     };
   }
 
@@ -389,6 +542,8 @@ export class AgentSessionProvider {
           text: message.text,
           created_at: message.createdAt,
           author: message.author,
+          goal_id: message.goalId,
+          continuation: message.continuation === true,
           position: index + 1,
         },
         summary: queuedSummary(message),
@@ -512,16 +667,17 @@ export class AgentSessionProvider {
           error: task.error,
         },
         summary: task.message,
-        actions: task.canCancel
-          ? {
-              cancel: action(async () => this.runtime.cancelTask(task.id), {
-                label: "Cancel",
-                description: "Forward cancellation to the downstream provider task.",
-                dangerous: true,
-                estimate: "instant",
-              }),
-            }
-          : undefined,
+        actions:
+          task.canCancel && task.status === "running" && typeof task.sourcePath === "string"
+            ? {
+                cancel: action(async () => this.runtime.cancelTask(task.id), {
+                  label: "Cancel",
+                  description: "Forward cancellation to the downstream provider task.",
+                  dangerous: true,
+                  estimate: "instant",
+                }),
+              }
+            : undefined,
       })),
     };
   }
@@ -535,6 +691,80 @@ export class AgentSessionProvider {
       },
       summary: "External provider attachments tracked for this session.",
       items: snapshot.apps.map((app) => buildAppItem(app)),
+      actions: {
+        query_provider: action(
+          {
+            provider_id: "string",
+            path: "string",
+            depth: {
+              type: "number",
+              optional: true,
+              description: "Optional query depth.",
+            },
+            max_nodes: {
+              type: "number",
+              optional: true,
+              description: "Optional maximum node count.",
+            },
+            window: {
+              type: "array",
+              optional: true,
+              items: { type: "number" },
+              description: "Optional [start, count] item window.",
+            },
+          },
+          async ({ provider_id, path, depth, max_nodes, window }) =>
+            this.runtime.queryProviderState(String(provider_id), String(path), {
+              depth: optionalPositiveInteger(depth),
+              maxNodes: optionalPositiveInteger(max_nodes),
+              window: optionalWindow(window),
+            }),
+          {
+            label: "Query Provider",
+            description:
+              "Query state from a provider attached to this session, including in-process built-ins.",
+            idempotent: true,
+            estimate: "fast",
+          },
+        ),
+        invoke_provider: action(
+          {
+            provider_id: "string",
+            path: "string",
+            action: "string",
+            params: {
+              type: "object",
+              optional: true,
+              description: "JSON parameters for the provider action.",
+            },
+          },
+          async ({ provider_id, path, action: actionName, params }) =>
+            this.runtime.invokeProviderAction(
+              String(provider_id),
+              String(path),
+              String(actionName),
+              optionalRecord(params),
+            ),
+          {
+            label: "Invoke Provider",
+            description:
+              "Invoke an affordance on a provider attached to this session. Hub approval policy still applies.",
+            estimate: "slow",
+          },
+        ),
+        reconnect_provider: action(
+          {
+            provider_id: "string",
+          },
+          async ({ provider_id }) => this.runtime.retryProvider(String(provider_id)),
+          {
+            label: "Reconnect Provider",
+            description: "Retry connection to a disconnected or errored external provider.",
+            idempotent: true,
+            estimate: "fast",
+          },
+        ),
+      },
     };
   }
 }

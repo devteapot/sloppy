@@ -1,22 +1,30 @@
-import type { TranscriptMessage } from "../types";
+import type { TranscriptMessage, TranscriptMessageRole } from "../types";
 import { buildId, deriveTitle, now, updateActivity, updateTurn } from "./helpers";
 import { trimResolvedApprovals, trimResolvedTasks } from "./mirrors";
 import type { SessionStoreState } from "./state";
 
-export function beginTurn(state: SessionStoreState, userText: string): string {
+export function beginTurn(
+  state: SessionStoreState,
+  userText: string,
+  options?: {
+    role?: TranscriptMessageRole;
+    author?: string;
+  },
+): string {
   if (state.snapshot.turn.state !== "idle" && state.snapshot.turn.state !== "error") {
     throw new Error("A turn is already running for this session.");
   }
 
   const time = now();
   const turnId = buildId("turn");
+  const role = options?.role ?? "user";
   const userMessage: TranscriptMessage = {
     id: buildId("msg"),
-    role: "user",
+    role,
     state: "complete",
     turnId,
     createdAt: time,
-    author: "user",
+    author: options?.author ?? role,
     content: [
       {
         id: buildId("block"),
@@ -27,7 +35,7 @@ export function beginTurn(state: SessionStoreState, userText: string): string {
     ],
   };
 
-  if (state.snapshot.session.title === undefined) {
+  if (state.snapshot.session.title === undefined && role === "user") {
     state.snapshot.session.title = deriveTitle(userText);
   }
 

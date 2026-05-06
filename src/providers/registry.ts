@@ -1,16 +1,19 @@
 import { join } from "node:path";
 import type { ClientTransport } from "@slop-ai/consumer/browser";
 import { WebSocketClientTransport } from "@slop-ai/consumer/browser";
+import { getHomeConfigPath } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { ProviderRuntimeHub } from "../core/hub";
 import type { RuntimeContext } from "../core/role";
 import { attachSubAgentRunnerFactory } from "../runtime/delegation";
 import type { ProviderApprovalManager } from "./approvals";
+import { A2AProvider } from "./builtin/a2a";
 import { BrowserProvider } from "./builtin/browser";
 import { CronProvider } from "./builtin/cron";
 import { DelegationProvider } from "./builtin/delegation";
 import { FilesystemProvider } from "./builtin/filesystem";
 import { InProcessTransport } from "./builtin/in-process";
+import { McpProvider } from "./builtin/mcp";
 import { MemoryProvider } from "./builtin/memory";
 import { MessagingProvider } from "./builtin/messaging";
 import { MetaRuntimeProvider } from "./builtin/meta-runtime";
@@ -19,6 +22,7 @@ import { SpecProvider } from "./builtin/spec";
 import { TerminalProvider } from "./builtin/terminal";
 import { VisionProvider } from "./builtin/vision";
 import { WebProvider } from "./builtin/web";
+import { WorkspacesProvider } from "./builtin/workspaces";
 import {
   discoverProviderDescriptors,
   type ProviderDescriptor,
@@ -160,8 +164,8 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => metaRuntime.stop(),
       approvals: metaRuntime.approvals,
-      attachRuntime: (hub) => {
-        metaRuntime.setHub(hub);
+      attachRuntime: (hub, _hubConfig, ctx) => {
+        metaRuntime.setHub(hub, ctx?.publishEvent);
         return {
           stop() {
             metaRuntime.setHub(null);
@@ -290,6 +294,81 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => vision.stop(),
       approvals: vision.approvals,
+    });
+  }
+
+  if (config.providers.builtin.workspaces) {
+    const workspaces = new WorkspacesProvider({
+      registry: config.workspaces,
+      globalConfigPath: getHomeConfigPath(),
+    });
+    providers.push({
+      id: "workspaces",
+      name: "Workspaces",
+      kind: "builtin",
+      transport: new InProcessTransport(workspaces.server),
+      transportLabel: "in-process",
+      stop: () => workspaces.stop(),
+      systemPromptFragment: () =>
+        [
+          "Workspace and project scopes are exposed through the workspaces provider.",
+          "Use /workspaces and /projects to inspect configured roots and active scoped config layers.",
+          "A workspace or project config layer can scope optional providers such as mcp without making core provider logic special.",
+        ].join("\n"),
+    });
+  }
+
+  if (config.providers.builtin.a2a) {
+    const a2a = new A2AProvider({
+      agents: config.providers.a2a?.agents ?? {},
+      fetchOnStart: config.providers.a2a?.fetchOnStart ?? true,
+    });
+    providers.push({
+      id: "a2a",
+      name: "A2A",
+      kind: "builtin",
+      transport: new InProcessTransport(a2a.server),
+      transportLabel: "in-process",
+      stop: () => a2a.stop(),
+      attachRuntime: () => {
+        a2a.start();
+        return {
+          stop() {},
+        };
+      },
+      systemPromptFragment: () =>
+        [
+          "A2A interoperability is exposed through the a2a provider as SLOP state.",
+          "Use /agents to inspect remote Agent Cards and declared skills before sending messages.",
+          "Use A2A for external opaque-agent collaboration; prefer SLOP/meta-runtime routes for internal agent topology.",
+        ].join("\n"),
+    });
+  }
+
+  if (config.providers.builtin.mcp) {
+    const mcp = new McpProvider({
+      servers: config.providers.mcp?.servers ?? {},
+      connectOnStart: config.providers.mcp?.connectOnStart ?? true,
+    });
+    providers.push({
+      id: "mcp",
+      name: "MCP",
+      kind: "builtin",
+      transport: new InProcessTransport(mcp.server),
+      transportLabel: "in-process",
+      stop: () => mcp.stop(),
+      attachRuntime: () => {
+        mcp.start();
+        return {
+          stop() {},
+        };
+      },
+      systemPromptFragment: () =>
+        [
+          "MCP compatibility is exposed through the mcp provider as SLOP state.",
+          "Use /servers to inspect configured MCP servers, then call MCP tools through the relevant server or tool node.",
+          "Prefer MCP for external ecosystem compatibility; keep runtime-native behavior SLOP-first.",
+        ].join("\n"),
     });
   }
 

@@ -1,10 +1,11 @@
-import type { ResultMessage } from "@slop-ai/consumer/browser";
+import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import {
   Agent,
   type AgentCallbacks,
   type AgentRunResult,
+  type LocalRuntimeTool,
   type ResolvedApprovalToolResult,
   type RoleProfile,
 } from "../core/agent";
@@ -30,6 +31,7 @@ type ProfileSessionAgentOptions = {
   publishEvent?: (event: RuntimeEvent) => void;
   mirrorProviderPaths?: string[];
   policyRules?: InvokePolicy[];
+  localTools?: () => LocalRuntimeTool[];
   callbacks: AgentCallbacks;
 };
 
@@ -67,6 +69,7 @@ export class ProfileSessionAgent implements SessionAgent {
   private readonly publishEvent?: (event: RuntimeEvent) => void;
   private readonly mirrorProviderPaths: string[];
   private readonly policyRules?: InvokePolicy[];
+  private readonly localTools?: () => LocalRuntimeTool[];
   private readonly callbacks: AgentCallbacks;
   private inner: SessionAgent | null = null;
   private innerFingerprint: string | null = null;
@@ -83,11 +86,12 @@ export class ProfileSessionAgent implements SessionAgent {
     this.publishEvent = options.publishEvent;
     this.mirrorProviderPaths = options.mirrorProviderPaths ?? [];
     this.policyRules = options.policyRules;
+    this.localTools = options.localTools;
     this.callbacks = options.callbacks;
   }
 
   async start(): Promise<void> {
-    await this.ensureInner();
+    await this.ensureStartupInner();
   }
 
   async chat(userMessage: string): Promise<AgentRunResult> {
@@ -106,12 +110,36 @@ export class ProfileSessionAgent implements SessionAgent {
     action: string,
     params?: Record<string, unknown>,
   ): Promise<ResultMessage> {
-    const inner = await this.ensureInner();
+    const inner = await this.ensureStartupInner();
     return inner.invokeProvider(providerId, path, action, params);
   }
 
+  async queryProvider(
+    providerId: string,
+    path: string,
+    options?: {
+      depth?: number;
+      maxNodes?: number;
+      window?: [number, number];
+    },
+  ): Promise<SlopNode> {
+    const inner = await this.ensureStartupInner();
+    if (!inner.queryProvider) {
+      throw new Error("Provider state query is not available for this session agent.");
+    }
+    return inner.queryProvider(providerId, path, options);
+  }
+
+  async retryProvider(providerId: string): Promise<boolean> {
+    const inner = await this.ensureStartupInner();
+    if (!inner.retryProvider) {
+      throw new Error("Provider reconnect is not available for this session agent.");
+    }
+    return inner.retryProvider(providerId);
+  }
+
   async resolveApprovalDirect(approvalId: string): Promise<ResultMessage> {
-    const inner = await this.ensureInner();
+    const inner = await this.ensureStartupInner();
     return inner.resolveApprovalDirect(approvalId);
   }
 
@@ -165,6 +193,23 @@ export class ProfileSessionAgent implements SessionAgent {
     return this.inner;
   }
 
+  private async ensureStartupInner(): Promise<SessionAgent> {
+    if (this.inner) {
+      return this.inner;
+    }
+
+    const state = await this.llmProfileManager.getState();
+    const profile = selectedProfile(state.profiles, state.activeProfileId, this.llmProfileId);
+    if (profile?.ready) {
+      return this.ensureInner();
+    }
+
+    this.inner = this.createNativeInner();
+    this.innerFingerprint = null;
+    await this.inner.start();
+    return this.inner;
+  }
+
   private profileFingerprint(profile: LlmProfileState): string {
     const model = this.llmModelOverride ?? profile.model;
     if (profile.provider === "acp") {
@@ -208,6 +253,10 @@ export class ProfileSessionAgent implements SessionAgent {
       });
     }
 
+    return this.createNativeInner();
+  }
+
+  private createNativeInner(): SessionAgent {
     return new Agent({
       config: this.config,
       llmProfileManager: this.llmProfileManager,
@@ -220,6 +269,7 @@ export class ProfileSessionAgent implements SessionAgent {
       publishEvent: this.publishEvent,
       mirrorProviderPaths: this.mirrorProviderPaths,
       policyRules: this.policyRules,
+      localTools: this.localTools,
       ...this.callbacks,
     });
   }

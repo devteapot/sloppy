@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -114,6 +115,18 @@ describe("SessionStore — persistence", () => {
       store.appendAssistantText(turnId, "partial");
       store.completeTurn(turnId, "restored response");
 
+      const persisted = JSON.parse(await readFile(persistencePath, "utf8")) as {
+        kind: string;
+        schema_version: number;
+        snapshot: AgentSessionSnapshot;
+      };
+      expect(persisted.kind).toBe("sloppy.session.snapshot");
+      expect(persisted.schema_version).toBe(1);
+      expect(persisted.snapshot.transcript.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+      ]);
+
       const restored = createStore({ persistencePath }).getSnapshot();
       expect(restored.session.persistencePath).toBe(persistencePath);
       expect(restored.session.restoredAt).toEqual(expect.any(String));
@@ -128,11 +141,68 @@ describe("SessionStore — persistence", () => {
     }
   });
 
+  test("restores legacy raw session snapshots and rewrites them as versioned envelopes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-legacy-"));
+    try {
+      const persistencePath = join(root, "sess-legacy.json");
+      const source = createStore();
+      const turnId = source.beginTurn("legacy input");
+      source.completeTurn(turnId, "legacy response");
+      await writeFile(
+        persistencePath,
+        `${JSON.stringify(source.getSnapshot(), null, 2)}\n`,
+        "utf8",
+      );
+
+      const restored = createStore({ persistencePath }).getSnapshot();
+      expect(restored.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
+      expect(textBlock(restored, 1)).toBe("legacy response");
+
+      const rewritten = JSON.parse(await readFile(persistencePath, "utf8")) as {
+        kind: string;
+        schema_version: number;
+      };
+      expect(rewritten.kind).toBe("sloppy.session.snapshot");
+      expect(rewritten.schema_version).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects unsupported session snapshot schema envelopes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-schema-"));
+    try {
+      const persistencePath = join(root, "sess-unsupported.json");
+      await writeFile(
+        persistencePath,
+        `${JSON.stringify(
+          {
+            kind: "sloppy.session.snapshot",
+            schema_version: 999,
+            saved_at: "2026-05-06T00:00:00.000Z",
+            snapshot: createStore().getSnapshot(),
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      expect(() => createStore({ persistencePath })).toThrow("unsupported schema_version 999");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("recovers stale in-flight turns visibly after restart", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-session-recover-"));
     try {
       const persistencePath = join(root, "sess-1.json");
       const store = createStore({ persistencePath });
+      store.createGoal({
+        objective: "recover cleanly",
+        message: "Goal active.",
+      });
       const turnId = store.beginTurn("needs approval");
       store.appendAssistantText(turnId, "half-written");
       store.recordApprovalRequested(turnId, {
@@ -167,6 +237,7 @@ describe("SessionStore — persistence", () => {
           updatedAt: new Date().toISOString(),
           message: "Running",
           turnId,
+          canCancel: true,
         },
       ]);
 
@@ -181,6 +252,10 @@ describe("SessionStore — persistence", () => {
       expect(restored.approvals[0]?.canApprove).toBe(false);
       expect(restored.tasks[0]?.status).toBe("superseded");
       expect(restored.tasks[0]?.error).toContain("could not be resumed");
+      expect(restored.tasks[0]?.canCancel).toBe(false);
+      expect(restored.goal?.status).toBe("paused");
+      expect(restored.goal?.message).toContain("process restart");
+      expect(restored.goal?.updateSource).toBe("runtime");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1656,15 +1731,43 @@ describe("SessionService — multi-session support", () => {
 
     class StubCredentialStore implements CredentialStore {
       readonly kind = "keychain" as const;
+      constructor(private readonly key: string | null = "test-key") {}
       async getStatus(): Promise<CredentialStoreStatus> {
         return "available";
       }
       async get(profileId: string): Promise<string | null> {
-        return profileId === "test-openai" ? "test-key" : null;
+        return profileId === "test-openai" ? this.key : null;
       }
       async set(): Promise<void> {}
       async delete(): Promise<void> {}
     }
+
+    const noKeyProfileManager = new LlmProfileManager({
+      config,
+      credentialStore: new StubCredentialStore(null),
+      writeConfig: async () => undefined,
+    });
+    const noKeySocketPath = `/tmp/slop/svc-start-needs-creds-${crypto.randomUUID()}.sock`;
+    const noKeyService = new SessionService({
+      sessionId: "service-start-needs-credentials",
+      socketPath: noKeySocketPath,
+      config,
+      llmProfileManager: noKeyProfileManager,
+      sessionPersistencePath: false,
+    });
+
+    try {
+      await noKeyService.start({ register: false });
+
+      const noKeySnapshot = noKeyService.runtime.store.getSnapshot();
+      expect(noKeySnapshot.llm.status).toBe("needs_credentials");
+      expect(
+        noKeySnapshot.llm.profiles.find((profile) => profile.id === "test-openai")?.ready,
+      ).toBe(false);
+    } finally {
+      noKeyService.stop();
+    }
+    expect(existsSync(noKeySocketPath)).toBe(false);
 
     const llmProfileManager = new LlmProfileManager({
       config,
@@ -1672,9 +1775,10 @@ describe("SessionService — multi-session support", () => {
       writeConfig: async () => undefined,
     });
 
+    const socketPath = `/tmp/slop/svc-start-${crypto.randomUUID()}.sock`;
     const service = new SessionService({
       sessionId: "service-start-test",
-      socketPath: `/tmp/slop/svc-start-${crypto.randomUUID()}.sock`,
+      socketPath,
       config,
       llmProfileManager,
       sessionPersistencePath: false,
@@ -1698,5 +1802,6 @@ describe("SessionService — multi-session support", () => {
     } finally {
       service.stop();
     }
+    expect(existsSync(socketPath)).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import { RoleRegistry } from "../core/role";
 import { LlmConfigurationError, type LlmProfileManager } from "../llm/profile-manager";
 import { buildRuntimeSloppyConfig } from "../llm/runtime-config";
 import { createBuiltinProviders, type RegisteredProvider } from "../providers/registry";
+import { type AgentEventBus, createAgentEventBus } from "../session/event-bus";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 
@@ -28,6 +29,7 @@ export type RuntimeSmokeOptions = {
   modelOverride?: string;
   acpAdapterId?: string;
   timeoutMs?: number;
+  eventLogPath?: string;
   llmProfileManager?: LlmProfileManager;
   log?: (line: string) => void;
 };
@@ -45,6 +47,7 @@ export type RuntimeSmokeResult = {
     resultPreview?: string;
     error?: string;
   };
+  eventLogPath?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -147,13 +150,14 @@ async function attachProviderRuntimes(
   hub: ConsumerHub,
   config: SloppyConfig,
   llmProfileManager?: LlmProfileManager,
+  eventBus?: AgentEventBus,
 ): Promise<Array<{ stop(): void }>> {
   const stops: Array<{ stop(): void }> = [];
   for (const provider of providers) {
     const stop = provider.attachRuntime?.(hub, config, {
       hub,
       config,
-      publishEvent: () => undefined,
+      publishEvent: eventBus?.publish ?? (() => undefined),
       roleRegistry: new RoleRegistry(),
       llmProfileManager,
     });
@@ -310,13 +314,26 @@ function buildTopologyOps(options: {
 async function waitForDelegatedAgent(
   hub: ConsumerHub,
   timeoutMs: number,
+  eventBus?: AgentEventBus,
 ): Promise<RuntimeSmokeResult["delegatedAgent"]> {
   const started = Date.now();
+  let lastStatus: string | undefined;
   while (Date.now() - started < timeoutMs) {
     const tree = await hub.queryState({ providerId: "delegation", path: "/agents", depth: 2 });
     const child = tree.children?.[0];
     const props = asRecord(child?.properties);
     const status = typeof props.status === "string" ? props.status : undefined;
+    if (child?.id && status && status !== lastStatus) {
+      lastStatus = status;
+      eventBus?.publish({
+        kind: "delegated_agent.state",
+        providerId: "delegation",
+        agentId: child.id,
+        status,
+        resultPreview: typeof props.result_preview === "string" ? props.result_preview : undefined,
+        error: typeof props.error === "string" ? props.error : undefined,
+      });
+    }
     if (child?.id && status && ["completed", "failed", "cancelled"].includes(status)) {
       return {
         id: child.id,
@@ -362,12 +379,31 @@ export async function runRuntimeSmoke(
   });
   const providers = createBuiltinProviders(config);
   const hub = new ConsumerHub(providers, config);
+  const eventLogPath = options.eventLogPath ?? process.env.SLOPPY_EVENT_LOG;
+  const eventBus = eventLogPath
+    ? createAgentEventBus({
+        logPath: eventLogPath,
+        actor: { id: "runtime-smoke", name: "Runtime Smoke", kind: "smoke" },
+      })
+    : undefined;
+  const unsubscribeProviderStates = eventBus
+    ? hub.onExternalProviderStateChange((states) => {
+        eventBus.callbacks.onExternalProviderStates?.(states);
+      })
+    : undefined;
   let stops: Array<{ stop(): void }> = [];
 
   try {
     log(`workspace: ${workspaceRoot}`);
     await hub.connect();
-    stops = await attachProviderRuntimes(providers, hub, config, options.llmProfileManager);
+    eventBus?.callbacks.onExternalProviderStates?.(hub.getExternalProviderStates());
+    stops = await attachProviderRuntimes(
+      providers,
+      hub,
+      config,
+      options.llmProfileManager,
+      eventBus,
+    );
     log("providers connected");
     const channel = (await invokeOk(hub, "messaging", "/session", "add_channel", {
       name: "Runtime Smoke",
@@ -416,14 +452,27 @@ export async function runRuntimeSmoke(
     if (channelHistory.length === 0) {
       throw new Error("Messaging channel history is empty after route dispatch.");
     }
+    eventBus?.publish({
+      kind: "runtime_smoke.channel_verified",
+      mode,
+      channelId: channel.id,
+      messageCount: channelHistory.length,
+    });
 
     const delegatedAgent =
       mode === "providers"
         ? undefined
-        : await waitForDelegatedAgent(hub, options.timeoutMs ?? 120000);
+        : await waitForDelegatedAgent(hub, options.timeoutMs ?? 120000, eventBus);
     if (delegatedAgent?.status === "failed") {
       throw new Error(`Delegated agent failed: ${delegatedAgent.error ?? "unknown error"}`);
     }
+    eventBus?.publish({
+      kind: "runtime_smoke.completed",
+      mode,
+      proposalId: proposal.id,
+      channelId: channel.id,
+      delegatedAgentStatus: delegatedAgent?.status,
+    });
 
     return {
       mode,
@@ -433,8 +482,10 @@ export async function runRuntimeSmoke(
       dispatch,
       channelHistory,
       delegatedAgent,
+      eventLogPath,
     };
   } finally {
+    unsubscribeProviderStates?.();
     for (const stop of stops) {
       try {
         stop.stop();
@@ -443,6 +494,7 @@ export async function runRuntimeSmoke(
       }
     }
     hub.shutdown();
+    eventBus?.stop();
     if (tempRoot && !options.keepState) {
       await rm(tempRoot, { recursive: true, force: true });
     }

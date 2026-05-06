@@ -58,7 +58,76 @@ const acpDelegationConfigSchema = z.object({
     .default({}),
 });
 
+const mcpStdioServerConfigSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  transport: z.literal("stdio"),
+  command: z.array(z.string().min(1)).min(1),
+  cwd: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  envAllowlist: z.array(z.string().min(1)).optional(),
+  inheritEnv: z.boolean().optional(),
+  timeoutMs: z.number().int().min(1000).optional(),
+  connectOnStart: z.boolean().optional(),
+});
+
+const mcpStreamableHttpServerConfigSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  transport: z.literal("streamableHttp"),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+  timeoutMs: z.number().int().min(1000).optional(),
+  connectOnStart: z.boolean().optional(),
+});
+
+const mcpServerConfigSchema = z.discriminatedUnion("transport", [
+  mcpStdioServerConfigSchema,
+  mcpStreamableHttpServerConfigSchema,
+]);
+
+const a2aAgentConfigSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    cardUrl: z.string().url().optional(),
+    url: z.string().url().optional(),
+    protocolVersion: z.string().trim().min(1).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    bearerTokenEnv: z.string().min(1).optional(),
+    apiKeyEnv: z.string().min(1).optional(),
+    apiKeyHeader: z.string().min(1).optional(),
+    timeoutMs: z.number().int().min(1000).optional(),
+    fetchOnStart: z.boolean().optional(),
+  })
+  .refine((config) => Boolean(config.cardUrl || config.url), {
+    message: "A2A agents require cardUrl or url.",
+  });
+
+const projectConfigSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  description: z.string().trim().min(1).optional(),
+  root: z.string().default("."),
+  configPath: z.string().default(".sloppy/config.yaml"),
+  tags: z.array(z.string().min(1)).default([]),
+});
+
+const workspaceConfigSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  description: z.string().trim().min(1).optional(),
+  root: z.string(),
+  configPath: z.string().default(".sloppy/config.yaml"),
+  tags: z.array(z.string().min(1)).default([]),
+  projects: z.record(z.string().min(1), projectConfigSchema).default({}),
+});
+
 export const sloppyConfigSchema = z.object({
+  workspaces: z
+    .object({
+      activeWorkspaceId: z.string().min(1).optional(),
+      activeProjectId: z.string().min(1).optional(),
+      items: z.record(z.string().min(1), workspaceConfigSchema).default({}),
+    })
+    .default({
+      items: {},
+    }),
   llm: z
     .object({
       provider: llmProviderSchema.default("anthropic"),
@@ -125,6 +194,9 @@ export const sloppyConfigSchema = z.object({
           delegation: z.boolean().default(false),
           spec: z.boolean().default(false),
           vision: z.boolean().default(false),
+          mcp: z.boolean().default(false),
+          workspaces: z.boolean().default(false),
+          a2a: z.boolean().default(false),
         })
         .default({
           terminal: true,
@@ -139,6 +211,9 @@ export const sloppyConfigSchema = z.object({
           delegation: false,
           spec: false,
           vision: false,
+          mcp: false,
+          workspaces: false,
+          a2a: false,
         }),
       discovery: z
         .object({
@@ -262,6 +337,24 @@ export const sloppyConfigSchema = z.object({
           defaultWidth: 512,
           defaultHeight: 512,
         }),
+      mcp: z
+        .object({
+          connectOnStart: z.boolean().default(true),
+          servers: z.record(z.string().min(1), mcpServerConfigSchema).default({}),
+        })
+        .default({
+          connectOnStart: true,
+          servers: {},
+        }),
+      a2a: z
+        .object({
+          fetchOnStart: z.boolean().default(true),
+          agents: z.record(z.string().min(1), a2aAgentConfigSchema).default({}),
+        })
+        .default({
+          fetchOnStart: true,
+          agents: {},
+        }),
     })
     .default({
       builtin: {
@@ -277,6 +370,9 @@ export const sloppyConfigSchema = z.object({
         delegation: false,
         spec: false,
         vision: false,
+        mcp: false,
+        workspaces: false,
+        a2a: false,
       },
       discovery: {
         enabled: true,
@@ -332,10 +428,29 @@ export const sloppyConfigSchema = z.object({
         defaultWidth: 512,
         defaultHeight: 512,
       },
+      mcp: {
+        connectOnStart: true,
+        servers: {},
+      },
+      a2a: {
+        fetchOnStart: true,
+        agents: {},
+      },
     }),
 });
 
 type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
+type BuiltinProviderConfig = Omit<
+  SloppyConfigBase["providers"]["builtin"],
+  "mcp" | "workspaces" | "a2a"
+> & {
+  mcp?: boolean;
+  workspaces?: boolean;
+  a2a?: boolean;
+};
+type McpProviderConfig = SloppyConfigBase["providers"]["mcp"];
+type A2AProviderConfig = SloppyConfigBase["providers"]["a2a"];
+type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 export type LlmReasoningEffort = z.infer<typeof llmReasoningEffortSchema>;
@@ -363,13 +478,18 @@ export interface LlmConfig {
   maxTokens: number;
 }
 
-export interface SloppyConfig extends Omit<SloppyConfigBase, "llm" | "providers" | "session"> {
+export interface SloppyConfig
+  extends Omit<SloppyConfigBase, "llm" | "providers" | "session" | "workspaces"> {
   llm: LlmConfig;
   session?: {
     persistSnapshots?: boolean;
     persistenceDir?: string;
   };
-  providers: Omit<SloppyConfigBase["providers"], "skills"> & {
+  workspaces?: WorkspaceRegistryConfig;
+  providers: Omit<SloppyConfigBase["providers"], "builtin" | "skills" | "mcp" | "a2a"> & {
+    builtin: BuiltinProviderConfig;
+    mcp?: McpProviderConfig;
+    a2a?: A2AProviderConfig;
     skills: {
       skillsDir: string;
       builtinSkillsDir?: string;

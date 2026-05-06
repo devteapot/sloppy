@@ -19,6 +19,7 @@ export function recordToolStart(
     provider?: string;
     path?: string;
     action?: string;
+    paramsPreview?: string;
   },
 ): void {
   const time = now();
@@ -35,6 +36,7 @@ export function recordToolStart(
     path: options.path,
     action: options.action,
     toolUseId: options.toolUseId,
+    paramsPreview: options.paramsPreview,
   });
   state.toolActivityIds.set(options.toolUseId, activityId);
   updateTurnPhase(state, "tool_use", options.summary, "tool", time);

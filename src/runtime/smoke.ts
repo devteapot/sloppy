@@ -13,6 +13,7 @@ function usage(): string {
     "  --acp-adapter <id>     configured ACP adapter id for acp mode",
     "  --workspace <path>     workspace/state root; defaults to a temp dir",
     "  --timeout-ms <ms>      delegated-agent timeout; default 120000",
+    "  --event-log <path>     write runtime audit events as JSONL",
     "  --keep-state           keep temp smoke state after completion",
     "  -h, --help             show this help",
     "",
@@ -35,6 +36,7 @@ function parseArgs(args: string[]) {
     acpAdapterId?: string;
     workspaceRoot?: string;
     timeoutMs?: number;
+    eventLogPath?: string;
     keepState?: boolean;
     help?: boolean;
   } = {};
@@ -78,6 +80,10 @@ function parseArgs(args: string[]) {
         }
         index += 1;
         break;
+      case "--event-log":
+        options.eventLogPath = takeValue(args, index, arg);
+        index += 1;
+        break;
       case "--keep-state":
         options.keepState = true;
         break;
@@ -103,6 +109,7 @@ try {
     acpAdapterId: options.acpAdapterId,
     workspaceRoot: options.workspaceRoot,
     timeoutMs: options.timeoutMs,
+    eventLogPath: options.eventLogPath,
     keepState: options.keepState,
     log: (line) => process.stderr.write(`[runtime:smoke] ${line}\n`),
   });

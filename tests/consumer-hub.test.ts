@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { action, createSlopServer } from "@slop-ai/server";
+import { listenUnix } from "@slop-ai/server/unix";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
@@ -210,6 +211,46 @@ describe("ConsumerHub", () => {
       expect(hub.getExternalProviderStates()).toEqual([]);
     } finally {
       hub.shutdown();
+    }
+  });
+
+  test("retries a previously failed external provider connection", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    const socketPath = `/tmp/sloppy-retry-${crypto.randomUUID()}.sock`;
+    const provider = {
+      id: "late-socket",
+      name: "Late Socket",
+      kind: "external" as const,
+      transport: new NodeSocketClientTransport(socketPath),
+      transportLabel: `unix:${socketPath}`,
+    };
+    const server = createSlopServer({ id: "late-socket", name: "Late Socket" });
+    server.register("workspace", {
+      type: "collection",
+      props: { ready: true },
+    });
+
+    try {
+      await hub.connect();
+      expect(await hub.addProvider(provider)).toBe(false);
+      expect(hub.getExternalProviderStates()[0]?.status).toBe("error");
+
+      listenUnix(server, socketPath, { register: false });
+      expect(await hub.retryProvider("late-socket")).toBe(true);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "late-socket",
+          name: "Late Socket",
+          transport: `unix:${socketPath}`,
+          status: "connected",
+        },
+      ]);
+      expect((await hub.queryState({ providerId: "late-socket", path: "/workspace" })).id).toBe(
+        "workspace",
+      );
+    } finally {
+      hub.shutdown();
+      server.stop();
     }
   });
 
@@ -487,6 +528,55 @@ describe("ConsumerHub", () => {
       // Sticky registry: the entry stays true after focusState runs.
       expect(hub.isDangerousAffordance(id, "/session", "destroy")).toBe(true);
       spy.mockRestore();
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("queryState records newly observed dangerous affordances", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    try {
+      await hub.connect();
+
+      const id = "query-danger";
+      const server = createSlopServer({ id, name: "QueryDanger" });
+      server.register("session", {
+        type: "collection",
+        props: {},
+      });
+
+      const provider: RegisteredProvider = {
+        id,
+        name: "QueryDanger",
+        kind: "builtin",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process",
+      };
+      await hub.addProvider(provider);
+
+      server.register("dynamic", {
+        type: "collection",
+        props: {},
+        actions: {
+          destroy: action(async () => ({ ok: true }), {
+            label: "Destroy",
+            dangerous: true,
+            estimate: "instant",
+          }),
+        },
+      });
+
+      // Simulate an affordance missed by attach-time discovery/subscriptions;
+      // queryState should still record it from the observed query result.
+      (hub as unknown as { dangerousAffordances: Set<string> }).dangerousAffordances.clear();
+      expect(hub.isDangerousAffordance(id, "/dynamic", "destroy")).toBe(false);
+      const before = hub.getStateRevision();
+      const tree = await hub.queryState({ providerId: id, path: "/dynamic", depth: 1 });
+      const after = hub.getStateRevision();
+
+      expect(tree.id).toBe("dynamic");
+      expect(hub.isDangerousAffordance(id, "/dynamic", "destroy")).toBe(true);
+      expect(after).toBeGreaterThan(before);
     } finally {
       hub.shutdown();
     }

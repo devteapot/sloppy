@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
@@ -7,11 +10,17 @@ import type { AgentCallbacks, ResolvedApprovalToolResult } from "../src/core/age
 import type { ExternalProviderState } from "../src/core/consumer";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
-import { LlmAbortError } from "../src/llm/types";
+import {
+  LlmAbortError,
+  type LlmAdapter,
+  type LlmChatOptions,
+  type LlmResponse,
+} from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
 import { SessionRuntime } from "../src/session/runtime";
+import { SessionStore } from "../src/session/store";
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -243,6 +252,42 @@ function createQueuedTurnHarnessFactory() {
   };
 }
 
+function createQueuedGoalHarnessFactory() {
+  const gates = [createDeferred<string>(), createDeferred<string>(), createDeferred<string>()];
+  const messages: string[] = [];
+
+  const factory: SessionAgentFactory = (): SessionAgent => ({
+    start: async () => undefined,
+    chat: async (userMessage: string) => {
+      const index = messages.length;
+      messages.push(userMessage);
+      return {
+        status: "completed",
+        response: await (gates[index] ?? gates[gates.length - 1]!).promise,
+        usage:
+          index === 0
+            ? { inputTokens: 100, outputTokens: 50 }
+            : { inputTokens: 10, outputTokens: 5 },
+      };
+    },
+    resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+    invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    resolveApprovalDirect: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+    rejectApprovalDirect: () => undefined,
+    cancelActiveTurn: () => false,
+    clearPendingApproval: () => undefined,
+    shutdown: () => undefined,
+  });
+
+  return {
+    factory,
+    messages,
+    resolve(index: number, response: string) {
+      gates[index]?.resolve(response);
+    },
+  };
+}
+
 function createCancelableStreamingAgentFactory() {
   const gate = createDeferred<string>();
   let cancelled = false;
@@ -281,6 +326,120 @@ function createCancelableStreamingAgentFactory() {
       }
     },
   };
+}
+
+function createNoToolGoalHarnessFactory() {
+  const messages: string[] = [];
+  const factory: SessionAgentFactory = (): SessionAgent => ({
+    start: async () => undefined,
+    chat: async (userMessage: string) => {
+      messages.push(userMessage);
+      return {
+        status: "completed",
+        response: `goal turn ${messages.length}`,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+      };
+    },
+    resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+    invokeProvider: async () => ({ type: "result", id: "inv-goal", status: "ok" }),
+    resolveApprovalDirect: async () => ({ type: "result", id: "inv-goal", status: "ok" }),
+    rejectApprovalDirect: () => undefined,
+    cancelActiveTurn: () => false,
+    clearPendingApproval: () => undefined,
+    shutdown: () => undefined,
+  });
+
+  return { factory, messages };
+}
+
+class GoalReportingLlm implements LlmAdapter {
+  calls = 0;
+  observedToolNames: string[] = [];
+  seenToolNames = new Set<string>();
+  observedToolResult = "";
+
+  async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    this.calls += 1;
+    this.observedToolNames = options.tools?.map((tool) => tool.function.name) ?? [];
+    for (const name of this.observedToolNames) {
+      this.seenToolNames.add(name);
+    }
+    if (this.calls === 1) {
+      return {
+        content: [
+          {
+            type: "tool_use",
+            id: "goal-report-1",
+            name: "slop_goal_update",
+            input: {
+              status: "complete",
+              message: "Goal is verified complete.",
+              evidence: ["tests passed", "audit log captured"],
+            },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 11, outputTokens: 7 },
+      };
+    }
+
+    this.observedToolResult = JSON.stringify(options.messages);
+    return {
+      content: [{ type: "text", text: "Goal is verified complete." }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 3, outputTokens: 2 },
+    };
+  }
+}
+
+class StaleGoalUpdateLlm implements LlmAdapter {
+  private firstCallGate = createDeferred<void>();
+  calls = 0;
+  observedToolResult = "";
+
+  releaseFirstCall(): void {
+    this.firstCallGate.resolve();
+  }
+
+  async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      await this.firstCallGate.promise;
+      return {
+        content: [
+          {
+            type: "tool_use",
+            id: "stale-goal-report",
+            name: "slop_goal_update",
+            input: {
+              status: "complete",
+              message: "This stale turn should not complete the replacement goal.",
+            },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 11, outputTokens: 7 },
+      };
+    }
+
+    if (this.calls === 2) {
+      this.observedToolResult = JSON.stringify(options.messages);
+      return {
+        content: [{ type: "text", text: "Stale goal update was rejected." }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 3, outputTokens: 2 },
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: `Goal B turn ${this.calls}.` }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 5, outputTokens: 1 },
+    };
+  }
 }
 
 /**
@@ -621,6 +780,7 @@ function createTaskMirrorHarnessFactory() {
 
 function createAppMirrorHarnessFactory() {
   let callbacks: AgentCallbacks | null = null;
+  const retries: string[] = [];
 
   const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
     callbacks = agentCallbacks;
@@ -632,6 +792,18 @@ function createAppMirrorHarnessFactory() {
       }),
       resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
       invokeProvider: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
+      retryProvider: async (providerId) => {
+        retries.push(providerId);
+        callbacks?.onExternalProviderStates?.([
+          {
+            id: providerId,
+            name: "Native Demo",
+            transport: "unix:/tmp/native-demo.sock",
+            status: "connected",
+          },
+        ]);
+        return true;
+      },
       resolveApprovalDirect: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
       rejectApprovalDirect: () => undefined,
       cancelActiveTurn: () => false,
@@ -642,6 +814,7 @@ function createAppMirrorHarnessFactory() {
 
   return {
     factory,
+    retries,
     emitApps(states: ExternalProviderState[]) {
       callbacks?.onExternalProviderStates?.(states);
     },
@@ -699,6 +872,191 @@ describe("AgentSessionProvider", () => {
         composer.affordances?.some((affordance) => affordance.action === "send_message") ?? false,
       ).toBe(false);
       expect(composer.properties?.disabled_reason).toBeTruthy();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("exposes persistent goal controls and pauses continuation after no tool activity", async () => {
+    const harness = createNoToolGoalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-goal",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-goal",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      let goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.exists).toBe(false);
+      expect(goal.affordances?.some((affordance) => affordance.action === "create_goal")).toBe(
+        true,
+      );
+
+      const result = await consumer.invoke("/goal", "create_goal", {
+        objective: "verify the goal loop",
+        token_budget: 1000,
+      });
+      expect(result.status).toBe("ok");
+
+      await runtime.waitForIdle();
+      goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.exists).toBe(true);
+      expect(goal.properties?.status).toBe("paused");
+      expect(goal.properties?.objective).toBe("verify the goal loop");
+      expect(goal.properties?.total_tokens).toBe(30);
+      expect(goal.properties?.continuation_count).toBe(1);
+      expect(harness.messages).toHaveLength(2);
+      expect(harness.messages[1]).toContain("Continue the active persistent session goal");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("queued goal creation does not account the already-running user turn", async () => {
+    const harness = createQueuedGoalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-goal-queued-accounting",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-goal-queued-accounting",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const userTurn = await consumer.invoke("/composer", "send_message", {
+        text: "unrelated user turn",
+      });
+      expect(userTurn.status).toBe("ok");
+
+      const goalStart = await consumer.invoke("/goal", "create_goal", {
+        objective: "queued goal should own its own accounting",
+      });
+      expect(goalStart.status).toBe("ok");
+      expect((goalStart.data as { status?: string }).status).toBe("queued");
+
+      let queue = await consumer.query("/queue", 2);
+      expect(queue.children?.[0]?.properties?.author).toBe("goal");
+      expect(queue.children?.[0]?.properties?.goal_id).toEqual(expect.any(String));
+
+      harness.resolve(0, "unrelated done");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(harness.messages[0]).toBe("unrelated user turn");
+      expect(harness.messages[1]).toContain("Start working toward this persistent session goal");
+
+      harness.resolve(1, "goal start done");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(harness.messages[2]).toContain("Continue the active persistent session goal");
+
+      harness.resolve(2, "goal continuation done");
+      await runtime.waitForIdle();
+
+      const goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.status).toBe("paused");
+      expect(goal.properties?.total_tokens).toBe(30);
+      expect(goal.properties?.continuation_count).toBe(1);
+
+      queue = await consumer.query("/queue", 2);
+      expect(queue.children ?? []).toHaveLength(0);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("native goal turns expose a model-owned goal update tool with evidence", async () => {
+    const llm = new GoalReportingLlm();
+    const llmProfileManager = createTestProfileManager();
+    llmProfileManager.createAdapter = async () => llm;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-goal-model-update",
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-goal-model-update",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/goal", "create_goal", {
+        objective: "verify model-owned completion",
+      });
+      expect(result.status).toBe("ok");
+
+      await runtime.waitForIdle();
+
+      const goal = await consumer.query("/goal", 1);
+      expect([...llm.seenToolNames]).toContain("slop_goal_update");
+      expect(llm.observedToolResult).toContain("Goal is verified complete.");
+      expect(goal.properties?.status).toBe("complete");
+      expect(goal.properties?.update_source).toBe("model");
+      expect(goal.properties?.completion_source).toBe("model");
+      expect(goal.properties?.evidence).toEqual(["tests passed", "audit log captured"]);
+      expect(goal.properties?.total_tokens).toBe(23);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("stale slop_goal_update cannot mutate a replacement goal", async () => {
+    const llm = new StaleGoalUpdateLlm();
+    const llmProfileManager = createTestProfileManager();
+    llmProfileManager.createAdapter = async () => llm;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-goal-stale-update",
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-goal-stale-update",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const first = await consumer.invoke("/goal", "create_goal", {
+        objective: "goal A",
+      });
+      expect(first.status).toBe("ok");
+      expect((first.data as { status?: string }).status).toBe("started");
+
+      const replacement = await consumer.invoke("/goal", "create_goal", {
+        objective: "goal B",
+      });
+      expect(replacement.status).toBe("ok");
+      expect((replacement.data as { status?: string }).status).toBe("queued");
+
+      llm.releaseFirstCall();
+      await runtime.waitForIdle();
+
+      const goal = await consumer.query("/goal", 1);
+      expect(llm.observedToolResult).toContain("goal_mismatch");
+      expect(goal.properties?.objective).toBe("goal B");
+      expect(goal.properties?.status).toBe("paused");
+      expect(goal.properties?.completion_source).toBeUndefined();
+      expect(goal.properties?.message).not.toContain("stale turn");
     } finally {
       provider.stop();
       runtime.shutdown();
@@ -775,6 +1133,125 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("session recovers persisted stale turns at the public provider boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-runtime-recover-"));
+    const persistencePath = join(root, "session.json");
+    const seeded = new SessionStore({
+      sessionId: "sess-runtime-recover",
+      modelProvider: "openai",
+      model: "gpt-5.4",
+      workspaceRoot: root,
+      persistencePath,
+    });
+    seeded.createGoal({
+      objective: "recover runtime state",
+      message: "Goal active before restart.",
+    });
+    const queued = seeded.enqueueMessage("queued before restart");
+    const turnId = seeded.beginTurn("blocked before restart");
+    seeded.appendAssistantText(turnId, "partial answer");
+    seeded.recordApprovalRequested(turnId, {
+      toolUseId: "tool-recover",
+      summary: "terminal:execute /session",
+      provider: "terminal",
+      path: "/session",
+      action: "execute",
+      reason: "Needs approval",
+    });
+    seeded.syncProviderApprovals("terminal", [
+      {
+        id: "approval-recover",
+        status: "pending",
+        provider: "terminal",
+        path: "/session",
+        action: "execute",
+        reason: "Needs approval",
+        createdAt: new Date().toISOString(),
+        canApprove: true,
+        canReject: true,
+        turnId,
+      },
+    ]);
+    seeded.syncProviderTasks("terminal", [
+      {
+        id: "task-recover",
+        status: "running",
+        provider: "terminal",
+        providerTaskId: "provider-task-recover",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        message: "Still running before restart",
+        turnId,
+        canCancel: true,
+      },
+    ]);
+
+    const harness = createNoToolGoalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-runtime-recover",
+      sessionPersistencePath: persistencePath,
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-runtime-recover",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      const session = await consumer.query("/session", 1);
+      expect(session.properties?.recovered_after_restart).toBe(true);
+      expect(session.properties?.last_error).toContain("could not be resumed");
+
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("error");
+      expect(turn.properties?.waiting_on).toBeNull();
+      expect(
+        turn.affordances?.some((affordance) => affordance.action === "cancel_turn") ?? false,
+      ).toBe(false);
+
+      const goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.status).toBe("paused");
+      expect(goal.properties?.message).toContain("process restart");
+      expect(goal.properties?.update_source).toBe("runtime");
+
+      const approvals = await consumer.query("/approvals", 3);
+      expect(approvals.children?.[0]?.properties?.status).toBe("expired");
+      expect(approvals.children?.[0]?.affordances ?? []).toHaveLength(0);
+
+      const tasks = await consumer.query("/tasks", 3);
+      expect(tasks.children?.[0]?.properties?.status).toBe("superseded");
+      expect(tasks.children?.[0]?.properties?.error).toContain("could not be resumed");
+      expect(tasks.children?.[0]?.affordances ?? []).toHaveLength(0);
+
+      const queue = await consumer.query("/queue", 2);
+      expect(queue.children?.[0]?.id).toBe(queued.id);
+      expect(queue.children?.[0]?.properties?.text).toBe("queued before restart");
+
+      const cancelQueued = await consumer.invoke(`/queue/${queued.id}`, "cancel", {});
+      expect(cancelQueued.status).toBe("ok");
+
+      const send = await consumer.invoke("/composer", "send_message", {
+        text: "fresh after restart",
+      });
+      expect(send.status).toBe("ok");
+      await runtime.waitForIdle();
+
+      const recoveredTurn = await consumer.query("/turn", 1);
+      expect(recoveredTurn.properties?.state).toBe("idle");
+      expect(harness.messages[0]).toBe("fresh after restart");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("send_message updates transcript, activity, and turn state", async () => {
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
@@ -819,6 +1296,52 @@ describe("AgentSessionProvider", () => {
     } finally {
       provider.stop();
       runtime.shutdown();
+    }
+  });
+
+  test("session runtime writes durable turn lifecycle audit events", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-audit-"));
+    const logPath = join(root, "events.jsonl");
+    const previousEventLog = process.env.SLOPPY_EVENT_LOG;
+    process.env.SLOPPY_EVENT_LOG = logPath;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-audit",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager: createTestProfileManager(),
+      actorId: "agent-audit",
+      actorName: "Audit Agent",
+    });
+
+    try {
+      await runtime.start();
+      const result = await runtime.sendMessage("audit this turn");
+      if (result.status !== "started") {
+        throw new Error(`Expected started turn, got ${result.status}`);
+      }
+      await runtime.waitForIdle();
+
+      const records = (await readFile(logPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { kind: string; [key: string]: unknown });
+      expect(records.map((record) => record.kind)).toContain("turn_started");
+      expect(records.map((record) => record.kind)).toContain("turn_completed");
+      expect(records.map((record) => record.kind)).toContain("tool_started");
+      expect(records.map((record) => record.kind)).toContain("tool_completed");
+      const turnStarted = records.find((record) => record.kind === "turn_started");
+      const turnCompleted = records.find((record) => record.kind === "turn_completed");
+      expect(turnStarted?.turnId).toBe(result.turnId);
+      expect(turnStarted?.actor).toMatchObject({ id: "agent-audit", name: "Audit Agent" });
+      expect(turnCompleted?.turnId).toBe(result.turnId);
+    } finally {
+      runtime.shutdown();
+      if (previousEventLog === undefined) {
+        delete process.env.SLOPPY_EVENT_LOG;
+      } else {
+        process.env.SLOPPY_EVENT_LOG = previousEventLog;
+      }
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1182,6 +1705,104 @@ describe("AgentSessionProvider", () => {
     } finally {
       provider.stop();
       runtime.shutdown();
+    }
+  });
+
+  test("session apps surface retries for disconnected external providers", async () => {
+    const harness = createAppMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-app-retry",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-app-retry",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitApps([
+        {
+          id: "native-demo",
+          name: "Native Demo",
+          transport: "unix:/tmp/native-demo.sock",
+          status: "error",
+          lastError: "Connection refused.",
+        },
+      ]);
+
+      const apps = await consumer.query("/apps", 2);
+      expect(
+        apps.affordances?.some((affordance) => affordance.action === "reconnect_provider"),
+      ).toBe(true);
+
+      const retry = await consumer.invoke("/apps", "reconnect_provider", {
+        provider_id: "native-demo",
+      });
+      expect(retry.status).toBe("ok");
+      expect(retry.data).toEqual({ providerId: "native-demo", connected: true });
+      expect(harness.retries).toEqual(["native-demo"]);
+
+      const appsAfterRetry = await consumer.query("/apps", 2);
+      expect(appsAfterRetry.children?.[0]?.properties?.status).toBe("connected");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session apps surface proxies built-in provider state queries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-meta-proxy-"));
+    const config: SloppyConfig = {
+      ...TEST_CONFIG,
+      providers: {
+        ...TEST_CONFIG.providers,
+        builtin: {
+          ...TEST_CONFIG.providers.builtin,
+          metaRuntime: true,
+        },
+        metaRuntime: {
+          globalRoot: join(root, "global"),
+          workspaceRoot: join(root, "workspace"),
+        },
+      },
+    };
+    const runtime = new SessionRuntime({
+      config,
+      sessionId: "sess-meta-proxy",
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-meta-proxy",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const apps = await consumer.query("/apps", 1);
+      expect(apps.affordances?.some((affordance) => affordance.action === "query_provider")).toBe(
+        true,
+      );
+
+      const result = await consumer.invoke("/apps", "query_provider", {
+        provider_id: "meta-runtime",
+        path: "/proposals",
+        depth: 1,
+      });
+
+      expect(result.status).toBe("ok");
+      expect((result.data as { id?: string }).id).toBe("proposals");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

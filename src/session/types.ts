@@ -43,7 +43,32 @@ export type QueuedSessionMessage = {
   status: "queued";
   text: string;
   createdAt: string;
-  author: "user";
+  author: "user" | "goal";
+  goalId?: string;
+  continuation?: boolean;
+};
+
+export type SessionGoalStatus = "active" | "paused" | "budget_limited" | "complete";
+export type SessionGoalUpdateSource = "user" | "model" | "runtime";
+
+export type SessionGoalSnapshot = {
+  goalId: string;
+  objective: string;
+  status: SessionGoalStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  tokenBudget?: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  elapsedMs: number;
+  continuationCount: number;
+  lastTurnId?: string;
+  message?: string;
+  evidence?: string[];
+  updateSource?: SessionGoalUpdateSource;
+  completionSource?: SessionGoalUpdateSource;
 };
 
 export type ActivityKind =
@@ -71,6 +96,7 @@ export type ActivityItem = {
   approvalId?: string;
   taskId?: string;
   toolUseId?: string;
+  paramsPreview?: string;
 };
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
@@ -174,6 +200,8 @@ export type SessionMetadata = {
   connectedClients: ConnectedClient[];
   title?: string;
   workspaceRoot?: string;
+  workspaceId?: string;
+  projectId?: string;
   lastError?: string;
   configRequiresRestart?: boolean;
   configRestartReason?: string;
@@ -200,6 +228,7 @@ export type AgentSessionSnapshot = {
   session: SessionMetadata;
   llm: LlmStateSnapshot;
   turn: TurnStateSnapshot;
+  goal: SessionGoalSnapshot | null;
   queue: QueuedSessionMessage[];
   transcript: TranscriptMessage[];
   activity: ActivityItem[];
@@ -217,6 +246,7 @@ export type SessionStoreEventType =
   | "apps"
   | "llm"
   | "session"
+  | "goal"
   | "queue";
 
 export type SessionStoreGranularListener = (event: {

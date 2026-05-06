@@ -171,13 +171,76 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
   };
 }
 
-export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
-  const terminalCwd = resolve(expandHomePath(config.providers.terminal.cwd));
-  const filesystemRoot = resolve(expandHomePath(config.providers.filesystem.root));
+function normalizeMcpServers(
+  servers: RawSloppyConfig["providers"]["mcp"]["servers"],
+  filesystemRoot: string,
+): RawSloppyConfig["providers"]["mcp"]["servers"] {
+  return Object.fromEntries(
+    Object.entries(servers).map(([id, server]) => {
+      if (server.transport !== "stdio" || !server.cwd) {
+        return [id, server];
+      }
+
+      return [
+        id,
+        {
+          ...server,
+          cwd: resolve(filesystemRoot, expandHomePath(server.cwd)),
+        },
+      ];
+    }),
+  ) as RawSloppyConfig["providers"]["mcp"]["servers"];
+}
+
+function resolveConfigPath(root: string, configPath: string): string {
+  return resolve(root, expandHomePath(configPath));
+}
+
+function normalizeWorkspaces(
+  workspaces: RawSloppyConfig["workspaces"],
+  cwd = process.cwd(),
+): RawSloppyConfig["workspaces"] {
+  return {
+    ...workspaces,
+    items: Object.fromEntries(
+      Object.entries(workspaces.items).map(([workspaceId, workspace]) => {
+        const workspaceRoot = resolve(cwd, expandHomePath(workspace.root));
+        return [
+          workspaceId,
+          {
+            ...workspace,
+            root: workspaceRoot,
+            configPath: resolveConfigPath(workspaceRoot, workspace.configPath),
+            projects: Object.fromEntries(
+              Object.entries(workspace.projects).map(([projectId, project]) => {
+                const projectRoot = resolve(workspaceRoot, expandHomePath(project.root));
+                return [
+                  projectId,
+                  {
+                    ...project,
+                    root: projectRoot,
+                    configPath: resolveConfigPath(projectRoot, project.configPath),
+                  },
+                ];
+              }),
+            ),
+          },
+        ];
+      }),
+    ),
+  };
+}
+
+export function normalizeConfig(config: RawSloppyConfig, cwd = process.cwd()): SloppyConfig {
+  const terminalCwd = resolve(cwd, expandHomePath(config.providers.terminal.cwd));
+  const filesystemRoot = resolve(cwd, expandHomePath(config.providers.filesystem.root));
   const filesystemFocus = config.providers.filesystem.focus
     ? resolve(filesystemRoot, expandHomePath(config.providers.filesystem.focus))
     : filesystemRoot;
-  const metaRuntimeGlobalRoot = resolve(expandHomePath(config.providers.metaRuntime.globalRoot));
+  const metaRuntimeGlobalRoot = resolve(
+    cwd,
+    expandHomePath(config.providers.metaRuntime.globalRoot),
+  );
   const metaRuntimeWorkspaceRoot = resolve(
     filesystemRoot,
     expandHomePath(config.providers.metaRuntime.workspaceRoot),
@@ -186,6 +249,7 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
   return {
     ...config,
     llm: normalizeLlmConfig(config.llm),
+    workspaces: normalizeWorkspaces(config.workspaces, cwd),
     providers: {
       ...config.providers,
       discovery: {
@@ -217,6 +281,10 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
         globalRoot: metaRuntimeGlobalRoot,
         workspaceRoot: metaRuntimeWorkspaceRoot,
       },
+      mcp: {
+        ...config.providers.mcp,
+        servers: normalizeMcpServers(config.providers.mcp.servers, filesystemRoot),
+      },
     },
   };
 }
@@ -224,16 +292,96 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
 export async function loadConfigFromPaths(
   homeConfigPath: string,
   workspaceConfigPath: string,
+  options: { cwd?: string } = {},
 ): Promise<SloppyConfig> {
-  const merged = deepMerge(
-    deepMerge({}, await readConfigFile(homeConfigPath)),
-    await readConfigFile(workspaceConfigPath),
-  );
+  return loadConfigFromLayerPaths([homeConfigPath, workspaceConfigPath], options);
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths.map((path) => resolve(path)))];
+}
+
+export async function loadConfigFromLayerPaths(
+  configPaths: string[],
+  options: { cwd?: string } = {},
+): Promise<SloppyConfig> {
+  let merged: JsonObject = {};
+  for (const configPath of uniquePaths(configPaths)) {
+    merged = deepMerge(merged, await readConfigFile(configPath));
+  }
 
   const withEnv = applyEnvironmentOverrides(merged);
   const parsed = sloppyConfigSchema.parse(withEnv);
 
-  return normalizeConfig(parsed);
+  return normalizeConfig(parsed, options.cwd ?? process.cwd());
+}
+
+function firstKey(record: Record<string, unknown>): string | undefined {
+  return Object.keys(record).sort()[0];
+}
+
+export type ScopedConfigOptions = {
+  workspaceId?: string;
+  projectId?: string;
+  cwd?: string;
+  homeConfigPath?: string;
+  workspaceConfigPath?: string;
+};
+
+export async function loadScopedConfig(options: ScopedConfigOptions = {}): Promise<SloppyConfig> {
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const homeConfigPath = options.homeConfigPath ?? getHomeConfigPath();
+  const workspaceConfigPath = options.workspaceConfigPath ?? getWorkspaceConfigPath(cwd);
+  const baseConfig = await loadConfigFromPaths(homeConfigPath, workspaceConfigPath, { cwd });
+  const registry = baseConfig.workspaces;
+  const workspaceId =
+    options.workspaceId ?? registry?.activeWorkspaceId ?? firstKey(registry?.items ?? {});
+
+  if (!workspaceId) {
+    return baseConfig;
+  }
+
+  const workspace = registry?.items[workspaceId];
+  if (!workspace) {
+    throw new Error(`Unknown workspace: ${workspaceId}`);
+  }
+
+  const projectId = options.projectId ?? registry?.activeProjectId;
+  const project = projectId ? workspace.projects[projectId] : undefined;
+  if (projectId && !project) {
+    throw new Error(`Unknown project for workspace ${workspaceId}: ${projectId}`);
+  }
+
+  const scopeRoot = project?.root ?? workspace.root;
+  let merged: JsonObject = {};
+  for (const configPath of uniquePaths([
+    homeConfigPath,
+    workspace.configPath,
+    ...(project ? [project.configPath] : []),
+  ])) {
+    merged = deepMerge(merged, await readConfigFile(configPath));
+  }
+
+  const scoped = deepMerge(merged, {
+    workspaces: {
+      activeWorkspaceId: workspaceId,
+      activeProjectId: project ? projectId : undefined,
+      items: registry?.items ?? {},
+    },
+    providers: {
+      terminal: {
+        cwd: scopeRoot,
+      },
+      filesystem: {
+        root: scopeRoot,
+        focus: scopeRoot,
+      },
+    },
+  });
+  const withEnv = applyEnvironmentOverrides(scoped);
+  const parsed = sloppyConfigSchema.parse(withEnv);
+
+  return normalizeConfig(parsed, scopeRoot);
 }
 
 export async function loadConfig(): Promise<SloppyConfig> {

@@ -11,6 +11,9 @@ function usage(): string {
     "  --acp-adapter <id>     configured ACP adapter id to check",
     "  --workspace <path>     workspace/config root; defaults to cwd",
     "  --timeout-ms <ms>      check timeout; default 5000",
+    "  --event-log <path>     audit log path to verify; defaults to SLOPPY_EVENT_LOG",
+    "  --socket <path>        session or supervisor Unix socket path to verify",
+    "  --migrate-persistence  rewrite legacy session/meta-runtime state envelopes with backups",
     "  -h, --help             show this help",
     "",
   ].join("\n");
@@ -30,6 +33,9 @@ function parseArgs(args: string[]) {
     acpAdapterId?: string;
     workspaceRoot?: string;
     timeoutMs?: number;
+    eventLogPath?: string;
+    socketPath?: string;
+    migratePersistence?: boolean;
     help?: boolean;
   } = {};
 
@@ -58,6 +64,17 @@ function parseArgs(args: string[]) {
           throw new Error("--timeout-ms must be an integer >= 1000.");
         }
         index += 1;
+        break;
+      case "--event-log":
+        options.eventLogPath = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--socket":
+        options.socketPath = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--migrate-persistence":
+        options.migratePersistence = true;
         break;
       default:
         throw new Error(`Unknown argument: ${arg}`);

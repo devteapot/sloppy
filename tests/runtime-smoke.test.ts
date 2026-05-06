@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -222,11 +222,13 @@ new acp.AgentSideConnection((connection) => new FakeAgent(connection), stream);
 describe("runtime smoke runner", () => {
   test("runs provider-level meta-runtime routing end-to-end", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-test-"));
+    const eventLogPath = join(workspaceRoot, "events.jsonl");
     try {
       const result = await runRuntimeSmoke({
         config: TEST_CONFIG,
         mode: "providers",
         workspaceRoot,
+        eventLogPath,
       });
 
       expect(result.mode).toBe("providers");
@@ -244,6 +246,17 @@ describe("runtime smoke runner", () => {
           metadata: { mode: "providers" },
         },
       });
+      expect(result.eventLogPath).toBe(eventLogPath);
+
+      const eventKinds = (await readFile(eventLogPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).kind);
+      expect(eventKinds).toContain("proposal.created");
+      expect(eventKinds).toContain("proposal.applied");
+      expect(eventKinds).toContain("route.dispatched");
+      expect(eventKinds).toContain("runtime_smoke.channel_verified");
+      expect(eventKinds).toContain("runtime_smoke.completed");
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
@@ -251,6 +264,7 @@ describe("runtime smoke runner", () => {
 
   test("runs native delegated-agent smoke with an injected LLM profile manager", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-native-"));
+    const eventLogPath = join(workspaceRoot, "events.jsonl");
     const config = TEST_CONFIG;
     const manager = {
       ensureReady: async () => READY_LLM_STATE,
@@ -281,12 +295,20 @@ describe("runtime smoke runner", () => {
         llmProfileManager: manager,
         mode: "native",
         workspaceRoot,
+        eventLogPath,
       });
 
       expect(result.mode).toBe("native");
       expect(result.delegatedAgent?.id).toStartWith("agent-");
       expect(result.delegatedAgent?.status).toBe("completed");
       expect(result.delegatedAgent?.resultPreview).toContain("native received:");
+
+      const eventKinds = (await readFile(eventLogPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).kind);
+      expect(eventKinds).toContain("delegated_agent.state");
+      expect(eventKinds).toContain("runtime_smoke.completed");
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

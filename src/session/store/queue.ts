@@ -2,14 +2,24 @@ import type { QueuedSessionMessage } from "../types";
 import { buildId, now } from "./helpers";
 import type { SessionStoreState } from "./state";
 
-export function enqueueMessage(state: SessionStoreState, text: string): QueuedSessionMessage {
+export function enqueueMessage(
+  state: SessionStoreState,
+  text: string,
+  options?: {
+    author?: "user" | "goal";
+    goalId?: string;
+    continuation?: boolean;
+  },
+): QueuedSessionMessage {
   const time = now();
   const message: QueuedSessionMessage = {
     id: buildId("queued"),
     status: "queued",
     text,
     createdAt: time,
-    author: "user",
+    author: options?.author ?? "user",
+    ...(options?.goalId && { goalId: options.goalId }),
+    ...(options?.continuation !== undefined && { continuation: options.continuation }),
   };
   state.snapshot.queue.push(message);
   state.snapshot.session.lastActivityAt = time;

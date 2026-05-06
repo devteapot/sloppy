@@ -73,7 +73,8 @@ explicitly exposes a safe summarized view.
 ## Open Questions
 
 - exact `/identity` state tree shape
-- import/export bundle format for identity plus skills
+- whether the checked-in meta-runtime `export_bundle` / `import_bundle`
+  substrate is enough, or a future identity provider needs its own bundle format
 - spawn-time skill resolution API
 - how role memory promotes candidates into skill proposals
 - UI treatment for identity review and skill promotion

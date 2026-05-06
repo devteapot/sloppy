@@ -1,6 +1,6 @@
 import { action } from "@slop-ai/server";
 
-import type { MetaScope, PersistedState, Proposal, TopologyExperiment } from "./meta-runtime-model";
+import type { MetaScope, Proposal, TopologyExperiment } from "./meta-runtime-model";
 import { asScope } from "./meta-runtime-ops";
 
 export type MetaRuntimeSessionDescriptorContext = {
@@ -25,7 +25,9 @@ export type MetaRuntimeSessionDescriptorContext = {
   archiveTopologyPattern: (params: Record<string, unknown>) => unknown;
   proposeFromPattern: (params: Record<string, unknown>) => unknown;
   exportState: (scope?: MetaScope) => unknown;
-  importState: (scope: MetaScope, state: PersistedState, mode: "merge" | "replace") => unknown;
+  importState: (scope: MetaScope, state: unknown, mode: "merge" | "replace") => unknown;
+  exportBundle: (params: Record<string, unknown>) => unknown;
+  importBundle: (params: Record<string, unknown>) => unknown;
 };
 
 export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDescriptorContext) {
@@ -258,6 +260,27 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           estimate: "instant",
         },
       ),
+      export_bundle: action(
+        {
+          scope: {
+            type: "string",
+            enum: ["merged", "workspace", "global"],
+            optional: true,
+          },
+          include_skills: {
+            type: "boolean",
+            optional: true,
+          },
+        },
+        (params) => context.exportBundle(params),
+        {
+          label: "Export Bundle",
+          description:
+            "Export a portable meta-runtime bundle with topology state and active skill-version content. Secrets are never included.",
+          idempotent: true,
+          estimate: "fast",
+        },
+      ),
       import_state: action(
         {
           scope: {
@@ -275,15 +298,54 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           },
         },
         ({ scope, mode, state }) =>
-          context.importState(
-            asScope(scope),
-            (state && typeof state === "object" ? state : {}) as PersistedState,
-            mode === "replace" ? "replace" : "merge",
-          ),
+          context.importState(asScope(scope), state, mode === "replace" ? "replace" : "merge"),
         {
           label: "Import State",
           description:
             "Import meta-runtime state. Persistent scopes require approval before writing.",
+          dangerous: true,
+          estimate: "fast",
+        },
+      ),
+      import_bundle: action(
+        {
+          bundle: {
+            type: "object",
+            description: "Bundle previously returned by export_bundle.",
+          },
+          scope: {
+            type: "string",
+            enum: ["session", "workspace", "global"],
+            optional: true,
+          },
+          mode: {
+            type: "string",
+            enum: ["merge", "replace"],
+            optional: true,
+          },
+          import_skills: {
+            type: "boolean",
+            optional: true,
+          },
+          skill_scope: {
+            type: "string",
+            enum: ["session", "workspace", "global"],
+            optional: true,
+          },
+          skip_existing_skills: {
+            type: "boolean",
+            optional: true,
+          },
+          dry_run: {
+            type: "boolean",
+            optional: true,
+          },
+        },
+        (params) => context.importBundle(params),
+        {
+          label: "Import Bundle",
+          description:
+            "Import or dry-run a portable meta-runtime bundle. Persistent topology writes require approval; bundled skills are installed through the skills provider.",
           dangerous: true,
           estimate: "fast",
         },

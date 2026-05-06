@@ -4,6 +4,7 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { AgentSessionProvider } from "./provider";
 import { SessionRuntime } from "./runtime";
+import { closeUnixListener, type UnixListener } from "./socket";
 
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "-");
@@ -21,7 +22,7 @@ export class SessionService {
   readonly providerId: string;
   readonly socketPath: string;
 
-  private unixListener: { close: () => void } | null = null;
+  private unixListener: UnixListener | null = null;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -59,12 +60,23 @@ export class SessionService {
     sessionId: string;
     providerId: string;
     socketPath: string;
+    title?: string;
+    workspaceRoot?: string;
+    workspaceId?: string;
+    projectId?: string;
   }[] {
-    return Array.from(SessionService.sessions.values()).map((s) => ({
-      sessionId: s.runtime.store.getSnapshot().session.sessionId,
-      providerId: s.providerId,
-      socketPath: s.socketPath,
-    }));
+    return Array.from(SessionService.sessions.values()).map((s) => {
+      const snapshot = s.runtime.store.getSnapshot();
+      return {
+        sessionId: snapshot.session.sessionId,
+        providerId: s.providerId,
+        socketPath: s.socketPath,
+        title: snapshot.session.title,
+        workspaceRoot: snapshot.session.workspaceRoot,
+        workspaceId: snapshot.session.workspaceId,
+        projectId: snapshot.session.projectId,
+      };
+    });
   }
 
   static stopSession(sessionId: string): boolean {
@@ -91,7 +103,9 @@ export class SessionService {
   stop(): void {
     const sessionId = this.runtime.store.getSnapshot().session.sessionId;
     SessionService.sessions.delete(sessionId);
-    this.unixListener?.close();
+    if (this.unixListener) {
+      closeUnixListener(this.unixListener, this.socketPath);
+    }
     this.unixListener = null;
     this.provider.stop();
     this.runtime.shutdown();

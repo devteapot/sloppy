@@ -7,6 +7,7 @@ export interface SessionStoreState {
   activeApprovalActivityId: string | null;
   toolActivityIds: Map<string, string>;
   turnChanged: boolean;
+  goalChanged: boolean;
   queueChanged: boolean;
   transcriptChanged: boolean;
   activityChanged: boolean;
@@ -25,6 +26,8 @@ export function createInitialState(options: {
   model: string;
   title?: string;
   workspaceRoot?: string;
+  workspaceId?: string;
+  projectId?: string;
   startedAt: string;
 }): SessionStoreState {
   const { startedAt } = options;
@@ -42,6 +45,8 @@ export function createInitialState(options: {
         connectedClients: [],
         title: options.title,
         workspaceRoot: options.workspaceRoot,
+        workspaceId: options.workspaceId,
+        projectId: options.projectId,
       },
       llm: {
         status: "needs_credentials",
@@ -62,6 +67,7 @@ export function createInitialState(options: {
         updatedAt: startedAt,
         message: "Idle",
       },
+      goal: null,
       queue: [],
       transcript: [],
       activity: [],
@@ -74,6 +80,7 @@ export function createInitialState(options: {
     activeApprovalActivityId: null,
     toolActivityIds: new Map(),
     turnChanged: false,
+    goalChanged: false,
     queueChanged: false,
     transcriptChanged: false,
     activityChanged: false,
@@ -96,6 +103,9 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },
+    goal: snapshot.goal
+      ? { ...snapshot.goal, evidence: snapshot.goal.evidence?.map((item) => item) }
+      : null,
     queue: (snapshot.queue ?? []).map((message) => ({ ...message })),
     transcript: snapshot.transcript.map((message) => ({
       ...message,
@@ -116,6 +126,7 @@ export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): Session
     activeApprovalActivityId: null,
     toolActivityIds: new Map(),
     turnChanged: false,
+    goalChanged: false,
     queueChanged: false,
     transcriptChanged: false,
     activityChanged: false,

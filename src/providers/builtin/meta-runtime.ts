@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import type { ProviderRuntimeHub } from "../../core/hub";
+import type { RuntimeEvent } from "../../core/role";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
 import { dispatchMetaRuntimeRoute } from "./meta-runtime-dispatch";
 import {
@@ -43,6 +46,7 @@ import {
   classifyApproval,
   optionalNonNegativeInteger,
   parseChange,
+  parsePersistedState,
 } from "./meta-runtime-ops";
 import {
   archiveTopologyPattern as archiveTopologyPatternWithContext,
@@ -78,6 +82,153 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function sha256(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function emptySkillImportSummary(): SkillImportSummary {
+  return { created: [], skipped: [], failed: [], skippedFiles: [] };
+}
+
+function validateBundleHash(label: string, content: string, expected: unknown): string | undefined {
+  if (expected === undefined) {
+    return undefined;
+  }
+  if (typeof expected !== "string" || expected.trim() === "") {
+    throw new Error(`${label} must be a non-empty string when provided.`);
+  }
+  const actual = sha256(content);
+  if (expected !== actual) {
+    throw new Error(`${label} does not match bundled content.`);
+  }
+  return expected;
+}
+
+function validateBundleFilePath(path: string, label: string): void {
+  if (path.startsWith("/") || path.startsWith("\\") || path.split(/[\\/]+/).includes("..")) {
+    throw new Error(`${label} must be a relative path inside the skill directory.`);
+  }
+}
+
+function parseRuntimeBundle(raw: unknown): RuntimeBundle {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("bundle must be an object.");
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.kind !== "sloppy.meta-runtime.bundle") {
+    throw new Error("bundle.kind must be sloppy.meta-runtime.bundle.");
+  }
+  if (record.schema_version !== 1) {
+    throw new Error("bundle.schema_version must be 1.");
+  }
+  const state = record.state;
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    throw new Error("bundle.state must be an object.");
+  }
+  const rawSkills = Array.isArray(record.skills) ? record.skills : [];
+  const skills: RuntimeBundleSkill[] = rawSkills.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`bundle.skills[${index}] must be an object.`);
+    }
+    const skill = entry as Record<string, unknown>;
+    if (typeof skill.name !== "string" || skill.name.trim() === "") {
+      throw new Error(`bundle.skills[${index}].name must be a non-empty string.`);
+    }
+    if (typeof skill.content !== "string" || skill.content.trim() === "") {
+      throw new Error(`bundle.skills[${index}].content must be a non-empty string.`);
+    }
+    return {
+      name: skill.name,
+      version: typeof skill.version === "string" ? skill.version : undefined,
+      scope: typeof skill.scope === "string" ? skill.scope : undefined,
+      content: skill.content,
+      content_sha256: validateBundleHash(
+        `bundle.skills[${index}].content_sha256`,
+        skill.content,
+        skill.content_sha256,
+      ),
+      files: parseBundleSkillFiles(skill.files, index),
+    };
+  });
+  return {
+    kind: "sloppy.meta-runtime.bundle",
+    schema_version: 1,
+    exported_at: typeof record.exported_at === "string" ? record.exported_at : now(),
+    scope:
+      record.scope === "global" || record.scope === "workspace" || record.scope === "session"
+        ? record.scope
+        : "merged",
+    state: parsePersistedState(state),
+    skills,
+    notes: { secrets: "excluded" },
+  };
+}
+
+function parseBundleSkillFiles(raw: unknown, skillIndex: number): RuntimeBundleSkillFile[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(`bundle.skills[${skillIndex}].files must be an array.`);
+  }
+  return raw.map((entry, fileIndex) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`bundle.skills[${skillIndex}].files[${fileIndex}] must be an object.`);
+    }
+    const file = entry as Record<string, unknown>;
+    if (typeof file.path !== "string" || file.path.trim() === "") {
+      throw new Error(
+        `bundle.skills[${skillIndex}].files[${fileIndex}].path must be a non-empty string.`,
+      );
+    }
+    validateBundleFilePath(file.path, `bundle.skills[${skillIndex}].files[${fileIndex}].path`);
+    if (typeof file.content !== "string") {
+      throw new Error(`bundle.skills[${skillIndex}].files[${fileIndex}].content must be a string.`);
+    }
+    return {
+      path: file.path,
+      content: file.content,
+      sha256: validateBundleHash(
+        `bundle.skills[${skillIndex}].files[${fileIndex}].sha256`,
+        file.content,
+        file.sha256,
+      ),
+    };
+  });
+}
+
+type RuntimeBundleSkillFile = {
+  path: string;
+  content: string;
+  sha256?: string;
+};
+
+type RuntimeBundleSkill = {
+  name: string;
+  version?: string;
+  scope?: string;
+  content: string;
+  content_sha256?: string;
+  files: RuntimeBundleSkillFile[];
+};
+
+type RuntimeBundle = {
+  kind: "sloppy.meta-runtime.bundle";
+  schema_version: 1;
+  exported_at: string;
+  scope: MetaScope | "merged";
+  state: PersistedState;
+  skills: RuntimeBundleSkill[];
+  notes: {
+    secrets: "excluded";
+  };
+};
+
+type SkillImportSummary = {
+  created: string[];
+  skipped: string[];
+  failed: Array<{ name: string; reason: string }>;
+  skippedFiles: Array<{ name: string; path: string; reason: string }>;
+};
+
 export class MetaRuntimeProvider {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
@@ -101,6 +252,7 @@ export class MetaRuntimeProvider {
   private proposals = new Map<string, Proposal>();
   private patterns = new Map<string, TopologyPattern>();
   private events: MetaEvent[] = [];
+  private publishEvent: ((event: RuntimeEvent) => void) | null = null;
 
   constructor(options: { globalRoot?: string; workspaceRoot?: string } = {}) {
     this.globalRoot = resolveMetaRuntimeRoot(options.globalRoot ?? "~/.sloppy/meta-runtime");
@@ -143,13 +295,14 @@ export class MetaRuntimeProvider {
     this.server.stop();
   }
 
-  setHub(hub: ProviderRuntimeHub | null): void {
+  setHub(hub: ProviderRuntimeHub | null, publishEvent?: (event: RuntimeEvent) => void): void {
     this.hub = hub;
+    this.publishEvent = publishEvent ?? null;
   }
 
   private load(): void {
-    const global = readPersistedMetaState(this.globalRoot);
-    const workspace = readPersistedMetaState(this.workspaceRoot);
+    const global = parsePersistedState(readPersistedMetaState(this.globalRoot));
+    const workspace = parsePersistedState(readPersistedMetaState(this.workspaceRoot));
     putState(this.layers.global, global);
     putState(this.layers.workspace, workspace);
     putById(this.proposals, global.proposals);
@@ -202,10 +355,10 @@ export class MetaRuntimeProvider {
 
   private exportState(scope?: MetaScope): PersistedState & { scope: MetaScope | "merged" } {
     if (scope === "global") {
-      return { scope, ...readPersistedMetaState(this.globalRoot) };
+      return { scope, ...parsePersistedState(readPersistedMetaState(this.globalRoot)) };
     }
     if (scope === "workspace") {
-      return { scope, ...readPersistedMetaState(this.workspaceRoot) };
+      return { scope, ...parsePersistedState(readPersistedMetaState(this.workspaceRoot)) };
     }
     return {
       scope: "merged",
@@ -215,10 +368,11 @@ export class MetaRuntimeProvider {
 
   private importState(
     scope: MetaScope,
-    state: PersistedState,
+    state: unknown,
     mode: "merge" | "replace",
     approved = false,
   ): { scope: MetaScope; mode: "merge" | "replace"; imported: true } {
+    const parsedState = parsePersistedState(state);
     if (scope !== "session" && !approved) {
       const approvalId = this.approvals.request({
         path: "/session",
@@ -227,12 +381,12 @@ export class MetaRuntimeProvider {
         paramsPreview: JSON.stringify({
           scope,
           mode,
-          profiles: state.profiles?.length ?? 0,
-          agents: state.agents?.length ?? 0,
-          routes: state.routes?.length ?? 0,
+          profiles: parsedState.profiles?.length ?? 0,
+          agents: parsedState.agents?.length ?? 0,
+          routes: parsedState.routes?.length ?? 0,
         }),
         dangerous: true,
-        execute: () => this.importState(scope, state, mode, true),
+        execute: () => this.importState(scope, parsedState, mode, true),
       });
       throw createApprovalRequiredError(
         `Importing ${scope} meta-runtime state requires approval via /approvals/${approvalId}.`,
@@ -253,10 +407,10 @@ export class MetaRuntimeProvider {
       }
       this.events = this.events.filter((event) => event.scope !== scope);
     }
-    putState(this.layers[scope], state);
-    putById(this.proposals, state.proposals);
-    putById(this.patterns, state.patterns);
-    this.events.push(...(state.events ?? []));
+    putState(this.layers[scope], parsedState);
+    putById(this.proposals, parsedState.proposals);
+    putById(this.patterns, parsedState.patterns);
+    this.events.push(...(parsedState.events ?? []));
     this.recordEvent({
       kind: "state.imported",
       scope,
@@ -268,13 +422,391 @@ export class MetaRuntimeProvider {
     return { scope, mode, imported: true };
   }
 
+  private async exportBundle(params: Record<string, unknown>): Promise<RuntimeBundle> {
+    const scope =
+      params.scope === "global" || params.scope === "workspace"
+        ? params.scope
+        : ("merged" as const);
+    const state =
+      scope === "global" || scope === "workspace"
+        ? this.exportState(scope)
+        : this.exportState(undefined);
+    const { scope: _exportedScope, ...portableState } = state;
+    const includeSkills = params.include_skills !== false;
+    return {
+      kind: "sloppy.meta-runtime.bundle",
+      schema_version: 1,
+      exported_at: now(),
+      scope,
+      state: portableState,
+      skills: includeSkills ? await this.exportActiveSkillContents() : [],
+      notes: {
+        secrets: "excluded",
+      },
+    };
+  }
+
+  private async exportActiveSkillContents(): Promise<RuntimeBundleSkill[]> {
+    const activeSkillVersions = [...this.skillVersions.values()].filter(
+      (skillVersion) => skillVersion.active && skillVersion.activationStatus !== "failed",
+    );
+    if (activeSkillVersions.length === 0) {
+      return [];
+    }
+    if (!this.hub) {
+      throw new Error("Cannot export active skill contents without an attached skills provider.");
+    }
+
+    const bySkillId = new Map<string, SkillVersion>();
+    for (const skillVersion of activeSkillVersions) {
+      if (!bySkillId.has(skillVersion.skillId)) {
+        bySkillId.set(skillVersion.skillId, skillVersion);
+      }
+    }
+
+    const skills: RuntimeBundleSkill[] = [];
+    for (const skillVersion of bySkillId.values()) {
+      const viewed = await this.invokeSkillView(skillVersion.skillId);
+      const supportingFiles = Array.isArray(viewed.supporting_files)
+        ? viewed.supporting_files.filter((file): file is string => typeof file === "string")
+        : [];
+      const files: RuntimeBundleSkillFile[] = [];
+      for (const filePath of supportingFiles) {
+        if (!filePath || filePath === "SKILL.md") continue;
+        const supporting = await this.invokeSkillView(skillVersion.skillId, filePath);
+        if (typeof supporting.content === "string") {
+          files.push({
+            path: filePath,
+            content: supporting.content,
+            sha256: sha256(supporting.content),
+          });
+        }
+      }
+      if (typeof viewed.content !== "string" || !viewed.content.trim()) {
+        throw new Error(`Active skill ${skillVersion.skillId} exported empty content.`);
+      }
+      skills.push({
+        name: skillVersion.skillId,
+        version: skillVersion.version,
+        scope: skillVersion.scope,
+        content: viewed.content,
+        content_sha256: sha256(viewed.content),
+        files,
+      });
+    }
+    return skills;
+  }
+
+  private async invokeSkillView(name: string, filePath?: string): Promise<Record<string, unknown>> {
+    if (!this.hub) {
+      throw new Error("Cannot read skills without an attached runtime hub.");
+    }
+    const result = await this.hub.invoke("skills", "/session", "skill_view", {
+      name,
+      ...(filePath ? { file_path: filePath } : {}),
+    });
+    if (result.status === "error") {
+      throw new Error(result.error?.message ?? `Failed to read skill ${name}.`);
+    }
+    return result.data && typeof result.data === "object" && !Array.isArray(result.data)
+      ? (result.data as Record<string, unknown>)
+      : {};
+  }
+
+  private async importBundle(
+    params: Record<string, unknown>,
+    approved = false,
+  ): Promise<{
+    scope: MetaScope;
+    mode: "merge" | "replace";
+    imported: boolean;
+    dry_run?: boolean;
+    skills: SkillImportSummary;
+    required_skills?: { count: number; missing: string[] };
+  }> {
+    const bundle = parseRuntimeBundle(params.bundle);
+    const scope =
+      params.scope === "global" || params.scope === "workspace" || params.scope === "session"
+        ? params.scope
+        : "session";
+    const mode = params.mode === "replace" ? "replace" : "merge";
+    const importSkills = params.import_skills !== false;
+    const skillScope: MetaScope =
+      params.skill_scope === "workspace" || params.skill_scope === "global"
+        ? params.skill_scope
+        : "session";
+    const skillOptions = {
+      skillScope,
+      skipExisting: params.skip_existing_skills !== false,
+    };
+    if (params.dry_run === true) {
+      const skills = importSkills
+        ? await this.planBundleSkillImport(bundle, skillOptions)
+        : emptySkillImportSummary();
+      const requiredSkillIds = this.requiredBundleSkillIds(bundle);
+      const existingSkillIds = this.hub ? await this.listExistingSkillNames() : new Set<string>();
+      const plannedSkillIds = new Set([...existingSkillIds, ...skills.created, ...skills.skipped]);
+      const missing = [...requiredSkillIds].filter((skillId) => !plannedSkillIds.has(skillId));
+      return {
+        scope,
+        mode,
+        imported: false,
+        dry_run: true,
+        skills,
+        required_skills: { count: requiredSkillIds.size, missing },
+      };
+    }
+    if (scope !== "session" && !approved) {
+      const approvalId = this.approvals.request({
+        path: "/session",
+        action: "import_bundle",
+        reason: `Importing ${scope} runtime bundle writes persisted meta-runtime state.`,
+        paramsPreview: JSON.stringify({
+          scope,
+          mode,
+          profiles: bundle.state.profiles?.length ?? 0,
+          agents: bundle.state.agents?.length ?? 0,
+          skills: bundle.skills.length,
+        }),
+        dangerous: true,
+        execute: () => this.importBundle(params, true),
+      });
+      throw createApprovalRequiredError(
+        `Importing ${scope} runtime bundle requires approval via /approvals/${approvalId}.`,
+      );
+    }
+
+    const skills = importSkills
+      ? await this.importBundleSkills(bundle, skillOptions)
+      : emptySkillImportSummary();
+    if (skills.failed.length > 0) {
+      throw new Error(
+        `Runtime bundle skill import failed; topology was not imported. ${skills.failed
+          .map((failure) => `${failure.name}: ${failure.reason}`)
+          .join("; ")}`,
+      );
+    }
+    await this.assertBundleSkillRequirementsSatisfied(bundle, params.import_skills === false);
+
+    this.importState(scope, bundle.state, mode, true);
+    this.recordEvent({
+      kind: "bundle.imported",
+      scope,
+      summary: `Imported runtime bundle with ${bundle.skills.length} bundled skills.`,
+      metadata: {
+        bundle_scope: bundle.scope,
+        skills_created: skills.created.length,
+        skills_skipped: skills.skipped.length,
+        skills_failed: skills.failed.length,
+      },
+    });
+    this.persist(scope);
+    this.server.refresh();
+    return { scope, mode, imported: true, skills };
+  }
+
+  private async importBundleSkills(
+    bundle: RuntimeBundle,
+    options: { skillScope: MetaScope; skipExisting: boolean },
+  ): Promise<SkillImportSummary> {
+    const plan = await this.planBundleSkillImport(bundle, options);
+    if (plan.failed.length > 0) {
+      return plan;
+    }
+    const summary = emptySkillImportSummary();
+    summary.skipped.push(...plan.skipped);
+    summary.skippedFiles.push(...plan.skippedFiles);
+    if (bundle.skills.length === 0) {
+      return summary;
+    }
+    if (!this.hub) {
+      throw new Error("Cannot import bundled skills without an attached skills provider.");
+    }
+    const plannedCreates = new Set(plan.created);
+    for (const skill of bundle.skills) {
+      if (!plannedCreates.has(skill.name)) {
+        continue;
+      }
+      const createResult = await this.hub.invoke("skills", "/session", "skill_manage", {
+        operation: "create",
+        name: skill.name,
+        scope: options.skillScope,
+        content: skill.content,
+      });
+      if (createResult.status === "error") {
+        summary.failed.push({
+          name: skill.name,
+          reason: createResult.error?.message ?? "Skill import failed.",
+        });
+        continue;
+      }
+      summary.created.push(skill.name);
+      for (const file of skill.files) {
+        if (options.skillScope === "session") {
+          continue;
+        }
+        const writeResult = await this.hub.invoke("skills", "/session", "skill_manage", {
+          operation: "write_file",
+          name: skill.name,
+          scope: options.skillScope,
+          file_path: file.path,
+          file_content: file.content,
+        });
+        if (writeResult.status === "error") {
+          summary.failed.push({
+            name: skill.name,
+            reason: writeResult.error?.message ?? `Failed to import supporting file ${file.path}.`,
+          });
+        }
+      }
+    }
+    return summary;
+  }
+
+  private async planBundleSkillImport(
+    bundle: RuntimeBundle,
+    options: { skillScope: MetaScope; skipExisting: boolean },
+  ): Promise<SkillImportSummary> {
+    const summary = emptySkillImportSummary();
+    if (bundle.skills.length === 0) {
+      return summary;
+    }
+    if (!this.hub) {
+      for (const skill of bundle.skills) {
+        summary.failed.push({
+          name: skill.name,
+          reason: "Cannot inspect or import bundled skills without an attached skills provider.",
+        });
+      }
+      return summary;
+    }
+    const existing = await this.listExistingSkillNames();
+    for (const skill of bundle.skills) {
+      if (existing.has(skill.name)) {
+        if (!options.skipExisting) {
+          summary.failed.push({
+            name: skill.name,
+            reason: "Skill already exists; import_bundle does not overwrite existing skills.",
+          });
+          continue;
+        }
+        const mismatch = await this.describeExistingSkillMismatch(skill);
+        if (mismatch) {
+          summary.failed.push({ name: skill.name, reason: mismatch });
+          continue;
+        }
+        summary.skipped.push(skill.name);
+      } else {
+        summary.created.push(skill.name);
+      }
+      if (options.skillScope === "session") {
+        for (const file of skill.files) {
+          summary.skippedFiles.push({
+            name: skill.name,
+            path: file.path,
+            reason: "session skills do not have supporting-file storage",
+          });
+        }
+      }
+    }
+    return summary;
+  }
+
+  private async describeExistingSkillMismatch(skill: RuntimeBundleSkill): Promise<string | null> {
+    let viewed: Record<string, unknown>;
+    try {
+      viewed = await this.invokeSkillView(skill.name);
+    } catch (error) {
+      return `Existing skill could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+    if (viewed.content !== skill.content) {
+      return "Existing skill content differs from bundled content.";
+    }
+    for (const file of skill.files) {
+      let supporting: Record<string, unknown>;
+      try {
+        supporting = await this.invokeSkillView(skill.name, file.path);
+      } catch (error) {
+        return `Existing skill supporting file ${file.path} could not be read: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+      if (supporting.content !== file.content) {
+        return `Existing skill supporting file ${file.path} differs from bundled content.`;
+      }
+    }
+    return null;
+  }
+
+  private async assertBundleSkillRequirementsSatisfied(
+    bundle: RuntimeBundle,
+    skippedImport: boolean,
+  ): Promise<void> {
+    const requiredSkillIds = this.requiredBundleSkillIds(bundle);
+    if (requiredSkillIds.size === 0) {
+      return;
+    }
+    if (!this.hub) {
+      throw new Error(
+        "Runtime bundle contains active skill versions, but no skills provider is attached; topology was not imported.",
+      );
+    }
+    const existing = await this.listExistingSkillNames();
+    const missing = [...requiredSkillIds].filter((skillId) => !existing.has(skillId));
+    if (missing.length > 0) {
+      throw new Error(
+        `${
+          skippedImport
+            ? "Runtime bundle skill import was skipped"
+            : "Runtime bundle skill import did not install all required skills"
+        }; topology was not imported. Missing skills: ${missing.join(", ")}.`,
+      );
+    }
+  }
+
+  private requiredBundleSkillIds(bundle: RuntimeBundle): Set<string> {
+    return new Set(
+      (bundle.state.skillVersions ?? [])
+        .filter((skillVersion) => skillVersion.active && skillVersion.activationStatus !== "failed")
+        .map((skillVersion) => skillVersion.skillId),
+    );
+  }
+
+  private async listExistingSkillNames(): Promise<Set<string>> {
+    if (!this.hub) return new Set();
+    const tree = await this.hub
+      .queryState({ providerId: "skills", path: "/skills", depth: 2 })
+      .catch(() => null);
+    const names = new Set<string>();
+    for (const child of tree?.children ?? []) {
+      const value = child.properties?.name;
+      if (typeof value !== "string") continue;
+      names.add(value);
+      if (value.startsWith("[DANGEROUS] ")) {
+        names.add(value.slice("[DANGEROUS] ".length));
+      }
+    }
+    return names;
+  }
+
   private recordEvent(event: Omit<MetaEvent, "id" | "createdAt">): void {
-    this.events.push({
+    const recorded = {
       id: `event-${crypto.randomUUID()}`,
       createdAt: now(),
       ...event,
-    });
+    };
+    this.events.push(recorded);
     this.events = this.events.slice(-200);
+    this.publishEvent?.({
+      kind: recorded.kind,
+      providerId: "meta-runtime",
+      eventId: recorded.id,
+      scope: recorded.scope,
+      summary: recorded.summary,
+      metadata: recorded.metadata,
+    });
   }
 
   private proposeChange(params: Record<string, unknown>): Proposal {
@@ -312,6 +844,7 @@ export class MetaRuntimeProvider {
     if (!proposal) {
       throw new Error(`Unknown proposal: ${id}`);
     }
+    const requiresApproval = this.recomputeProposalApproval(proposal);
     if (proposal.status !== "proposed") {
       throw new Error(`Proposal ${id} is already ${proposal.status}.`);
     }
@@ -331,7 +864,7 @@ export class MetaRuntimeProvider {
       this.server.refresh();
       throw new Error(`Proposal ${id} expired before it could be applied.`);
     }
-    if (proposal.requiresApproval && !approved) {
+    if (requiresApproval && !approved) {
       const approvalId = this.approvals.request({
         path: `/proposals/${id}`,
         action: "apply_proposal",
@@ -530,37 +1063,42 @@ export class MetaRuntimeProvider {
       proposeFromPattern: (params) => this.proposeFromPattern(params),
       exportState: (scope) => this.exportState(scope),
       importState: (scope, state, mode) => this.importState(scope, state, mode),
+      exportBundle: (params) => this.exportBundle(params),
+      importBundle: (params) => this.importBundle(params),
     });
   }
 
   private buildProposalsDescriptor() {
-    const items: ItemDescriptor[] = listById(this.proposals).map((proposal) => ({
-      id: proposal.id,
-      props: proposal,
-      summary: proposal.summary,
-      actions: {
-        ...(proposal.status === "proposed"
-          ? {
-              apply_proposal: action(async () => this.applyProposal(proposal.id), {
-                label: "Apply Proposal",
-                description:
-                  "Apply this topology proposal. Privileged or persistent changes request approval.",
-                dangerous: proposal.requiresApproval,
-                estimate: "fast",
-              }),
-              revert_proposal: action(async () => this.revertProposal(proposal.id), {
-                label: "Revert Proposal",
-                description: "Mark this proposed topology change as reverted.",
-                estimate: "instant",
-              }),
-            }
-          : {}),
-      },
-      meta: {
-        salience: proposal.status === "proposed" ? 0.9 : 0.4,
-        urgency: proposal.requiresApproval && proposal.status === "proposed" ? "high" : "low",
-      },
-    }));
+    const items: ItemDescriptor[] = listById(this.proposals).map((proposal) => {
+      const requiresApproval = this.recomputeProposalApproval(proposal);
+      return {
+        id: proposal.id,
+        props: { ...proposal, requiresApproval },
+        summary: proposal.summary,
+        actions: {
+          ...(proposal.status === "proposed"
+            ? {
+                apply_proposal: action(async () => this.applyProposal(proposal.id), {
+                  label: "Apply Proposal",
+                  description:
+                    "Apply this topology proposal. Privileged or persistent changes request approval.",
+                  dangerous: requiresApproval,
+                  estimate: "fast",
+                }),
+                revert_proposal: action(async () => this.revertProposal(proposal.id), {
+                  label: "Revert Proposal",
+                  description: "Mark this proposed topology change as reverted.",
+                  estimate: "instant",
+                }),
+              }
+            : {}),
+        },
+        meta: {
+          salience: proposal.status === "proposed" ? 0.9 : 0.4,
+          urgency: requiresApproval && proposal.status === "proposed" ? "high" : "low",
+        },
+      };
+    });
 
     return {
       type: "collection",
@@ -570,6 +1108,14 @@ export class MetaRuntimeProvider {
       summary: "Pending and resolved meta-runtime topology proposals.",
       items,
     };
+  }
+
+  private recomputeProposalApproval(proposal: Proposal): boolean {
+    const requiresApproval = classifyApproval(proposal.scope, proposal.ops);
+    if (proposal.requiresApproval !== requiresApproval) {
+      proposal.requiresApproval = requiresApproval;
+    }
+    return requiresApproval;
   }
 
   private buildPatternsDescriptor() {

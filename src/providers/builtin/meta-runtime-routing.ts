@@ -46,6 +46,57 @@ function trafficSampleAllows(route: RouteRule, envelope: RouteMessageEnvelope): 
   return bucket < sampleRate;
 }
 
+function envelopeFieldValue(envelope: RouteMessageEnvelope, field: string | undefined): unknown {
+  if (field === undefined || field === "body") return envelope.body;
+  if (field === "topic") return envelope.topic;
+  if (field === "channelId") return envelope.channelId;
+  if (!field.startsWith("metadata.")) return undefined;
+
+  let current: unknown = envelope.metadata;
+  for (const part of field.slice("metadata.".length).split(".")) {
+    if (!part || !current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function routeFieldMatches(route: RouteRule, envelope: RouteMessageEnvelope): boolean {
+  const mode = route.matchMode ?? "substring";
+  const value = envelopeFieldValue(envelope, route.matchField);
+  if (mode === "exists") {
+    return value !== undefined && value !== null;
+  }
+  if (route.match === "*") {
+    return true;
+  }
+  if (value === undefined || value === null) {
+    return false;
+  }
+
+  const rawCandidate =
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : (JSON.stringify(value) ?? String(value));
+  const caseSensitive = route.caseSensitive !== false;
+  const candidate = caseSensitive ? rawCandidate : rawCandidate.toLowerCase();
+  const match = caseSensitive ? route.match : route.match.toLowerCase();
+
+  switch (mode) {
+    case "exact":
+      return candidate === match;
+    case "prefix":
+      return candidate.startsWith(match);
+    case "regex": {
+      const regex = new RegExp(route.match, caseSensitive ? undefined : "i");
+      return regex.test(rawCandidate);
+    }
+    default:
+      return candidate.includes(match);
+  }
+}
+
 export function matchingRoutes(
   routes: RouteRule[],
   envelope: RouteMessageEnvelope,
@@ -56,7 +107,7 @@ export function matchingRoutes(
       if (!route.enabled) return false;
       if (route.source !== "*" && route.source !== envelope.source) return false;
       if (!trafficSampleAllows(route, envelope)) return false;
-      return route.match === "*" || envelope.body.includes(route.match);
+      return routeFieldMatches(route, envelope);
     })
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id));
 

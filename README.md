@@ -47,6 +47,9 @@ Current checked-in implementation includes:
   - `delegation`
   - `spec`
   - `vision`
+  - `mcp`
+  - `workspaces`
+  - `a2a`
 - fixed observation tools:
   - `slop_query_state`
   - `slop_focus_state`
@@ -60,12 +63,17 @@ Current checked-in implementation includes:
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
+- session-provider `/goal` state for persistent long-running objectives, including
+  create/pause/resume/complete/clear controls, usage accounting, and automatic
+  continuation while the goal is active. Native goal turns expose a model-owned
+  `slop_goal_update` local tool for progress, blocker, and completion reports
+  with evidence.
 - session-provider restart-required state when provider or agent config changes after startup
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
 - session-provider `/apps` attachment state for external provider visibility and debugging
-- TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
+- TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with managed session-supervisor startup, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - canvas + HTML dashboard prototype under `apps/dashboard/`
-- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, and import/export. Reusable self-evolution strategy lives in skills over this substrate.
+- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a built-in `skill-curator` workflow for skill-managed procedural memory
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
@@ -132,7 +140,7 @@ These providers are currently implemented as in-process SLOP providers:
 
 - `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
 - `skills` for skill-based progressive skill loading (`skill_view`), supporting files, nested `metadata.sloppy`, agent-managed skill edits (`skill_manage`), proposed skill activation, and approval-gated persistent workspace/global writes
-- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, per-profile/per-agent skill-version context for routed children, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology pattern authoring should be expressed as skills over this state rather than long-term provider policy.
+- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including typed route dispatch to delegated agents or messaging channels, route matchers over envelope body/topic/channel/metadata, topology proposals, experiment/evaluation records, per-profile/per-agent skill-version context for routed children, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology pattern authoring should be expressed as skills over this state rather than long-term provider policy.
 - `browser` for tab state, navigation history, and simulated screenshots
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
@@ -140,6 +148,9 @@ These providers are currently implemented as in-process SLOP providers:
 - `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
+- `mcp` for opt-in Model Context Protocol compatibility, exposing configured MCP servers as SLOP state under `/servers`
+- `workspaces` for opt-in workspace/project registry state, active scope selection, and scoped config layer visibility
+- `a2a` for opt-in Agent2Agent interoperability, exposing remote Agent Cards, declared skills, and remote task lifecycle as SLOP state under `/agents` and `/tasks`
 
 They follow the same architectural rule as terminal/filesystem: state first, affordances second.
 
@@ -193,6 +204,9 @@ Provider-specific config now exists for:
 - `messaging`
 - `delegation`
 - `vision`
+- `mcp`
+- `workspaces`
+- `a2a`
 
 The `spec` provider uses the configured filesystem workspace root and currently
 does not require a provider-specific config block.
@@ -208,10 +222,17 @@ bun install
 Run checks:
 
 ```sh
+bun run preflight
+```
+
+For narrower local loops, run the individual gates:
+
+```sh
+bun run lint
 bun run typecheck
 bun run tui:typecheck
-bun run build
 bun run test
+bun run build
 ```
 
 Run the CLI with the default Anthropic config:
@@ -235,6 +256,19 @@ bun run session:serve
 ```
 
 If no ready model profile is configured, the session still starts and waits for a UI to attach.
+When `workspaces.items` is configured, `session:serve` loads the active
+workspace/project config layers by default. You can pin a scope explicitly:
+
+```sh
+bun run session:serve -- --workspace-id sloppy --project-id runtime
+```
+
+Run a public session supervisor, which exposes session creation/switching while
+each managed session still has its own ordinary session-provider socket:
+
+```sh
+bun run session:serve -- --supervisor --socket /tmp/slop/sloppy-supervisor.sock
+```
 
 Run the TypeScript/OpenTUI TUI:
 
@@ -242,11 +276,29 @@ Run the TypeScript/OpenTUI TUI:
 bun run tui
 ```
 
-By default this starts a managed session provider and attaches to it. To attach
-to an existing session provider socket, use:
+By default this starts a managed session supervisor, creates the initial
+session, and attaches to that session's public provider socket. To attach to an
+existing session provider socket directly, use:
 
 ```sh
 bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock
+```
+
+To attach through an existing supervisor socket, use:
+
+```sh
+bun run tui -- --supervisor-socket /tmp/slop/sloppy-supervisor.sock
+```
+
+Managed TUI sessions accept the same workspace/project scope flags. The command
+palette and slash commands can create, switch, and stop additional scoped
+sessions through the supervisor. The supervisor `/sessions` state also exposes
+per-session turn state, goal status, queue pressure, pending approvals, and
+running task counts so the TUI can compare sessions through `/inspector
+sessions` without reading runtime internals:
+
+```sh
+bun run tui -- --workspace-id sloppy --project-id runtime --title "Runtime"
 ```
 
 Run the dashboard prototype:
@@ -275,6 +327,10 @@ bun run runtime:smoke -- --mode native
 bun run runtime:smoke -- --mode acp --acp-adapter claude
 ```
 
+Add `--event-log /path/to/events.jsonl` or set `SLOPPY_EVENT_LOG` to capture a
+JSONL audit trail of runtime events such as topology proposals, route dispatch,
+tool calls, provider task changes, and approvals.
+
 Native mode uses the active LLM profile selected by the LLM profile manager
 unless `--profile <id>` is provided. For a local OpenAI-compatible router, point
 the run at that endpoint with the normal one-shot LLM environment overrides, for
@@ -293,8 +349,21 @@ Check live runtime dependencies before a smoke run:
 ```sh
 bun run runtime:doctor \
   --litellm-url http://sloppy-mba.local:8001/v1 \
-  --acp-adapter claude
+  --acp-adapter claude \
+  --event-log /tmp/sloppy-events.jsonl \
+  --socket /tmp/slop/sloppy-session.sock
 ```
+
+The doctor reports the active LLM profile readiness and credential source,
+OpenAI-compatible router reachability, ACP adapter startup and boundary posture,
+workspace path containment/readability, required ACP/MCP startup subprocess
+commands, audit-log writability, session/supervisor socket path usability, and
+persisted session/meta-runtime state schema health. A missing ready LLM profile
+is an error; environment-backed credentials are reported as a warning so
+operators can decide whether process-scoped secrets are acceptable for that run.
+If persistence checks warn about legacy raw state, rerun with
+`--migrate-persistence` to rewrite those files into current schema envelopes;
+the doctor creates `.bak` copies before rewriting.
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
 Claude and Codex ACP adapters. Copy those adapter blocks into
@@ -381,7 +450,7 @@ llm:
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
-Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
+Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable them in `.sloppy/config.yaml`:
 
 ```yaml
 providers:
@@ -392,6 +461,9 @@ providers:
     delegation: true
     metaRuntime: true
     spec: true
+    mcp: true
+    workspaces: true
+    a2a: true
   skills:
     builtinSkillsDir: skills
     skillsDir: ~/.sloppy/skills
@@ -401,7 +473,67 @@ providers:
   metaRuntime:
     globalRoot: ~/.sloppy/meta-runtime
     workspaceRoot: .sloppy/meta-runtime
+  mcp:
+    connectOnStart: true
+    servers:
+      local-demo:
+        transport: stdio
+        command: ["bunx", "my-mcp-server"]
+        cwd: .
+        envAllowlist: ["MY_MCP_TOKEN"]
+      hosted-demo:
+        transport: streamableHttp
+        url: https://mcp.example.test/mcp
+        headers:
+          x-api-key: <token>
+  a2a:
+    fetchOnStart: true
+    agents:
+      planner:
+        cardUrl: https://agent.example/.well-known/agent-card.json
+        bearerTokenEnv: A2A_AGENT_TOKEN
+      local-bridge:
+        url: https://agent.example/a2a/rpc
+        protocolVersion: "1.0"
+workspaces:
+  activeWorkspaceId: sloppy
+  activeProjectId: runtime
+  items:
+    sloppy:
+      name: Sloppy
+      root: ~/dev/sloppy
+      configPath: .sloppy/config.yaml
+      projects:
+        runtime:
+          name: Runtime
+          root: .
+          configPath: .sloppy/config.yaml
+        dashboard:
+          name: Dashboard
+          root: apps/dashboard
+          configPath: .sloppy/config.yaml
 ```
+
+The MCP provider is compatibility glue, not a core architectural dependency.
+It projects configured MCP tools, resources, templates, and prompts into SLOP
+state at `/servers/<id>`, with affordances such as `refresh`, `call_tool`,
+`read_resource`, and per-tool `call`.
+
+The workspaces provider exposes registered workspaces and projects as state at
+`/workspaces`, `/projects`, and `/config`. Selecting a workspace/project updates
+the active scope and returns the config layer order (`global`, `workspace`,
+`project`) that a scoped session should load. `session:serve`, the public
+session supervisor, and managed TUI sessions load those scoped layers and pin
+terminal/filesystem roots to the selected workspace or project folder. The
+supervisor exposes `/session`, `/sessions`, and `/scopes` for creation,
+switching, and stopping, but it does not add privileged scheduling or provider
+rewiring to core.
+
+The A2A provider is an external interoperability bridge, not Sloppy's internal
+agent-to-agent architecture. It fetches configured Agent Cards, selects a
+JSON-RPC interface, exposes skills under `/agents/<id>/skills`, and tracks
+remote tasks under `/tasks`. Internal topology still belongs in SLOP-native
+`meta-runtime`, `delegation`, and `messaging` state.
 
 Skills follow the `SKILL.md` directory pattern used by Hermes and agentskills.io:
 `SKILL.md` is loaded on demand, while supporting files under `references/`,
@@ -481,7 +613,9 @@ API keys are not written to YAML:
 - one-shot runs explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
 
 The current TUI uses the session provider's `/llm` state to onboard and manage
-profiles, and its `/apps` state to surface external provider attachment status.
+profiles, its `/apps` state to surface external provider attachment status, and
+the connected `meta-runtime` app's `/proposals` state for runtime proposal
+review.
 
 Useful TUI slash commands:
 
@@ -489,6 +623,13 @@ Useful TUI slash commands:
 - `/profile-secret openai gpt-5.4` opens masked API-key entry.
 - `/profile acp sonnet --adapter claude` saves an ACP adapter-backed profile.
 - `/default <profile-id>`, `/delete-profile <profile-id>`, and `/delete-key <profile-id>` manage exposed profiles.
+- `/goal <objective> [--token-budget N]` starts a persistent runtime goal.
+- `/goal`, `/goal pause`, `/goal resume`, `/goal complete`, and `/goal clear` inspect and control the active goal.
+- `/session-new [--workspace-id id] [--project-id id] [--title text]` creates and switches to a supervised session.
+- `/session-switch <session-id>` switches the TUI to another supervised session.
+- `/session-stop <session-id>` stops a supervised session.
+- `/inspector sessions` shows supervised sessions with turn, goal, queue, approval, and task state.
+- `/runtime refresh`, `/runtime export`, `/runtime inspect [proposal-id]`, `/runtime apply <proposal-id>`, and `/runtime revert <proposal-id>` review meta-runtime state, export a portable runtime bundle, and act on topology proposals.
 - `/query /llm 2` inspects the session provider; `/query <app-id>:/ 2` inspects a connected external provider listed under `/apps`.
 - `/invoke [app-id:]<path> <action> <json-object>` invokes a contextual affordance from the explicit inspector path.
 

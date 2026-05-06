@@ -2,6 +2,97 @@
 
 Evaluation of existing agent harnesses and how SLOP changes the architecture.
 
+## May 2026 Market Update
+
+This refresh looked at current docs and source-level PRs for Codex CLI,
+OpenCode, Hermes Agent, OpenClaw, Pi TUI, MCP, Claude Code, and A2A.
+
+### What to Copy
+
+- **Codex `/goal`**: persisted objective state, explicit pause/resume/clear
+  controls, usage accounting, and runtime-owned continuation are the right
+  shape for long-running work. Sloppy should keep the state in the public
+  session provider and keep strategy out of core. Source: OpenAI Codex PRs
+  `#18073`, `#18076`, `#18077`, `#20082`.
+- **OpenCode config layering**: global, project, `.opencode` directory, env,
+  and managed config precedence is the right model for future
+  workspace/project scopes. Sloppy already has home plus workspace config; the
+  next step is first-class workspace/project records that select scoped config
+  layers rather than ad hoc cwd-only behavior. Source:
+  <https://opencode.ai/docs/config/>.
+- **OpenCode TUI controls**: configurable keybinds, command palette, sessions,
+  themes, mouse toggle, and external editor handoff are worth copying. Sloppy
+  should keep function-key navigation only as a fallback and move toward a
+  command registry over hardcoded shortcuts. Source:
+  <https://opencode.ai/docs/tui/>.
+- **Hermes learning loop**: progressive skills, session search, memory, and
+  skill curation are the correct self-evolution unit. Sloppy should continue to
+  make reusable behavior a skill over provider state, not a provider policy.
+  Source: <https://hermes-agent.nousresearch.com/docs/getting-started/quickstart/>.
+- **Hermes native MCP skill**: MCP compatibility is valuable, but it should be
+  a compatibility provider/skill that projects MCP tools/resources/prompts into
+  SLOP state and affordances. It should not turn Sloppy into an MCP-first tool
+  catalog. Source:
+  <https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/mcp/mcp-native-mcp>.
+- **Pi TUI discipline**: line-width invariants, bracketed paste handling,
+  autocomplete, and virtual terminal tests are important quality bars for a
+  serious terminal UI. Source:
+  <https://github.com/badlogic/pi-mono/tree/main/packages/tui>.
+- **Claude Code custom commands/subagents/permissions**: markdown command
+  files, scoped subagent tool access, and permission rules are proven UX. In
+  Sloppy these map to skills, meta-runtime profiles/capability masks, and
+  provider-level approval policy. Sources:
+  <https://docs.claude.com/en/docs/claude-code/slash-commands> and
+  <https://docs.claude.com/en/docs/claude-code/subagents>.
+
+### Where to Diverge
+
+- **Do not copy flat tool catalogs.** MCP tools and Claude/OpenCode tool lists
+  should be projected as stateful SLOP providers so the model sees state plus
+  contextual affordances.
+- **Do not put planner policy in the runtime.** `/goal` belongs in session
+  lifecycle state, but scoring, completion evidence, repair loops, and
+  topology optimization belong in skills over `meta-runtime`, `spec`, memory,
+  and activity state.
+- **Treat A2A as an external interoperability reference, not the internal
+  architecture.** A2A's Agent Card, task lifecycle, messages, artifacts, and
+  streaming/push delivery model are useful for boundary adapters. Internally
+  Sloppy already has state trees, affordances, channels, delegated session
+  providers, and meta-runtime routes. The current A2A 1.0 spec makes
+  `supportedInterfaces`, JSON-RPC/gRPC/HTTP+JSON bindings, `A2A-Version`
+  negotiation, and task history/artifact separation explicit. Source:
+  <https://a2a-protocol.org/dev/specification/>.
+- **Treat MCP as compatibility.** The official TypeScript SDK supports Bun and
+  exposes clients for stdio and Streamable HTTP; Sloppy should use that for an
+  MCP compatibility provider. Source:
+  <https://github.com/modelcontextprotocol/typescript-sdk>.
+
+### Current Product Direction
+
+1. Add `/goal` to the public session provider first. It gives Sloppy a
+   long-running task loop without introducing a scheduler or DAG.
+2. Add an MCP compatibility provider next. It should expose configured MCP
+   servers as SLOP state with tool/prompt/resource affordances, approvals, and
+   health state.
+3. Add first-class workspaces/projects after that. A workspace/project should
+   be selectable session state with a linked folder and scoped config layers,
+   not a special-case filesystem cwd.
+4. Add A2A as an external-provider bridge for opaque agent collaboration.
+   Prefer SLOP-native routes internally so state observation remains primary.
+
+Current implementation status in this branch:
+
+- `/goal` is implemented in the public session provider, runtime continuation
+  loop, and TUI command/status surfaces.
+- MCP compatibility is implemented as an opt-in SLOP provider using the
+  official TypeScript SDK for stdio and Streamable HTTP servers.
+- Workspace/project scope is implemented as an opt-in provider that exposes
+  configured roots and global/workspace/project config layer order.
+- A2A interoperability is implemented as an opt-in SLOP provider that fetches
+  Agent Cards, projects declared skills, selects JSON-RPC interfaces, sends
+  text/data parts through `SendMessage`, and tracks remote tasks through
+  `GetTask`, `ListTasks`, and `CancelTask`.
+
 ## Projects Evaluated
 
 ### OpenClaw

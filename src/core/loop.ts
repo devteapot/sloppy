@@ -1,4 +1,4 @@
-import { formatTree } from "@slop-ai/consumer/browser";
+import { formatTree, type LlmTool } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
@@ -39,6 +39,12 @@ export interface RunLoopHooks {
    * is per-invocation; it does NOT leak to other callers (scheduler, UI).
    */
   roleId?: string;
+  /**
+   * Runtime-local tools that are not provider affordances. These are for
+   * session-owned control surfaces such as goal progress reporting; reusable
+   * capabilities should still be providers or skills.
+   */
+  localTools?: () => LocalRuntimeTool[];
 }
 
 type ToolResult = {
@@ -46,10 +52,25 @@ type ToolResult = {
   summary: string;
 };
 
+export type LocalRuntimeToolResult = {
+  status: "ok" | "error";
+  summary: string;
+  content: unknown;
+  isError?: boolean;
+};
+
+export type LocalRuntimeTool = {
+  tool: LlmTool;
+  execute: (
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => LocalRuntimeToolResult | Promise<LocalRuntimeToolResult>;
+};
+
 export type AgentToolInvocation = {
   toolUseId: string;
   toolName: string;
-  kind: "observation" | "affordance";
+  kind: "observation" | "affordance" | "local";
   providerId?: string;
   path?: string;
   action: string;
@@ -97,10 +118,18 @@ export type RunLoopResult =
   | {
       status: "completed";
       response: string;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+      };
     }
   | {
       status: "waiting_approval";
       pending: PendingApprovalContinuation;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+      };
     };
 
 type ExecuteToolCallResult =
@@ -131,7 +160,12 @@ export { truncateToolResult };
 
 function invalidToolArgumentsResult(
   toolUse: ToolUseContentBlock,
-  resolution: RuntimeToolResolution,
+  resolution:
+    | RuntimeToolResolution
+    | {
+        kind: "local";
+        action: string;
+      },
   onToolEvent?: (event: AgentToolEvent) => void,
 ): ExecuteToolCallResult {
   const error = toolUse.inputError;
@@ -146,7 +180,12 @@ function invalidToolArgumentsResult(
   const invocation: AgentToolInvocation = {
     toolUseId: toolUse.id,
     toolName: toolUse.name,
-    kind: resolution.kind === "observation" ? "observation" : "affordance",
+    kind:
+      resolution.kind === "observation"
+        ? "observation"
+        : resolution.kind === "local"
+          ? "local"
+          : "affordance",
     providerId: resolution.kind === "affordance" ? resolution.providerId : undefined,
     path: resolution.kind === "affordance" ? (resolution.path ?? undefined) : undefined,
     action: resolution.action,
@@ -192,9 +231,76 @@ function invalidToolArgumentsResult(
   };
 }
 
+async function executeLocalToolCall(
+  toolUse: ToolUseContentBlock,
+  localTool: LocalRuntimeTool,
+  onToolEvent?: (event: AgentToolEvent) => void,
+  signal?: AbortSignal,
+): Promise<ExecuteToolCallResult> {
+  const action = localTool.tool.function.name;
+  if (toolUse.inputError) {
+    return invalidToolArgumentsResult(toolUse, { kind: "local", action }, onToolEvent);
+  }
+
+  const invocation: AgentToolInvocation = {
+    toolUseId: toolUse.id,
+    toolName: toolUse.name,
+    kind: "local",
+    providerId: "session",
+    path: "/goal",
+    action,
+    params: { ...toolUse.input },
+  };
+  const summary = `session:${action} /goal`;
+  onToolEvent?.({
+    kind: "started",
+    invocation,
+    summary,
+  });
+
+  try {
+    const result = await localTool.execute({ ...toolUse.input }, signal);
+    const content =
+      typeof result.content === "string" ? result.content : stringifyResult(result.content);
+    return {
+      kind: "completed",
+      invocation,
+      result: {
+        block: {
+          type: "tool_result",
+          toolUseId: toolUse.id,
+          isError: result.isError ?? result.status === "error",
+          content,
+        },
+        summary: result.summary,
+      },
+      status: result.status,
+      errorMessage: result.status === "error" ? result.summary : undefined,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      kind: "completed",
+      invocation,
+      result: {
+        block: {
+          type: "tool_result",
+          toolUseId: toolUse.id,
+          isError: true,
+          content: message,
+        },
+        summary: message,
+      },
+      status: "error",
+      errorMessage: message,
+    };
+  }
+}
+
 async function executeToolCall(
   toolUse: ToolUseContentBlock,
   toolSet: RuntimeToolSet,
+  localTools: LocalRuntimeTool[],
   hub: ProviderRuntimeHub,
   config: SloppyConfig,
   onToolEvent?: (event: AgentToolEvent) => void,
@@ -204,6 +310,10 @@ async function executeToolCall(
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
+    const localTool = localTools.find((item) => item.tool.function.name === toolUse.name);
+    if (localTool) {
+      return executeLocalToolCall(toolUse, localTool, onToolEvent);
+    }
     return {
       kind: "completed",
       result: {
@@ -440,6 +550,7 @@ async function executeToolCalls(options: {
   toolResults: ToolResultContentBlock[];
   iteration: number;
   toolSet: RuntimeToolSet;
+  localTools: LocalRuntimeTool[];
   hub: ProviderRuntimeHub;
   config: SloppyConfig;
   onToolCall?: (summary: string) => void;
@@ -466,6 +577,7 @@ async function executeToolCalls(options: {
     const result = await executeToolCall(
       toolCall,
       options.toolSet,
+      options.localTools,
       options.hub,
       options.config,
       options.onToolEvent,
@@ -541,6 +653,11 @@ export async function runLoop(options: {
   const transformInvoke = options.hooks?.transformInvoke;
   const beforeNextTurn = options.hooks?.beforeNextTurn;
   const roleId = options.hooks?.roleId;
+  const localTools = options.hooks?.localTools;
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+  };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
     if (options.signal?.aborted) {
@@ -558,6 +675,7 @@ export async function runLoop(options: {
         toolResults: [...plan.continuation.toolResults, plan.resolvedToolResult],
         iteration,
         toolSet: options.hub.getRuntimeToolSet(),
+        localTools: localTools?.() ?? [],
         hub: options.hub,
         config: options.config,
         onToolCall: options.onToolCall,
@@ -569,7 +687,10 @@ export async function runLoop(options: {
       });
 
       if (resumedExecution.status === "waiting_approval") {
-        return suspendedResult(resumedExecution.pending);
+        return {
+          ...suspendedResult(resumedExecution.pending),
+          usage: { ...usage },
+        };
       }
 
       options.history.addToolResults(resumedExecution.toolResults);
@@ -582,14 +703,17 @@ export async function runLoop(options: {
 
     const stateContext = buildStateContext(options.hub.getProviderViews(), options.config);
     const toolSet = options.hub.getRuntimeToolSet();
+    const activeLocalTools = localTools?.() ?? [];
     const response = await options.llm.chat({
       system,
       messages: options.history.buildRequestMessages(stateContext),
-      tools: toolSet.tools,
+      tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
       maxTokens: options.config.llm.maxTokens,
       onText: options.onText,
       signal: options.signal,
     });
+    usage.inputTokens += response.usage.inputTokens;
+    usage.outputTokens += response.usage.outputTokens;
 
     options.history.addAssistantContent(response.content);
 
@@ -605,6 +729,7 @@ export async function runLoop(options: {
       return {
         status: "completed",
         response: options.history.latestAssistantText(),
+        usage: { ...usage },
       };
     }
 
@@ -614,6 +739,7 @@ export async function runLoop(options: {
       toolResults: [],
       iteration,
       toolSet,
+      localTools: activeLocalTools,
       hub: options.hub,
       config: options.config,
       onToolCall: options.onToolCall,
@@ -624,7 +750,10 @@ export async function runLoop(options: {
       roleId,
     });
     if (execution.status === "waiting_approval") {
-      return suspendedResult(execution.pending);
+      return {
+        ...suspendedResult(execution.pending),
+        usage: { ...usage },
+      };
     }
 
     options.history.addToolResults(execution.toolResults);

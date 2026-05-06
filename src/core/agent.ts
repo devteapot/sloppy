@@ -28,6 +28,7 @@ import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
+  type LocalRuntimeTool,
   type PendingApprovalContinuation,
   type RunLoopHooks,
   type RunLoopResult,
@@ -43,7 +44,7 @@ import {
   type RuntimeEvent,
 } from "./role";
 
-export type { AgentToolEvent, AgentToolInvocation } from "./loop";
+export type { AgentToolEvent, AgentToolInvocation, LocalRuntimeTool } from "./loop";
 export type { RoleProfile } from "./role";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
@@ -52,10 +53,18 @@ export type AgentRunResult =
   | {
       status: "completed";
       response: string;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+      };
     }
   | {
       status: "waiting_approval";
       invocation: AgentToolInvocation;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+      };
     };
 
 export type ResolvedApprovalToolResult = {
@@ -104,6 +113,7 @@ export class Agent {
   private policyRules: InvokePolicy[];
   private runtimeStops: Array<{ stop(): void }> = [];
   private systemPromptFragments: string[] = [];
+  private localTools?: () => LocalRuntimeTool[];
 
   constructor(
     options?: {
@@ -118,6 +128,7 @@ export class Agent {
       publishEvent?: (event: RuntimeEvent) => void;
       mirrorProviderPaths?: string[];
       policyRules?: InvokePolicy[];
+      localTools?: () => LocalRuntimeTool[];
     } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
@@ -145,6 +156,7 @@ export class Agent {
     this.publishEventCallback = options?.publishEvent;
     this.mirrorProviderPaths = options?.mirrorProviderPaths ?? [];
     this.policyRules = options?.policyRules ?? [];
+    this.localTools = options?.localTools;
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
@@ -358,6 +370,7 @@ export class Agent {
       transformInvoke: this.role.transformInvoke,
       beforeNextTurn: this.role.beforeNextTurn,
       roleId: this.roleId ?? this.role.id,
+      localTools: this.localTools,
     };
   }
 
@@ -372,6 +385,42 @@ export class Agent {
     }
 
     return this.hub.invoke(providerId, path, action, params);
+  }
+
+  async queryProvider(
+    providerId: string,
+    path: string,
+    options?: {
+      depth?: number;
+      maxNodes?: number;
+      window?: [number, number];
+    },
+  ): Promise<SlopNode> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+
+    return this.hub.queryState({
+      providerId,
+      path,
+      depth: options?.depth,
+      maxNodes: options?.maxNodes,
+      window: options?.window,
+    });
+  }
+
+  async retryProvider(providerId: string): Promise<boolean> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+
+    this.unregisterProviderMirrors(providerId);
+    const connected = await this.hub.retryProvider(providerId);
+    if (connected) {
+      await this.registerProviderMirrors(providerId);
+    }
+    this.emitExternalProviderStates(this.hub.getExternalProviderStates());
+    return connected;
   }
 
   /**
@@ -554,6 +603,7 @@ export class Agent {
       return {
         status: "waiting_approval",
         invocation: result.pending.blockedInvocation,
+        usage: result.usage,
       };
     }
 
@@ -561,6 +611,7 @@ export class Agent {
     return {
       status: "completed",
       response: result.response,
+      usage: result.usage,
     };
   }
 

@@ -12,10 +12,51 @@ import type {
 } from "./meta-runtime-model";
 import { listById, listByName, snapshotStateMaps } from "./meta-runtime-model";
 
+const META_RUNTIME_STATE_KIND = "sloppy.meta-runtime.state";
+const META_RUNTIME_STATE_SCHEMA_VERSION = 1;
+
+type PersistedMetaStateEnvelope = {
+  kind: typeof META_RUNTIME_STATE_KIND;
+  schema_version: typeof META_RUNTIME_STATE_SCHEMA_VERSION;
+  saved_at: string;
+  state: PersistedState;
+};
+
 function expandHome(path: string): string {
   if (path === "~") return homedir();
   if (path.startsWith("~/")) return join(homedir(), path.slice(2));
   return path;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function unwrapPersistedMetaState(parsed: unknown, path: string): PersistedState {
+  if (!isRecord(parsed)) {
+    throw new Error(`Meta-runtime state at ${path} must be an object.`);
+  }
+  if (
+    parsed.kind === undefined &&
+    parsed.schema_version === undefined &&
+    parsed.state === undefined
+  ) {
+    return parsed as PersistedState;
+  }
+  if (parsed.kind !== META_RUNTIME_STATE_KIND) {
+    throw new Error(`Meta-runtime state at ${path} has unsupported kind.`);
+  }
+  if (parsed.schema_version !== META_RUNTIME_STATE_SCHEMA_VERSION) {
+    throw new Error(
+      `Meta-runtime state at ${path} has unsupported schema_version ${String(
+        parsed.schema_version,
+      )}.`,
+    );
+  }
+  if (!isRecord(parsed.state)) {
+    throw new Error(`Meta-runtime state at ${path} has malformed state payload.`);
+  }
+  return parsed.state as PersistedState;
 }
 
 export function resolveMetaRuntimeRoot(path: string): string {
@@ -26,7 +67,7 @@ export function readPersistedMetaState(root: string): PersistedState {
   const path = join(root, "state.json");
   if (!existsSync(path)) return {};
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as PersistedState;
+    return unwrapPersistedMetaState(JSON.parse(readFileSync(path, "utf8")) as unknown, path);
   } catch (error) {
     throw new Error(
       `Could not read meta-runtime state at ${path}: ${
@@ -38,7 +79,13 @@ export function readPersistedMetaState(root: string): PersistedState {
 
 export function writePersistedMetaState(root: string, state: PersistedState): void {
   mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const envelope: PersistedMetaStateEnvelope = {
+    kind: META_RUNTIME_STATE_KIND,
+    schema_version: META_RUNTIME_STATE_SCHEMA_VERSION,
+    saved_at: new Date().toISOString(),
+    state,
+  };
+  writeFileSync(join(root, "state.json"), `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
 }
 
 export function snapshotMetaScope(

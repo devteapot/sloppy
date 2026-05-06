@@ -37,6 +37,9 @@ export type RouteRule = {
   id: string;
   source: string;
   match: string;
+  matchMode?: "substring" | "exact" | "prefix" | "regex" | "exists";
+  matchField?: "body" | "topic" | "channelId" | `metadata.${string}`;
+  caseSensitive?: boolean;
   target: string;
   enabled: boolean;
   priority?: number;

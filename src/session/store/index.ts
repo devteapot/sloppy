@@ -5,12 +5,14 @@ import type {
   ExternalAppSnapshot,
   LlmStateSnapshot,
   QueuedSessionMessage,
+  SessionGoalUpdateSource,
   SessionStoreChangeListener,
   SessionStoreGranularListener,
   SessionTask,
 } from "../types";
 import * as activity from "./activity";
 import * as apps from "./apps";
+import * as goal from "./goal";
 import { now } from "./helpers";
 import { ListenerRegistry } from "./listeners";
 import * as llm from "./llm";
@@ -43,6 +45,8 @@ export class SessionStore {
     model: string;
     title?: string;
     workspaceRoot?: string;
+    workspaceId?: string;
+    projectId?: string;
     persistencePath?: string;
   }) {
     this.persistencePath = options.persistencePath;
@@ -108,6 +112,10 @@ export class SessionStore {
     return this.registry.subscribeGranular("turn", fn);
   }
 
+  onGoalChange(fn: SessionStoreGranularListener): () => void {
+    return this.registry.subscribeGranular("goal", fn);
+  }
+
   onQueueChange(fn: SessionStoreGranularListener): () => void {
     return this.registry.subscribeGranular("queue", fn);
   }
@@ -157,14 +165,64 @@ export class SessionStore {
     this.emit();
   }
 
-  beginTurn(userText: string): string {
-    const turnId = turn.beginTurn(this.state, userText);
+  beginTurn(
+    userText: string,
+    options?: {
+      role?: "user" | "assistant" | "system";
+      author?: string;
+    },
+  ): string {
+    const turnId = turn.beginTurn(this.state, userText, options);
     this.emit();
     return turnId;
   }
 
-  enqueueMessage(text: string): QueuedSessionMessage {
-    const message = queue.enqueueMessage(this.state, text);
+  createGoal(options: { objective: string; tokenBudget?: number; message?: string }): string {
+    const goalId = goal.createGoal(this.state, options);
+    this.emit();
+    return goalId;
+  }
+
+  updateGoalStatus(
+    status: "active" | "paused" | "budget_limited" | "complete",
+    update?:
+      | string
+      | {
+          message?: string;
+          evidence?: string[];
+          source?: SessionGoalUpdateSource;
+        },
+  ): void {
+    goal.updateGoalStatus(this.state, status, update);
+    this.emit();
+  }
+
+  clearGoal(): void {
+    goal.clearGoal(this.state);
+    this.emit();
+  }
+
+  accountGoalTurn(options: {
+    turnId: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    elapsedMs: number;
+    continuation: boolean;
+    usedTools: boolean;
+  }): void {
+    goal.accountGoalTurn(this.state, options);
+    this.emit();
+  }
+
+  enqueueMessage(
+    text: string,
+    options?: {
+      author?: "user" | "goal";
+      goalId?: string;
+      continuation?: boolean;
+    },
+  ): QueuedSessionMessage {
+    const message = queue.enqueueMessage(this.state, text, options);
     this.emit();
     return message;
   }
@@ -211,6 +269,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      paramsPreview?: string;
     },
   ): void {
     activity.recordToolStart(this.state, turnId, options);

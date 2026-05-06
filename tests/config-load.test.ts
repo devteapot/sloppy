@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-import { loadConfig } from "../src/config/load";
+import { loadConfig, loadScopedConfig } from "../src/config/load";
 
 const tempPaths: string[] = [];
 const originalCwd = process.cwd();
@@ -255,6 +255,235 @@ describe("loadConfig", () => {
       join(home, "team-skills"),
       join(process.cwd(), "vendor-skills"),
     ]);
+  });
+
+  test("loads MCP server config and normalizes stdio cwd", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  builtin:",
+        "    mcp: true",
+        "  mcp:",
+        "    connectOnStart: false",
+        "    servers:",
+        "      local:",
+        "        name: Local MCP",
+        "        transport: stdio",
+        '        command: ["bunx", "demo-mcp"]',
+        "        cwd: ./tools",
+        "        envAllowlist: [DEMO_TOKEN]",
+        "      hosted:",
+        "        transport: streamableHttp",
+        "        url: https://mcp.example.test/mcp",
+        "        headers:",
+        "          x-demo: demo",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.builtin.mcp).toBe(true);
+    expect(config.providers.mcp?.connectOnStart).toBe(false);
+    const local = config.providers.mcp?.servers.local;
+    expect(local).toBeDefined();
+    if (!local) {
+      throw new Error("Expected local MCP server config.");
+    }
+    expect(local.transport).toBe("stdio");
+    if (local.transport === "stdio") {
+      expect(local.cwd).toBe(resolve(process.cwd(), "tools"));
+      expect(local.envAllowlist).toEqual(["DEMO_TOKEN"]);
+    }
+    expect(config.providers.mcp?.servers.hosted.transport).toBe("streamableHttp");
+  });
+
+  test("loads A2A agent config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  builtin:",
+        "    a2a: true",
+        "  a2a:",
+        "    fetchOnStart: false",
+        "    agents:",
+        "      planner:",
+        "        name: Planner",
+        "        cardUrl: https://agent.example/.well-known/agent-card.json",
+        "        bearerTokenEnv: A2A_TOKEN",
+        "        timeoutMs: 15000",
+        "      direct:",
+        "        url: https://direct.example/a2a/rpc",
+        "        protocolVersion: '1.0'",
+        "        apiKeyEnv: DIRECT_A2A_KEY",
+        "        apiKeyHeader: x-api-key",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.builtin.a2a).toBe(true);
+    expect(config.providers.a2a?.fetchOnStart).toBe(false);
+    expect(config.providers.a2a?.agents.planner.cardUrl).toBe(
+      "https://agent.example/.well-known/agent-card.json",
+    );
+    expect(config.providers.a2a?.agents.planner.bearerTokenEnv).toBe("A2A_TOKEN");
+    expect(config.providers.a2a?.agents.planner.timeoutMs).toBe(15000);
+    expect(config.providers.a2a?.agents.direct.url).toBe("https://direct.example/a2a/rpc");
+    expect(config.providers.a2a?.agents.direct.apiKeyHeader).toBe("x-api-key");
+  });
+
+  test("loads workspace/project registry and normalizes scoped config paths", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  builtin:",
+        "    workspaces: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  activeProjectId: app",
+        "  items:",
+        "    main:",
+        "      name: Main Workspace",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+        "      projects:",
+        "        app:",
+        "          name: App",
+        "          root: apps/app",
+        "          configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+    const registry = config.workspaces;
+
+    expect(config.providers.builtin.workspaces).toBe(true);
+    expect(registry?.activeWorkspaceId).toBe("main");
+    expect(registry?.activeProjectId).toBe("app");
+    const main = registry?.items.main;
+    expect(main?.root).toBe(process.cwd());
+    expect(main?.configPath).toBe(resolve(process.cwd(), ".sloppy/config.yaml"));
+    expect(main?.projects.app.root).toBe(resolve(process.cwd(), "apps/app"));
+    expect(main?.projects.app.configPath).toBe(
+      resolve(process.cwd(), "apps/app/.sloppy/config.yaml"),
+    );
+  });
+
+  test("loads scoped workspace/project config layers and pins provider roots to the project", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    const projectRoot = join(workspace, "apps/app");
+    await mkdir(projectRoot, { recursive: true });
+    await writeConfig(
+      home,
+      [
+        "providers:",
+        "  builtin:",
+        "    workspaces: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  activeProjectId: app",
+        "  items:",
+        "    main:",
+        "      name: Main Workspace",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+        "      projects:",
+        "        app:",
+        "          name: App",
+        "          root: apps/app",
+        "          configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: openai",
+        "  model: workspace-model",
+        "providers:",
+        "  mcp:",
+        "    connectOnStart: false",
+      ].join("\n"),
+    );
+    await writeConfig(
+      projectRoot,
+      [
+        "llm:",
+        "  model: project-model",
+        "providers:",
+        "  builtin:",
+        "    mcp: true",
+        "  mcp:",
+        "    servers:",
+        "      project-tools:",
+        "        transport: stdio",
+        '        command: ["project-mcp"]',
+        "        cwd: ./tools",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadScopedConfig({
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+      cwd: workspace,
+      workspaceId: "main",
+      projectId: "app",
+    });
+
+    expect(config.llm.model).toBe("project-model");
+    expect(config.workspaces?.activeWorkspaceId).toBe("main");
+    expect(config.workspaces?.activeProjectId).toBe("app");
+    expect(config.providers.filesystem.root).toBe(projectRoot);
+    expect(config.providers.filesystem.focus).toBe(projectRoot);
+    expect(config.providers.terminal.cwd).toBe(projectRoot);
+    expect(config.providers.builtin.mcp).toBe(true);
+    const mcp = config.providers.mcp?.servers["project-tools"];
+    expect(mcp?.transport).toBe("stdio");
+    if (mcp?.transport === "stdio") {
+      expect(mcp.cwd).toBe(join(projectRoot, "tools"));
+    }
   });
 
   test("applies env override for max iterations", async () => {

@@ -10,6 +10,7 @@
         "@anthropic-ai/sdk": "0.82.0",
         "@dagrejs/dagre": "^3.0.0",
         "@google/genai": "1.48.0",
+        "@modelcontextprotocol/sdk": "1.29.0",
         "@opentui/core": "^0.2.3",
         "@opentui/solid": "^0.2.3",
         "@slop-ai/consumer": "0.2.0",
