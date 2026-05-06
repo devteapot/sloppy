@@ -4,6 +4,10 @@ import type { AgentToolInvocation } from "../core/agent";
 import { buildMirroredItemId } from "./store";
 import type { ApprovalItem, SessionTask, SessionTaskStatus } from "./types";
 
+function cleanMirrorIdSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 function hasAffordance(node: SlopNode, action: string): boolean {
   return (node.affordances ?? []).some((affordance) => affordance.action === action);
 }
@@ -25,6 +29,57 @@ function normalizeTaskStatus(status: unknown): SessionTaskStatus {
   }
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function inferLegacyMirrorLineage(sourceId: string): string[] {
+  const matches = sourceId.matchAll(/(?:^|-)approval-([a-zA-Z0-9_-]+?)(?=-approval-)/g);
+  return [...matches].map((match) => match[1]).filter((entry): entry is string => !!entry);
+}
+
+function sourceMirrorLineage(properties: Record<string, unknown>, sourceId: string): string[] {
+  const explicit = stringArray(properties.mirror_lineage);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  return inferLegacyMirrorLineage(sourceId);
+}
+
+function hasLocalMirrorLineage(args: {
+  localProviderIds: Set<string>;
+  localMirrorIds: Set<string>;
+  properties: Record<string, unknown>;
+  sourceId: string;
+  lineage: string[];
+}): boolean {
+  const { localProviderIds, localMirrorIds, properties, sourceId, lineage } = args;
+  if (localProviderIds.size === 0) {
+    return false;
+  }
+
+  const sourceProvider = typeof properties.provider === "string" ? properties.provider : undefined;
+  if (sourceProvider && localProviderIds.has(sourceProvider)) {
+    return true;
+  }
+
+  for (const entry of lineage) {
+    if (localProviderIds.has(entry) || localMirrorIds.has(cleanMirrorIdSegment(entry))) {
+      return true;
+    }
+  }
+
+  for (const localMirrorId of localMirrorIds) {
+    if (sourceId.includes(`approval-${localMirrorId}-`)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function parseApprovalsTree(
   providerId: string,
   tree: SlopNode | null,
@@ -33,13 +88,35 @@ export function parseApprovalsTree(
     invocation: AgentToolInvocation;
     sourceApprovalId: string;
   } | null,
+  options?: {
+    localProviderIds?: Iterable<string>;
+  },
 ): ApprovalItem[] {
   if (!tree?.children) {
     return [];
   }
 
-  return tree.children.map((node) => {
+  const localProviderIds = new Set(options?.localProviderIds ?? []);
+  if (localProviderIds.has(providerId)) {
+    return [];
+  }
+  const localMirrorIds = new Set([...localProviderIds].map((id) => cleanMirrorIdSegment(id)));
+
+  return tree.children.flatMap((node) => {
     const properties = node.properties ?? {};
+    const lineage = sourceMirrorLineage(properties, node.id);
+    if (
+      hasLocalMirrorLineage({
+        localProviderIds,
+        localMirrorIds,
+        properties,
+        sourceId: node.id,
+        lineage,
+      })
+    ) {
+      return [];
+    }
+
     const item: ApprovalItem = {
       id: buildMirroredItemId("approval", providerId, node.id),
       status:
@@ -63,6 +140,7 @@ export function parseApprovalsTree(
       dangerous: typeof properties.dangerous === "boolean" ? properties.dangerous : undefined,
       sourceApprovalId: node.id,
       sourcePath: `/approvals/${node.id}`,
+      mirrorLineage: [providerId, ...lineage],
       canApprove: hasAffordance(node, "approve"),
       canReject: hasAffordance(node, "reject"),
     };
@@ -76,7 +154,7 @@ export function parseApprovalsTree(
       item.turnId = pendingApproval.turnId;
     }
 
-    return item;
+    return [item];
   });
 }
 

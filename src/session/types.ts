@@ -114,6 +114,7 @@ export type ApprovalItem = {
   dangerous?: boolean;
   sourceApprovalId?: string;
   sourcePath?: string;
+  mirrorLineage?: string[];
   canApprove?: boolean;
   canReject?: boolean;
   turnId?: string;

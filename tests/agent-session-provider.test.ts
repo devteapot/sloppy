@@ -669,24 +669,34 @@ function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage 
     approveCalls,
     rejectCalls,
     resumeCalls,
-    emitApprovalSnapshot() {
+    emitApprovalSnapshot(options?: {
+      providerId?: string;
+      approvalId?: string;
+      approvalProvider?: string;
+      path?: string;
+      action?: string;
+      reason?: string;
+      mirrorLineage?: string[];
+    }) {
       callbacks?.onProviderSnapshot?.({
-        providerId: "terminal",
+        providerId: options?.providerId ?? "terminal",
         path: "/approvals",
         tree: {
           id: "approvals",
           type: "collection",
           children: [
             {
-              id: "approval-1",
+              id: options?.approvalId ?? "approval-1",
               type: "item",
               properties: {
                 status: "pending",
-                path: "/session",
-                action: "execute",
-                reason: "Approval required.",
+                provider: options?.approvalProvider,
+                path: options?.path ?? "/session",
+                action: options?.action ?? "execute",
+                reason: options?.reason ?? "Approval required.",
                 created_at: new Date().toISOString(),
                 dangerous: true,
+                mirror_lineage: options?.mirrorLineage,
               },
               affordances: [{ action: "approve" }, { action: "reject" }],
             },
@@ -1566,6 +1576,108 @@ describe("AgentSessionProvider", () => {
       const resumed = harness.resumeCalls[0]!;
       expect(resumed.status).toBe("accepted");
       expect(resumed.taskId).toBe("task-123");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session forwards non-turn mirrored approval actions to the source provider", async () => {
+    const harness = createApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-forward-approval",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-forward-approval",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitApprovalSnapshot({
+        providerId: "sloppy-session-child",
+        approvalId: "approval-child",
+        approvalProvider: "skills",
+        path: "/skills/dual-model-development-loop",
+        action: "skill_manage",
+        reason: "Skill write requires approval.",
+        mirrorLineage: ["skills"],
+      });
+
+      const approvals = await consumer.query("/approvals", 3);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+
+      const approveResult = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approveResult.status).toBe("ok");
+
+      expect(harness.approveCalls).toEqual([]);
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "sloppy-session-child",
+          path: "/approvals/approval-child",
+          action: "approve",
+          params: undefined,
+        },
+      ]);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session forwards non-turn mirrored approval rejections to the source provider", async () => {
+    const harness = createApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-forward-reject",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-forward-reject",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitApprovalSnapshot({
+        providerId: "sloppy-session-child",
+        approvalId: "approval-child",
+        approvalProvider: "skills",
+        path: "/skills/dual-model-development-loop",
+        action: "skill_manage",
+        reason: "Skill write requires approval.",
+        mirrorLineage: ["skills"],
+      });
+
+      const approvals = await consumer.query("/approvals", 3);
+      const approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+
+      const rejectResult = await consumer.invoke(`/approvals/${approvalId}`, "reject", {
+        reason: "not now",
+      });
+      expect(rejectResult.status).toBe("ok");
+
+      expect(harness.rejectCalls).toEqual([]);
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "sloppy-session-child",
+          path: "/approvals/approval-child",
+          action: "reject",
+          params: { reason: "not now" },
+        },
+      ]);
     } finally {
       provider.stop();
       runtime.shutdown();

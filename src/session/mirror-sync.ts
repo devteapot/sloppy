@@ -27,9 +27,14 @@ export function syncProviderSnapshotToSession(
   store: SessionStore,
   update: ProviderSnapshotUpdate,
   pendingApproval: PendingApprovalMirror | null,
+  options?: {
+    localProviderIds?: Iterable<string>;
+  },
 ): void {
   if (update.path === "/approvals") {
-    const approvals = parseApprovalsTree(update.providerId, update.tree, pendingApproval);
+    const approvals = parseApprovalsTree(update.providerId, update.tree, pendingApproval, {
+      localProviderIds: options?.localProviderIds,
+    });
     const matchedApproval = approvals.find(
       (approval) => approval.turnId === pendingApproval?.turnId,
     );

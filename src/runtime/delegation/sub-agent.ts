@@ -112,6 +112,7 @@ export class SubAgentRunner {
       sessionId: this.sessionProviderId,
       title: options.name,
       agentFactory: options.agentFactory,
+      ignoredProviderIds: [this.sessionProviderId],
       llmProfileManager: options.llmProfileManager,
       llmProfileId: options.llmProfileId,
       llmModelOverride: options.llmModelOverride,

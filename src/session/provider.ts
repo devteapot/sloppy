@@ -189,8 +189,10 @@ export class AgentSessionProvider {
     },
   ) {
     const snapshot = this.runtime.store.getSnapshot();
+    const providerId = options?.providerId ?? `sloppy-session-${snapshot.session.sessionId}`;
+    this.runtime.registerSessionProviderId(providerId);
     this.server = createSlopServer({
-      id: options?.providerId ?? `sloppy-session-${snapshot.session.sessionId}`,
+      id: providerId,
       name: options?.providerName ?? "Sloppy Agent Session",
     });
 
@@ -602,6 +604,7 @@ export class AgentSessionProvider {
           resolved_at: approval.resolvedAt,
           params_preview: approval.paramsPreview,
           dangerous: approval.dangerous,
+          mirror_lineage: approval.mirrorLineage,
         },
         summary: approval.reason,
         actions:

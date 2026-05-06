@@ -312,6 +312,7 @@ export class SessionRuntime {
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
   private pendingApproval: PendingApprovalMirror | null = null;
+  private readonly localProviderIds = new Set<string>();
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
   private currentTurnContinuation = false;
@@ -351,6 +352,10 @@ export class SessionRuntime {
         config: this.config,
       });
     const sessionId = options?.sessionId ?? crypto.randomUUID();
+    for (const providerId of options?.ignoredProviderIds ?? []) {
+      this.localProviderIds.add(providerId);
+    }
+    this.localProviderIds.add(`sloppy-session-${sessionId}`);
     this.store =
       options?.store ??
       new SessionStore({
@@ -397,7 +402,9 @@ export class SessionRuntime {
         this.handleToolEvent(this.currentTurnId, event);
       },
       onProviderSnapshot: (update) => {
-        syncProviderSnapshotToSession(this.store, update, this.pendingApproval);
+        syncProviderSnapshotToSession(this.store, update, this.pendingApproval, {
+          localProviderIds: this.localProviderIds,
+        });
       },
       onExternalProviderStates: (states) => {
         syncExternalProviderStatesToSession(this.store, states);
@@ -447,6 +454,10 @@ export class SessionRuntime {
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
+  }
+
+  registerSessionProviderId(providerId: string): void {
+    this.localProviderIds.add(providerId);
   }
 
   async start(): Promise<void> {
@@ -846,7 +857,7 @@ export class SessionRuntime {
   }
 
   async approveApproval(approvalId: string): Promise<{ approvalId: string; status: string }> {
-    const approval = this.store.getApproval(approvalId);
+    let approval = this.store.getApproval(approvalId);
     if (!approval) {
       throw new Error(`Unknown approval: ${approvalId}`);
     }
@@ -878,15 +889,17 @@ export class SessionRuntime {
           status: current?.status ?? "unknown",
         };
       }
+      approval = current;
     }
 
-    // Resolve through the hub-owned approval queue directly so we get the raw
-    // inner ResultMessage from the underlying invoke (status / task_id /
-    // data). Going via `agent.invokeProvider("/approvals/{id}", "approve")`
-    // would let the SLOP server wrap that inner result a second time, hiding
-    // `accepted` + task identity for async-approved actions. The provider
-    // action stays in place as the public surface for UI/model callers.
-    const result = await this.agent.resolveApprovalDirect(approval.sourceApprovalId);
+    if (!approval.sourcePath || !approval.sourceApprovalId) {
+      throw new Error(`Approval is missing source location: ${approvalId}`);
+    }
+
+    const resumePendingTurn = this.shouldResumePendingApproval(approval);
+    const result = resumePendingTurn
+      ? await this.agent.resolveApprovalDirect(approval.sourceApprovalId)
+      : await this.agent.invokeProvider(approval.provider, approval.sourcePath, "approve");
     if (this.shouldResumePendingApproval(approval)) {
       const toolUseId = this.pendingToolUseId(approval);
       this.pendingApproval = null;
@@ -917,7 +930,7 @@ export class SessionRuntime {
     approvalId: string,
     reason?: string,
   ): Promise<{ approvalId: string; status: string }> {
-    const approval = this.store.getApproval(approvalId);
+    let approval = this.store.getApproval(approvalId);
     if (!approval) {
       throw new Error(`Unknown approval: ${approvalId}`);
     }
@@ -943,13 +956,24 @@ export class SessionRuntime {
           status: current?.status ?? "unknown",
         };
       }
+      approval = current;
     }
 
-    // Reject through the hub-owned queue directly to mirror the approve path.
-    // The provider action `/approvals/{id}.reject` remains the public surface
-    // for UI/model callers.
-    this.agent.rejectApprovalDirect(approval.sourceApprovalId, reason);
-    if (this.shouldResumePendingApproval(approval)) {
+    if (!approval.sourcePath || !approval.sourceApprovalId) {
+      throw new Error(`Approval is missing source location: ${approvalId}`);
+    }
+
+    const resumePendingTurn = this.shouldResumePendingApproval(approval);
+    const result = resumePendingTurn
+      ? null
+      : await this.agent.invokeProvider(
+          approval.provider,
+          approval.sourcePath,
+          "reject",
+          reason ? { reason } : undefined,
+        );
+    if (resumePendingTurn) {
+      this.agent.rejectApprovalDirect(approval.sourceApprovalId, reason);
       const toolUseId = this.pendingToolUseId(approval);
       this.pendingApproval = null;
       this.activeTurnPromise = this.resumeTurn(approval.turnId ?? this.currentTurnId ?? "", {
@@ -968,7 +992,7 @@ export class SessionRuntime {
 
     return {
       approvalId,
-      status: "rejected",
+      status: result?.status === "error" ? "error" : "rejected",
     };
   }
 
@@ -1186,7 +1210,10 @@ export class SessionRuntime {
     // emit two of the same destructive call in one turn, and the user's
     // approve/reject would otherwise be applied to whichever happens to come
     // first in the mirrored tree.
-    return approval.sourceApprovalId === this.pendingApproval.sourceApprovalId;
+    return (
+      approval.provider === this.pendingApproval.invocation.providerId &&
+      approval.sourceApprovalId === this.pendingApproval.sourceApprovalId
+    );
   }
 
   private pendingToolUseId(approval: ApprovalItem): string {
