@@ -17,7 +17,7 @@ Named after the SLOP protocol's owl mascot.
 ## Project structure
 
 ```
-docs/           — Architecture docs, evaluation, MVP plan
+docs/           — Current architecture docs plus archive/future/research folders
 src/            — Source code (TypeScript)
   core/         — Agent loop, SLOP consumer, context builder
   providers/    — Provider registry + built-in providers
@@ -34,11 +34,13 @@ src/            — Source code (TypeScript)
 
 ## Key docs
 
-- `docs/01-prior-art.md` — Analysis of OpenClaw and Hermes Agent
+- `docs/README.md` — Documentation map and current/archive split
+- `docs/research/prior-art.md` — Analysis of OpenClaw and Hermes Agent
 - `docs/02-architecture.md` — System design and component breakdown
 - `docs/03-mvp-plan.md` — Phased implementation plan
 - `docs/04-slop-protocol-reference.md` — Agent-relevant protocol summary
 - `docs/05-language-evaluation.md` — Why TypeScript
-- `docs/09-orchestration-state-machine.md` — Task status transitions, CAS, verification gate
-- `docs/10-phase-2-plan.md` — Phase 2 feature spec (transcript media, retention, cost)
+- `docs/13-meta-runtime.md` — Optional meta-runtime provider and skill-led self-evolution boundary
+- `docs/16-tui-plan.md` — TypeScript/OpenTUI TUI plan
+- `docs/archive/session-provider-phase-2-plan.md` — Archived Phase 2 session-provider sketch
 - `docs/ui-design-system.md` — UI design system ("Nocturnal Observer")

@@ -1,4 +1,14 @@
-# Sloppy Implementation Plan
+# Archived: Session Provider Phase 2 Plan
+
+This document is retained for historical context only. It captures an older
+Phase 2 session-provider sketch and may mention stale counts, paths, or feature
+ordering. Use these current docs for active planning:
+
+- `docs/03-mvp-plan.md`
+- `docs/06-agent-session-provider.md`
+- `docs/16-tui-plan.md`
+
+---
 
 ## Overview
 
@@ -6,10 +16,10 @@ This plan covers Phase 2 features for the SLOP-native agent harness based on the
 
 All agents must read `AGENTS.md` before starting work. All agents must follow the formatting, naming, and architecture rules from AGENTS.md.
 
-## Current State Baseline
+## Archived Baseline At Time Of Draft
 
-- **152 tests passing, 0 failures** — all tests pass
-- **44 source files** across src/ (core, llm, providers, session, config)
+- **152 tests passing, 0 failures** — recorded when this draft was written
+- **44 source files** across src/ (core, llm, providers, session, config) — recorded when this draft was written
 - Session provider layer is fully scaffolded with store, runtime, provider, service, server
 - All types are defined in `src/session/types.ts`
 - Store supports: beginTurn, appendAssistantText, recordToolStart/Completion, recordApprovalRequested, syncProviderApprovals, syncProviderTasks, syncApps, cancelTurn, close

@@ -1,6 +1,6 @@
 # Memory tiers
 
-> **Status: superseded — split across `docs/13-meta-runtime.md §2.11` (role memory) and `docs/14-agent-identity.md §2` (identity memory). Routing model carried forward, substrate replaced.**
+> **Status: superseded — split across `docs/13-meta-runtime.md §2.11` (role memory) and `docs/future/agent-identity.md §2` (identity memory). Routing model carried forward, substrate replaced.**
 >
 > This document was an early sketch from before the meta-runtime (`docs/13`) and identity layer (`docs/14`) were designed. Its `(general/role × global/project)` matrix collapsed two distinct concerns that are now separated:
 >

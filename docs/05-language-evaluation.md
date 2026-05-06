@@ -97,6 +97,6 @@ We have SLOP SDKs in four languages. Evaluation for the agent harness MVP.
 
 1. **MVP core:** TypeScript + Bun, with published npm SLOP SDK packages
 2. **Next interface phase:** keep the core in TypeScript, expose a public session bridge or provider, and allow UI clients in other languages
-3. **First richer UI:** a Go + Bubble Tea `apps/tui/` client is a good candidate to validate the Go SDK without rewriting the core
+3. **First richer UI:** a TypeScript/OpenTUI `apps/tui/` client validates the public session-provider boundary without adding a second implementation language
 4. **v1 core distribution:** still TypeScript, potentially compiled with `bun build --compile`
-5. **v2 (if needed):** Go port for lightweight or embedded core-runtime distribution
+5. **v2 (if needed):** Go remains a possible option for lightweight or embedded core-runtime distribution, but it is not the current UI path

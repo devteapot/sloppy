@@ -15,6 +15,8 @@ Checked in now:
 - optional built-ins: `web`, `browser`, `cron`, `messaging`, `delegation`,
   `spec`, `vision`, `meta-runtime`
 - session provider and headless session server
+- TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
+  agent-session provider socket
 - ACP-backed delegated child sessions behind the same session-provider boundary
 - CLI-backed delegated child sessions for Codex CLI or custom one-shot agents
   behind the same session-provider boundary
@@ -41,15 +43,22 @@ providers, skills, routes, and agent-to-agent channels.
 
 3. Ship the meta-runtime as an optional provider.
    - Model agent profiles, nodes, channels, routes, capabilities, executor
-     bindings, skill versions, topology experiments, evaluations, proposals,
-     and events.
+     bindings, skill versions, topology experiments, evaluations, reusable
+     topology patterns, proposals, and events.
    - Apply safe session changes directly.
    - Require approval for persistent or privileged changes.
    - Dispatch typed route envelopes to delegated agents or messaging channels
      through the provider hub, forwarding capability masks into delegated child
-     runtime policy and supporting fanout when requested.
+     runtime policy and supporting fanout or sampled canary routes when
+     requested.
+   - Keep trace analysis, repair tactics, runtime architect prompts, automatic
+     evidence scoring, and topology pattern reuse out of the long-term provider
+     contract. The checked-in helper affordances are transitional and should
+     migrate into skills once the skills provider can host linked files and
+     authoring workflows cleanly.
    - Promote topology experiments only after recorded evaluations satisfy their
-     criteria; record rollback lineage instead of hiding it in ad hoc proposals.
+     criteria and record rollback lineage instead of hiding it in ad hoc
+     proposals.
    - Export merged/global/workspace state and import session/workspace/global
      state with approvals for persistent scopes while preserving storage layer
      boundaries.
@@ -62,6 +71,13 @@ providers, skills, routes, and agent-to-agent channels.
      precedence.
    - Link meta-runtime `activateSkillVersion` records to skills-provider
      proposal activation when a topology proposal applies.
+   - Treat reusable self-evolution behavior as skills: runtime architecture,
+     route repair, topology experiment evaluation, and topology pattern
+     authoring should be skill playbooks over provider state, not hardcoded
+     runtime policy.
+   - Add enough skill authoring surface for agent-maintained procedural memory:
+     linked-file reads, patch/edit/write support, usage telemetry, and a
+     curator/review path before enabling broad autonomous skill growth.
 
 5. Keep session routing lightweight.
    - Represent channels and routes as SLOP state.
@@ -74,8 +90,9 @@ providers, skills, routes, and agent-to-agent channels.
   provider state JSON.
 - Evolve route matching beyond substring matches when real usage needs richer
   predicates over typed message envelopes.
-- Add automatic experiment evaluators and rollback synthesis once real runtime
-  evolution loops need more than recorded evidence.
+- Migrate the trace-derived repair and topology-pattern helper affordances into
+  built-in skills, then shrink the long-term meta-runtime `/session` surface to
+  substrate operations.
 
 ## Verification
 

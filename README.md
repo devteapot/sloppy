@@ -57,9 +57,9 @@ Current checked-in implementation includes:
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
-- Go + Bubble Tea TUI onboarding/settings flow under `apps/tui/`
+- TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
 - canvas + HTML dashboard prototype under `apps/dashboard/`
-- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout dispatch, enforced child capability masks, executor bindings, skill versions, topology experiments/evaluations, proposals, scoped storage, events, and import/export
+- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, skill versions, topology experiments/evaluations, proposals, scoped storage, events, and import/export. Some checked-in trace-analysis and topology-pattern helper affordances remain as compatibility prototypes, but reusable self-evolution strategy is expected to move into skills.
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -125,7 +125,7 @@ These providers are currently implemented as in-process SLOP providers:
 
 - `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
 - `skills` for discovering installed skills, proposing new skill versions, activating session/workspace/global skill artifacts, and preventing persistent skill overwrites
-- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels with scoped persistence and child capability-mask enforcement
+- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology patterns should be expressed as skills over this state rather than long-term provider policy.
 - `browser` for tab state, navigation history, and simulated screenshots
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
@@ -202,6 +202,7 @@ Run checks:
 
 ```sh
 bun run typecheck
+bun run tui:typecheck
 bun run build
 bun run test
 ```
@@ -228,11 +229,17 @@ bun run session:serve
 
 If no ready model profile is configured, the session still starts and waits for a UI to attach.
 
-Run the Go TUI against a running session provider:
+Run the TypeScript/OpenTUI TUI:
 
 ```sh
-cd apps/tui
-go run .
+bun run tui
+```
+
+By default this starts a managed session provider and attaches to it. To attach
+to an existing session provider socket, use:
+
+```sh
+bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock
 ```
 
 Run the dashboard prototype:
@@ -375,16 +382,36 @@ providers:
       adapters:
         gemini:
           command: ["gemini", "--acp"]
+          capabilities:
+            spawn_allowed: false
+            shell_allowed: false
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: false
         claude:
           command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
         codex:
           command: ["codex-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
 ```
 
 Then use `execution_mode: "acp:gemini"`, `execution_mode: "acp:claude"`, or
 `execution_mode: "acp:codex"` on `delegation.spawn_agent`; omitted execution
 mode still uses the native Sloppy sub-agent. Zed's Codex adapter is published as
 `@zed-industries/codex-acp` and exposes the `codex-acp` binary.
+Routed or allow-masked ACP spawns require the adapter `capabilities` block so the
+runtime can reject child bindings that exceed the adapter's declared surface.
 
 Delegation can also launch trusted CLI subprocesses as child sessions. The
 runtime streams stdout into the child transcript and exposes the result through
@@ -439,12 +466,15 @@ TUI-specific settings are configured under `tui`.
 
 ## Design references
 
-- `docs/01-prior-art.md` for notes on OpenClaw, Hermes, and nearby auth/runtime approaches
+- `docs/README.md` for the current documentation map
+- `docs/research/prior-art.md` for notes on OpenClaw, Hermes, and nearby auth/runtime approaches
 - `docs/02-architecture.md` for the current runtime design
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap
 - `docs/04-slop-protocol-reference.md` for the local protocol summary
 - `docs/05-language-evaluation.md` for language/runtime choices
 - `docs/06-agent-session-provider.md` for the concrete public UI/session provider shape
+- `docs/13-meta-runtime.md` for the optional topology/evaluation provider and skill-led self-evolution boundary
+- `docs/16-tui-plan.md` for the TypeScript/OpenTUI TUI architecture
 - `~/dev/slop-slop-slop/spec/` for the full SLOP protocol spec
 
 ## License

@@ -6,9 +6,10 @@ Define the public SLOP shape for one running Sloppy agent session.
 
 This provider is the boundary that first-party and third-party UIs should consume.
 
-Current first-party consumers are the Go TUI under `apps/tui/` and a read-only
-canvas/HTML dashboard prototype under `apps/dashboard/`. The dashboard should
-move toward consuming this provider plus public provider surfaces directly.
+Current first-party consumers are the TypeScript/OpenTUI TUI under `apps/tui/`
+and a read-only canvas/HTML dashboard prototype under `apps/dashboard/`. The
+dashboard should move toward consuming this provider plus public provider
+surfaces directly.
 
 It is intentionally session-scoped:
 

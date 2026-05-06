@@ -11,11 +11,14 @@
 
 ## Primary Sources Of Truth
 - `README.md` for the current status and developer workflow.
+- `docs/README.md` for the documentation map and active/archive split.
 - `docs/02-architecture.md` for the current SLOP-first runtime design.
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap.
 - `docs/04-slop-protocol-reference.md` for protocol vocabulary and message semantics.
 - `docs/05-language-evaluation.md` for stack decisions.
 - `docs/06-agent-session-provider.md` for the concrete session-provider state and affordance shape.
+- `docs/13-meta-runtime.md` for the optional topology/evaluation provider and skill-led self-evolution boundary.
+- `docs/16-tui-plan.md` for the TypeScript/OpenTUI TUI architecture and UX plan.
 - External SLOP spec: `~/dev/slop-slop-slop/spec/`.
 
 ## Working Reality
@@ -23,8 +26,8 @@
 - State observation is primary; affordance invocation is secondary.
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes built-in `terminal`, `filesystem`, `memory`, `skills`, `meta-runtime`, `spec`, and `delegation` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, an optional ACP-backed `SessionAgent` path for delegated third-party child agents, and a managed LLM-profile layer with secure credential storage for macOS and Linux. The `meta-runtime` provider supports typed proposals for agent profiles, nodes, channels, typed route envelopes, capability masks, executor bindings, skill versions, and topology experiments/evaluations, with scoped global/workspace/session storage and capability-mask enforcement in delegated child runtimes.
-- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, a Go TUI under `apps/tui/` that can onboard/manage LLM profiles and inspect external app attachment state, and a canvas/HTML dashboard prototype under `apps/dashboard/`.
+- The current implementation includes built-in `terminal`, `filesystem`, `memory`, `skills`, `meta-runtime`, `spec`, and `delegation` providers, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, optional ACP/CLI-backed `SessionAgent` paths for delegated third-party child agents, and a managed LLM-profile layer with secure credential storage for macOS and Linux. ACP delegated adapters declare capabilities in config, and routed or allow-masked ACP spawns are rejected when the adapter declaration does not satisfy the child surface. The `meta-runtime` provider supports typed proposals for agent profiles, nodes, channels, typed route envelopes, capability masks, executor bindings, skill versions, topology experiments/evaluations, canary route sampling, scoped global/workspace/session storage, capability-mask enforcement in delegated child runtimes, and transitional trace-analysis/topology-pattern helper affordances. The long-term direction is Hermes-style skill-led self-evolution: reusable diagnosis, repair, architect prompts, scoring rubrics, and topology-pattern playbooks should live in skills over provider state, not as hardcoded runtime policy.
+- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state and `/apps` external-provider attachment visibility, a TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket, and a canvas/HTML dashboard prototype under `apps/dashboard/`.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -39,6 +42,8 @@ bun run lint
 bun run runtime:doctor
 bun run runtime:smoke
 bun run session:serve
+bun run tui
+bun run tui:typecheck
 bun run typecheck
 bun run test
 ```
@@ -51,12 +56,16 @@ bun test
 bun test tests/filesystem-provider.test.ts
 bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 bun test tests/agent-session-provider.test.ts
+bun test tests/acp-capabilities.test.ts
 bun test tests/cli-session-agent.test.ts
+bun test tests/delegation-provider.test.ts
+bun test tests/meta-runtime-provider.test.ts
 bun test tests/runtime-doctor.test.ts
 bun test tests/runtime-smoke.test.ts
 bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
 bun test tests/gemini-adapter.test.ts
+bun test tests/tui-session-client.test.ts
 ```
 
 - Run the narrowest test slice that proves your change.
@@ -96,6 +105,7 @@ docs/
 - Everything is a SLOP provider.
 - Prefer state-first design over tool-first design.
 - Keep the core small; push capability-specific logic into providers.
+- Keep providers small when behavior can be expressed as instructions plus existing affordances; reusable self-evolution strategy belongs in skills.
 - Do not add built-in orchestration DAGs, schedulers, or task-lifecycle hooks to core.
 - Model agent-to-agent restructuring through SLOP provider state such as `meta-runtime`, not privileged runtime branches.
 - Prefer live subscriptions and patches over repeated polling.
@@ -112,10 +122,9 @@ docs/
 - Group imports in this order: platform/external packages, workspace modules, relative modules.
 - Avoid circular dependencies between `core`, `providers`, and `llm`.
 - Keep config loading, provider wiring, protocol handling, and model logic separate.
-- Prefer the browser-safe consumer entrypoint: `@slop-ai/consumer/browser`.
-- Do not switch back to the top-level `@slop-ai/consumer` entrypoint unless the published package export issue is fixed.
+- Prefer the browser-safe consumer entrypoint: `@slop-ai/consumer/browser` for browser-safe code.
+- Use the top-level `@slop-ai/consumer` entrypoint only for Node/Bun-only consumers such as `apps/tui`, where `NodeSocketClientTransport` is required.
 - Use the npm-installed SLOP SDK packages for TypeScript code, not local workspace links to the sibling SLOP repo.
-- The checked-in Go TUI scaffold currently uses a local `replace` to the sibling Go SDK path until the module is consumed through a stable external release workflow.
 
 ## Formatting
 - Use 2-space indentation.

@@ -1,20 +1,22 @@
 # Meta-Runtime
 
-This document describes the checked-in lean meta-runtime provider. Older drafts
-described a layer above the removed orchestration runtime; that design is no
-longer current. The v1 direction is:
+This document describes the checked-in `meta-runtime` provider and the intended
+direction for keeping it lean.
+
+Older drafts described a layer above a removed orchestration runtime. That
+design is no longer current. The v1 direction is:
 
 - keep the agent kernel small
 - expose runtime structure as SLOP provider state
-- let agents propose and apply topology changes through normal affordances
-- enforce safety at the provider and hub boundary, not through a privileged
-  orchestrator path
+- let agents propose topology changes through normal affordances
+- keep reusable strategy in skills, not hardcoded runtime policy
+- enforce safety at the provider and hub boundary
 
 ## Purpose
 
 The `meta-runtime` provider is the substrate for evolving internal
-agent-to-agent structure. It is not source-code mutation and it is not a built-in
-workflow engine. It models a mutable graph:
+agent-to-agent structure. It is not source-code mutation, a workflow engine, or
+a task scheduler. It models a mutable graph:
 
 - agent profiles
 - agent nodes
@@ -23,15 +25,14 @@ workflow engine. It models a mutable graph:
 - capability masks
 - executor bindings
 - active skill versions
-- topology experiments
-- experiment evaluations
-- proposals
+- topology experiments and evaluations
+- topology proposals
 - events
 
-The provider is optional. If it is not mounted, the runtime behaves as a bare
+The provider is optional. If it is not mounted, Sloppy behaves as a bare
 SLOP-native agent with the configured built-in and discovered providers.
 
-## State Surfaces
+## Current Surfaces
 
 The provider exposes:
 
@@ -52,34 +53,44 @@ The provider exposes:
 /approvals
 ```
 
-`/session` contains control affordances:
+Stable substrate affordances on `/session`:
 
 - `propose_change`
 - `dispatch_route`
+- `create_experiment`
+- `record_evaluation`
+- `promote_experiment`
+- `rollback_experiment`
+- `export_state`
+- `import_state`
+
+Compatibility affordances that exist in code today but should be treated as
+skill-migration candidates:
+
 - `analyze_runtime_trace`
 - `prepare_architect_brief`
 - `start_architect_cycle`
 - `derive_proposals_from_events`
 - `start_evolution_cycle`
-- `create_experiment`
-- `record_evaluation`
 - `record_experiment_evidence`
-- `promote_experiment`
-- `rollback_experiment`
 - `archive_topology_pattern`
 - `propose_from_pattern`
-- `export_state`
-- `import_state`
 
-`/proposals/<id>` exposes proposal affordances while a proposal is still
-pending:
+Those helpers encode diagnosis, prompt construction, repair tactics, scoring
+formulas, and pattern-reuse policy. They are useful prototypes, but they should
+not become the long-term runtime API. The long-term shape is a small
+meta-runtime substrate plus skills such as `runtime-architect`,
+`runtime-route-repair`, `topology-experiment-evaluator`, and
+`topology-pattern-author` operating over that substrate.
+
+`/proposals/<id>` exposes proposal affordances while a proposal is pending:
 
 - `apply_proposal`
 - `revert_proposal`
 
 `revert_proposal` rejects a pending proposal. Applied proposals are not
-auto-undone by replaying inverse operations; the current recovery model is a new
-proposal that writes the desired topology state.
+auto-undone by replaying inverse operations; recovery is a new proposal that
+writes the desired topology state.
 
 ## Storage Model
 
@@ -158,10 +169,10 @@ envelope body. If multiple routes match, higher `priority` wins, then route id
 breaks ties. `dispatch_route` can run in single-target mode or `fanout` mode,
 which delivers the same envelope to every matching route.
 
-Routes may also include `traffic.sampleRate` between `0` and `1`. The matcher
-uses a deterministic bucket from route id and envelope id, so agents can propose
+Routes may include `traffic.sampleRate` between `0` and `1`. The matcher uses a
+deterministic bucket from route id and envelope id, so agents can propose
 session canary routes without adding a scheduler or privileged runtime branch.
-`traffic.experimentId` is optional metadata that links a canary route to the
+`traffic.experimentId` is optional metadata linking a canary route to the
 experiment it is intended to evaluate.
 
 Agent dispatch invokes `delegation.spawn_agent` with:
@@ -177,23 +188,7 @@ body and typed envelope. The source must be a channel participant.
 
 Dispatch records `route.dispatched` only after the provider call succeeds. A
 provider error or invalid target records `route.failed` and returns an unrouted
-result. `derive_proposals_from_events` inspects recent events and creates normal
-topology proposals for recognized failure patterns. It can repair channel
-membership, retarget a failing agent route to a generated fallback specialist,
-create a triage specialist for repeated unmatched traffic, or quarantine a route
-when no targeted repair is recognized. `start_evolution_cycle` runs the same
-trace-derived synthesis and attaches each proposal to a session experiment. This
-is deliberately not a privileged repair loop: the derived change still goes
-through proposal, approval, and experiment affordances like any other topology
-mutation.
-
-The more general self-evolution path is agent-authored. `analyze_runtime_trace`
-returns coordination smells from recent SLOP events. `prepare_architect_brief`
-turns that trace analysis into a prompt and affordance map for a normal agent.
-`start_architect_cycle` spawns that runtime architect through the `delegation`
-provider; the child agent must use the ordinary SLOP affordances to propose
-topology changes and create experiments. The meta-runtime remains a validator,
-event log, and proposal/experiment host rather than a hidden orchestrator.
+result. Unmatched traffic records `route.unmatched`.
 
 ## Experiments
 
@@ -211,19 +206,12 @@ against a single best run. `promote_experiment` applies the linked proposal only
 after recorded evaluations meet the criteria and requests approval before
 applying privileged or persistent changes. `rollback_experiment` records
 rollback lineage and applies a provided rollback proposal when it is still
-pending. `start_evolution_cycle` can create candidate experiments from recent
-runtime traces. `record_experiment_evidence` can also score a candidate from
-observed route events before and after the proposal pivot. Agents may still
-record richer external evidence through `record_evaluation`.
+pending.
 
-## Topology Patterns
-
-Promoted experiments can be archived as reusable topology patterns with
-`archive_topology_pattern`. A pattern stores the applied proposal operations,
-the source experiment/proposal, tags, and the latest recorded evidence. Agents
-can call `propose_from_pattern` to instantiate the pattern as a normal topology
-proposal in a chosen scope. Pattern reuse does not bypass validation, approvals,
-or experiment promotion.
+The runtime should store evaluations, not decide domain-specific truth. Route
+event scoring and pattern promotion heuristics are useful skills or diagnostic
+scripts over `/events`, `/routes`, `/proposals`, and `/experiments`; they should
+not keep expanding as hardcoded provider policy.
 
 ## Capability Masks
 
@@ -252,11 +240,11 @@ Rules:
 This keeps capability control at the consumer hub boundary, where provider
 invocations actually happen.
 
-## Skills
+## Skills And Self-Evolution
 
-The skills provider is adjacent to the meta-runtime. It loads SKILL.md files from
-imported, global, workspace, and session scopes. When names collide, precedence
-is:
+The skills provider is adjacent to the meta-runtime. It loads `SKILL.md` files
+from imported, global, workspace, and session scopes. When names collide,
+precedence is:
 
 1. session
 2. workspace
@@ -264,10 +252,22 @@ is:
 4. imported
 
 Skill proposals can activate session skills directly. Workspace and global skill
-activation require approval and refuse to overwrite an existing SKILL.md path.
+activation require approval and refuse to overwrite an existing `SKILL.md` path.
+
 Meta-runtime `activateSkillVersion` operations may reference a skills-provider
 proposal id; when the topology proposal applies, the meta-runtime invokes the
 skills provider and records activation success or failure on the skill version.
+
+The important boundary:
+
+- meta-runtime owns topology state, validation, dispatch, persistence, approval,
+  and experiment records
+- skills own reusable strategy, diagnosis, repair recipes, evaluation rubrics,
+  architect prompts, and pattern authoring
+
+This follows the Hermes-style lesson: if behavior can be expressed as
+instructions plus existing affordances, make it a skill. Reserve provider code
+for deterministic state mutation, safety enforcement, and exact integrations.
 
 ## Non-Goals
 
@@ -279,18 +279,36 @@ particular, it does not own:
 - plan lifecycle state
 - verification-gated task completion
 - privileged orchestrator roles
+- hardcoded repair playbooks
+- hardcoded runtime architect prompts
+- hardcoded promotion heuristics for topology patterns
 
 Those behaviors can be composed through providers, skills, routes, channels, and
 agent communication patterns. If a richer workflow system is added later, it
 should be another provider or package using this boundary, not special kernel
 logic.
 
-## Remaining Work
+## Migration Notes
 
-The implementation is intentionally lean, but these areas are still open:
+Current code still includes trace-derived repair and topology-pattern helper
+affordances. Treat them as transitional compatibility affordances until the
+skills provider has enough authoring and linked-file support to host those
+playbooks cleanly.
+
+Preferred migration order:
+
+1. Add built-in skills for runtime architecture, route repair, experiment
+   evaluation, and topology pattern authoring.
+2. Teach child-agent spawning to resolve active skill versions at spawn time and
+   freeze them into the child prompt.
+3. Move hardcoded repair synthesis and scoring formulas into skills or skill
+   scripts.
+4. Keep only substrate affordances in the long-term `/session` surface.
+
+## Remaining Work
 
 - richer route matchers beyond substring matching
 - UI treatment for proposals, typed envelopes, route events, and capability masks
-- automatic evaluation loops for skill/runtime variants before promotion
-- richer rollback synthesis for failed runtime variants
+- skill-backed runtime architect and route-repair playbooks
+- spawn-time skill resolution for profiles and nodes
 - packaged export/import of identity, skills, and runtime state as one bundle

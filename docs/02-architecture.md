@@ -91,15 +91,16 @@ Enabled routes dispatch typed message envelopes through the provider hub:
 
 Dispatch can run in single-target mode or fanout mode. Routes can carry
 `traffic.sampleRate` metadata for deterministic canary delivery without adding a
-core scheduler. Recent route events can also drive `start_evolution_cycle`, a
-SLOP affordance that synthesizes trace-backed topology proposals and attaches
-them to session experiments. The more general path is agent-authored:
-`analyze_runtime_trace` and `prepare_architect_brief` expose coordination smells
-and a SLOP affordance map, while `start_architect_cycle` delegates the actual
-proposal authoring to a runtime architect agent. Topology proposals can be
-scored by external evaluators or by `record_experiment_evidence`, promoted only
-after meeting criteria, archived as reusable topology patterns, and linked to
-rollback proposals when a topology variant is retired.
+core scheduler.
+
+The checked-in provider still includes several experimental self-evolution
+helpers for trace analysis, architect briefs, trace-derived repairs, automatic
+route-event evidence, and topology pattern reuse. Treat those as compatibility
+affordances and skill-migration candidates, not as the long-term runtime shape.
+The intended boundary is smaller: meta-runtime stores topology, route events,
+proposals, experiments, approvals, and capability masks; skills provide reusable
+diagnosis, repair playbooks, architect prompts, and evaluation rubrics over that
+state.
 
 The meta-runtime provider can also export merged/global/workspace state and
 import session/workspace/global state. Persistent imports are approval-gated.
@@ -140,6 +141,12 @@ meta-runtime roots:
 - `~/.sloppy/meta-runtime/skills`
 - `.sloppy/meta-runtime/skills`
 
+Self-extensibility should primarily grow through skills. If a recurring
+procedure can be expressed as instructions plus existing SLOP affordances, it
+belongs in a skill or skill script rather than provider code. Provider code is
+reserved for deterministic state mutation, exact integrations, approvals, and
+safety enforcement.
+
 ## Public Consumers
 
 First-party UIs and external clients should use the same provider/session
@@ -159,6 +166,7 @@ The runtime intentionally does not include:
 - gate/digest/precedent infrastructure
 - MCP-style flat tool catalogs
 - special task lifecycle hooks in the kernel
+- hardcoded self-repair or topology-optimization playbooks
 
 Those features can be rebuilt as optional SLOP providers or skills if they
 prove useful, but they are not part of the lean runtime.

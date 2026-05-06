@@ -16,5 +16,5 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "apps/dashboard/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "apps/dashboard/**/*.ts", "apps/tui/**/*.ts"]
 }
