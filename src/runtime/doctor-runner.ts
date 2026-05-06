@@ -43,6 +43,7 @@ async function loadDoctorConfig(
 async function checkOpenAiCompatibleUrl(
   baseUrl: string | undefined,
   timeoutMs: number,
+  apiKeyEnv?: string,
 ): Promise<RuntimeDoctorCheck> {
   if (!baseUrl) {
     return {
@@ -55,21 +56,32 @@ async function checkOpenAiCompatibleUrl(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const url = `${trimTrailingSlash(baseUrl)}/models`;
+  const apiKey = apiKeyEnv ? Bun.env[apiKeyEnv] : undefined;
+  const headers: HeadersInit = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { headers, signal: controller.signal });
     const text = await response.text();
     if (!response.ok) {
       return {
         id: "litellm",
         status: "error",
         summary: `Router responded with HTTP ${response.status}.`,
-        detail: text.slice(0, 1000),
+        detail: [
+          text.slice(0, 1000),
+          apiKeyEnv && !apiKey
+            ? `No API key found in ${apiKeyEnv}; request was unauthenticated.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
       };
     }
     return {
       id: "litellm",
       status: "ok",
-      summary: `Router responded at ${url}.`,
+      summary: apiKeyEnv
+        ? `Router responded at ${url}${apiKey ? ` using ${apiKeyEnv}.` : " without an API key."}`
+        : `Router responded at ${url}.`,
       detail: text.slice(0, 1000),
     };
   } catch (error) {
@@ -190,10 +202,10 @@ export async function runRuntimeDoctor(
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const config = await loadDoctorConfig(workspaceRoot, options.config);
   const timeoutMs = options.timeoutMs ?? 5000;
-  const litellmUrl = options.litellmUrl;
+  const litellmUrl = options.litellmUrl ?? config.llm.baseUrl;
 
   const checks = await Promise.all([
-    checkOpenAiCompatibleUrl(litellmUrl, timeoutMs),
+    checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
     checkAcpAdapter(config, workspaceRoot, options.acpAdapterId, timeoutMs),
     checkCliAdapter(config, workspaceRoot, options.cliAdapterId, timeoutMs),
   ]);

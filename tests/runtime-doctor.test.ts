@@ -1,10 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { runRuntimeDoctor } from "../src/runtime/doctor-runner";
+
+const originalFetch = globalThis.fetch;
+const originalLiteLlmKey = process.env.LITELLM_API_KEY;
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -74,6 +77,15 @@ const TEST_CONFIG: SloppyConfig = {
   },
 };
 
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  if (originalLiteLlmKey == null) {
+    delete process.env.LITELLM_API_KEY;
+  } else {
+    process.env.LITELLM_API_KEY = originalLiteLlmKey;
+  }
+});
+
 describe("runtime doctor", () => {
   test("reports skipped optional checks and validates configured CLI adapter", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-"));
@@ -99,6 +111,44 @@ describe("runtime doctor", () => {
         id: "cli",
         status: "ok",
         summary: "CLI adapter 'fake' command is configured.",
+      });
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("checks the configured OpenAI-compatible base URL with the configured API key env", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-url-"));
+    const seenHeaders: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      seenHeaders.push(headers.get("authorization") ?? "");
+      return new Response(JSON.stringify({ data: [{ id: "local-model" }] }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+    process.env.LITELLM_API_KEY = "router-key";
+
+    try {
+      const result = await runRuntimeDoctor({
+        config: {
+          ...TEST_CONFIG,
+          llm: {
+            ...TEST_CONFIG.llm,
+            apiKeyEnv: "LITELLM_API_KEY",
+            baseUrl: "http://sloppy-mba.local:8001/v1",
+          },
+        },
+        workspaceRoot,
+      });
+
+      expect(seenHeaders).toEqual(["Bearer router-key"]);
+      expect(result.checks).toContainEqual({
+        id: "litellm",
+        status: "ok",
+        summary:
+          "Router responded at http://sloppy-mba.local:8001/v1/models using LITELLM_API_KEY.",
+        detail: JSON.stringify({ data: [{ id: "local-model" }] }),
       });
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
