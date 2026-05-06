@@ -31,6 +31,7 @@
     "@slop-ai/consumer": "0.2.0",
     "@slop-ai/core": "0.2.0",
     "@slop-ai/server": "0.2.0",
+    "@zed-industries/codex-acp": "^0.13.0",
     "openai": "6.33.0",
     "solid-js": "^1.9.12",
     "yaml": "2.8.3",

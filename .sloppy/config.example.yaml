@@ -16,6 +16,8 @@ providers:
       adapters:
         claude:
           command: ["claude-agent-acp"]
+        codex:
+          command: ["codex-acp"]
     cli:
       enabled: true
       defaultTimeoutMs: 600000

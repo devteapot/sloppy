@@ -303,11 +303,17 @@ export class AcpSessionAgent implements SessionAgent {
 
   shutdown(): void {
     void this.closeSession();
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
+    const child = this.child;
+    if (child) {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (!child.killed) {
+        child.kill("SIGTERM");
+      }
       setTimeout(() => {
-        if (this.child && !this.child.killed) {
-          this.child.kill("SIGKILL");
+        if (!child.killed || child.exitCode === null) {
+          child.kill("SIGKILL");
         }
       }, 1000).unref();
     }

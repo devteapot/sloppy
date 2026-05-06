@@ -377,11 +377,14 @@ providers:
           command: ["gemini", "--acp"]
         claude:
           command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
+        codex:
+          command: ["codex-acp"]
 ```
 
-Then use `execution_mode: "acp:gemini"` or `execution_mode: "acp:claude"` on
-`delegation.spawn_agent`; omitted execution mode still uses the native Sloppy
-sub-agent.
+Then use `execution_mode: "acp:gemini"`, `execution_mode: "acp:claude"`, or
+`execution_mode: "acp:codex"` on `delegation.spawn_agent`; omitted execution
+mode still uses the native Sloppy sub-agent. Zed's Codex adapter is published as
+`@zed-industries/codex-acp` and exposes the `codex-acp` binary.
 
 Delegation can also launch trusted CLI subprocesses as child sessions. The
 runtime streams stdout into the child transcript and exposes the result through
