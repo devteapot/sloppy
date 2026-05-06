@@ -64,6 +64,7 @@ export { AcpSessionAgent } from "./runtime/acp";
 export {
   attachSubAgentRunnerFactory,
   createAwaitChildrenHook,
+  createDelegationWaitTool,
   SubAgentRunner,
 } from "./runtime/delegation";
 export type { AgentSessionSnapshot } from "./session";

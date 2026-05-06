@@ -257,6 +257,16 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(delegation.server),
       transportLabel: "in-process",
       stop: () => delegation.stop(),
+      systemPromptFragment: () =>
+        [
+          "Delegation child agents run as background child sessions.",
+          "Use spawn_agent to start child work without blocking.",
+          "If the user asks you to work in parallel or in the meantime, do your own independent work before the first delegation wait.",
+          "When you need child progress, call slop_wait_for_delegation_event with the agent ids instead of repeatedly querying delegation /agents.",
+          "A wait returns one wake event; wait again when more children remain active.",
+          "Call get_result before relying on a completed child's findings.",
+          "After retrieving a child's final result, close that child session unless you need a follow-up turn.",
+        ].join("\n"),
       attachRuntime: (hub, hubConfig, ctx) => {
         attachSubAgentRunnerFactory(delegation, hub, hubConfig, ctx?.llmProfileManager);
         return {

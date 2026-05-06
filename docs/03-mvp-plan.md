@@ -23,7 +23,9 @@ Checked in now:
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
   agent-session provider socket, can attach through the session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert
-- ACP-backed delegated child sessions behind the same session-provider boundary
+- ACP-backed delegated child sessions behind the same session-provider boundary,
+  with explicit `slop_wait_for_delegation_event` joins plus child follow-up,
+  result retrieval, approval forwarding, and close controls
 - ACP adapters selectable as first-class main-session LLM profiles behind the
   same session-provider boundary
 - native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
@@ -44,6 +46,8 @@ providers, skills, routes, and agent-to-agent channels.
    - No workflow-specific policy in core.
    - No task context or delegation lifecycle coupling.
    - No built-in task scheduler.
+   - Delegation joins are explicit runtime-local waits owned by the active
+     parent turn, not autonomous parent continuations.
 
 2. Make state the contract.
    - Providers expose observable state first.

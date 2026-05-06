@@ -59,11 +59,19 @@ export type LocalRuntimeToolResult = {
   isError?: boolean;
 };
 
+export type LocalRuntimeToolContext = {
+  hub: ProviderRuntimeHub;
+  config: SloppyConfig;
+  signal?: AbortSignal;
+};
+
 export type LocalRuntimeTool = {
   tool: LlmTool;
+  providerId?: string;
+  path?: string;
   execute: (
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    context: LocalRuntimeToolContext,
   ) => LocalRuntimeToolResult | Promise<LocalRuntimeToolResult>;
 };
 
@@ -234,6 +242,8 @@ function invalidToolArgumentsResult(
 async function executeLocalToolCall(
   toolUse: ToolUseContentBlock,
   localTool: LocalRuntimeTool,
+  hub: ProviderRuntimeHub,
+  config: SloppyConfig,
   onToolEvent?: (event: AgentToolEvent) => void,
   signal?: AbortSignal,
 ): Promise<ExecuteToolCallResult> {
@@ -246,12 +256,12 @@ async function executeLocalToolCall(
     toolUseId: toolUse.id,
     toolName: toolUse.name,
     kind: "local",
-    providerId: "session",
-    path: "/goal",
+    providerId: localTool.providerId ?? "session",
+    path: localTool.path ?? "/runtime",
     action,
     params: { ...toolUse.input },
   };
-  const summary = `session:${action} /goal`;
+  const summary = `${invocation.providerId}:${action} ${invocation.path}`;
   onToolEvent?.({
     kind: "started",
     invocation,
@@ -259,7 +269,14 @@ async function executeLocalToolCall(
   });
 
   try {
-    const result = await localTool.execute({ ...toolUse.input }, signal);
+    const result = await localTool.execute(
+      { ...toolUse.input },
+      {
+        hub,
+        config,
+        signal,
+      },
+    );
     const content =
       typeof result.content === "string" ? result.content : stringifyResult(result.content);
     return {
@@ -278,6 +295,9 @@ async function executeLocalToolCall(
       errorMessage: result.status === "error" ? result.summary : undefined,
     };
   } catch (error) {
+    if (error instanceof LlmAbortError) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     return {
       kind: "completed",
@@ -307,12 +327,13 @@ async function executeToolCall(
   toolPolicy?: RunLoopHooks["toolPolicy"],
   transformInvoke?: RunLoopHooks["transformInvoke"],
   roleId?: string,
+  signal?: AbortSignal,
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
     const localTool = localTools.find((item) => item.tool.function.name === toolUse.name);
     if (localTool) {
-      return executeLocalToolCall(toolUse, localTool, onToolEvent);
+      return executeLocalToolCall(toolUse, localTool, hub, config, onToolEvent, signal);
     }
     return {
       kind: "completed",
@@ -559,6 +580,7 @@ async function executeToolCalls(options: {
   toolPolicy?: RunLoopHooks["toolPolicy"];
   transformInvoke?: RunLoopHooks["transformInvoke"];
   roleId?: string;
+  signal?: AbortSignal;
 }): Promise<
   | {
       status: "completed";
@@ -572,6 +594,10 @@ async function executeToolCalls(options: {
   const toolResults = [...options.toolResults];
 
   for (let index = options.startIndex; index < options.toolCalls.length; index += 1) {
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
     const toolCall = options.toolCalls[index];
     options.onToolCall?.(`${toolCall.name} ${JSON.stringify(toolCall.input)}`);
     const result = await executeToolCall(
@@ -584,6 +610,7 @@ async function executeToolCalls(options: {
       options.toolPolicy,
       options.transformInvoke,
       options.roleId,
+      options.signal,
     );
 
     if (result.kind === "approval_requested") {
@@ -684,6 +711,7 @@ export async function runLoop(options: {
         toolPolicy,
         transformInvoke,
         roleId,
+        signal: options.signal,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -748,6 +776,7 @@ export async function runLoop(options: {
       toolPolicy,
       transformInvoke,
       roleId,
+      signal: options.signal,
     });
     if (execution.status === "waiting_approval") {
       return {

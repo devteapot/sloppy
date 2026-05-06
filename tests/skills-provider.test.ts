@@ -177,6 +177,18 @@ tags: [demo]
       const viewed = await consumer.invoke("/session", "skill_view", { name: "skill-curator" });
       expect(viewed.status).toBe("ok");
       expect((viewed.data as { content: string }).content).toContain("skill_manage");
+
+      const delegation = skills.children?.find(
+        (child) => child.properties?.name === "delegation-orchestration",
+      );
+      expect(delegation?.properties?.scope).toBe("builtin");
+      const delegationView = await consumer.invoke("/session", "skill_view", {
+        name: "delegation-orchestration",
+      });
+      expect(delegationView.status).toBe("ok");
+      expect((delegationView.data as { content: string }).content).toContain(
+        "do your own independent work before the first delegation wait",
+      );
     } finally {
       provider.stop();
     }

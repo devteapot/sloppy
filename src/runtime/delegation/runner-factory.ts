@@ -81,12 +81,11 @@ export function attachSubAgentRunnerFactory(
         error: event.error,
         session_provider_id: runner.sessionProviderId,
         completed_at: event.completedAt,
+        turn_state: event.turnState,
+        turn_phase: event.turnPhase,
+        session_provider_closed: event.sessionProviderClosed,
       });
-      if (
-        event.status === "completed" ||
-        event.status === "failed" ||
-        event.status === "cancelled"
-      ) {
+      if (event.status === "failed" || event.status === "cancelled" || event.status === "closed") {
         unsubscribe();
       }
     });
@@ -96,6 +95,12 @@ export function attachSubAgentRunnerFactory(
       },
       async cancel() {
         await runner.cancel();
+      },
+      async sendMessage(text: string) {
+        return runner.sendMessage(text);
+      },
+      async close() {
+        await runner.close();
       },
     };
   });

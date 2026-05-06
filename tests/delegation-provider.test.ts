@@ -430,6 +430,133 @@ describe("DelegationProvider", () => {
     }
   });
 
+  test("keeps completed child sessions available for follow-up, result retrieval, and close", async () => {
+    const { provider, consumer } = createDelegationHarness({
+      runnerFactory: (spawn, callbacks) => {
+        let turn = 0;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        const complete = (text: string) => {
+          timeout = setTimeout(() => {
+            callbacks.onUpdate({
+              status: "completed",
+              result: `turn ${turn}: ${text}`,
+              turn_state: "idle",
+              turn_phase: "none",
+              completed_at: new Date().toISOString(),
+              session_provider_id: `child-${spawn.id}`,
+            });
+          }, 20);
+        };
+
+        return {
+          async start() {
+            turn = 1;
+            callbacks.onUpdate({
+              status: "running",
+              turn_state: "running",
+              turn_phase: "model",
+              session_provider_id: `child-${spawn.id}`,
+            });
+            complete(spawn.goal);
+          },
+          async sendMessage(text: string) {
+            if (timeout) clearTimeout(timeout);
+            turn += 1;
+            callbacks.onUpdate({
+              status: "running",
+              turn_state: "running",
+              turn_phase: "model",
+              session_provider_id: `child-${spawn.id}`,
+            });
+            complete(text);
+            return { status: "started", turnId: `turn-${turn}` };
+          },
+          async cancel() {
+            if (timeout) clearTimeout(timeout);
+            callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+          },
+          async close() {
+            if (timeout) clearTimeout(timeout);
+            callbacks.onUpdate({
+              status: "closed",
+              session_provider_closed: true,
+              completed_at: new Date().toISOString(),
+            });
+          },
+        };
+      },
+    });
+
+    try {
+      await connect(consumer);
+      const spawn = await consumer.invoke("/session", "spawn_agent", {
+        name: "chat-child",
+        goal: "first answer",
+      });
+      expect(spawn.status).toBe("ok");
+      const agentId = (spawn.data as { id: string }).id;
+
+      const completed = await waitFor(async () => {
+        const current = await consumer.query(`/agents/${agentId}`, 2);
+        return current.properties?.status === "completed" ? current : null;
+      }, 1500);
+      expect(completed.properties).toMatchObject({
+        id: agentId,
+        status: "completed",
+        turn_state: "idle",
+        result_preview: "turn 1: first answer",
+        session_provider_id: `child-${agentId}`,
+        session_provider_closed: false,
+      });
+      expect(completed.affordances?.map((affordance) => affordance.action)).toEqual([
+        "get_result",
+        "send_message",
+        "close",
+        "list_approvals",
+        "approve_child_approval",
+        "reject_child_approval",
+      ]);
+      expect(
+        completed.affordances?.find((affordance) => affordance.action === "close")?.dangerous,
+      ).not.toBe(true);
+
+      const followUp = await consumer.invoke(`/agents/${agentId}`, "send_message", {
+        text: "second answer",
+      });
+      expect(followUp.status).toBe("ok");
+      expect(followUp.data).toMatchObject({ agent_id: agentId, status: "sent" });
+
+      const secondCompleted = await waitFor(async () => {
+        const current = await consumer.query(`/agents/${agentId}`, 2);
+        return current.properties?.result_preview === "turn 2: second answer" ? current : null;
+      }, 1500);
+      expect(secondCompleted.properties).toMatchObject({
+        status: "completed",
+        turn_state: "idle",
+        result_preview: "turn 2: second answer",
+      });
+
+      const result = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
+      expect(result.status).toBe("ok");
+      expect(result.data).toEqual({ id: agentId, result: "turn 2: second answer" });
+
+      const close = await consumer.invoke(`/agents/${agentId}`, "close", {});
+      expect(close.status).toBe("ok");
+      expect(close.data).toEqual({ id: agentId, status: "closed" });
+
+      const closed = await consumer.query(`/agents/${agentId}`, 2);
+      expect(closed.properties).toMatchObject({
+        status: "closed",
+        session_provider_closed: true,
+        result_preview: "turn 2: second answer",
+      });
+      expect(closed.affordances?.map((affordance) => affordance.action)).toEqual(["get_result"]);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("deprecated task_id does not change completed agent result retrieval", async () => {
     const { provider, consumer } = createDelegationHarness();
 

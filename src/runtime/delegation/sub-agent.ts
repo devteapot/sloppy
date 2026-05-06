@@ -8,11 +8,19 @@ import type { RegisteredProvider } from "../../providers/registry";
 import { AgentSessionProvider } from "../../session/provider";
 import {
   type ExternalSessionAgentState,
+  type SendMessageResult,
   type SessionAgentFactory,
   SessionRuntime,
 } from "../../session/runtime";
+import type { AgentTurnState } from "../../session/types";
 
-export type SubAgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type SubAgentStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "closed";
 
 export type SubAgentEvent = {
   id: string;
@@ -20,6 +28,10 @@ export type SubAgentEvent = {
   resultPreview?: string;
   error?: string;
   completedAt?: string;
+  turnState?: AgentTurnState;
+  turnPhase?: string;
+  sessionProviderId: string;
+  sessionProviderClosed: boolean;
 };
 
 type SubAgentListener = (event: SubAgentEvent) => void;
@@ -62,6 +74,7 @@ export class SubAgentRunner {
   private completedAt?: string;
   private registered = false;
   private sawTurnInFlight = false;
+  private sessionProviderClosed = false;
 
   constructor(options: SubAgentRunnerOptions) {
     this.id = options.id;
@@ -126,12 +139,17 @@ export class SubAgentRunner {
   }
 
   snapshot(): SubAgentEvent {
+    const turn = this.runtime.store.getSnapshot().turn;
     return {
       id: this.id,
       status: this.status,
       resultPreview: this.resultText,
       error: this.errorMessage,
       completedAt: this.completedAt,
+      turnState: turn.state,
+      turnPhase: turn.phase,
+      sessionProviderId: this.sessionProviderId,
+      sessionProviderClosed: this.sessionProviderClosed,
     };
   }
 
@@ -166,12 +184,19 @@ export class SubAgentRunner {
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error);
       this.completedAt = new Date().toISOString();
+      this.sessionProviderClosed = true;
       this.transition("failed");
+      this.teardown();
     }
   }
 
   async cancel(): Promise<void> {
-    if (this.status === "completed" || this.status === "failed" || this.status === "cancelled") {
+    if (
+      this.status === "completed" ||
+      this.status === "failed" ||
+      this.status === "cancelled" ||
+      this.status === "closed"
+    ) {
       return;
     }
 
@@ -182,12 +207,45 @@ export class SubAgentRunner {
     }
 
     this.completedAt = new Date().toISOString();
+    this.sessionProviderClosed = true;
     this.transition("cancelled");
     this.teardown();
   }
 
+  async sendMessage(text: string): Promise<SendMessageResult> {
+    if (this.status === "failed" || this.status === "cancelled" || this.status === "closed") {
+      throw new Error(`Cannot send a follow-up to agent ${this.id} in status ${this.status}.`);
+    }
+    if (this.sessionProviderClosed) {
+      throw new Error(`Cannot send a follow-up to closed agent session ${this.id}.`);
+    }
+
+    const result = await this.runtime.sendMessage(text);
+    this.syncFromStore();
+    return result;
+  }
+
   getResult(): string | undefined {
     return this.resultText;
+  }
+
+  async close(): Promise<void> {
+    if (this.status === "closed") {
+      return;
+    }
+
+    if (this.status === "pending" || this.status === "running") {
+      try {
+        await this.runtime.cancelTurn();
+      } catch {
+        // best-effort: the child may already be between turns
+      }
+    }
+
+    this.completedAt ??= new Date().toISOString();
+    this.sessionProviderClosed = true;
+    this.transition("closed");
+    this.teardown();
   }
 
   shutdown(): void {
@@ -202,6 +260,7 @@ export class SubAgentRunner {
       this.parentHub.removeProvider(this.sessionProviderId);
       this.registered = false;
     }
+    this.sessionProviderClosed = true;
 
     try {
       this.runtime.shutdown();
@@ -211,7 +270,7 @@ export class SubAgentRunner {
   }
 
   private syncFromStore(): void {
-    if (this.status === "cancelled" || this.status === "failed" || this.status === "completed") {
+    if (this.status === "cancelled" || this.status === "failed" || this.status === "closed") {
       return;
     }
 
@@ -220,7 +279,7 @@ export class SubAgentRunner {
 
     if (turnState === "running" || turnState === "waiting_approval") {
       this.sawTurnInFlight = true;
-      if (this.status === "pending") {
+      if (this.status === "pending" || this.status === "completed") {
         this.transition("running");
       }
       return;
@@ -236,6 +295,7 @@ export class SubAgentRunner {
     if (turnState === "error") {
       this.errorMessage = snapshot.turn.lastError ?? "Sub-agent turn failed.";
       this.completedAt = new Date().toISOString();
+      this.sessionProviderClosed = true;
       this.transition("failed");
       this.teardown();
       return;
@@ -244,7 +304,7 @@ export class SubAgentRunner {
     if (
       turnState === "idle" &&
       this.sawTurnInFlight &&
-      (this.status === "running" || this.status === "pending")
+      (this.status === "running" || this.status === "pending" || this.status === "completed")
     ) {
       const transcript = snapshot.transcript;
       const lastAssistant = [...transcript]
@@ -259,8 +319,8 @@ export class SubAgentRunner {
       }
 
       this.completedAt = new Date().toISOString();
+      this.sawTurnInFlight = false;
       this.transition("completed");
-      this.teardown();
     }
   }
 

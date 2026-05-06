@@ -22,6 +22,7 @@ import {
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
+import { createDelegationWaitTool } from "../runtime/delegation/wait-tool";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import {
   type ExternalSessionAgentState,
@@ -142,7 +143,7 @@ function collectEditPairs(
   const pairs: Array<{ oldText: string; newText: string }> = [];
   const single = readEditPair(params);
   if (single) pairs.push(single);
-  const list = params["edits"];
+  const list = params.edits;
   if (Array.isArray(list)) {
     for (const entry of list) {
       if (entry && typeof entry === "object") {
@@ -459,46 +460,53 @@ export class SessionRuntime {
   }
 
   private buildLocalTools(): LocalRuntimeTool[] {
-    const goal = this.store.getSnapshot().goal;
-    if (!goal || goal.status === "complete" || goal.goalId !== this.currentTurnGoalId) {
-      return [];
+    const tools: LocalRuntimeTool[] = [];
+    if (this.config.providers.builtin.delegation) {
+      tools.push(createDelegationWaitTool());
     }
 
-    return [
-      {
-        tool: {
-          type: "function",
-          function: {
-            name: "slop_goal_update",
-            description:
-              "Report progress for the active persistent session goal. Use status=progress for evidence of forward movement, status=blocked when work cannot continue, and status=complete only when the objective is genuinely achieved.",
-            parameters: {
-              type: "object",
-              properties: {
-                status: {
-                  type: "string",
-                  enum: ["progress", "blocked", "complete"],
-                  description: "Goal report status.",
-                },
-                message: {
-                  type: "string",
-                  description: "Concise progress, blocker, or completion message.",
-                },
-                evidence: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "Optional concrete evidence such as file paths changed, tests run, audit logs, or blockers observed.",
-                },
+    const goal = this.store.getSnapshot().goal;
+    if (!goal || goal.status === "complete" || goal.goalId !== this.currentTurnGoalId) {
+      return tools;
+    }
+
+    tools.push({
+      providerId: "session",
+      path: "/goal",
+      tool: {
+        type: "function",
+        function: {
+          name: "slop_goal_update",
+          description:
+            "Report progress for the active persistent session goal. Use status=progress for evidence of forward movement, status=blocked when work cannot continue, and status=complete only when the objective is genuinely achieved.",
+          parameters: {
+            type: "object",
+            properties: {
+              status: {
+                type: "string",
+                enum: ["progress", "blocked", "complete"],
+                description: "Goal report status.",
               },
-              required: ["status", "message"],
-              additionalProperties: false,
+              message: {
+                type: "string",
+                description: "Concise progress, blocker, or completion message.",
+              },
+              evidence: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Optional concrete evidence such as file paths changed, tests run, audit logs, or blockers observed.",
+              },
             },
+            required: ["status", "message"],
+            additionalProperties: false,
           },
         },
-        execute: (params) => this.reportGoalUpdate(params, goal.goalId),
       },
-    ];
+      execute: (params) => this.reportGoalUpdate(params, goal.goalId),
+    });
+
+    return tools;
   }
 
   private reportGoalUpdate(
@@ -1028,7 +1036,10 @@ export class SessionRuntime {
       return true;
     }
 
-    return snapshot.turn.state === "running" && snapshot.turn.waitingOn === "model";
+    return (
+      snapshot.turn.state === "running" &&
+      (snapshot.turn.waitingOn === "model" || snapshot.turn.waitingOn === "tool")
+    );
   }
 
   async cancelTurn(): Promise<{ status: string; turnId: string }> {

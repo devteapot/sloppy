@@ -135,6 +135,22 @@ not understand tasks or plans. Child agents expose the same session-provider
 surface as the parent, so parent agents and UIs observe child transcript,
 approvals, activity, and lifecycle state through SLOP.
 
+`spawn_agent` is nonblocking: it creates a background child session and returns
+the child id. The parent remains responsible for strategy. It may continue
+independent work, then explicitly park the current turn with the runtime-local
+`slop_wait_for_delegation_event` tool. That wait tool watches delegation state
+through `ConsumerHub.waitForStateChange()` and returns a single wake payload
+when a watched child completes a turn, fails, is cancelled or closed, needs
+approval, or times out. Child state patches do not start autonomous parent
+turns by themselves.
+
+Completed child sessions stay open as chat-like conversations. Their agent
+items expose follow-up `send_message`, full `get_result`, approval forwarding,
+and `close` controls while the child session provider remains registered.
+Closing a child unregisters its session provider but keeps the summarized
+delegation result in `/agents`. Parent agents should close completed children
+after retrieving final results unless they need another follow-up turn.
+
 The deprecated `task_id` spawn field is ignored for compatibility. Completed
 children expose `get_result` directly on their agent item.
 

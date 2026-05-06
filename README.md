@@ -145,7 +145,7 @@ These providers are currently implemented as in-process SLOP providers:
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
-- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
+- `delegation` for background child-session lifecycle state, explicit wait joins, follow-up messages, approval forwarding, result retrieval, close controls, and optional ACP-backed child execution
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 - `mcp` for opt-in Model Context Protocol compatibility, exposing configured MCP servers as SLOP state under `/servers`
@@ -540,7 +540,9 @@ Skills follow the `SKILL.md` directory pattern used by Hermes and agentskills.io
 `templates/`, or `scripts/` are read with `skill_view(name, file_path)`.
 Workspace and global changes made through `skill_manage` require approval.
 
-Delegation can also launch configured Agent Client Protocol agents as child sessions while preserving the same SLOP session surface:
+Delegation launches child agents as background child sessions while preserving the same SLOP session surface. Parent turns join child progress explicitly with the runtime-local `slop_wait_for_delegation_event` tool instead of polling `/delegation/agents`; completed children stay available for follow-up messages until closed. After retrieving a final child result, close that child unless a follow-up turn is still needed.
+
+Delegation can also launch configured Agent Client Protocol agents as child sessions:
 
 ```yaml
 providers:

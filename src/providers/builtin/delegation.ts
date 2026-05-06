@@ -8,7 +8,7 @@ import {
 } from "../../runtime/delegation/executor-binding";
 import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "./message-envelope";
 
-type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "closed";
 
 export type DelegationAgentSpawn = {
   id: string;
@@ -24,12 +24,17 @@ export type DelegationAgentUpdate = {
   result?: string;
   error?: string;
   session_provider_id?: string;
+  session_provider_closed?: boolean;
+  turn_state?: string;
+  turn_phase?: string;
   completed_at?: string;
 };
 
 export interface DelegationRunner {
   start(): Promise<void>;
   cancel(): Promise<void>;
+  sendMessage?(text: string): Promise<unknown>;
+  close?(): Promise<void>;
 }
 
 export type DelegationRunnerFactory = (
@@ -50,6 +55,9 @@ type DelegationAgent = {
   result?: string;
   error?: string;
   session_provider_id?: string;
+  session_provider_closed?: boolean;
+  turn_state?: string;
+  turn_phase?: string;
   created_at: string;
   completed_at?: string;
   runner?: DelegationRunner;
@@ -127,6 +135,13 @@ export class DelegationProvider {
   stop(): void {
     for (const agentId of [...this.approvalMirrors.keys()]) {
       this.stopMirroringApprovals(agentId);
+    }
+    for (const agent of this.agents.values()) {
+      if (agent.runner?.close) {
+        void agent.runner.close().catch(() => undefined);
+      } else if (agent.status === "pending" || agent.status === "running") {
+        void agent.runner?.cancel().catch(() => undefined);
+      }
     }
     this.server.stop();
   }
@@ -312,11 +327,16 @@ export class DelegationProvider {
             current.session_provider_id = update.session_provider_id;
             void this.mirrorChildApprovals(id, update.session_provider_id);
           }
+          if (update.session_provider_closed !== undefined) {
+            current.session_provider_closed = update.session_provider_closed;
+          }
+          if (update.turn_state !== undefined) current.turn_state = update.turn_state;
+          if (update.turn_phase !== undefined) current.turn_phase = update.turn_phase;
           if (update.completed_at !== undefined) current.completed_at = update.completed_at;
           if (
-            update.status === "completed" ||
             update.status === "failed" ||
-            update.status === "cancelled"
+            update.status === "cancelled" ||
+            update.status === "closed"
           ) {
             this.stopMirroringApprovals(id);
           }
@@ -363,7 +383,7 @@ export class DelegationProvider {
     if (!agent) {
       throw new Error(`Unknown agent: ${agentId}`);
     }
-    if (agent.status === "completed" || agent.status === "failed") {
+    if (agent.status === "completed" || agent.status === "failed" || agent.status === "closed") {
       throw new Error(`Agent ${agentId} has already ${agent.status} and cannot be cancelled.`);
     }
 
@@ -377,18 +397,82 @@ export class DelegationProvider {
     return { cancelled: true };
   }
 
+  private async sendMessage(
+    agentId: string,
+    text: string,
+  ): Promise<{ agent_id: string; status: string; result: unknown }> {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${agentId}`);
+    }
+    if (agent.status === "failed" || agent.status === "cancelled" || agent.status === "closed") {
+      throw new Error(`Cannot send a follow-up to agent ${agentId} in status ${agent.status}.`);
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      throw new Error("Message text cannot be empty.");
+    }
+
+    let result: unknown;
+    if (agent.runner?.sendMessage) {
+      result = await agent.runner.sendMessage(trimmed);
+    } else {
+      if (!agent.session_provider_id || agent.session_provider_closed) {
+        throw new Error(`Agent ${agentId} has no open session provider for follow-up.`);
+      }
+      if (!this.parentHub) {
+        throw new Error("Delegation provider has no parent hub reference.");
+      }
+      const invokeResult = await this.parentHub.invoke(
+        agent.session_provider_id,
+        "/composer",
+        "send_message",
+        { text: trimmed },
+      );
+      if (invokeResult.status === "error") {
+        throw new Error(
+          invokeResult.error?.message ?? `Failed to send follow-up to agent ${agentId}.`,
+        );
+      }
+      result = invokeResult.data;
+    }
+
+    return { agent_id: agentId, status: "sent", result };
+  }
+
   private getResult(agentId: string): { id: string; result: string } {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new Error(`Unknown agent: ${agentId}`);
     }
-    if (agent.status !== "completed") {
-      throw new Error(`Agent ${agentId} has not completed yet (status: ${agent.status}).`);
-    }
     if (!agent.result) {
-      throw new Error(`Agent ${agentId} completed but has no result.`);
+      throw new Error(`Agent ${agentId} has no result yet (status: ${agent.status}).`);
     }
     return { id: agentId, result: agent.result };
+  }
+
+  private async close(agentId: string): Promise<{ id: string; status: AgentStatus }> {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${agentId}`);
+    }
+    if (agent.status === "closed") {
+      return { id: agentId, status: "closed" };
+    }
+
+    await agent.runner?.close?.();
+    if (!agent.runner?.close) {
+      if (agent.status === "pending" || agent.status === "running") {
+        void agent.runner?.cancel().catch(() => undefined);
+      }
+      this.stopMirroringApprovals(agentId);
+    }
+
+    agent.status = "closed";
+    agent.session_provider_closed = true;
+    agent.completed_at ??= new Date().toISOString();
+    this.server.refresh();
+    return { id: agentId, status: "closed" };
   }
 
   private listAgents(): DelegationAgent[] {
@@ -398,7 +482,9 @@ export class DelegationProvider {
   private buildSessionDescriptor() {
     const all = this.listAgents();
     const active = all.filter((a) => a.status === "pending" || a.status === "running").length;
-    const completed = all.filter((a) => a.status === "completed").length;
+    const completed = all.filter(
+      (a) => a.status === "completed" || (a.status === "closed" && Boolean(a.result)),
+    ).length;
     const failed = all.filter((a) => a.status === "failed" || a.status === "cancelled").length;
 
     return {
@@ -471,7 +557,8 @@ export class DelegationProvider {
             ),
           {
             label: "Spawn Agent",
-            description: "Create and launch a new subagent to accomplish a delegated goal.",
+            description:
+              "Create and launch a child session in the background. Continue independent work, then use slop_wait_for_delegation_event to join on child turn edges instead of polling /agents.",
             estimate: "fast",
           },
         ),
@@ -501,15 +588,17 @@ export class DelegationProvider {
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
         error: agent.error,
         session_provider_id: agent.session_provider_id,
+        session_provider_closed: agent.session_provider_closed === true,
+        turn_state: agent.turn_state,
+        turn_phase: agent.turn_phase,
         pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
       },
       actions: {
-        ...(agent.status === "completed"
+        ...(agent.result
           ? {
               get_result: action(async () => this.getResult(agent.id), {
                 label: "Get Result",
-                description:
-                  "Return the full result text for a completed agent. This affordance appears only after completion; use pushed agent state while it is running.",
+                description: "Return the full latest result text for this child conversation.",
                 idempotent: true,
                 estimate: "instant",
               }),
@@ -525,8 +614,34 @@ export class DelegationProvider {
               }),
             }
           : {}),
-        ...(agent.session_provider_id
+        ...(agent.session_provider_id && agent.session_provider_closed !== true
           ? {
+              send_message: action(
+                {
+                  text: {
+                    type: "string",
+                    description:
+                      "Follow-up message to send to this child session. Starts immediately when idle or queues behind an active child turn.",
+                  },
+                },
+                async ({ text }) => this.sendMessage(agent.id, text as string),
+                {
+                  label: "Send Message",
+                  description:
+                    "Send a follow-up message into this child session without closing it.",
+                  estimate: "instant",
+                },
+              ),
+              ...(agent.status === "completed"
+                ? {
+                    close: action(async () => this.close(agent.id), {
+                      label: "Close Agent",
+                      description:
+                        "Close this completed child session provider while keeping its summarized result in delegation state.",
+                      estimate: "instant",
+                    }),
+                  }
+                : {}),
               list_approvals: action(async () => this.listChildApprovals(agent.id), {
                 label: "List Child Approvals",
                 description:
