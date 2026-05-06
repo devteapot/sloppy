@@ -11,6 +11,7 @@ const originalHome = process.env.HOME;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
+const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 const originalMaxIterations = process.env.SLOPPY_MAX_ITERATIONS;
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -50,6 +51,12 @@ afterEach(async () => {
     delete process.env.SLOPPY_LLM_BASE_URL;
   } else {
     process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
+
+  if (originalApiKeyEnv == null) {
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+  } else {
+    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
   }
 
   if (originalMaxIterations == null) {
@@ -114,6 +121,7 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     process.env.SLOPPY_LLM_PROVIDER = "ollama";
     process.env.SLOPPY_LLM_BASE_URL = "http://127.0.0.1:11434/v1";
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     delete process.env.SLOPPY_MODEL;
     process.chdir(workspace);
 
@@ -123,6 +131,24 @@ describe("loadConfig", () => {
     expect(config.llm.model).toBe("llama3.2");
     expect(config.llm.apiKeyEnv).toBeUndefined();
     expect(config.llm.baseUrl).toBe("http://127.0.0.1:11434/v1");
+  });
+
+  test("applies env override for API key env name", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(workspace, "llm:\n  provider: openai\n");
+
+    process.env.HOME = home;
+    process.env.SLOPPY_LLM_API_KEY_ENV = "LITELLM_API_KEY";
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.provider).toBe("openai");
+    expect(config.llm.apiKeyEnv).toBe("LITELLM_API_KEY");
   });
 
   test("expands ~ in skills.skillsDir to the user's home directory", async () => {

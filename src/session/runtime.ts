@@ -16,9 +16,10 @@ import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
   LlmConfigurationError,
-  LlmProfileManager,
+  type LlmProfileManager,
   type LlmStateSnapshot as RuntimeLlmStateSnapshot,
 } from "../llm/profile-manager";
+import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
@@ -224,7 +225,7 @@ export class SessionRuntime {
     this.externalAgentState = options?.externalAgentState;
     this.llmProfileManager =
       options?.llmProfileManager ??
-      new LlmProfileManager({
+      createRuntimeLlmProfileManager({
         config: this.config,
       });
     this.store =

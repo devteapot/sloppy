@@ -284,6 +284,10 @@ bun run runtime:doctor \
   --cli-adapter codex
 ```
 
+Use `.sloppy/config.example.yaml` as the local workspace config shape for the
+Claude ACP and Codex CLI adapters. Copy those adapter blocks into
+`.sloppy/config.yaml` and set the LiteLLM model/base URL for your machine.
+
 If the LiteLLM check fails before HTTP, verify local name resolution first:
 
 ```sh
@@ -296,8 +300,10 @@ IP address in `--litellm-url` and `SLOPPY_LLM_BASE_URL`.
 
 If the ACP check fails for Claude, confirm that the installed command actually
 speaks Agent Client Protocol over stdio. `claude mcp ...` is MCP server support,
-not ACP agent mode; configure `providers.delegation.acp.adapters.<id>.command`
-with the real ACP adapter command.
+not ACP agent mode; Zed uses a dedicated adapter, so configure
+`providers.delegation.acp.adapters.<id>.command` with an ACP adapter command
+such as `["bunx", "@agentclientprotocol/claude-agent-acp"]` or an installed
+`claude-agent-acp` binary.
 
 CLI mode runs a configured subprocess-backed child session. It is intended for
 tools such as Codex CLI or local custom agents that can complete from one prompt:
@@ -369,9 +375,13 @@ providers:
       adapters:
         gemini:
           command: ["gemini", "--acp"]
+        claude:
+          command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
 ```
 
-Then use `execution_mode: "acp:gemini"` on `delegation.spawn_agent`; omitted execution mode still uses the native Sloppy sub-agent.
+Then use `execution_mode: "acp:gemini"` or `execution_mode: "acp:claude"` on
+`delegation.spawn_agent`; omitted execution mode still uses the native Sloppy
+sub-agent.
 
 Delegation can also launch trusted CLI subprocesses as child sessions. The
 runtime streams stdout into the child transcript and exposes the result through

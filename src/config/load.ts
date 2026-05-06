@@ -102,6 +102,13 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
     };
   }
 
+  if (Bun.env.SLOPPY_LLM_API_KEY_ENV) {
+    overrides.llm = {
+      ...(overrides.llm as JsonObject | undefined),
+      apiKeyEnv: Bun.env.SLOPPY_LLM_API_KEY_ENV,
+    };
+  }
+
   if (Bun.env.SLOPPY_CONTEXT_BUDGET_TOKENS) {
     overrides.agent = {
       ...(overrides.agent as JsonObject | undefined),

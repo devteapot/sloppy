@@ -3,13 +3,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
-import { buildRuntimeLlmConfig } from "../src/llm/runtime-config";
+import { buildRuntimeLlmConfig, createRuntimeLlmProfileManager } from "../src/llm/runtime-config";
 
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
 const originalGeminiKey = process.env.GEMINI_API_KEY;
+const originalLiteLlmKey = process.env.LITELLM_API_KEY;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
+const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -144,6 +146,12 @@ afterEach(() => {
     process.env.GEMINI_API_KEY = originalGeminiKey;
   }
 
+  if (originalLiteLlmKey == null) {
+    delete process.env.LITELLM_API_KEY;
+  } else {
+    process.env.LITELLM_API_KEY = originalLiteLlmKey;
+  }
+
   if (originalProvider == null) {
     delete process.env.SLOPPY_LLM_PROVIDER;
   } else {
@@ -160,6 +168,12 @@ afterEach(() => {
     delete process.env.SLOPPY_LLM_BASE_URL;
   } else {
     process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
+
+  if (originalApiKeyEnv == null) {
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+  } else {
+    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
   }
 });
 
@@ -267,6 +281,33 @@ describe("LlmProfileManager", () => {
     expect(activeProfile?.baseUrl).toBe("http://192.168.1.96:8001/v1");
     expect(activeProfile?.keySource).toBe("env");
     expect(activeProfile?.origin).toBe("environment");
+    expect(state.profiles.every((profile) => profile.origin !== "managed")).toBe(true);
+  });
+
+  test("runtime profile manager honors explicit env routing by default", async () => {
+    process.env.LITELLM_API_KEY = "router-key";
+    process.env.SLOPPY_LLM_PROVIDER = "openai";
+    process.env.SLOPPY_MODEL = "local/test-model";
+    process.env.SLOPPY_LLM_BASE_URL = "http://sloppy-mba.local:8001/v1";
+    process.env.SLOPPY_LLM_API_KEY_ENV = "LITELLM_API_KEY";
+
+    const manager = createRuntimeLlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: new MemoryCredentialStore(
+        "available",
+        new Map([["openai-main", "sk-stored-cloud-key"]]),
+      ),
+      writeConfig: async () => undefined,
+      env: process.env,
+    });
+
+    const state = await manager.getState();
+    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
+
+    expect(state.activeProfileId).toStartWith("env-openai-litellm-api-key-");
+    expect(state.selectedModel).toBe("local/test-model");
+    expect(activeProfile?.baseUrl).toBe("http://sloppy-mba.local:8001/v1");
+    expect(activeProfile?.keySource).toBe("env");
     expect(state.profiles.every((profile) => profile.origin !== "managed")).toBe(true);
   });
 

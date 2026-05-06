@@ -10,7 +10,8 @@ import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
-import { LlmProfileManager } from "../llm/profile-manager";
+import type { LlmProfileManager } from "../llm/profile-manager";
+import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import {
   discoverProviderDescriptors,
@@ -150,7 +151,7 @@ export class Agent {
     });
     this.llmProfileManager =
       options?.llmProfileManager ??
-      new LlmProfileManager({
+      createRuntimeLlmProfileManager({
         config: this.config,
       });
     this.llmProfileId = options?.llmProfileId;

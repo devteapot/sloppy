@@ -18,6 +18,12 @@ export { Agent } from "./core/agent";
 export type { RoleProfile } from "./core/role";
 export { defaultRole } from "./core/role";
 export { LlmConfigurationError, LlmProfileManager } from "./llm/profile-manager";
+export {
+  buildRuntimeLlmConfig,
+  buildRuntimeSloppyConfig,
+  createRuntimeLlmProfileManager,
+  hasExplicitRuntimeLlmRouting,
+} from "./llm/runtime-config";
 export { BrowserProvider } from "./providers/builtin/browser";
 export { CronProvider } from "./providers/builtin/cron";
 export { DelegationProvider } from "./providers/builtin/delegation";

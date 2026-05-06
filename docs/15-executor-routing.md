@@ -93,7 +93,7 @@ providers:
     acp:
       adapters:
         claude-code:
-          command: ["claude", "--acp"]
+          command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
           timeoutMs: 60000
           capabilities:                 # NEW — see §3
             spawn_allowed: false

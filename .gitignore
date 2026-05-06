@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.sloppy/config.yaml
 .sloppy-demo/
 .sloppy-debug/
 .claude/

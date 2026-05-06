@@ -1,4 +1,6 @@
-import type { LlmConfig } from "../config/schema";
+import { type LlmConfig, llmProviderSchema, type SloppyConfig } from "../config/schema";
+import type { CredentialStore } from "./credential-store";
+import { LlmProfileManager } from "./profile-manager";
 import { getProviderDefaults } from "./provider-defaults";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
@@ -21,15 +23,46 @@ export function buildRuntimeLlmConfig(
   baseConfig: LlmConfig,
   env: RuntimeEnvironment = Bun.env,
 ): LlmConfig {
-  const defaults = getProviderDefaults(baseConfig.provider);
+  const provider = trimOptional(env.SLOPPY_LLM_PROVIDER)
+    ? llmProviderSchema.parse(trimOptional(env.SLOPPY_LLM_PROVIDER))
+    : baseConfig.provider;
+  const defaults = getProviderDefaults(provider);
 
   return {
     ...baseConfig,
-    model: baseConfig.model ?? defaults.model,
+    provider,
+    model: trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model,
     apiKeyEnv:
       trimOptional(env.SLOPPY_LLM_API_KEY_ENV) ?? baseConfig.apiKeyEnv ?? defaults.apiKeyEnv,
-    baseUrl: baseConfig.baseUrl ?? defaults.baseUrl,
+    baseUrl: trimOptional(env.SLOPPY_LLM_BASE_URL) ?? baseConfig.baseUrl ?? defaults.baseUrl,
     defaultProfileId: undefined,
     profiles: [],
   };
+}
+
+export function buildRuntimeSloppyConfig(
+  baseConfig: SloppyConfig,
+  env: RuntimeEnvironment = Bun.env,
+): SloppyConfig {
+  if (!hasExplicitRuntimeLlmRouting(env)) {
+    return baseConfig;
+  }
+
+  return {
+    ...baseConfig,
+    llm: buildRuntimeLlmConfig(baseConfig.llm, env),
+  };
+}
+
+export function createRuntimeLlmProfileManager(options: {
+  config: SloppyConfig;
+  credentialStore?: CredentialStore;
+  writeConfig?: (config: LlmConfig) => Promise<void>;
+  env?: RuntimeEnvironment;
+}): LlmProfileManager {
+  return new LlmProfileManager({
+    config: buildRuntimeSloppyConfig(options.config, options.env),
+    credentialStore: options.credentialStore,
+    writeConfig: options.writeConfig,
+  });
 }

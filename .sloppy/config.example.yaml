@@ -1,0 +1,24 @@
+llm:
+  provider: openai
+  model: <litellm-model>
+  apiKeyEnv: LITELLM_API_KEY
+  baseUrl: http://sloppy-mba.local:8001/v1
+
+providers:
+  builtin:
+    metaRuntime: true
+    messaging: true
+    delegation: true
+  delegation:
+    acp:
+      enabled: true
+      defaultTimeoutMs: 600000
+      adapters:
+        claude:
+          command: ["claude-agent-acp"]
+    cli:
+      enabled: true
+      defaultTimeoutMs: 600000
+      adapters:
+        codex:
+          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
