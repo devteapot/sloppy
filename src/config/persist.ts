@@ -8,6 +8,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
   return {
     provider: config.provider,
     model: config.model,
+    reasoningEffort: config.reasoningEffort,
     adapterId: config.adapterId,
     apiKeyEnv: config.apiKeyEnv,
     baseUrl: config.baseUrl,
@@ -18,6 +19,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      reasoningEffort: profile.reasoningEffort,
       adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,

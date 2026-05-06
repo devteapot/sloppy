@@ -1,7 +1,7 @@
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
-import { llmProviderSchema, type SloppyConfig } from "../config/schema";
+import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
 import type {
   AgentCallbacks,
   AgentRunResult,
@@ -276,6 +276,12 @@ export class SessionRuntime {
     const profileId = typeof params.profile_id === "string" ? params.profile_id : undefined;
     const label = typeof params.label === "string" ? params.label : undefined;
     const model = typeof params.model === "string" ? params.model : undefined;
+    const reasoningEffort =
+      typeof params.reasoning_effort === "string"
+        ? llmReasoningEffortSchema.parse(params.reasoning_effort)
+        : typeof params.reasoningEffort === "string"
+          ? llmReasoningEffortSchema.parse(params.reasoningEffort)
+          : undefined;
     const adapterId =
       typeof params.adapter_id === "string"
         ? params.adapter_id
@@ -291,6 +297,7 @@ export class SessionRuntime {
       label,
       provider,
       model,
+      reasoningEffort,
       adapterId,
       baseUrl,
       apiKey,

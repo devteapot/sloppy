@@ -9,7 +9,8 @@ built-in orchestrator.
 Checked in now:
 
 - Bun/TypeScript runtime scaffold
-- native Anthropic, Gemini, and OpenAI-compatible adapters
+- native Anthropic, Gemini, OpenAI-compatible, and OpenAI Codex subscription
+  adapters
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - default built-ins: `terminal`, `filesystem`, `memory`, `skills`
 - optional built-ins: `web`, `browser`, `cron`, `messaging`, `delegation`,
@@ -21,6 +22,8 @@ Checked in now:
 - CLI-backed delegated child sessions for Codex CLI or custom one-shot agents
 - ACP and CLI adapters selectable as first-class main-session LLM profiles
   behind the same session-provider boundary
+- native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
+  by the Codex CLI auth store created by `codex login`
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native, ACP, and CLI delegated-child modes
 - runtime doctor (`bun run runtime:doctor`) for checking live OpenAI-compatible

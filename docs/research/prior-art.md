@@ -121,23 +121,32 @@ This is a good "own the auth session, keep the implementation small" model. It a
 
 This is the cleanest architecture of the group. It makes the boundary between normal OpenAI API-key usage and ChatGPT subscription auth explicit in both auth storage and runtime transport selection.
 
-### Likely Direction For Sloppy
-
-If `sloppy` adds ChatGPT subscription auth later, the cleanest direction is:
+### Sloppy Direction
 
 - add a separate provider such as `openai-codex` rather than overloading `openai`
 - store structured OAuth credentials separately from API keys
 - resolve a Codex-specific runtime transport rather than forcing it through the plain OpenAI API-key path
-- consider Codex CLI reuse as optional compatibility later, not the core design
+- treat Codex CLI reuse as compatibility and bootstrap convenience, not the
+  model/session boundary
 
-The checked-in first step is lower risk: reuse configured ACP/CLI adapters as
-first-class LLM profiles, so a `cli` profile can point at Codex CLI and inherit
-its existing subscription login. That keeps subscription auth out of the core
-runtime while preserving the provider/model profile UX. A future first-party
-Codex transport can still follow the Hermes/OpenClaw shape:
+The checked-in implementation now follows the Hermes/OpenClaw shape at the
+runtime boundary: `openai-codex` is a native provider, separate from normal
+OpenAI API-key profiles, and sends Responses requests to the Codex backend with
+ChatGPT subscription auth. For the first iteration it reuses the official Codex
+CLI auth store created by `codex login` instead of implementing Sloppy-owned
+device-code or browser OAuth.
 
-- Hermes-style first-party device auth is the smallest coherent implementation
-- OpenClaw-style provider and transport separation is the better long-term architecture
+That means Sloppy owns the model/tool loop and SLOP affordance projection while
+Codex CLI owns only the current login lifecycle. The existing `cli` provider
+path remains as the fallback when the desired behavior is for the official Codex
+CLI to own the whole turn.
+
+Likely next steps:
+
+- Hermes-style first-party device auth is the smallest coherent way to remove
+  the Codex CLI auth-store dependency
+- OpenClaw-style provider-owned auth profiles are the better long-term boundary
+  once Sloppy needs account selection, migration, or richer subscription status
 
 ## What Both Projects Get Right
 

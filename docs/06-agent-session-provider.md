@@ -183,7 +183,7 @@ Required profile item props:
 - `origin`: `managed | environment | fallback`
 - `is_default`: boolean
 - `has_key`: boolean
-- `key_source`: `env | secure_store | missing | not_required`
+- `key_source`: `env | secure_store | missing | not_required | external_auth`
 - `ready`: boolean
 - `managed`: boolean indicating whether the profile is persisted in config or only the fallback active selection
 - `can_delete_profile`: boolean
@@ -192,13 +192,14 @@ Required profile item props:
 Optional profile item props:
 
 - `label`: display label
+- `reasoning_effort`: optional OpenAI-style reasoning effort for providers that expose it
 - `adapter_id`: ACP/CLI adapter id when the profile runs through an external session agent
 - `api_key_env`: environment variable name that can satisfy the profile for this process
 - `base_url`: provider base URL override
 
 Affordances:
 
-- `save_profile(profile_id?, label?, provider, model?, adapter_id?, base_url?, api_key?, make_default?)`
+- `save_profile(profile_id?, label?, provider, model?, reasoning_effort?, adapter_id?, base_url?, api_key?, make_default?)`
 - `set_default_profile(profile_id)`
 - `delete_profile(profile_id)`
 - `delete_api_key(profile_id)`
@@ -208,6 +209,7 @@ Rules:
 - secret values must never be exposed in state, transcript, activity, or logs
 - `api_key` is write-only input for secure persistence
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
+- `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
 - ACP/CLI profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
 - the session should remain attachable even when `status=needs_credentials`
 

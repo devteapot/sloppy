@@ -31,6 +31,7 @@ Current checked-in implementation includes:
 - provider-native LLM adapter layer with:
   - native Anthropic/Claude support
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
+  - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
 - consumer hub for built-in and live-discovered SLOP providers
 - built-in in-process providers:
@@ -347,6 +348,25 @@ llm:
       adapterId: codex
 ```
 
+For Codex subscription models, prefer the native `openai-codex` provider when
+you want Sloppy to keep its own model/tool loop instead of delegating the whole
+turn to `codex exec`. It reads the existing Codex CLI auth store, so run
+`codex login` first:
+
+```yaml
+llm:
+  provider: openai-codex
+  model: gpt-5.5
+  reasoningEffort: low
+  defaultProfileId: codex-native
+  profiles:
+    - id: codex-native
+      label: Codex GPT-5.5 Low
+      provider: openai-codex
+      model: gpt-5.5
+      reasoningEffort: low
+```
+
 ## Config
 
 Sloppy reads configuration from:
@@ -371,6 +391,9 @@ llm:
       provider: openai
       model: gpt-5.4
 ```
+
+Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
+`high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
 Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
 

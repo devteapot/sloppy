@@ -114,7 +114,7 @@ export type ExternalAppSnapshot = {
   lastError?: string;
 };
 
-export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required";
+export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required" | "external_auth";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 
 export type LlmSecureStoreStatus = "available" | "unavailable" | "unsupported";
@@ -124,6 +124,7 @@ export type LlmProfileSnapshot = {
   label?: string;
   provider: string;
   model: string;
+  reasoningEffort?: string;
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;

@@ -59,6 +59,19 @@ describe("createLlmAdapter", () => {
     expect(adapter.constructor.name).toBe("OpenAICompatibleAdapter");
   });
 
+  test("creates the native OpenAI Codex adapter without an API key", () => {
+    const adapter = createLlmAdapter(
+      createConfig({
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        reasoningEffort: "low",
+        apiKeyEnv: undefined,
+      }),
+    );
+
+    expect(adapter.constructor.name).toBe("OpenAICodexAdapter");
+  });
+
   test("requires API keys for Anthropic-backed providers", () => {
     delete process.env.ANTHROPIC_API_KEY;
 

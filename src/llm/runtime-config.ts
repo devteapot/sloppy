@@ -1,4 +1,9 @@
-import { type LlmConfig, llmProviderSchema, type SloppyConfig } from "../config/schema";
+import {
+  type LlmConfig,
+  llmProviderSchema,
+  llmReasoningEffortSchema,
+  type SloppyConfig,
+} from "../config/schema";
 import type { CredentialStore } from "./credential-store";
 import { LlmProfileManager } from "./profile-manager";
 import { getProviderDefaults } from "./provider-defaults";
@@ -14,6 +19,7 @@ export function hasExplicitRuntimeLlmRouting(env: RuntimeEnvironment = Bun.env):
   return Boolean(
     trimOptional(env.SLOPPY_LLM_PROVIDER) ??
       trimOptional(env.SLOPPY_MODEL) ??
+      trimOptional(env.SLOPPY_LLM_REASONING_EFFORT) ??
       trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ??
       trimOptional(env.SLOPPY_LLM_BASE_URL) ??
       trimOptional(env.SLOPPY_LLM_API_KEY_ENV),
@@ -27,12 +33,16 @@ export function buildRuntimeLlmConfig(
   const provider = trimOptional(env.SLOPPY_LLM_PROVIDER)
     ? llmProviderSchema.parse(trimOptional(env.SLOPPY_LLM_PROVIDER))
     : baseConfig.provider;
+  const reasoningEffort = trimOptional(env.SLOPPY_LLM_REASONING_EFFORT)
+    ? llmReasoningEffortSchema.parse(trimOptional(env.SLOPPY_LLM_REASONING_EFFORT))
+    : baseConfig.reasoningEffort;
   const defaults = getProviderDefaults(provider);
 
   return {
     ...baseConfig,
     provider,
     model: trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model,
+    reasoningEffort,
     adapterId:
       trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ?? baseConfig.adapterId ?? defaults.adapterId,
     apiKeyEnv:

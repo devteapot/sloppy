@@ -24,6 +24,7 @@ export function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnaps
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      reasoningEffort: profile.reasoningEffort,
       adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,

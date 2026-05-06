@@ -1,7 +1,8 @@
-import type { LlmProvider } from "../config/schema";
+import type { LlmProvider, LlmReasoningEffort } from "../config/schema";
 
 import { AnthropicAdapter } from "./anthropic";
 import { GeminiAdapter } from "./gemini";
+import { OpenAICodexAdapter } from "./openai-codex";
 import { OpenAICompatibleAdapter } from "./openai-compatible";
 import { providerRequiresApiKey } from "./provider-defaults";
 import type { LlmAdapter } from "./types";
@@ -9,6 +10,7 @@ import type { LlmAdapter } from "./types";
 export type LlmAdapterConfig = {
   provider: LlmProvider;
   model: string;
+  reasoningEffort?: LlmReasoningEffort;
   apiKey?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
@@ -49,6 +51,12 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         model: config.model,
         provider: config.provider,
         baseUrl: config.baseUrl,
+      });
+    case "openai-codex":
+      return new OpenAICodexAdapter({
+        model: config.model,
+        baseUrl: config.baseUrl,
+        reasoningEffort: config.reasoningEffort,
       });
     case "ollama":
       return new OpenAICompatibleAdapter({

@@ -43,6 +43,11 @@ The same adapter configs are usable from `llm.profiles` with provider `acp` or
 `cli`. In that shape, `adapterId` selects the configured adapter and `model`
 remains the selected model identifier exposed through `/llm`.
 
+For ChatGPT/Codex subscription models, `openai-codex` is the native provider.
+It reads the Codex CLI auth store created by `codex login` and keeps Sloppy's
+own model/tool loop. The `cli` Codex adapter remains useful as a conservative
+fallback when you want the official Codex CLI to own the whole turn.
+
 ## Delegation Boundary
 
 `delegation.spawn_agent` accepts a goal and optional `executor` binding. The
@@ -98,6 +103,22 @@ Meta-runtime executor bindings can route an agent to these adapters with
 `modelOverride` is optional and expands `{model}` in adapter commands.
 
 Main-session profile example:
+
+```yaml
+llm:
+  provider: openai-codex
+  model: gpt-5.5
+  reasoningEffort: low
+  defaultProfileId: codex-native
+  profiles:
+    - id: codex-native
+      label: Codex GPT-5.5 Low
+      provider: openai-codex
+      model: gpt-5.5
+      reasoningEffort: low
+```
+
+CLI fallback profile example:
 
 ```yaml
 llm:

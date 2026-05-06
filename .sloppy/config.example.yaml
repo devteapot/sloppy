@@ -3,7 +3,11 @@ llm:
   model: <litellm-model>
   apiKeyEnv: LITELLM_API_KEY
   baseUrl: http://sloppy-mba.local:8001/v1
-  # To use Codex CLI as the main session model instead:
+  # To use a ChatGPT/Codex subscription natively, run `codex login` first:
+  # provider: openai-codex
+  # model: gpt-5.5
+  # reasoningEffort: low
+  # To use Codex CLI as a fallback external session model instead:
   # provider: cli
   # model: gpt-5.5
   # adapterId: codex

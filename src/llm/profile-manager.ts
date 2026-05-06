@@ -1,6 +1,12 @@
 import { defaultConfigPromise } from "../config/load";
 import { writeHomeLlmConfig } from "../config/persist";
-import type { LlmConfig, LlmProfileConfig, LlmProvider, SloppyConfig } from "../config/schema";
+import type {
+  LlmConfig,
+  LlmProfileConfig,
+  LlmProvider,
+  LlmReasoningEffort,
+  SloppyConfig,
+} from "../config/schema";
 import {
   type CredentialStore,
   type CredentialStoreKind,
@@ -8,16 +14,18 @@ import {
   createCredentialStore,
 } from "./credential-store";
 import { createLlmAdapter } from "./factory";
+import { getCodexAuthStatus } from "./openai-codex";
 import {
   DEFAULT_LLM_PROVIDER_CONFIG,
   getProviderDefaults,
   providerRequiresApiKey,
+  providerUsesCodexAuth,
 } from "./provider-defaults";
 import type { LlmAdapter } from "./types";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 
-export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required";
+export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required" | "external_auth";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 
 type ResolvedProfile = LlmProfileConfig & {
@@ -53,6 +61,7 @@ export type SaveProfileInput = {
   label?: string;
   provider: LlmProvider;
   model?: string;
+  reasoningEffort?: LlmReasoningEffort;
   adapterId?: string;
   baseUrl?: string;
   apiKey?: string;
@@ -126,6 +135,7 @@ function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
     label: "Default",
     provider: config.provider,
     model: config.model || defaults.model,
+    reasoningEffort: config.reasoningEffort,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     adapterId: config.adapterId ?? defaults.adapterId,
@@ -207,6 +217,7 @@ function buildNextLlmConfig(
     ...previous,
     provider: activeProfile.provider,
     model: activeProfile.model,
+    reasoningEffort: activeProfile.reasoningEffort,
     adapterId: activeProfile.adapterId,
     apiKeyEnv: activeProfile.apiKeyEnv,
     baseUrl: activeProfile.baseUrl,
@@ -324,6 +335,7 @@ export class LlmProfileManager {
       targetProfile.id,
       targetProfile.provider,
       model,
+      targetProfile.reasoningEffort ?? "",
       targetProfile.adapterId ?? "",
       targetProfile.baseUrl ?? "",
       credential.keySource,
@@ -338,6 +350,7 @@ export class LlmProfileManager {
     const adapter = createLlmAdapter({
       provider: targetProfile.provider,
       model,
+      reasoningEffort: targetProfile.reasoningEffort,
       apiKey: credential.apiKey,
       apiKeyEnv: targetProfile.apiKeyEnv,
       baseUrl: targetProfile.baseUrl,
@@ -371,6 +384,7 @@ export class LlmProfileManager {
       label: trimOptional(input.label) ?? existingProfile?.label,
       provider: input.provider,
       model: trimOptional(input.model) ?? existingProfile?.model ?? defaults.model,
+      reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
       adapterId: trimOptional(input.adapterId) ?? existingProfile?.adapterId ?? defaults.adapterId,
       apiKeyEnv:
         existingProfile && existingProfile.provider === input.provider
@@ -498,6 +512,16 @@ export class LlmProfileManager {
   }
 
   private async resolveCredential(profile: ResolvedProfile): Promise<ResolvedCredential> {
+    if (providerUsesCodexAuth(profile.provider)) {
+      const status = await getCodexAuthStatus();
+      return {
+        keySource: status.available ? "external_auth" : "missing",
+        ready: status.available,
+        hasKey: status.available,
+        invalidReason: status.reason,
+      };
+    }
+
     if (!providerRequiresApiKey(profile.provider)) {
       return {
         keySource: "not_required",
@@ -586,6 +610,10 @@ export class LlmProfileManager {
     if (profile.ready) {
       if (profile.keySource === "not_required") {
         return `Ready to chat with ${profile.provider} ${profile.model}.`;
+      }
+
+      if (profile.keySource === "external_auth") {
+        return `Ready to chat with ${profile.provider} ${profile.model} using Codex auth.`;
       }
 
       if (profile.keySource === "env") {

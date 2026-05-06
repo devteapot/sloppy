@@ -10,6 +10,7 @@ const originalCwd = process.cwd();
 const originalHome = process.env.HOME;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
+const originalReasoningEffort = process.env.SLOPPY_LLM_REASONING_EFFORT;
 const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
@@ -46,6 +47,12 @@ afterEach(async () => {
     delete process.env.SLOPPY_MODEL;
   } else {
     process.env.SLOPPY_MODEL = originalModel;
+  }
+
+  if (originalReasoningEffort == null) {
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+  } else {
+    process.env.SLOPPY_LLM_REASONING_EFFORT = originalReasoningEffort;
   }
 
   if (originalBaseUrl == null) {
@@ -122,6 +129,44 @@ describe("loadConfig", () => {
     expect(config.llm.model).toBe("gemini-2.5-pro");
     expect(config.llm.apiKeyEnv).toBe("GEMINI_API_KEY");
     expect(config.llm.baseUrl).toBeUndefined();
+  });
+
+  test("loads native OpenAI Codex profiles with reasoning effort", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: openai-codex",
+        "  model: gpt-5.5",
+        "  reasoningEffort: low",
+        "  profiles:",
+        "    - id: codex-native",
+        "      label: Codex Native",
+        "      provider: openai-codex",
+        "      model: gpt-5.5",
+        "      reasoningEffort: low",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.provider).toBe("openai-codex");
+    expect(config.llm.model).toBe("gpt-5.5");
+    expect(config.llm.reasoningEffort).toBe("low");
+    expect(config.llm.baseUrl).toBe("https://chatgpt.com/backend-api/codex");
+    expect(config.llm.apiKeyEnv).toBeUndefined();
+    expect(config.llm.profiles[0]?.reasoningEffort).toBe("low");
   });
 
   test("applies env overrides for provider and base URL", async () => {

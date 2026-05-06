@@ -16,6 +16,10 @@ export const DEFAULT_LLM_PROVIDER_CONFIG: Record<LlmProvider, ProviderDefault> =
     model: "gpt-5.4",
     apiKeyEnv: "OPENAI_API_KEY",
   },
+  "openai-codex": {
+    model: "gpt-5.5",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+  },
   openrouter: {
     model: "openai/gpt-5.4",
     apiKeyEnv: "OPENROUTER_API_KEY",
@@ -44,5 +48,11 @@ export function getProviderDefaults(provider: LlmProvider): ProviderDefault {
 }
 
 export function providerRequiresApiKey(provider: LlmProvider): boolean {
-  return provider !== "ollama" && provider !== "acp" && provider !== "cli";
+  return (
+    provider !== "ollama" && provider !== "acp" && provider !== "cli" && provider !== "openai-codex"
+  );
+}
+
+export function providerUsesCodexAuth(provider: LlmProvider): boolean {
+  return provider === "openai-codex";
 }

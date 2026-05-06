@@ -117,6 +117,7 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      reasoning_effort: profile.reasoningEffort,
       adapter_id: profile.adapterId,
       api_key_env: profile.apiKeyEnv,
       base_url: profile.baseUrl,
@@ -260,6 +261,10 @@ export class AgentSessionProvider {
             model: {
               type: "string",
               description: "Optional model override for the provider.",
+            },
+            reasoning_effort: {
+              type: "string",
+              description: "Optional reasoning effort for providers that expose it.",
             },
             adapter_id: {
               type: "string",

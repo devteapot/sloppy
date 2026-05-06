@@ -17,6 +17,7 @@ export { sloppyConfigSchema } from "./config/schema";
 export { Agent } from "./core/agent";
 export type { RoleProfile } from "./core/role";
 export { defaultRole } from "./core/role";
+export { OpenAICodexAdapter } from "./llm/openai-codex";
 export { LlmConfigurationError, LlmProfileManager } from "./llm/profile-manager";
 export {
   buildRuntimeLlmConfig,

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
@@ -13,6 +16,8 @@ const originalModel = process.env.SLOPPY_MODEL;
 const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
+const originalReasoningEffort = process.env.SLOPPY_LLM_REASONING_EFFORT;
+const originalCodexAuthPath = process.env.SLOPPY_CODEX_AUTH_PATH;
 
 const TEST_CONFIG: SloppyConfig = {
   llm: {
@@ -182,6 +187,18 @@ afterEach(() => {
   } else {
     process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
   }
+
+  if (originalReasoningEffort == null) {
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+  } else {
+    process.env.SLOPPY_LLM_REASONING_EFFORT = originalReasoningEffort;
+  }
+
+  if (originalCodexAuthPath == null) {
+    delete process.env.SLOPPY_CODEX_AUTH_PATH;
+  } else {
+    process.env.SLOPPY_CODEX_AUTH_PATH = originalCodexAuthPath;
+  }
 });
 
 describe("LlmProfileManager", () => {
@@ -258,6 +275,7 @@ describe("LlmProfileManager", () => {
     process.env.OPENAI_API_KEY = "stub-key";
     process.env.SLOPPY_LLM_PROVIDER = "openai";
     process.env.SLOPPY_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8";
+    process.env.SLOPPY_LLM_REASONING_EFFORT = "low";
     process.env.SLOPPY_LLM_BASE_URL = "http://192.168.1.96:8001/v1";
 
     const manager = new LlmProfileManager({
@@ -285,6 +303,7 @@ describe("LlmProfileManager", () => {
 
     expect(state.activeProfileId).toStartWith("env-openai-openai-api-key-");
     expect(state.selectedModel).toBe("Qwen/Qwen3.6-35B-A3B-FP8");
+    expect(activeProfile?.reasoningEffort).toBe("low");
     expect(activeProfile?.baseUrl).toBe("http://192.168.1.96:8001/v1");
     expect(activeProfile?.keySource).toBe("env");
     expect(activeProfile?.origin).toBe("environment");
@@ -462,6 +481,62 @@ describe("LlmProfileManager", () => {
     expect(state.profiles[0]?.adapterId).toBe("codex");
     expect(state.profiles[0]?.keySource).toBe("not_required");
     expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
+  });
+
+  test("treats OpenAI Codex profiles as ready when Codex auth is available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-codex-auth-"));
+    try {
+      const authPath = join(root, "auth.json");
+      await writeFile(
+        authPath,
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "codex-access-token",
+            refresh_token: "codex-refresh-token",
+            account_id: "codex-account",
+          },
+        }),
+      );
+      process.env.SLOPPY_CODEX_AUTH_PATH = authPath;
+
+      const manager = new LlmProfileManager({
+        config: {
+          ...TEST_CONFIG,
+          llm: {
+            ...TEST_CONFIG.llm,
+            provider: "openai-codex",
+            model: "gpt-5.5",
+            reasoningEffort: "low",
+            apiKeyEnv: undefined,
+            defaultProfileId: "codex-native",
+            profiles: [
+              {
+                id: "codex-native",
+                label: "Codex GPT-5.5",
+                provider: "openai-codex",
+                model: "gpt-5.5",
+                reasoningEffort: "low",
+              },
+            ],
+          },
+        },
+        credentialStore: new MemoryCredentialStore("available"),
+        writeConfig: async () => undefined,
+      });
+
+      const state = await manager.getState();
+
+      expect(state.status).toBe("ready");
+      expect(state.selectedProvider).toBe("openai-codex");
+      expect(state.selectedModel).toBe("gpt-5.5");
+      expect(state.profiles[0]?.reasoningEffort).toBe("low");
+      expect(state.profiles[0]?.keySource).toBe("external_auth");
+      expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
+      expect(state.message).toContain("using Codex auth");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("persists adapter ids when saving external agent profiles", async () => {
