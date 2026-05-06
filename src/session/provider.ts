@@ -11,6 +11,7 @@ import type {
   ActivityItem,
   ExternalAppSnapshot,
   LlmProfileSnapshot,
+  QueuedSessionMessage,
   TranscriptContentBlock,
   TranscriptMessage,
   TurnStateSnapshot,
@@ -86,6 +87,10 @@ function buildTranscriptItem(message: TranscriptMessage): ItemDescriptor {
       },
     },
   };
+}
+
+function queuedSummary(message: QueuedSessionMessage): string {
+  return message.text.length > 96 ? `${message.text.slice(0, 93)}...` : message.text;
 }
 
 function buildActivityItem(item: ActivityItem): ItemDescriptor {
@@ -170,6 +175,7 @@ export class AgentSessionProvider {
     this.server.register("llm", () => this.buildLlmDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
     this.server.register("composer", () => this.buildComposerDescriptor());
+    this.server.register("queue", () => this.buildQueueDescriptor());
     this.server.register("transcript", () => this.buildTranscriptDescriptor());
     this.server.register("activity", () => this.buildActivityDescriptor());
     this.server.register("approvals", () => this.buildApprovalsDescriptor());
@@ -202,6 +208,12 @@ export class AgentSessionProvider {
         title: snapshot.session.title,
         workspace_root: snapshot.session.workspaceRoot,
         last_error: snapshot.session.lastError,
+        config_requires_restart: snapshot.session.configRequiresRestart === true,
+        config_restart_reason: snapshot.session.configRestartReason,
+        persistence_path: snapshot.session.persistencePath,
+        restored_at: snapshot.session.restoredAt,
+        recovered_after_restart: snapshot.session.recoveredAfterRestart === true,
+        queued_count: snapshot.queue.length,
       },
       summary: "Shared state for one running Sloppy agent session.",
       meta: {
@@ -341,6 +353,8 @@ export class AgentSessionProvider {
         max_attachments: 0,
         ready: llmReady,
         disabled_reason: llmReady ? undefined : snapshot.llm.message,
+        queued_count: snapshot.queue.length,
+        active_turn_id: snapshot.turn.turnId,
       },
       summary: "Send a user message into the running session.",
       actions: llmReady
@@ -350,12 +364,42 @@ export class AgentSessionProvider {
               async ({ text }) => this.runtime.sendMessage(text),
               {
                 label: "Send Message",
-                description: "Append a user message and start a new turn.",
+                description:
+                  "Submit a user message. Starts immediately when idle, otherwise queues it for the next turn.",
                 estimate: "instant",
               },
             ),
           }
         : undefined,
+    };
+  }
+
+  private buildQueueDescriptor(): NodeDescriptor {
+    const snapshot = this.runtime.store.getSnapshot();
+    return {
+      type: "collection",
+      props: {
+        count: snapshot.queue.length,
+      },
+      summary: "Submitted user messages waiting for the current turn to finish.",
+      items: snapshot.queue.map((message, index) => ({
+        id: message.id,
+        props: {
+          status: message.status,
+          text: message.text,
+          created_at: message.createdAt,
+          author: message.author,
+          position: index + 1,
+        },
+        summary: queuedSummary(message),
+        actions: {
+          cancel: action(async () => this.runtime.cancelQueuedMessage(message.id), {
+            label: "Cancel Queued Message",
+            description: "Remove this submitted message from the pending turn queue.",
+            estimate: "instant",
+          }),
+        },
+      })),
     };
   }
 

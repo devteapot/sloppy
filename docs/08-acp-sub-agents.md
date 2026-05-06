@@ -69,6 +69,7 @@ providers:
       adapters:
         claude:
           command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
+          envAllowlist: ["ANTHROPIC_API_KEY"]
           capabilities:
             spawn_allowed: true
             shell_allowed: true
@@ -116,6 +117,19 @@ ACP adapters can be more powerful than the child capability mask suggests, so
 configured adapters should declare capabilities. Routed or allow-masked ACP
 spawns are rejected when the adapter declaration does not satisfy the requested
 child surface.
+
+Adapter subprocesses do not inherit the full Sloppy process environment by
+default. Sloppy passes a small process allowlist (`PATH`, `HOME`, user/shell/tmp
+variables, locale variables) plus explicit adapter `env` entries. Set
+`envAllowlist` to add exact environment variable names, or `inheritEnv: true`
+only for adapters that intentionally need the whole ambient environment. ACP
+prompt timeouts are hard bounds: if an adapter ignores cancel after
+`timeoutMs`, Sloppy fails the turn and tears down that adapter process.
+Adapters also default to the workspace root as their cwd, and a configured cwd
+outside the workspace is rejected unless `allowCwdOutsideWorkspace: true` is set
+for a trusted adapter.
+`runtime:doctor --acp-adapter <id>` reports a boundary warning when an adapter
+inherits the full environment or lacks a capability declaration.
 
 ## Non-Goals
 

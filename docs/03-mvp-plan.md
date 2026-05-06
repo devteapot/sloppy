@@ -84,13 +84,13 @@ providers, skills, routes, and agent-to-agent channels.
      `skill_view(name)`, `skill_view(name, file_path)`, supporting files, nested
      `metadata.sloppy`, builtin/imported roots, and external skill directories.
    - Treat reusable self-evolution behavior as skills: runtime architecture,
-     route repair, topology experiment evaluation, and topology pattern
-     authoring should be skill playbooks over provider state, not hardcoded
-     runtime policy.
+     route repair, topology experiment evaluation, topology pattern authoring,
+     and skill curation should be skill playbooks over provider state, not
+     hardcoded runtime policy.
    - Add enough skill authoring surface for agent-maintained procedural memory:
      linked-file reads and patch/edit/write support are implemented through
-     `skill_view` and `skill_manage`; usage telemetry and a curator/review path
-     remain before enabling broad autonomous skill growth.
+     `skill_view` and `skill_manage`; usage telemetry and a built-in
+     `skill-curator` workflow are in place before broad autonomous skill growth.
 
 5. Keep session routing lightweight.
    - Represent channels and routes as SLOP state.
@@ -103,8 +103,8 @@ providers, skills, routes, and agent-to-agent channels.
   provider state JSON.
 - Evolve route matching beyond substring matches when real usage needs richer
   predicates over typed message envelopes.
-- Add usage telemetry and curator/review workflows before enabling broad
-  autonomous skill growth.
+- Add autonomous scheduling or identity-level review around the existing
+  `skill-curator` workflow before enabling broad autonomous skill growth.
 
 ## Verification
 

@@ -131,6 +131,57 @@ tags: [demo]
     }
   });
 
+  test("records lightweight skill_view usage telemetry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    await createSkill(root, "demo", "---\nname: demo-skill\n---");
+
+    const { provider, consumer } = createHarness(root);
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const before = await consumer.query("/skills", 2);
+      expect(before.children?.[0]?.properties?.view_count).toBe(0);
+
+      const viewed = await consumer.invoke("/session", "skill_view", { name: "demo-skill" });
+      expect(viewed.status).toBe("ok");
+      expect((viewed.data as { view_count: number }).view_count).toBe(1);
+
+      const after = await consumer.query("/skills", 2);
+      expect(after.children?.[0]?.properties?.view_count).toBe(1);
+      expect(typeof after.children?.[0]?.properties?.last_viewed_at).toBe("string");
+
+      const session = await consumer.query("/session", 1);
+      expect(session.properties?.skill_views_count).toBe(1);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("bundles the runtime skill curator workflow as a builtin skill", async () => {
+    const imported = await mkdtemp(join(tmpdir(), "sloppy-skills-empty-"));
+    tempPaths.push(imported);
+    const { provider, consumer } = createCustomHarness({
+      builtinSkillsDir: join(process.cwd(), "skills"),
+      skillsDir: imported,
+    });
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const skills = await consumer.query("/skills", 2);
+      const curator = skills.children?.find((child) => child.properties?.name === "skill-curator");
+      expect(curator?.properties?.scope).toBe("builtin");
+
+      const viewed = await consumer.invoke("/session", "skill_view", { name: "skill-curator" });
+      expect(viewed.status).toBe("ok");
+      expect((viewed.data as { content: string }).content).toContain("skill_manage");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("discovers builtin and external skill roots", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);

@@ -38,6 +38,14 @@ export type TranscriptMessage = {
   content: TranscriptContentBlock[];
 };
 
+export type QueuedSessionMessage = {
+  id: string;
+  status: "queued";
+  text: string;
+  createdAt: string;
+  author: "user";
+};
+
 export type ActivityKind =
   | "model_call"
   | "tool_call"
@@ -167,6 +175,11 @@ export type SessionMetadata = {
   title?: string;
   workspaceRoot?: string;
   lastError?: string;
+  configRequiresRestart?: boolean;
+  configRestartReason?: string;
+  persistencePath?: string;
+  restoredAt?: string;
+  recoveredAfterRestart?: boolean;
   maxResolvedApprovals?: number;
   maxResolvedTasks?: number;
 };
@@ -187,6 +200,7 @@ export type AgentSessionSnapshot = {
   session: SessionMetadata;
   llm: LlmStateSnapshot;
   turn: TurnStateSnapshot;
+  queue: QueuedSessionMessage[];
   transcript: TranscriptMessage[];
   activity: ActivityItem[];
   approvals: ApprovalItem[];
@@ -202,7 +216,8 @@ export type SessionStoreEventType =
   | "tasks"
   | "apps"
   | "llm"
-  | "session";
+  | "session"
+  | "queue";
 
 export type SessionStoreGranularListener = (event: {
   type: SessionStoreEventType;

@@ -239,6 +239,109 @@ setInterval(() => {}, 1000);
   return scriptPath;
 }
 
+function createPromptHangingAcpAgent(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sloppy-acp-prompt-hang-test-"));
+  tempDirs.push(dir);
+  const scriptPath = join(dir, "prompt-hanging-agent.mjs");
+  const sdkUrl = pathToFileURL(
+    join(process.cwd(), "node_modules", "@agentclientprotocol", "sdk", "dist", "acp.js"),
+  ).href;
+  writeFileSync(
+    scriptPath,
+    `
+import * as acp from ${JSON.stringify(sdkUrl)};
+import { Readable, Writable } from "node:stream";
+
+class PromptHangingAgent {
+  async initialize() {
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: { loadSession: false },
+    };
+  }
+
+  async newSession() {
+    return { sessionId: "prompt-hang-session" };
+  }
+
+  async prompt() {
+    await new Promise(() => {});
+  }
+
+  async cancel() {
+    // Intentionally ignore cancellation to verify Sloppy's timeout is a real bound.
+  }
+}
+
+const stream = acp.ndJsonStream(
+  Writable.toWeb(process.stdout),
+  Readable.toWeb(process.stdin),
+);
+new acp.AgentSideConnection(() => new PromptHangingAgent(), stream);
+`,
+  );
+  return scriptPath;
+}
+
+function createEnvEchoAcpAgent(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sloppy-acp-env-test-"));
+  tempDirs.push(dir);
+  const scriptPath = join(dir, "env-agent.mjs");
+  const sdkUrl = pathToFileURL(
+    join(process.cwd(), "node_modules", "@agentclientprotocol", "sdk", "dist", "acp.js"),
+  ).href;
+  writeFileSync(
+    scriptPath,
+    `
+import * as acp from ${JSON.stringify(sdkUrl)};
+import { Readable, Writable } from "node:stream";
+
+class EnvAgent {
+  async initialize() {
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: { loadSession: false },
+    };
+  }
+
+  async newSession() {
+    return { sessionId: "env-session" };
+  }
+
+  async prompt(params) {
+    await this.connection.sessionUpdate({
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: JSON.stringify({
+            leaked: process.env.SLOPPY_ACP_SHOULD_NOT_LEAK ?? null,
+            explicit: process.env.SLOPPY_ACP_EXPLICIT ?? null,
+          }),
+        },
+      },
+    });
+    return { stopReason: "end_turn" };
+  }
+
+  async cancel() {}
+
+  constructor(connection) {
+    this.connection = connection;
+  }
+}
+
+const stream = acp.ndJsonStream(
+  Writable.toWeb(process.stdout),
+  Readable.toWeb(process.stdin),
+);
+new acp.AgentSideConnection((connection) => new EnvAgent(connection), stream);
+`,
+  );
+  return scriptPath;
+}
+
 function createRuntime(scriptPath: string): SessionRuntime {
   return new SessionRuntime({
     config: TEST_CONFIG,
@@ -305,6 +408,84 @@ describe("AcpSessionAgent", () => {
       await expect(agent.start()).rejects.toThrow(
         "ACP adapter 'hanging' did not complete startup within 100ms.",
       );
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  test("fails a prompt when an adapter ignores cancellation past the timeout", async () => {
+    const agent = new AcpSessionAgent({
+      adapterId: "prompt-hanging",
+      adapter: {
+        command: ["node", createPromptHangingAcpAgent()],
+        timeoutMs: 100,
+      },
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      await expect(agent.chat("hang forever")).rejects.toThrow(
+        "ACP adapter 'prompt-hanging' prompt timed out after 100ms.",
+      );
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  test("starts ACP adapters with explicit env and without inheriting ambient secrets", async () => {
+    const previousSecret = process.env.SLOPPY_ACP_SHOULD_NOT_LEAK;
+    const previousExplicit = process.env.SLOPPY_ACP_EXPLICIT;
+    process.env.SLOPPY_ACP_SHOULD_NOT_LEAK = "secret";
+    delete process.env.SLOPPY_ACP_EXPLICIT;
+    const agent = new AcpSessionAgent({
+      adapterId: "env",
+      adapter: {
+        command: ["node", createEnvEchoAcpAgent()],
+        env: {
+          SLOPPY_ACP_EXPLICIT: "visible",
+        },
+      },
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      const result = await agent.chat("env");
+      if (result.status !== "completed") {
+        throw new Error(`Expected completed ACP result, got ${result.status}`);
+      }
+      expect(result.response).toBe(JSON.stringify({ leaked: null, explicit: "visible" }));
+    } finally {
+      if (previousSecret === undefined) {
+        delete process.env.SLOPPY_ACP_SHOULD_NOT_LEAK;
+      } else {
+        process.env.SLOPPY_ACP_SHOULD_NOT_LEAK = previousSecret;
+      }
+      if (previousExplicit === undefined) {
+        delete process.env.SLOPPY_ACP_EXPLICIT;
+      } else {
+        process.env.SLOPPY_ACP_EXPLICIT = previousExplicit;
+      }
+      agent.shutdown();
+    }
+  });
+
+  test("rejects adapter cwd outside the workspace unless explicitly allowed", async () => {
+    const outsideWorkspace = mkdtempSync(join(tmpdir(), "sloppy-acp-outside-cwd-"));
+    tempDirs.push(outsideWorkspace);
+    const agent = new AcpSessionAgent({
+      adapterId: "outside-cwd",
+      adapter: {
+        command: ["node", createFakeAcpAgent()],
+        cwd: outsideWorkspace,
+      },
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      await expect(agent.start()).rejects.toThrow("is outside workspace root");
     } finally {
       agent.shutdown();
     }

@@ -319,12 +319,12 @@ added later without changing the surrounding UI.
 
 ### Queueing
 
-The session provider v1 rejects `send_message` while a turn is active. The TUI
-should queue drafts locally when the turn is running and send the next queued
-draft when `/turn.state` returns to `idle`. This mirrors Hermes' best UX while
-respecting the provider contract.
+The session provider exposes submitted-message queueing through `/queue`.
+Calling `/composer.send_message` while a turn is active appends shared submitted
+input to that queue, and the runtime drains it FIFO when the active turn
+finishes.
 
-Queued drafts are local UI state only.
+Unsubmitted drafts remain local UI state only.
 
 ### Approvals
 
@@ -465,7 +465,7 @@ apps/tui/
 - send text through `/composer.send_message`
 - approve/reject pending approvals
 - cancel active turn
-- local queued drafts
+- render and cancel submitted `/queue` items
 
 Validation:
 

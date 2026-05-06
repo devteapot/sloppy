@@ -276,6 +276,7 @@ Built-in runtime skills live under `skills/runtime/`:
 - `runtime-route-repair`
 - `topology-experiment-evaluator`
 - `topology-pattern-author`
+- `skill-curator`
 
 Meta-runtime `activateSkillVersion` operations may reference a skills-provider
 proposal id. Session skill proposals can be activated as part of applying the
@@ -295,7 +296,7 @@ The important boundary:
 - meta-runtime owns topology state, validation, dispatch, persistence, approval,
   and experiment records
 - skills own reusable strategy, diagnosis, repair recipes, evaluation rubrics,
-  architect prompts, and pattern authoring
+  architect prompts, pattern authoring, and procedural-memory curation
 
 This follows the Hermes-style lesson: if behavior can be expressed as
 instructions plus existing affordances, make it a skill. Reserve provider code
@@ -336,7 +337,8 @@ Preferred migration order:
    time and freeze them into the child prompt. Done for meta-runtime routed
    children.
 4. Add usage telemetry and curator/review workflows before broad autonomous
-   skill growth.
+   skill growth. Done for the built-in `skill-curator` workflow; autonomous
+   scheduling remains out of scope for the runtime.
 
 ## Remaining Work
 

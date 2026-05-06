@@ -4,6 +4,7 @@ import type {
   ApprovalItem,
   ExternalAppSnapshot,
   LlmStateSnapshot,
+  QueuedSessionMessage,
   SessionStoreChangeListener,
   SessionStoreGranularListener,
   SessionTask,
@@ -14,7 +15,18 @@ import { now } from "./helpers";
 import { ListenerRegistry } from "./listeners";
 import * as llm from "./llm";
 import * as mirrors from "./mirrors";
-import { cloneSnapshot, createInitialState, type SessionStoreState } from "./state";
+import {
+  loadPersistedSessionSnapshot,
+  persistSessionSnapshot,
+  recoverPersistedSessionSnapshot,
+} from "./persistence";
+import * as queue from "./queue";
+import {
+  cloneSnapshot,
+  createInitialState,
+  createStateFromSnapshot,
+  type SessionStoreState,
+} from "./state";
 import * as transcript from "./transcript";
 import * as turn from "./turn";
 
@@ -23,6 +35,7 @@ export { buildMirroredItemId } from "./helpers";
 export class SessionStore {
   private state: SessionStoreState;
   private registry = new ListenerRegistry();
+  private persistencePath?: string;
 
   constructor(options: {
     sessionId: string;
@@ -30,8 +43,21 @@ export class SessionStore {
     model: string;
     title?: string;
     workspaceRoot?: string;
+    persistencePath?: string;
   }) {
-    this.state = createInitialState({ ...options, startedAt: now() });
+    this.persistencePath = options.persistencePath;
+    const persisted = options.persistencePath
+      ? loadPersistedSessionSnapshot(options.persistencePath)
+      : null;
+    this.state = persisted
+      ? createStateFromSnapshot(
+          recoverPersistedSessionSnapshot(persisted, options.persistencePath ?? ""),
+        )
+      : createInitialState({ ...options, startedAt: now() });
+    if (this.persistencePath && !persisted) {
+      this.state.snapshot.session.persistencePath = this.persistencePath;
+    }
+    this.persist();
   }
 
   getSnapshot(): AgentSessionSnapshot {
@@ -82,6 +108,10 @@ export class SessionStore {
     return this.registry.subscribeGranular("turn", fn);
   }
 
+  onQueueChange(fn: SessionStoreGranularListener): () => void {
+    return this.registry.subscribeGranular("queue", fn);
+  }
+
   onTranscriptChange(fn: SessionStoreGranularListener): () => void {
     return this.registry.subscribeGranular("transcript", fn);
   }
@@ -115,10 +145,42 @@ export class SessionStore {
     this.emit();
   }
 
+  setConfigRestartRequired(required: boolean, reason?: string): void {
+    if (required) {
+      this.state.snapshot.session.configRequiresRestart = true;
+      this.state.snapshot.session.configRestartReason = reason;
+    } else {
+      delete this.state.snapshot.session.configRequiresRestart;
+      delete this.state.snapshot.session.configRestartReason;
+    }
+    this.state.sessionChanged = true;
+    this.emit();
+  }
+
   beginTurn(userText: string): string {
     const turnId = turn.beginTurn(this.state, userText);
     this.emit();
     return turnId;
+  }
+
+  enqueueMessage(text: string): QueuedSessionMessage {
+    const message = queue.enqueueMessage(this.state, text);
+    this.emit();
+    return message;
+  }
+
+  dequeueMessage(): QueuedSessionMessage | undefined {
+    const message = queue.dequeueMessage(this.state);
+    if (message) {
+      this.emit();
+    }
+    return message;
+  }
+
+  removeQueuedMessage(queuedMessageId: string): QueuedSessionMessage {
+    const message = queue.removeQueuedMessage(this.state, queuedMessageId);
+    this.emit();
+    return message;
   }
 
   appendAssistantText(turnId: string, chunk: string): void {
@@ -253,7 +315,21 @@ export class SessionStore {
   }
 
   private emit(): void {
+    this.persist();
     const snapshot = this.getSnapshot();
     this.registry.emit(this.state, snapshot);
+  }
+
+  private persist(): void {
+    if (!this.persistencePath) {
+      return;
+    }
+    try {
+      persistSessionSnapshot(this.persistencePath, this.state.snapshot);
+    } catch (error) {
+      console.warn(
+        `[sloppy] failed to persist session snapshot ${this.persistencePath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }

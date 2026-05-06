@@ -9,7 +9,7 @@ const ALLOW: PolicyDecision = { kind: "allow" };
  * single source of truth).
  */
 const DESTRUCTIVE_COMMAND_RE =
-  /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|git\s+(?:reset|clean|checkout)\s|sed\s+-i|truncate\s|dd\s|shred\s)/;
+  /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|chmod\s|chown\s|chgrp\s|git\s+(?:reset|clean|checkout|restore)\s|sed\s+-i|truncate\s|dd\s|shred\s|rsync\s+[^;&|]*--delete\b|find\s+[^;&|]*\s-delete\b)/;
 // File-clobbering redirects: `>`, `>>`, `2>`, `2>>`, `&>`, `&>>`. The leading
 // `(?:^|[^>&])` ensures we don't double-count the second `>` in `>>` and that
 // we don't misread `2>&1` (where the target is a file descriptor, not a file).

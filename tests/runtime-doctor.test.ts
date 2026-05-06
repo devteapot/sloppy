@@ -175,4 +175,43 @@ describe("runtime doctor", () => {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
+
+  test("warns when a requested ACP adapter weakens the process boundary", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-acp-boundary-"));
+    try {
+      const result = await runRuntimeDoctor({
+        config: {
+          ...TEST_CONFIG,
+          providers: {
+            ...TEST_CONFIG.providers,
+            delegation: {
+              maxAgents: 10,
+              acp: {
+                enabled: true,
+                adapters: {
+                  unsafe: {
+                    command: ["node", "-e", "process.exit(1)"],
+                    inheritEnv: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        workspaceRoot,
+        acpAdapterId: "unsafe",
+        timeoutMs: 100,
+      });
+
+      expect(result.checks).toContainEqual(
+        expect.objectContaining({
+          id: "acp-boundary",
+          status: "warning",
+          summary: expect.stringContaining("inherits the full Sloppy process environment"),
+        }),
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });

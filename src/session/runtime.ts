@@ -1,3 +1,5 @@
+import { join, resolve } from "node:path";
+
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
@@ -37,6 +39,37 @@ import type { ApprovalItem } from "./types";
 export type { ExternalSessionAgentState } from "./llm-state";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
+
+function runtimeConfigFingerprint(config: SloppyConfig): string {
+  return JSON.stringify({
+    agent: config.agent,
+    maxToolResultSize: config.maxToolResultSize,
+    providers: config.providers,
+  });
+}
+
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-") || "session";
+}
+
+function resolveSessionPersistencePath(
+  config: SloppyConfig,
+  sessionId: string,
+  explicitPath: string | false | undefined,
+): string | undefined {
+  if (explicitPath === false) {
+    return undefined;
+  }
+  if (explicitPath) {
+    return resolve(explicitPath);
+  }
+  if (config.session?.persistSnapshots !== true) {
+    return undefined;
+  }
+  const dir = config.session.persistenceDir ?? ".sloppy/sessions";
+  const absoluteDir = resolve(config.providers.filesystem.root, dir);
+  return join(absoluteDir, `${sanitizePathSegment(sessionId)}.json`);
+}
 
 function stringifyResultMessage(result: ResultMessage): string {
   if (result.status === "error") {
@@ -78,6 +111,10 @@ export type SessionAgentFactory = (
   config: SloppyConfig,
   llmProfileManager: LlmProfileManager,
 ) => SessionAgent;
+
+export type SendMessageResult =
+  | { status: "started"; turnId: string }
+  | { status: "queued"; queuedMessageId: string; position: number };
 
 function createDefaultSessionAgent(
   callbacks: AgentCallbacks,
@@ -123,6 +160,7 @@ export class SessionRuntime {
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
   private pendingApproval: PendingApprovalMirror | null = null;
+  private readonly startedRuntimeConfigFingerprint: string;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -145,8 +183,10 @@ export class SessionRuntime {
     llmProfileId?: string;
     llmModelOverride?: string;
     policyRules?: InvokePolicy[];
+    sessionPersistencePath?: string | false;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
+    this.startedRuntimeConfigFingerprint = runtimeConfigFingerprint(this.config);
     this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
     this.externalAgentState = options?.externalAgentState;
     this.llmProfileManager =
@@ -154,14 +194,20 @@ export class SessionRuntime {
       createRuntimeLlmProfileManager({
         config: this.config,
       });
+    const sessionId = options?.sessionId ?? crypto.randomUUID();
     this.store =
       options?.store ??
       new SessionStore({
-        sessionId: options?.sessionId ?? crypto.randomUUID(),
+        sessionId,
         modelProvider: this.config.llm.provider,
         model: this.config.llm.model,
         title: options?.title,
         workspaceRoot: this.config.providers.filesystem.root,
+        persistencePath: resolveSessionPersistencePath(
+          this.config,
+          sessionId,
+          options?.sessionPersistencePath,
+        ),
       });
 
     if (!this.requiresLlmProfile) {
@@ -251,24 +297,43 @@ export class SessionRuntime {
     this.started = true;
   }
 
-  async sendMessage(text: string): Promise<{ turnId: string }> {
+  async sendMessage(text: string): Promise<SendMessageResult> {
     const trimmed = text.trim();
     if (!trimmed) {
       throw new Error("Message text cannot be empty.");
-    }
-
-    if (this.currentTurnId) {
-      throw new Error("A turn is already running for this session.");
     }
 
     await this.start();
     if (this.requiresLlmProfile) {
       await this.refreshLlmState({ requireReady: true });
     }
-    const turnId = this.store.beginTurn(trimmed);
+    if (this.currentTurnId) {
+      const queued = this.store.enqueueMessage(trimmed);
+      const position =
+        this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
+      return {
+        status: "queued",
+        queuedMessageId: queued.id,
+        position,
+      };
+    }
+
+    return this.startTurn(trimmed);
+  }
+
+  cancelQueuedMessage(queuedMessageId: string): { queuedMessageId: string; status: string } {
+    this.store.removeQueuedMessage(queuedMessageId);
+    return {
+      queuedMessageId,
+      status: "cancelled",
+    };
+  }
+
+  private startTurn(userMessage: string): { status: "started"; turnId: string } {
+    const turnId = this.store.beginTurn(userMessage);
     this.currentTurnId = turnId;
-    this.activeTurnPromise = this.runTurn(turnId, trimmed);
-    return { turnId };
+    this.activeTurnPromise = this.runTurn(turnId, userMessage);
+    return { status: "started", turnId };
   }
 
   async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
@@ -523,6 +588,7 @@ export class SessionRuntime {
         approvalId: pendingApproval.sessionApprovalId,
         approvalStatus,
       });
+      this.startNextQueuedTurn();
       return {
         status: "cancelled",
         turnId,
@@ -540,7 +606,9 @@ export class SessionRuntime {
   }
 
   async waitForIdle(): Promise<void> {
-    await this.activeTurnPromise;
+    while (this.activeTurnPromise) {
+      await this.activeTurnPromise;
+    }
   }
 
   shutdown(): void {
@@ -626,31 +694,39 @@ export class SessionRuntime {
   }
 
   private runTurn(turnId: string, userMessage: string): Promise<void> {
-    return this.agent
+    const run = this.agent
       .chat(userMessage)
       .then((result) => {
         this.handleAgentResult(turnId, result);
       })
       .catch((error) => {
         this.handleTurnFailure(turnId, error);
-      })
-      .finally(() => {
-        this.activeTurnPromise = null;
       });
+    let tracked!: Promise<void>;
+    tracked = run.finally(() => {
+      if (this.activeTurnPromise === tracked) {
+        this.activeTurnPromise = null;
+      }
+    });
+    return tracked;
   }
 
   private resumeTurn(turnId: string, result: ResolvedApprovalToolResult): Promise<void> {
-    return this.agent
+    const run = this.agent
       .resumeWithToolResult(result)
       .then((nextResult) => {
         this.handleAgentResult(turnId, nextResult);
       })
       .catch((error) => {
         this.handleTurnFailure(turnId, error);
-      })
-      .finally(() => {
-        this.activeTurnPromise = null;
       });
+    let tracked!: Promise<void>;
+    tracked = run.finally(() => {
+      if (this.activeTurnPromise === tracked) {
+        this.activeTurnPromise = null;
+      }
+    });
+    return tracked;
   }
 
   private handleAgentResult(turnId: string, result: AgentRunResult): void {
@@ -671,12 +747,14 @@ export class SessionRuntime {
     this.pendingApproval = null;
     this.currentTurnId = null;
     this.store.completeTurn(turnId, result.response);
+    this.startNextQueuedTurn();
   }
 
   private failTurn(turnId: string, error: unknown): void {
     this.pendingApproval = null;
     this.currentTurnId = null;
     this.store.failTurn(turnId, error instanceof Error ? error.message : String(error));
+    this.startNextQueuedTurn();
   }
 
   private handleTurnFailure(turnId: string, error: unknown): void {
@@ -686,10 +764,22 @@ export class SessionRuntime {
       this.store.cancelTurn(turnId, {
         message: "Turn cancelled by user.",
       });
+      this.startNextQueuedTurn();
       return;
     }
 
     this.failTurn(turnId, error);
+  }
+
+  private startNextQueuedTurn(): void {
+    if (this.currentTurnId) {
+      return;
+    }
+    const next = this.store.dequeueMessage();
+    if (!next) {
+      return;
+    }
+    this.startTurn(next.text);
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {
@@ -722,8 +812,17 @@ export class SessionRuntime {
   }
 
   private applyLlmState(state: RuntimeLlmStateSnapshot): void {
-    this.config = this.llmProfileManager.getConfig();
+    const nextConfig = this.llmProfileManager.getConfig();
+    const restartRequired =
+      runtimeConfigFingerprint(nextConfig) !== this.startedRuntimeConfigFingerprint;
+    this.config = nextConfig;
     this.agent.updateConfig?.(this.config);
+    this.store.setConfigRestartRequired(
+      restartRequired,
+      restartRequired
+        ? "Runtime provider or agent configuration changed. Restart this session to rebuild providers, discovery, policies, and runtime hooks."
+        : undefined,
+    );
     this.store.syncLlmState(toSessionLlmState(state));
   }
 }

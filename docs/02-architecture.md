@@ -15,6 +15,7 @@ The default runtime includes:
 - `Agent` loop and LLM adapters
 - `ConsumerHub` for state subscriptions, query, invoke, and policy checks
 - session provider for UI and API consumers
+- durable public session snapshots with explicit stale-turn recovery
 - provider discovery
 - approval queue and generic dangerous-action policy
 - default built-ins: `terminal`, `filesystem`, `memory`, and `skills`
@@ -36,6 +37,17 @@ Everything visible to the agent is a provider state tree with affordances:
 Built-in capabilities are providers, not privileged runtime branches. Optional
 providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,
 `spec`, and `meta-runtime`.
+
+## LLM Context Tail
+
+The model sees current provider state as an ephemeral `<slop-state>` tail,
+rebuilt on every model request and never persisted into conversation history.
+The tail uses the canonical text tree projection with salience/view filtering,
+preserves provider boundaries, and escapes forged SLOP context tags inside
+provider-controlled text. This follows the SLOP integration pattern in
+`~/dev/slop-slop-slop/spec/integrations/llm-context.md`: stable conversation
+history remains before the volatile state tail so prompt-cache prefixes stay
+usable while the model still reasons over fresh state.
 
 ## Delegation
 
@@ -133,7 +145,13 @@ The `skills` provider remains compatible with Hermes/agentskills.io-style
 `SKILL.md` directories and uses progressive disclosure. `/skills` exposes a
 compact index; `skill_view(name)` loads `SKILL.md`; `skill_view(name,
 file_path)` loads a supporting file under the skill directory. It reads nested
-`metadata.sloppy`, category, platform, tag, and supporting-file metadata.
+`metadata.sloppy`, category, platform, tag, and supporting-file metadata. The
+index also exposes lightweight usage telemetry (`view_count`,
+`last_viewed_at`, and aggregate `skill_views_count`) so curator skills can
+review which procedural memories are actually being used. The built-in
+`skill-curator` skill uses this state plus transcript/activity evidence to
+propose minimal `skill_manage` changes without adding a scheduler or repair
+policy to the runtime.
 
 Agents can create and maintain procedural memory through `skill_manage`:
 `create`, `patch`, `edit`, `delete`, `write_file`, and `remove_file`.

@@ -6,7 +6,7 @@ import { AcpSessionAgent } from "./acp";
 
 export type RuntimeDoctorCheck = {
   id: string;
-  status: "ok" | "error" | "skipped";
+  status: "ok" | "warning" | "error" | "skipped";
   summary: string;
   detail?: string;
 };
@@ -148,6 +148,54 @@ async function checkAcpAdapter(
   }
 }
 
+function checkAcpBoundary(config: SloppyConfig, adapterId: string | undefined): RuntimeDoctorCheck {
+  if (!adapterId) {
+    return {
+      id: "acp-boundary",
+      status: "skipped",
+      summary: "No ACP adapter id provided.",
+    };
+  }
+
+  const adapter = config.providers.delegation.acp?.adapters[adapterId];
+  if (!adapter) {
+    return {
+      id: "acp-boundary",
+      status: "skipped",
+      summary: `ACP adapter '${adapterId}' is not configured.`,
+    };
+  }
+
+  const notes: string[] = [];
+  if (adapter.inheritEnv === true) {
+    notes.push("inherits the full Sloppy process environment");
+  }
+  if (adapter.allowCwdOutsideWorkspace === true) {
+    notes.push("can launch outside the workspace root");
+  }
+  if (!adapter.capabilities) {
+    notes.push("has no declared adapter capabilities");
+  }
+
+  if (notes.length > 0) {
+    return {
+      id: "acp-boundary",
+      status: "warning",
+      summary: `ACP adapter '${adapterId}' ${notes.join(" and ")}.`,
+      detail:
+        "ACP capability declarations and environment filtering are runtime guardrails, not an OS sandbox. Use a separate OS sandbox/container for untrusted adapters.",
+    };
+  }
+
+  return {
+    id: "acp-boundary",
+    status: "ok",
+    summary: `ACP adapter '${adapterId}' uses Sloppy's minimal environment boundary and declares capabilities.`,
+    detail:
+      "This does not sandbox local filesystem or network access by itself; it only constrains Sloppy-exposed provider routing and ambient environment inheritance.",
+  };
+}
+
 export async function runRuntimeDoctor(
   options: RuntimeDoctorOptions = {},
 ): Promise<RuntimeDoctorResult> {
@@ -162,6 +210,7 @@ export async function runRuntimeDoctor(
     checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
     checkAcpAdapter(config, workspaceRoot, options.acpAdapterId, timeoutMs),
   ]);
+  checks.push(checkAcpBoundary(config, options.acpAdapterId));
 
   return {
     workspaceRoot,

@@ -310,5 +310,6 @@ describe("loadConfig", () => {
       filesystem_reads_allowed: true,
       filesystem_writes_allowed: false,
     });
+    expect(config.providers.delegation.acp?.adapters.fake.inheritEnv ?? false).toBe(false);
   });
 });

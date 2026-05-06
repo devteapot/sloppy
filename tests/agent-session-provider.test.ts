@@ -211,13 +211,20 @@ function createStreamingAgentFactory(): SessionAgentFactory {
   });
 }
 
-function createBlockingAgentFactory(gate: Deferred<string>): SessionAgentFactory {
-  return (): SessionAgent => ({
+function createQueuedTurnHarnessFactory() {
+  const gates = [createDeferred<string>(), createDeferred<string>()];
+  const messages: string[] = [];
+
+  const factory: SessionAgentFactory = (): SessionAgent => ({
     start: async () => undefined,
-    chat: async () => ({
-      status: "completed",
-      response: await gate.promise,
-    }),
+    chat: async (userMessage: string) => {
+      const index = messages.length;
+      messages.push(userMessage);
+      return {
+        status: "completed",
+        response: await (gates[index] ?? gates[gates.length - 1]!).promise,
+      };
+    },
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
     resolveApprovalDirect: async () => ({ type: "result", id: "inv-test", status: "ok" }),
@@ -226,6 +233,14 @@ function createBlockingAgentFactory(gate: Deferred<string>): SessionAgentFactory
     clearPendingApproval: () => undefined,
     shutdown: () => undefined,
   });
+
+  return {
+    factory,
+    messages,
+    resolve(index: number, response: string) {
+      gates[index]?.resolve(response);
+    },
+  };
 }
 
 function createCancelableStreamingAgentFactory() {
@@ -690,6 +705,76 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("session marks provider and agent config changes as restart-required", async () => {
+    const changedConfig: SloppyConfig = {
+      ...TEST_CONFIG,
+      providers: {
+        ...TEST_CONFIG.providers,
+        builtin: {
+          ...TEST_CONFIG.providers.builtin,
+          terminal: true,
+        },
+      },
+    };
+    const readyState = {
+      status: "ready" as const,
+      message: "ready",
+      activeProfileId: "test-openai",
+      selectedProvider: "openai",
+      selectedModel: "gpt-5.4",
+      secureStoreKind: "memory",
+      secureStoreStatus: "available" as const,
+      profiles: [
+        {
+          id: "test-openai",
+          label: "Test OpenAI",
+          provider: "openai",
+          model: "gpt-5.4",
+          apiKeyEnv: "OPENAI_API_KEY",
+          isDefault: true,
+          hasKey: true,
+          keySource: "env" as const,
+          ready: true,
+          managed: true,
+          origin: "managed" as const,
+          canDeleteProfile: false,
+          canDeleteApiKey: false,
+        },
+      ],
+    };
+    const llmProfileManager = {
+      getState: async () => readyState,
+      ensureReady: async () => readyState,
+      getConfig: () => changedConfig,
+      updateConfig: () => undefined,
+      createAdapter: async () => {
+        throw new Error("not used");
+      },
+    } as unknown as LlmProfileManager;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-restart-required",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-restart-required",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const session = await consumer.query("/session", 1);
+      expect(session.properties?.config_requires_restart).toBe(true);
+      expect(session.properties?.config_restart_reason).toContain("Runtime provider or agent");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("send_message updates transcript, activity, and turn state", async () => {
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
@@ -737,24 +822,64 @@ describe("AgentSessionProvider", () => {
     }
   });
 
-  test("runtime rejects a second message while a turn is already active", async () => {
-    const gate = createDeferred<string>();
+  test("send_message during an active turn queues and drains FIFO", async () => {
+    const harness = createQueuedTurnHarnessFactory();
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
       sessionId: "sess-blocking",
-      agentFactory: createBlockingAgentFactory(gate),
+      agentFactory: harness.factory,
       llmProfileManager: createTestProfileManager(),
     });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-queue",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
 
     try {
-      await runtime.sendMessage("first");
-      await expect(runtime.sendMessage("second")).rejects.toThrow(
-        "A turn is already running for this session.",
-      );
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
 
-      gate.resolve("done");
+      const first = await consumer.invoke("/composer", "send_message", { text: "first" });
+      expect(first.status).toBe("ok");
+      expect((first.data as { status?: string }).status).toBe("started");
+
+      const second = await consumer.invoke("/composer", "send_message", { text: "second" });
+      expect(second.status).toBe("ok");
+      expect((second.data as { status?: string }).status).toBe("queued");
+      expect((second.data as { position?: number }).position).toBe(1);
+
+      let queue = await consumer.query("/queue", 2);
+      expect(queue.properties?.count).toBe(1);
+      expect(queue.children?.[0]?.properties?.text).toBe("second");
+      expect(
+        queue.children?.[0]?.affordances?.some((affordance) => affordance.action === "cancel") ??
+          false,
+      ).toBe(true);
+
+      harness.resolve(0, "first done");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(harness.messages).toEqual(["first", "second"]);
+
+      queue = await consumer.query("/queue", 2);
+      expect(queue.properties?.count).toBe(0);
+
+      harness.resolve(1, "second done");
       await runtime.waitForIdle();
+
+      const transcript = await consumer.query("/transcript", 5);
+      expect(
+        transcript.children
+          ?.filter((child) => child.properties?.role === "user")
+          .map((child) => child.children?.[0]?.children?.[0]?.properties?.text),
+      ).toEqual(["first", "second"]);
+      expect(
+        transcript.children
+          ?.filter((child) => child.properties?.role === "assistant")
+          .map((child) => child.children?.[0]?.children?.[0]?.properties?.text),
+      ).toEqual(["first done", "second done"]);
     } finally {
+      provider.stop();
       runtime.shutdown();
     }
   });

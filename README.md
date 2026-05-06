@@ -57,11 +57,16 @@ Current checked-in implementation includes:
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
 - ACP adapter profiles as first-class session model profiles, so a main session can run through a configured external agent instead of only native API adapters
+- ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
+- session-provider FIFO `/queue` for submitted messages while another turn is active
+- session-provider restart-required state when provider or agent config changes after startup
+- durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
 - canvas + HTML dashboard prototype under `apps/dashboard/`
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, and import/export. Reusable self-evolution strategy lives in skills over this substrate.
+- Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a built-in `skill-curator` workflow for skill-managed procedural memory
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -95,7 +100,7 @@ RuntimeToolSet
         v
 Agent Loop
   - history
-  - state context
+  - ephemeral <slop-state> context tail
   - tool execution
         |
         v
@@ -423,6 +428,7 @@ providers:
             filesystem_writes_allowed: false
         claude:
           command: ["bunx", "@agentclientprotocol/claude-agent-acp"]
+          envAllowlist: ["ANTHROPIC_API_KEY"]
           capabilities:
             spawn_allowed: true
             shell_allowed: true

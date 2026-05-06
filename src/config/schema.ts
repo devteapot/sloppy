@@ -40,6 +40,9 @@ const acpDelegationConfigSchema = z.object({
         command: z.array(z.string().min(1)).min(1),
         cwd: z.string().optional(),
         env: z.record(z.string(), z.string()).optional(),
+        envAllowlist: z.array(z.string().min(1)).optional(),
+        inheritEnv: z.boolean().optional(),
+        allowCwdOutsideWorkspace: z.boolean().optional(),
         timeoutMs: z.number().int().min(1000).optional(),
         capabilities: z
           .object({
@@ -95,6 +98,15 @@ export const sloppyConfigSchema = z.object({
       detailMaxNodes: 200,
       historyTurns: 8,
       toolResultMaxChars: 16000,
+    }),
+  session: z
+    .object({
+      persistSnapshots: z.boolean().default(true),
+      persistenceDir: z.string().default(".sloppy/sessions"),
+    })
+    .default({
+      persistSnapshots: true,
+      persistenceDir: ".sloppy/sessions",
     }),
   maxToolResultSize: z.number().int().min(100).default(4096),
   providers: z
@@ -351,8 +363,12 @@ export interface LlmConfig {
   maxTokens: number;
 }
 
-export interface SloppyConfig extends Omit<SloppyConfigBase, "llm" | "providers"> {
+export interface SloppyConfig extends Omit<SloppyConfigBase, "llm" | "providers" | "session"> {
   llm: LlmConfig;
+  session?: {
+    persistSnapshots?: boolean;
+    persistenceDir?: string;
+  };
   providers: Omit<SloppyConfigBase["providers"], "skills"> & {
     skills: {
       skillsDir: string;

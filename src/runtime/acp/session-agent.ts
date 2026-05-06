@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 
 import * as acp from "@agentclientprotocol/sdk";
@@ -18,6 +18,9 @@ export type AcpAdapterConfig = {
   command: string[];
   cwd?: string;
   env?: Record<string, string>;
+  envAllowlist?: string[];
+  inheritEnv?: boolean;
+  allowCwdOutsideWorkspace?: boolean;
   timeoutMs?: number;
 };
 
@@ -50,6 +53,26 @@ type ActivePrompt = {
 };
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15000;
+const DEFAULT_ACP_ENV_ALLOWLIST = [
+  "PATH",
+  "Path",
+  "HOME",
+  "USER",
+  "USERNAME",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+];
+
+class AcpPromptTimeoutError extends Error {
+  constructor(adapterId: string, timeoutMs: number) {
+    super(`ACP adapter '${adapterId}' prompt timed out after ${timeoutMs}ms.`);
+    this.name = "AcpPromptTimeoutError";
+  }
+}
 
 function createDeferred<T>(): Deferred<T> {
   let resolveValue!: (value: T | PromiseLike<T>) => void;
@@ -104,6 +127,50 @@ function expandEnvTemplates(
   return Object.fromEntries(
     Object.entries(env).map(([key, value]) => [key, expandModelTemplate(value, modelOverride)]),
   );
+}
+
+function envNameAllowed(name: string, allowlist: string[]): boolean {
+  return allowlist.includes(name) || name.startsWith("LC_");
+}
+
+function buildAdapterEnv(adapter: AcpAdapterConfig, modelOverride?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  if (adapter.inheritEnv === true) {
+    Object.assign(env, process.env);
+  } else {
+    const allowlist = adapter.envAllowlist ?? DEFAULT_ACP_ENV_ALLOWLIST;
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && envNameAllowed(key, allowlist)) {
+        env[key] = value;
+      }
+    }
+  }
+
+  Object.assign(env, expandEnvTemplates(adapter.env, modelOverride) ?? {});
+  return env;
+}
+
+function pathWithinRoot(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+}
+
+function resolveAdapterCwd(options: {
+  adapterId: string;
+  adapter: AcpAdapterConfig;
+  workspaceRoot: string;
+  modelOverride?: string;
+}): string {
+  const cwd = resolve(
+    expandModelTemplate(options.adapter.cwd ?? options.workspaceRoot, options.modelOverride),
+  );
+  const workspaceRoot = resolve(options.workspaceRoot);
+  if (options.adapter.allowCwdOutsideWorkspace !== true && !pathWithinRoot(workspaceRoot, cwd)) {
+    throw new Error(
+      `ACP adapter '${options.adapterId}' cwd '${cwd}' is outside workspace root '${workspaceRoot}'. Set allowCwdOutsideWorkspace: true only for trusted adapters that intentionally need this.`,
+    );
+  }
+  return cwd;
 }
 
 function permissionReason(params: acp.RequestPermissionRequest): string {
@@ -195,12 +262,15 @@ export class AcpSessionAgent implements SessionAgent {
     const args = this.adapter.command
       .slice(1)
       .map((arg) => expandModelTemplate(arg, this.modelOverride));
+    const cwd = resolveAdapterCwd({
+      adapterId: this.adapterId,
+      adapter: this.adapter,
+      workspaceRoot: this.workspaceRoot,
+      modelOverride: this.modelOverride,
+    });
     this.child = spawn(command, args, {
-      cwd: resolve(expandModelTemplate(this.adapter.cwd ?? this.workspaceRoot, this.modelOverride)),
-      env: {
-        ...process.env,
-        ...(expandEnvTemplates(this.adapter.env, this.modelOverride) ?? {}),
-      },
+      cwd,
+      env: buildAdapterEnv(this.adapter, this.modelOverride),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk) => {
@@ -361,7 +431,12 @@ export class AcpSessionAgent implements SessionAgent {
       },
     });
     const session = await connection.newSession({
-      cwd: resolve(expandModelTemplate(this.adapter.cwd ?? this.workspaceRoot, this.modelOverride)),
+      cwd: resolveAdapterCwd({
+        adapterId: this.adapterId,
+        adapter: this.adapter,
+        workspaceRoot: this.workspaceRoot,
+        modelOverride: this.modelOverride,
+      }),
       mcpServers: [],
     });
     this.sessionId = session.sessionId;
@@ -544,10 +619,29 @@ export class AcpSessionAgent implements SessionAgent {
     }
 
     const activePrompt = this.activePrompt;
-    const result = await Promise.race([
-      activePrompt.promise.then((response) => ({ kind: "completed" as const, response })),
-      this.approvalSignal.promise.then(() => ({ kind: "approval" as const })),
-    ]);
+    let result: { kind: "completed"; response: acp.PromptResponse } | { kind: "approval" };
+    try {
+      result = await Promise.race([
+        activePrompt.promise.then((response) => ({ kind: "completed" as const, response })),
+        this.approvalSignal.promise.then(() => ({ kind: "approval" as const })),
+      ]);
+    } catch (error) {
+      this.activePrompt = null;
+      if (this.pendingApproval) {
+        const pending = this.pendingApproval;
+        this.pendingApproval = null;
+        pending.response.resolve({
+          outcome: {
+            outcome: "cancelled",
+          },
+        });
+        this.emitApprovalSnapshot(pending, "rejected");
+      }
+      if (error instanceof AcpPromptTimeoutError) {
+        this.shutdown();
+      }
+      throw error;
+    }
 
     if (result.kind === "approval") {
       const pending = this.pendingApproval;
@@ -576,11 +670,15 @@ export class AcpSessionAgent implements SessionAgent {
       return prompt;
     }
 
-    let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      void this.cancelActivePrompt();
-    }, this.timeoutMs);
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        void this.cancelActivePrompt();
+        reject(new AcpPromptTimeoutError(this.adapterId, this.timeoutMs ?? 0));
+      }, this.timeoutMs);
+    });
 
-    return prompt.finally(() => {
+    return Promise.race([prompt, timeoutPromise]).finally(() => {
       if (timeout) {
         clearTimeout(timeout);
         timeout = null;

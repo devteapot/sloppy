@@ -8,6 +8,10 @@ llm:
   # model: gpt-5.5
   # reasoningEffort: low
 
+session:
+  persistSnapshots: true
+  persistenceDir: .sloppy/sessions
+
 providers:
   builtin:
     metaRuntime: true
@@ -20,6 +24,7 @@ providers:
       adapters:
         claude:
           command: ["claude-agent-acp"]
+          envAllowlist: ["ANTHROPIC_API_KEY"]
           capabilities:
             spawn_allowed: true
             shell_allowed: true

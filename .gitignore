@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .sloppy/config.yaml
+.sloppy/sessions/
 .sloppy-demo/
 .sloppy-debug/
 .claude/

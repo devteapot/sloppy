@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
@@ -13,7 +17,12 @@ import type {
 } from "../src/session/types";
 
 function createStore(
-  overrides?: Partial<{ sessionId: string; title: string; workspaceRoot: string }>,
+  overrides?: Partial<{
+    sessionId: string;
+    title: string;
+    workspaceRoot: string;
+    persistencePath: string;
+  }>,
 ) {
   return new SessionStore({
     sessionId: overrides?.sessionId ?? "sess-1",
@@ -21,6 +30,7 @@ function createStore(
     model: "gpt-5.4",
     title: overrides?.title,
     workspaceRoot: overrides?.workspaceRoot,
+    persistencePath: overrides?.persistencePath,
   });
 }
 
@@ -59,6 +69,7 @@ describe("SessionStore — initial state", () => {
     expect(snapshot.turn.startedAt).toBeNull();
     expect(snapshot.turn.message).toBe("Idle");
 
+    expect(snapshot.queue).toEqual([]);
     expect(snapshot.transcript).toEqual([]);
     expect(snapshot.activity).toEqual([]);
     expect(snapshot.approvals).toEqual([]);
@@ -89,6 +100,126 @@ describe("SessionStore — initial state", () => {
     const fresh = store.getSnapshot();
     expect(fresh.transcript).toEqual([]);
     expect(fresh.session.status).toBe("active");
+  });
+});
+
+describe("SessionStore — persistence", () => {
+  test("persists and restores visible session snapshots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-persist-"));
+    try {
+      const persistencePath = join(root, "sess-1.json");
+      const store = createStore({ persistencePath });
+      const turnId = store.beginTurn("remember this");
+      store.enqueueMessage("next visible input");
+      store.appendAssistantText(turnId, "partial");
+      store.completeTurn(turnId, "restored response");
+
+      const restored = createStore({ persistencePath }).getSnapshot();
+      expect(restored.session.persistencePath).toBe(persistencePath);
+      expect(restored.session.restoredAt).toEqual(expect.any(String));
+      expect(restored.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
+      expect(textBlock(restored, 1)).toBe("restored response");
+      expect(restored.queue.map((message) => message.text)).toEqual(["next visible input"]);
+      expect(restored.turn.state).toBe("idle");
+      expect(restored.session.clientCount).toBe(0);
+      expect(restored.session.connectedClients).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("recovers stale in-flight turns visibly after restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-recover-"));
+    try {
+      const persistencePath = join(root, "sess-1.json");
+      const store = createStore({ persistencePath });
+      const turnId = store.beginTurn("needs approval");
+      store.appendAssistantText(turnId, "half-written");
+      store.recordApprovalRequested(turnId, {
+        toolUseId: "tool-1",
+        summary: "terminal:execute /session",
+        provider: "terminal",
+        path: "/session",
+        action: "execute",
+        reason: "Needs approval",
+      });
+      store.syncProviderApprovals("terminal", [
+        {
+          id: "approval-1",
+          status: "pending",
+          provider: "terminal",
+          path: "/session",
+          action: "execute",
+          reason: "Needs approval",
+          createdAt: new Date().toISOString(),
+          canApprove: true,
+          canReject: true,
+          turnId,
+        },
+      ]);
+      store.syncProviderTasks("terminal", [
+        {
+          id: "task-1",
+          status: "running",
+          provider: "terminal",
+          providerTaskId: "provider-task-1",
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          message: "Running",
+          turnId,
+        },
+      ]);
+
+      const restored = createStore({ persistencePath }).getSnapshot();
+      expect(restored.session.recoveredAfterRestart).toBe(true);
+      expect(restored.turn.state).toBe("error");
+      expect(restored.turn.lastError).toContain("could not be resumed");
+      expect(restored.transcript.find((message) => message.role === "assistant")?.state).toBe(
+        "error",
+      );
+      expect(restored.approvals[0]?.status).toBe("expired");
+      expect(restored.approvals[0]?.canApprove).toBe(false);
+      expect(restored.tasks[0]?.status).toBe("superseded");
+      expect(restored.tasks[0]?.error).toContain("could not be resumed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SessionStore — queued messages", () => {
+  test("enqueueMessage stores shared FIFO input outside the transcript", () => {
+    const store = createStore();
+    const queued = store.enqueueMessage("run this after the current turn");
+    const snapshot = store.getSnapshot();
+
+    expect(queued.id).toMatch(/^queued-/);
+    expect(queued.status).toBe("queued");
+    expect(snapshot.queue).toHaveLength(1);
+    expect(snapshot.queue[0]?.text).toBe("run this after the current turn");
+    expect(snapshot.queue[0]?.author).toBe("user");
+    expect(snapshot.transcript).toEqual([]);
+  });
+
+  test("dequeueMessage returns messages in FIFO order", () => {
+    const store = createStore();
+    store.enqueueMessage("first");
+    store.enqueueMessage("second");
+
+    expect(store.dequeueMessage()?.text).toBe("first");
+    expect(store.dequeueMessage()?.text).toBe("second");
+    expect(store.dequeueMessage()).toBeUndefined();
+    expect(store.getSnapshot().queue).toEqual([]);
+  });
+
+  test("removeQueuedMessage cancels one queued input", () => {
+    const store = createStore();
+    const first = store.enqueueMessage("first");
+    const second = store.enqueueMessage("second");
+
+    expect(store.removeQueuedMessage(first.id).text).toBe("first");
+    expect(store.getSnapshot().queue.map((message) => message.id)).toEqual([second.id]);
+    expect(() => store.removeQueuedMessage(first.id)).toThrow(/Unknown queued message/);
   });
 });
 
@@ -1349,6 +1480,7 @@ describe("SessionService — multi-session support", () => {
     const service = new SessionService({
       sessionId: "test-session-1",
       title: "Test Session",
+      sessionPersistencePath: false,
     });
     const snapshot = service.runtime.store.getSnapshot();
 
@@ -1363,10 +1495,12 @@ describe("SessionService — multi-session support", () => {
     const service1 = new SessionService({
       sessionId: "multi-sess-1",
       title: "Session 1",
+      sessionPersistencePath: false,
     });
     const service2 = new SessionService({
       sessionId: "multi-sess-2",
       title: "Session 2",
+      sessionPersistencePath: false,
     });
 
     const sessions = SessionService.getActiveSessions();
@@ -1383,10 +1517,12 @@ describe("SessionService — multi-session support", () => {
     const _service1 = new SessionService({
       sessionId: "stop-sess-1",
       title: "Session 1",
+      sessionPersistencePath: false,
     });
     const service2 = new SessionService({
       sessionId: "stop-sess-2",
       title: "Session 2",
+      sessionPersistencePath: false,
     });
 
     let sessions = SessionService.getActiveSessions();
@@ -1410,10 +1546,12 @@ describe("SessionService — multi-session support", () => {
     const _service1 = new SessionService({
       sessionId: "isolate-1",
       title: "Session 1",
+      sessionPersistencePath: false,
     });
     const service2 = new SessionService({
       sessionId: "isolate-2",
       title: "Session 2",
+      sessionPersistencePath: false,
     });
 
     // Send message on service2 via store
@@ -1539,6 +1677,7 @@ describe("SessionService — multi-session support", () => {
       socketPath: `/tmp/slop/svc-start-${crypto.randomUUID()}.sock`,
       config,
       llmProfileManager,
+      sessionPersistencePath: false,
     });
 
     try {

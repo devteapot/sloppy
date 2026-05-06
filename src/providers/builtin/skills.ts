@@ -153,6 +153,7 @@ export class SkillsProvider {
   private roots: SkillRoot[];
   private skills: SkillInfo[] = [];
   private proposals = new Map<string, SkillProposal>();
+  private usage = new Map<string, { viewCount: number; lastViewedAt?: string }>();
   private templateVars: boolean;
   private viewMaxBytes: number;
   private discoveryReady: Promise<void>;
@@ -296,6 +297,21 @@ export class SkillsProvider {
     return content.replaceAll(SLOPPY_SKILL_DIR_TOKEN, skill.directory);
   }
 
+  private skillUsage(skill: SkillInfo): { viewCount: number; lastViewedAt?: string } {
+    return this.usage.get(skill.id) ?? { viewCount: 0 };
+  }
+
+  private recordSkillView(skill: SkillInfo): { viewCount: number; lastViewedAt: string } {
+    const current = this.skillUsage(skill);
+    const usage = {
+      viewCount: current.viewCount + 1,
+      lastViewedAt: new Date().toISOString(),
+    };
+    this.usage.set(skill.id, usage);
+    this.server.refresh();
+    return usage;
+  }
+
   private resolveSkillFile(skill: SkillInfo, filePath: string): string {
     if (!skill.directory) {
       throw new Error(`Skill ${skill.name} does not have a filesystem directory.`);
@@ -322,6 +338,8 @@ export class SkillsProvider {
     file_path: string;
     skill_dir?: string;
     supporting_files: string[];
+    view_count: number;
+    last_viewed_at: string;
     content: string;
   }> {
     await this.ensureDiscovered();
@@ -336,23 +354,29 @@ export class SkillsProvider {
         (await readTextFile(skill.file_path, this.viewMaxBytes).catch(() => {
           throw new Error(`Could not read skill file: ${skill.file_path}`);
         }));
+      const usage = this.recordSkillView(skill);
       return {
         name: skill.name,
         file_path: "SKILL.md",
         skill_dir: skill.directory,
         supporting_files: skill.supporting_files,
+        view_count: usage.viewCount,
+        last_viewed_at: usage.lastViewedAt,
         content: this.renderSkillContent(skill, content),
       };
     }
 
     const absolutePath = this.resolveSkillFile(skill, filePath);
     const content = await readTextFile(absolutePath, this.viewMaxBytes);
+    const usage = this.recordSkillView(skill);
 
     return {
       name: skill.name,
       file_path: portablePath(relative(skill.directory ?? dirname(absolutePath), absolutePath)),
       skill_dir: skill.directory,
       supporting_files: skill.supporting_files,
+      view_count: usage.viewCount,
+      last_viewed_at: usage.lastViewedAt,
       content: this.renderSkillContent(skill, content),
     };
   }
@@ -752,11 +776,16 @@ export class SkillsProvider {
   private buildSessionDescriptor() {
     const tagSet = new Set(this.skills.flatMap((s) => s.tags));
     const categories = [...new Set(this.skills.map((skill) => skill.category).filter(Boolean))];
+    const skillViewsCount = [...this.usage.values()].reduce(
+      (total, usage) => total + usage.viewCount,
+      0,
+    );
 
     return {
       type: "context",
       props: {
         skills_count: this.skills.length,
+        skill_views_count: skillViewsCount,
         tags_count: tagSet.size,
         categories,
         installed: this.skills.map((s) => s.name),
@@ -895,6 +924,8 @@ export class SkillsProvider {
     const items: ItemDescriptor[] = this.skills.map((skill) => ({
       id: skill.id,
       props: {
+        view_count: this.skillUsage(skill).viewCount,
+        last_viewed_at: this.skillUsage(skill).lastViewedAt,
         name: skill.dangerous ? `[DANGEROUS] ${skill.name}` : skill.name,
         description: skill.description,
         version: skill.version,

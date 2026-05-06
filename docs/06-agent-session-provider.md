@@ -62,6 +62,7 @@ The root tree should expose these top-level children:
 - `/llm`
 - `/turn`
 - `/composer`
+- `/queue`
 - `/transcript`
 - `/activity`
 - `/approvals`
@@ -80,7 +81,9 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
   [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_provider="openai", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
     [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
-  [control] composer (accepts_attachments=false, max_attachments=0, ready=false, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
+  [control] composer (accepts_attachments=false, max_attachments=0, ready=false, queued_count=1, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
+  [collection] queue (count=1)
+    [item] queued-1 (status="queued", position=1, text="then run the focused test")
   [collection] transcript
     [item] msg-1 (role="user", state="complete", turn_id="turn-1")
       [group] content
@@ -121,6 +124,17 @@ Optional props:
 - `title`: human-readable label for the session
 - `workspace_root`: current workspace root if one exists
 - `last_error`: latest session-level error summary
+- `config_requires_restart`: true when provider/agent/runtime config changed
+  after this session was constructed and the live provider graph has not been
+  rebuilt
+- `config_restart_reason`: human-readable restart reason when
+  `config_requires_restart=true`
+- `persistence_path`: durable snapshot path when session snapshot persistence is
+  enabled
+- `restored_at`: ISO timestamp when this session was restored from a persisted
+  snapshot
+- `recovered_after_restart`: true when a persisted in-flight turn was recovered
+  as non-resumable after process restart
 
 Affordances:
 
@@ -224,8 +238,10 @@ Required props:
 
 Optional props:
 
-- `ready`: boolean indicating whether a model turn can start immediately
+- `ready`: boolean indicating whether submitted input can be accepted
 - `disabled_reason`: short onboarding message when `send_message` is unavailable
+- `queued_count`: number of submitted messages waiting for the active turn to finish
+- `active_turn_id`: current turn id when a submitted message would queue
 
 Affordances:
 
@@ -257,8 +273,39 @@ Rules:
 
 - callers should provide non-empty `text`, at least one attachment, or both
 - `send_message` may be absent while no ready LLM profile is configured
-- `send_message` should return an error in v1 if a turn is already active instead of implicitly queueing
+- `send_message` starts a turn immediately when idle
+- `send_message` appends to `/queue` when a turn is already active; queued messages drain FIFO after the current turn reaches a terminal state
 - `attachments` are session input content, not persistent local UI drafts
+
+### `/queue`
+
+Node type: `collection`
+
+Purpose:
+
+- expose submitted user messages that are waiting for the single active turn to finish
+- let all attached clients see and cancel queued input
+- keep local UI drafts out of shared session state
+
+Each item:
+
+- path shape: `/queue/{queuedMessageId}`
+- type: `item`
+- `status`: currently `queued`
+- `text`: submitted message text
+- `created_at`: ISO timestamp
+- `author`: currently `user`
+- `position`: one-based FIFO position
+
+Affordances:
+
+- `cancel`
+
+Rules:
+
+- queued messages are session input, not transcript messages, until their turn starts
+- the runtime removes the head of `/queue` immediately before starting the next turn
+- cancelling a queued message removes only that pending input and does not affect the active turn
 
 ### `/apps`
 
@@ -497,9 +544,10 @@ Target path:
 
 Behavior:
 
-1. append a new user message to `/transcript`
+1. if no turn is active, append a new user message to `/transcript`
 2. create or update `/turn` to the running state
 3. begin streaming assistant output and activity updates through patches
+4. if a turn is already active, append a queued item to `/queue` instead; the queued item becomes a transcript user message only when its turn starts
 
 ### `cancel_turn`
 
@@ -574,17 +622,37 @@ This provider is intentionally shared across all consumers attached to the same 
 
 That means:
 
-- all consumers see the same transcript, turn state, approvals, activity, and tasks
+- all consumers see the same transcript, turn state, queued input, approvals, activity, and tasks
 - actions invoked by one consumer are reflected to all others through patches
 - no client gets a private draft or pane state inside the session tree
 
 Concurrency rules for v1:
 
 - only one active turn at a time per session
-- `send_message` during an active turn should return an error instead of queueing
+- `send_message` during an active turn queues shared submitted input under `/queue`
 - if two clients race to approve or reject the same approval, only the first successful resolution should win
 
 Authentication and authorization policy are intentionally left outside this document. The provider shape should work whether all attached clients are trusted or an outer layer enforces access control.
+
+---
+
+## Persistence
+
+When session snapshot persistence is enabled, the runtime writes the public
+session snapshot after each state mutation. Restoring a snapshot is intentionally
+state-first rather than a hidden replay engine:
+
+- completed transcript, queued input, activity, approvals, tasks, apps, and LLM state are
+  restored for inspection
+- client connections are never restored
+- in-flight model turns cannot be replayed safely, so they are marked `error`
+  with `recovered_after_restart=true`
+- pending approvals are marked `expired` because the in-memory approval queue is
+  gone
+- running mirrored tasks are marked `superseded`
+
+This keeps restarts explicit and inspectable without adding a privileged task
+orchestration layer to the session provider.
 
 ---
 
@@ -608,8 +676,7 @@ This keeps the provider useful across TUI, web, IDE, voice, and future agent con
 
 Likely future extensions include:
 
-- queued messages instead of hard-erroring when a turn is active
-- session persistence and resumption metadata
+- richer resumable turn replay beyond the persisted public session snapshot
 - participant attribution when multiple humans or agents act on one session
 - optional richer inspection subtrees, if explicitly justified
 - separate delegation-oriented affordances for agent-to-agent workflows

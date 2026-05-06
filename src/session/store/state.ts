@@ -7,6 +7,7 @@ export interface SessionStoreState {
   activeApprovalActivityId: string | null;
   toolActivityIds: Map<string, string>;
   turnChanged: boolean;
+  queueChanged: boolean;
   transcriptChanged: boolean;
   activityChanged: boolean;
   approvalsChanged: boolean;
@@ -61,6 +62,7 @@ export function createInitialState(options: {
         updatedAt: startedAt,
         message: "Idle",
       },
+      queue: [],
       transcript: [],
       activity: [],
       approvals: [],
@@ -72,6 +74,7 @@ export function createInitialState(options: {
     activeApprovalActivityId: null,
     toolActivityIds: new Map(),
     turnChanged: false,
+    queueChanged: false,
     transcriptChanged: false,
     activityChanged: false,
     approvalsChanged: false,
@@ -93,6 +96,7 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },
+    queue: (snapshot.queue ?? []).map((message) => ({ ...message })),
     transcript: snapshot.transcript.map((message) => ({
       ...message,
       content: message.content.map((block) => ({ ...block })),
@@ -101,5 +105,24 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
     approvals: snapshot.approvals.map((item) => ({ ...item })),
     tasks: snapshot.tasks.map((task) => ({ ...task })),
     apps: snapshot.apps.map((app) => ({ ...app })),
+  };
+}
+
+export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): SessionStoreState {
+  return {
+    snapshot: cloneSnapshot(snapshot),
+    activeAssistantMessageId: null,
+    activeModelActivityId: null,
+    activeApprovalActivityId: null,
+    toolActivityIds: new Map(),
+    turnChanged: false,
+    queueChanged: false,
+    transcriptChanged: false,
+    activityChanged: false,
+    approvalsChanged: false,
+    tasksChanged: false,
+    appsChanged: false,
+    llmChanged: false,
+    sessionChanged: false,
   };
 }

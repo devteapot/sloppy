@@ -74,7 +74,7 @@ export class ConversationHistory {
         content: [
           {
             type: "text",
-            text: `Runtime state snapshot (ephemeral, not user-authored):\n\n${stateContext}`,
+            text: stateContext,
           },
         ],
       },

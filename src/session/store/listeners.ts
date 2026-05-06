@@ -39,6 +39,7 @@ export class ListenerRegistry {
 
     const changedTypes: SessionStoreEventType[] = [];
     if (state.turnChanged) changedTypes.push("turn");
+    if (state.queueChanged) changedTypes.push("queue");
     if (state.transcriptChanged) changedTypes.push("transcript");
     if (state.activityChanged) changedTypes.push("activity");
     if (state.approvalsChanged) changedTypes.push("approvals");
@@ -57,6 +58,7 @@ export class ListenerRegistry {
     }
 
     state.turnChanged = false;
+    state.queueChanged = false;
     state.transcriptChanged = false;
     state.activityChanged = false;
     state.approvalsChanged = false;
