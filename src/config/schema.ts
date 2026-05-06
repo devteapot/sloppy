@@ -27,6 +27,23 @@ const acpDelegationConfigSchema = z.object({
     .default({}),
 });
 
+const cliDelegationConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  defaultTimeoutMs: z.number().int().min(1000).optional(),
+  adapters: z
+    .record(
+      z.string().min(1),
+      z.object({
+        command: z.array(z.string().min(1)).min(1),
+        cwd: z.string().optional(),
+        env: z.record(z.string(), z.string()).optional(),
+        timeoutMs: z.number().int().min(1000).optional(),
+        appendPrompt: z.boolean().optional(),
+      }),
+    )
+    .default({}),
+});
+
 export const sloppyConfigSchema = z.object({
   llm: z
     .object({
@@ -197,6 +214,7 @@ export const sloppyConfigSchema = z.object({
         .object({
           maxAgents: z.number().int().min(1).default(10),
           acp: acpDelegationConfigSchema.optional(),
+          cli: cliDelegationConfigSchema.optional(),
         })
         .default({
           maxAgents: 10,

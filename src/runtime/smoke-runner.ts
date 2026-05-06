@@ -16,7 +16,7 @@ import { createBuiltinProviders, type RegisteredProvider } from "../providers/re
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 
-export type RuntimeSmokeMode = "providers" | "native" | "acp";
+export type RuntimeSmokeMode = "providers" | "native" | "acp" | "cli";
 
 export type RuntimeSmokeOptions = {
   mode?: RuntimeSmokeMode;
@@ -26,6 +26,7 @@ export type RuntimeSmokeOptions = {
   profileId?: string;
   modelOverride?: string;
   acpAdapterId?: string;
+  cliAdapterId?: string;
   timeoutMs?: number;
   llmProfileManager?: LlmProfileManager;
   log?: (line: string) => void;
@@ -77,6 +78,7 @@ function buildSmokeConfig(
     workspaceRoot: string;
     profileId?: string;
     acpAdapterId?: string;
+    cliAdapterId?: string;
     timeoutMs?: number;
   },
 ): SloppyConfig {
@@ -136,7 +138,17 @@ function buildSmokeConfig(
                 adapters: baseConfig.providers.delegation.acp?.adapters ?? {},
               },
             }
-          : baseConfig.providers.delegation,
+          : options.mode === "cli" && options.cliAdapterId
+            ? {
+                ...baseConfig.providers.delegation,
+                cli: {
+                  enabled: true,
+                  defaultTimeoutMs:
+                    options.timeoutMs ?? baseConfig.providers.delegation.cli?.defaultTimeoutMs,
+                  adapters: baseConfig.providers.delegation.cli?.adapters ?? {},
+                },
+              }
+            : baseConfig.providers.delegation,
     },
   };
 }
@@ -207,6 +219,7 @@ function buildTopologyOps(options: {
   profileId?: string;
   modelOverride?: string;
   acpAdapterId?: string;
+  cliAdapterId?: string;
 }) {
   const ops: unknown[] = [
     {
@@ -236,10 +249,12 @@ function buildTopologyOps(options: {
   }
 
   const bindingId =
-    options.mode === "acp" || options.profileId || options.modelOverride
+    options.mode === "acp" || options.mode === "cli" || options.profileId || options.modelOverride
       ? options.mode === "acp"
         ? "smoke-acp"
-        : "smoke-llm"
+        : options.mode === "cli"
+          ? "smoke-cli"
+          : "smoke-llm"
       : undefined;
   if (bindingId) {
     ops.push({
@@ -251,12 +266,18 @@ function buildTopologyOps(options: {
               kind: "acp",
               adapterId: options.acpAdapterId,
             }
-          : {
-              id: bindingId,
-              kind: "llm",
-              profileId: options.profileId,
-              modelOverride: options.modelOverride,
-            },
+          : options.mode === "cli"
+            ? {
+                id: bindingId,
+                kind: "cli",
+                adapterId: options.cliAdapterId,
+              }
+            : {
+                id: bindingId,
+                kind: "llm",
+                profileId: options.profileId,
+                modelOverride: options.modelOverride,
+              },
     });
   }
 
@@ -341,12 +362,16 @@ export async function runRuntimeSmoke(
   if (mode === "acp" && !options.acpAdapterId) {
     throw new Error("ACP smoke mode requires --acp-adapter <id>.");
   }
+  if (mode === "cli" && !options.cliAdapterId) {
+    throw new Error("CLI smoke mode requires --cli-adapter <id>.");
+  }
 
   const config = buildSmokeConfig(baseConfig, {
     mode,
     workspaceRoot,
     profileId: profile?.id,
     acpAdapterId: options.acpAdapterId,
+    cliAdapterId: options.cliAdapterId,
     timeoutMs: options.timeoutMs,
   });
   const providers = createBuiltinProviders(config);
@@ -373,6 +398,7 @@ export async function runRuntimeSmoke(
         profileId: profile?.id,
         modelOverride: options.modelOverride,
         acpAdapterId: options.acpAdapterId,
+        cliAdapterId: options.cliAdapterId,
       }),
     })) as { id: string };
     await applyProposal(hub, proposal.id);

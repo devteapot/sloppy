@@ -54,6 +54,8 @@ export {
 } from "./providers/registry";
 export type { AcpAdapterConfig, AcpSessionAgentOptions } from "./runtime/acp";
 export { AcpSessionAgent } from "./runtime/acp";
+export type { CliAdapterConfig, CliSessionAgentOptions } from "./runtime/cli";
+export { CliSessionAgent } from "./runtime/cli";
 export {
   attachSubAgentRunnerFactory,
   createAwaitChildrenHook,

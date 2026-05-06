@@ -1,8 +1,8 @@
-# Executor Routing — Per-Agent Model, Provider, and ACP Selection
+# Executor Routing — Per-Agent Model, Provider, ACP, and CLI Selection
 
-This document specifies how an agent in the Sloppy stack — orchestrator, manager, observer, specialist, identity curator — is bound to the *executor* that runs it: which LLM provider/profile, or which ACP-backed external agent. It extends `docs/12-orchestration-design.md`, `docs/13-meta-runtime.md`, and `docs/14-agent-identity.md` additively.
+This document specifies how an agent in the Sloppy stack — orchestrator, manager, observer, specialist, identity curator — is bound to the *executor* that runs it: which LLM provider/profile, which ACP-backed external agent, or which CLI-backed custom agent. It extends `docs/12-orchestration-design.md`, `docs/13-meta-runtime.md`, and `docs/14-agent-identity.md` additively.
 
-It is a design doc, not a state-of-the-code doc. The current code wires LLM provider selection globally per session (`src/llm/profile-manager.ts`) and dispatches ACP delegation via an `executionMode: "native" | "acp:<adapterId>"` field on the spawn path (`src/runtime/delegation/runner-factory.ts`). Per-agent routing as state does not exist yet.
+It is partly implemented. The current code supports native LLM bindings, ACP bindings, and CLI bindings through meta-runtime executor state, `DelegationProvider`, and `SubAgentRunner`. Role defaults and capability metadata on adapter definitions remain design work.
 
 The guiding principle is unchanged: **everything is a SLOP provider — state tree plus affordances**. Executor binding is not a flag on a function call; it is a typed field on agent and task descriptors, governed by the same overlay/gate/reflection machinery as anything else.
 
@@ -13,20 +13,21 @@ Today an entire session tree shares one LLM provider. That is wrong for several 
 - A **verifier** specialist for a security-tagged slice should be free to run on a stronger or differently-tuned model than the executor that produced the artifact under review. Self-review with the same model is a known weak verifier; the docs/12 verification gate is built on the assumption that verification is structurally distinct.
 - A **diagnostician** spawned after a slice failed three times benefits from a model with a longer context window, even if the rest of the session uses something cheaper.
 - A **doc-writer** specialist on a routine refactor should not be paying for the same profile as a planner reasoning over a multi-spec goal.
-- An **ACP-backed delegation agent** (e.g. a third-party Claude Code or pi instance) is just another executor; binding it to a specific role or task is the same problem as picking an LLM profile, not a separate dispatch.
+- An **ACP-backed delegation agent** (e.g. a third-party Claude Code or pi instance) or **CLI-backed custom agent** (e.g. Codex CLI via `codex exec`) is just another executor; binding it to a specific role or task is the same problem as picking an LLM profile, not a separate dispatch.
 
 The static-config equivalent — "edit the YAML, restart the session" — is the same failure mode that motivated the meta-runtime in docs/13: configuration that should be a function of artifacts is instead a function of source.
 
 ## What an executor is
 
-An executor is **the thing that turns a prompt into a turn**. Two shapes today:
+An executor is **the thing that turns a prompt into a turn**. Three shapes today:
 
 - **LLM executor.** Anthropic / OpenAI-compatible / Gemini adapter, configured by an `LlmProfile`. The native code path through `SubAgentRunner`.
 - **ACP executor.** An external process speaking ACP (`AcpSessionAgent`), configured by an `acp.adapters[id]` entry. The agent loop is delegated; only the bridging happens in-process.
+- **CLI executor.** A one-shot subprocess (`CliSessionAgent`), configured by a `cli.adapters[id]` entry. Stdout streams into the child transcript and becomes the delegated result.
 
 Both are executors in the sense this doc uses the word. The selection mechanism should not care which kind it is at the call site; only the resolver does.
 
-There is no third shape implied here. Multi-LLM ensemble executors, router-models, and "MoE-of-providers" are explicitly out of scope; they would be a different kind of executor that this doc does not define.
+Multi-LLM ensemble executors, router-models, and "MoE-of-providers" are explicitly out of scope; they would be a different kind of executor that this doc does not define.
 
 ---
 
@@ -38,9 +39,10 @@ An `ExecutorBinding` is a tagged union:
 ExecutorBinding =
   | { kind: "llm";  profileId: string; modelOverride?: string }
   | { kind: "acp";  adapterId: string; timeoutMs?: number }
+  | { kind: "cli";  adapterId: string; timeoutMs?: number }
 ```
 
-Both kinds reference a *profile* — `LlmProfile` for LLM, `AcpAdapter` for ACP — defined elsewhere in config. `modelOverride` exists for the narrow case of "same provider, different model"; it does not let a binding cross profiles.
+Every kind references a configured profile or adapter. `modelOverride` exists for the narrow case of "same provider, different model"; it does not let a binding cross profiles.
 
 Bindings are **values** carried in descriptors and config. They are not function arguments; threading them through spawn signatures as bare strings (`model?: string`, `executionMode?: string`) was the v0 shortcut and is to be removed.
 
@@ -103,9 +105,14 @@ providers:
             spawn_allowed: false
             shell_allowed: false
             network_allowed: false
+    cli:
+      adapters:
+        codex:
+          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
+          timeoutMs: 600000
 ```
 
-The current `LlmProfile` and `AcpAdapter` schemas already exist; the additions are:
+The current `LlmProfile`, `AcpAdapter`, and `CliAdapter` schemas exist; the remaining additions are:
 
 - `acp.adapters[id].capabilities` — see §3.
 - An optional `executor.defaults` block that maps role ids to bindings (the role-default home from §1.1).
@@ -117,6 +124,7 @@ executor:
     diagnostician: { kind: "llm", profileId: "anthropic-opus" }
     doc-writer:    { kind: "llm", profileId: "openrouter-cheap" }
     security-audit:{ kind: "acp", adapterId: "claude-code" }
+    codex-helper:  { kind: "cli", adapterId: "codex" }
 ```
 
 Role defaults are **config**, not state. They change via release. The state-resident overrides live on specialists and tasks (§1.1).

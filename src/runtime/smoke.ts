@@ -4,13 +4,14 @@ import { type RuntimeSmokeMode, runRuntimeSmoke } from "./smoke-runner";
 
 function usage(): string {
   return [
-    "Usage: bun run runtime:smoke [--mode providers|native|acp] [options]",
+    "Usage: bun run runtime:smoke [--mode providers|native|acp|cli] [options]",
     "",
     "Options:",
-    "  --mode <mode>          providers (default), native, or acp",
+    "  --mode <mode>          providers (default), native, acp, or cli",
     "  --profile <id>         LLM profile id for native mode",
     "  --model <model>        model override for native mode",
     "  --acp-adapter <id>     configured ACP adapter id for acp mode",
+    "  --cli-adapter <id>     configured CLI adapter id for cli mode",
     "  --workspace <path>     workspace/state root; defaults to a temp dir",
     "  --timeout-ms <ms>      delegated-agent timeout; default 120000",
     "  --keep-state           keep temp smoke state after completion",
@@ -33,6 +34,7 @@ function parseArgs(args: string[]) {
     profileId?: string;
     modelOverride?: string;
     acpAdapterId?: string;
+    cliAdapterId?: string;
     workspaceRoot?: string;
     timeoutMs?: number;
     keepState?: boolean;
@@ -48,7 +50,7 @@ function parseArgs(args: string[]) {
         break;
       case "--mode": {
         const mode = takeValue(args, index, arg);
-        if (mode !== "providers" && mode !== "native" && mode !== "acp") {
+        if (mode !== "providers" && mode !== "native" && mode !== "acp" && mode !== "cli") {
           throw new Error(`Unknown smoke mode: ${mode}`);
         }
         options.mode = mode;
@@ -65,6 +67,10 @@ function parseArgs(args: string[]) {
         break;
       case "--acp-adapter":
         options.acpAdapterId = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--cli-adapter":
+        options.cliAdapterId = takeValue(args, index, arg);
         index += 1;
         break;
       case "--workspace":
@@ -101,6 +107,7 @@ try {
     profileId: options.profileId,
     modelOverride: options.modelOverride,
     acpAdapterId: options.acpAdapterId,
+    cliAdapterId: options.cliAdapterId,
     workspaceRoot: options.workspaceRoot,
     timeoutMs: options.timeoutMs,
     keepState: options.keepState,

@@ -6,6 +6,10 @@ type AcpAdapterConfig = NonNullable<
   NonNullable<SloppyConfig["providers"]["delegation"]["acp"]>["adapters"][string]
 >;
 
+type CliAdapterConfig = NonNullable<
+  NonNullable<SloppyConfig["providers"]["delegation"]["cli"]>["adapters"][string]
+>;
+
 export type ResolvedExecutor =
   | {
       kind: "llm";
@@ -16,6 +20,13 @@ export type ResolvedExecutor =
       kind: "acp";
       adapterId: string;
       adapter: AcpAdapterConfig;
+      timeoutMs?: number;
+      defaultTimeoutMs?: number;
+    }
+  | {
+      kind: "cli";
+      adapterId: string;
+      adapter: CliAdapterConfig;
       timeoutMs?: number;
       defaultTimeoutMs?: number;
     };
@@ -44,6 +55,28 @@ export class ExecutorResolver {
         kind: "llm",
         profileId: binding.profileId,
         modelOverride: binding.modelOverride,
+      };
+    }
+
+    if (binding.kind === "cli") {
+      const cliConfig = this.config.providers.delegation.cli;
+      if (!cliConfig?.enabled) {
+        throw new LlmConfigurationError(
+          `CLI delegation adapter '${binding.adapterId}' requested but providers.delegation.cli.enabled is false.`,
+        );
+      }
+      const adapter = cliConfig.adapters[binding.adapterId];
+      if (!adapter) {
+        throw new LlmConfigurationError(
+          `CLI delegation adapter '${binding.adapterId}' is not configured.`,
+        );
+      }
+      return {
+        kind: "cli",
+        adapterId: binding.adapterId,
+        adapter,
+        timeoutMs: binding.timeoutMs,
+        defaultTimeoutMs: cliConfig.defaultTimeoutMs,
       };
     }
 

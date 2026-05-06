@@ -16,8 +16,10 @@ Checked in now:
   `spec`, `vision`, `meta-runtime`
 - session provider and headless session server
 - ACP-backed delegated child sessions behind the same session-provider boundary
+- CLI-backed delegated child sessions for Codex CLI or custom one-shot agents
+  behind the same session-provider boundary
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
-  meta-runtime routing plus native and ACP delegated-child modes
+  meta-runtime routing plus native, ACP, and CLI delegated-child modes
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from

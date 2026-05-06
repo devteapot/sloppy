@@ -149,11 +149,12 @@ export function parseChange(raw: unknown): TopologyChange {
         type,
         binding: {
           id: asString(binding?.id, "binding.id"),
-          kind: binding.kind === "acp" ? "acp" : "llm",
+          kind: binding.kind === "acp" || binding.kind === "cli" ? binding.kind : "llm",
           profileId: typeof binding.profileId === "string" ? binding.profileId : undefined,
           adapterId: typeof binding.adapterId === "string" ? binding.adapterId : undefined,
           modelOverride:
             typeof binding.modelOverride === "string" ? binding.modelOverride : undefined,
+          timeoutMs: typeof binding.timeoutMs === "number" ? binding.timeoutMs : undefined,
         },
       };
     }

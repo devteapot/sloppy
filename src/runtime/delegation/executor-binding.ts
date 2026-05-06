@@ -11,6 +11,11 @@ export const executorBindingSchema = z.discriminatedUnion("kind", [
     adapterId: z.string().min(1),
     timeoutMs: z.number().int().min(1).optional(),
   }),
+  z.object({
+    kind: z.literal("cli"),
+    adapterId: z.string().min(1),
+    timeoutMs: z.number().int().min(1).optional(),
+  }),
 ]);
 
 export type ExecutorBinding = z.infer<typeof executorBindingSchema>;

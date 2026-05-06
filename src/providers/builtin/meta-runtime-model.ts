@@ -42,10 +42,11 @@ export type RouteRule = {
 
 export type ExecutorBinding = {
   id: string;
-  kind: "llm" | "acp";
+  kind: "llm" | "acp" | "cli";
   profileId?: string;
   adapterId?: string;
   modelOverride?: string;
+  timeoutMs?: number;
 };
 
 export type SkillVersion = {

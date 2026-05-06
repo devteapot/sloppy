@@ -254,11 +254,12 @@ bun run runtime:smoke
 By default this creates a temporary workspace, wires `meta-runtime`, `messaging`,
 `delegation`, `skills`, and `filesystem`, applies a session topology proposal,
 dispatches a typed route envelope, and verifies that the message lands in a SLOP
-channel. Native and ACP delegated-child paths can be checked explicitly:
+channel. Native, ACP, and CLI delegated-child paths can be checked explicitly:
 
 ```sh
 bun run runtime:smoke -- --mode native
 bun run runtime:smoke -- --mode acp --acp-adapter claude
+bun run runtime:smoke -- --mode cli --cli-adapter codex
 ```
 
 Native mode uses the active LLM profile selected by the LLM profile manager
@@ -272,6 +273,20 @@ SLOPPY_MODEL=<model> \
 SLOPPY_LLM_BASE_URL=http://sloppy-mba.local:8001/v1 \
 OPENAI_API_KEY=<router-key-or-dummy> \
 bun run runtime:smoke -- --mode native
+```
+
+CLI mode runs a configured subprocess-backed child session. It is intended for
+tools such as Codex CLI or local custom agents that can complete from one prompt:
+
+```yaml
+providers:
+  delegation:
+    cli:
+      enabled: true
+      defaultTimeoutMs: 600000
+      adapters:
+        codex:
+          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
 ```
 
 ## Config
@@ -333,6 +348,25 @@ providers:
 ```
 
 Then use `execution_mode: "acp:gemini"` on `delegation.spawn_agent`; omitted execution mode still uses the native Sloppy sub-agent.
+
+Delegation can also launch trusted CLI subprocesses as child sessions. The
+runtime streams stdout into the child transcript and exposes the result through
+the same delegated-agent state:
+
+```yaml
+providers:
+  builtin:
+    delegation: true
+  delegation:
+    cli:
+      enabled: true
+      adapters:
+        codex:
+          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
+```
+
+Then use `execution_mode: "cli:codex"` on `delegation.spawn_agent`, or create a
+meta-runtime executor binding with `{ kind: "cli", adapterId: "codex" }`.
 
 Provider defaults:
 

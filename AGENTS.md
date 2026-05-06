@@ -50,6 +50,7 @@ bun test
 bun test tests/filesystem-provider.test.ts
 bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
 bun test tests/agent-session-provider.test.ts
+bun test tests/cli-session-agent.test.ts
 bun test tests/runtime-smoke.test.ts
 bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
