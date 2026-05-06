@@ -83,10 +83,11 @@ describe("ExecutorResolver", () => {
         },
       }),
     });
-    const resolved = resolver.resolve({ kind: "acp", adapterId: "fake" });
+    const resolved = resolver.resolve({ kind: "acp", adapterId: "fake", modelOverride: "sonnet" });
     expect(resolved).toMatchObject({
       kind: "acp",
       adapterId: "fake",
+      modelOverride: "sonnet",
       defaultTimeoutMs: 5000,
     });
     if (resolved.kind === "acp") {
@@ -153,10 +154,15 @@ describe("ExecutorResolver", () => {
         },
       }),
     });
-    const resolved = resolver.resolve({ kind: "cli", adapterId: "codex" });
+    const resolved = resolver.resolve({
+      kind: "cli",
+      adapterId: "codex",
+      modelOverride: "gpt-5.5",
+    });
     expect(resolved).toMatchObject({
       kind: "cli",
       adapterId: "codex",
+      modelOverride: "gpt-5.5",
       defaultTimeoutMs: 5000,
     });
     if (resolved.kind === "cli") {

@@ -1,12 +1,21 @@
 import { z } from "zod";
 
-export const llmProviderSchema = z.enum(["anthropic", "openai", "openrouter", "ollama", "gemini"]);
+export const llmProviderSchema = z.enum([
+  "anthropic",
+  "openai",
+  "openrouter",
+  "ollama",
+  "gemini",
+  "acp",
+  "cli",
+]);
 
 export const llmProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().trim().min(1).optional(),
   provider: llmProviderSchema,
   model: z.string().optional(),
+  adapterId: z.string().optional(),
   apiKeyEnv: z.string().optional(),
   baseUrl: z.string().optional(),
 });
@@ -58,6 +67,7 @@ export const sloppyConfigSchema = z.object({
     .object({
       provider: llmProviderSchema.default("anthropic"),
       model: z.string().optional(),
+      adapterId: z.string().optional(),
       apiKeyEnv: z.string().optional(),
       baseUrl: z.string().optional(),
       defaultProfileId: z.string().optional(),
@@ -329,6 +339,7 @@ export type LlmProfileConfig = {
   label?: string;
   provider: LlmProvider;
   model: string;
+  adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
 };
@@ -336,6 +347,7 @@ export type LlmProfileConfig = {
 export interface LlmConfig {
   provider: LlmProvider;
   model: string;
+  adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
   defaultProfileId?: string;

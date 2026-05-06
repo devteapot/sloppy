@@ -130,7 +130,11 @@ If `sloppy` adds ChatGPT subscription auth later, the cleanest direction is:
 - resolve a Codex-specific runtime transport rather than forcing it through the plain OpenAI API-key path
 - consider Codex CLI reuse as optional compatibility later, not the core design
 
-The practical rollout path is probably Hermes first, OpenClaw eventually:
+The checked-in first step is lower risk: reuse configured ACP/CLI adapters as
+first-class LLM profiles, so a `cli` profile can point at Codex CLI and inherit
+its existing subscription login. That keeps subscription auth out of the core
+runtime while preserving the provider/model profile UX. A future first-party
+Codex transport can still follow the Hermes/OpenClaw shape:
 
 - Hermes-style first-party device auth is the smallest coherent implementation
 - OpenClaw-style provider and transport separation is the better long-term architecture

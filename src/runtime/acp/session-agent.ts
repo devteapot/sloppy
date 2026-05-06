@@ -24,6 +24,7 @@ export type AcpAdapterConfig = {
 export type AcpSessionAgentOptions = {
   adapterId: string;
   adapter: AcpAdapterConfig;
+  modelOverride?: string;
   callbacks: AgentCallbacks;
   workspaceRoot: string;
   defaultTimeoutMs?: number;
@@ -89,6 +90,22 @@ function safeToolNameSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_") || "tool";
 }
 
+function expandModelTemplate(value: string, modelOverride?: string): string {
+  return value.replaceAll("{model}", modelOverride ?? "");
+}
+
+function expandEnvTemplates(
+  env: Record<string, string> | undefined,
+  modelOverride?: string,
+): Record<string, string> | undefined {
+  if (!env) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [key, expandModelTemplate(value, modelOverride)]),
+  );
+}
+
 function permissionReason(params: acp.RequestPermissionRequest): string {
   const title = params.toolCall.title ?? "ACP tool call";
   const optionNames = params.options.map((option) => option.name).filter(Boolean);
@@ -141,6 +158,7 @@ export class AcpSessionAgent implements SessionAgent {
   private readonly workspaceRoot: string;
   private readonly providerId: string;
   private readonly timeoutMs?: number;
+  private readonly modelOverride?: string;
   private child: ChildProcessWithoutNullStreams | null = null;
   private connection: acp.ClientSideConnection | null = null;
   private sessionId: string | null = null;
@@ -159,6 +177,7 @@ export class AcpSessionAgent implements SessionAgent {
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.providerId = `acp:${options.adapterId}`;
     this.timeoutMs = options.adapter.timeoutMs ?? options.defaultTimeoutMs;
+    this.modelOverride = options.modelOverride;
   }
 
   async start(): Promise<void> {
@@ -169,16 +188,18 @@ export class AcpSessionAgent implements SessionAgent {
       throw new Error(`ACP adapter '${this.adapterId}' has no command configured.`);
     }
 
-    const command = this.adapter.command[0];
+    const command = expandModelTemplate(this.adapter.command[0] ?? "", this.modelOverride);
     if (!command) {
       throw new Error(`ACP adapter '${this.adapterId}' has no command configured.`);
     }
-    const args = this.adapter.command.slice(1);
+    const args = this.adapter.command
+      .slice(1)
+      .map((arg) => expandModelTemplate(arg, this.modelOverride));
     this.child = spawn(command, args, {
-      cwd: resolve(this.adapter.cwd ?? this.workspaceRoot),
+      cwd: resolve(expandModelTemplate(this.adapter.cwd ?? this.workspaceRoot, this.modelOverride)),
       env: {
         ...process.env,
-        ...(this.adapter.env ?? {}),
+        ...(expandEnvTemplates(this.adapter.env, this.modelOverride) ?? {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -340,7 +361,7 @@ export class AcpSessionAgent implements SessionAgent {
       },
     });
     const session = await connection.newSession({
-      cwd: resolve(this.adapter.cwd ?? this.workspaceRoot),
+      cwd: resolve(expandModelTemplate(this.adapter.cwd ?? this.workspaceRoot, this.modelOverride)),
       mcpServers: [],
     });
     this.sessionId = session.sessionId;

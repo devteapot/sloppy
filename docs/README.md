@@ -9,7 +9,7 @@ This directory is split by whether a document is current operating guidance, fut
 - `04-slop-protocol-reference.md` — local protocol vocabulary and message semantics.
 - `05-language-evaluation.md` — stack and runtime decisions.
 - `06-agent-session-provider.md` — public session-provider state and affordance surface.
-- `08-cli-sub-agents.md` — current CLI/ACP child-agent delegation paths.
+- `08-cli-sub-agents.md` — current CLI/ACP session-agent and delegation paths.
 - `13-meta-runtime.md` — optional topology/evaluation substrate and skill-led self-evolution boundary.
 - `16-tui-plan.md` — TypeScript/OpenTUI TUI architecture and UX plan.
 - `ui-design-system.md` — UI design system for first-party surfaces.

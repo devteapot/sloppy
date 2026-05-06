@@ -19,6 +19,7 @@ Checked in now:
   agent-session provider socket
 - ACP-backed delegated child sessions behind the same session-provider boundary
 - CLI-backed delegated child sessions for Codex CLI or custom one-shot agents
+- ACP and CLI adapters selectable as first-class main-session LLM profiles
   behind the same session-provider boundary
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native, ACP, and CLI delegated-child modes
@@ -51,6 +52,8 @@ providers, skills, routes, and agent-to-agent channels.
      through the provider hub, forwarding capability masks into delegated child
      runtime policy and supporting fanout or sampled canary routes when
      requested.
+   - Require routed agent targets to have explicit capability masks rather than
+     inheriting the parent's whole provider surface.
    - Keep trace analysis, repair tactics, runtime architect prompts, automatic
      evidence scoring, and topology pattern reuse out of the provider contract.
      The hardcoded trace/architect/evidence helpers have been removed from the
@@ -70,10 +73,11 @@ providers, skills, routes, and agent-to-agent channels.
    - Refuse persistent skill overwrites and resolve duplicate names by scope
      precedence.
    - Link meta-runtime `activateSkillVersion` records to skills-provider
-     proposal activation when a topology proposal applies.
-   - Freeze active skill versions into meta-runtime routed child-agent goals so
-     skill activation changes the spawned runtime context instead of remaining
-     inert metadata.
+     proposal activation when a topology proposal applies. Persistent skill
+     proposals are activated through the skills provider first.
+   - Freeze selected active skill versions into meta-runtime routed child-agent
+     goals so skill activation changes the spawned runtime context instead of
+     remaining inert metadata.
    - Support Hermes-style progressive disclosure: compact skill list,
      `skill_view(name)`, `skill_view(name, file_path)`, supporting files, nested
      `metadata.sloppy`, builtin/imported roots, and external skill directories.

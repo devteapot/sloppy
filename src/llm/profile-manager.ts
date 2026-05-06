@@ -53,6 +53,7 @@ export type SaveProfileInput = {
   label?: string;
   provider: LlmProvider;
   model?: string;
+  adapterId?: string;
   baseUrl?: string;
   apiKey?: string;
   makeDefault?: boolean;
@@ -127,6 +128,7 @@ function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
     model: config.model || defaults.model,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
+    adapterId: config.adapterId ?? defaults.adapterId,
   };
 }
 
@@ -205,6 +207,7 @@ function buildNextLlmConfig(
     ...previous,
     provider: activeProfile.provider,
     model: activeProfile.model,
+    adapterId: activeProfile.adapterId,
     apiKeyEnv: activeProfile.apiKeyEnv,
     baseUrl: activeProfile.baseUrl,
     defaultProfileId: activeProfile.origin === "fallback" ? undefined : activeProfile.id,
@@ -321,6 +324,7 @@ export class LlmProfileManager {
       targetProfile.id,
       targetProfile.provider,
       model,
+      targetProfile.adapterId ?? "",
       targetProfile.baseUrl ?? "",
       credential.keySource,
       credential.apiKey ?? "",
@@ -367,6 +371,7 @@ export class LlmProfileManager {
       label: trimOptional(input.label) ?? existingProfile?.label,
       provider: input.provider,
       model: trimOptional(input.model) ?? existingProfile?.model ?? defaults.model,
+      adapterId: trimOptional(input.adapterId) ?? existingProfile?.adapterId ?? defaults.adapterId,
       apiKeyEnv:
         existingProfile && existingProfile.provider === input.provider
           ? (existingProfile.apiKeyEnv ?? defaults.apiKeyEnv)

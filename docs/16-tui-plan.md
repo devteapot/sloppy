@@ -351,6 +351,7 @@ and disabled composer, with the setup panel focused:
 
 - provider picker
 - model field with provider defaults
+- adapter id field for ACP/CLI profiles
 - base URL field for OpenAI-compatible profiles
 - API key secret input
 - save profile
@@ -375,7 +376,7 @@ important for Sloppy because external app state is the main integration surface.
 The inspector is a developer feature, not the primary UX:
 
 - list providers from discovered app/session state
-- query a path with depth/window options
+- query a session path or external app target with depth/window options
 - show node type, props, summary, salience, focus, urgency
 - list affordances on the selected node
 - invoke affordances through generated forms

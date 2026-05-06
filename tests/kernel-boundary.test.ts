@@ -107,6 +107,13 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
         ...TEST_CONFIG,
         providers: {
           ...TEST_CONFIG.providers,
+          builtin: {
+            ...TEST_CONFIG.providers.builtin,
+            delegation: true,
+            metaRuntime: true,
+            cron: true,
+            messaging: true,
+          },
           filesystem: { ...TEST_CONFIG.providers.filesystem, root: workspaceRoot },
         },
       };
@@ -116,6 +123,7 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
 
       const observed: string[] = [];
       let capturedPrompt = "";
+      let capturedBuiltins: SloppyConfig["providers"]["builtin"] | undefined;
 
       const runner = new SubAgentRunner({
         id: "boundary-1",
@@ -124,29 +132,32 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
         parentHub: hub,
         parentConfig: config,
         llmProfileManager: stubLlmProfileManager,
-        agentFactory: (callbacks) => ({
-          async start() {},
-          async chat(userMessage: string) {
-            capturedPrompt = userMessage;
-            callbacks.onText?.("done");
-            return { status: "completed" as const, response: "done" };
-          },
-          async resumeWithToolResult(): Promise<never> {
-            throw new Error("not used");
-          },
-          async invokeProvider(): Promise<never> {
-            throw new Error("not used");
-          },
-          async resolveApprovalDirect(): Promise<never> {
-            throw new Error("not used");
-          },
-          rejectApprovalDirect() {},
-          cancelActiveTurn() {
-            return false;
-          },
-          clearPendingApproval() {},
-          shutdown() {},
-        }),
+        agentFactory: (callbacks, childConfig) => {
+          capturedBuiltins = childConfig.providers.builtin;
+          return {
+            async start() {},
+            async chat(userMessage: string) {
+              capturedPrompt = userMessage;
+              callbacks.onText?.("done");
+              return { status: "completed" as const, response: "done" };
+            },
+            async resumeWithToolResult(): Promise<never> {
+              throw new Error("not used");
+            },
+            async invokeProvider(): Promise<never> {
+              throw new Error("not used");
+            },
+            async resolveApprovalDirect(): Promise<never> {
+              throw new Error("not used");
+            },
+            rejectApprovalDirect() {},
+            cancelActiveTurn() {
+              return false;
+            },
+            clearPendingApproval() {},
+            shutdown() {},
+          };
+        },
       });
 
       runner.onChange((event) => {
@@ -163,6 +174,10 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
       }
 
       expect(capturedPrompt).toBe("boundary goal");
+      expect(capturedBuiltins?.delegation).toBe(false);
+      expect(capturedBuiltins?.metaRuntime).toBe(false);
+      expect(capturedBuiltins?.cron).toBe(false);
+      expect(capturedBuiltins?.messaging).toBe(false);
       expect(observed).toContain("completed");
       expect(observed).not.toContain("failed");
       runner.shutdown();

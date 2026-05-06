@@ -20,6 +20,7 @@ export type ResolvedExecutor =
       kind: "acp";
       adapterId: string;
       adapter: AcpAdapterConfig;
+      modelOverride?: string;
       timeoutMs?: number;
       defaultTimeoutMs?: number;
     }
@@ -27,6 +28,7 @@ export type ResolvedExecutor =
       kind: "cli";
       adapterId: string;
       adapter: CliAdapterConfig;
+      modelOverride?: string;
       timeoutMs?: number;
       defaultTimeoutMs?: number;
     };
@@ -75,6 +77,7 @@ export class ExecutorResolver {
         kind: "cli",
         adapterId: binding.adapterId,
         adapter,
+        modelOverride: binding.modelOverride,
         timeoutMs: binding.timeoutMs,
         defaultTimeoutMs: cliConfig.defaultTimeoutMs,
       };
@@ -96,6 +99,7 @@ export class ExecutorResolver {
       kind: "acp",
       adapterId: binding.adapterId,
       adapter,
+      modelOverride: binding.modelOverride,
       timeoutMs: binding.timeoutMs,
       defaultTimeoutMs: acpConfig.defaultTimeoutMs,
     };

@@ -55,11 +55,12 @@ Current checked-in implementation includes:
 - idle session startup without an API key
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
+- ACP and CLI adapter profiles as first-class session model profiles, so a main session can run through a configured external agent such as Codex CLI instead of only native API adapters
 - session-provider LLM/profile onboarding and management state
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
 - canvas + HTML dashboard prototype under `apps/dashboard/`
-- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, active skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, and import/export. Reusable self-evolution strategy lives in skills over this substrate.
+- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, and import/export. Reusable self-evolution strategy lives in skills over this substrate.
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -83,7 +84,7 @@ This means the agent process is expected to act both as:
 ## Architecture at a glance
 
 ```text
-LLM adapter (Anthropic/OpenAI-compatible/Gemini)
+Session agent profile (native LLM adapter, ACP adapter, or CLI adapter)
         |
         v
 RuntimeToolSet
@@ -125,12 +126,12 @@ These providers are currently implemented as in-process SLOP providers:
 
 - `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
 - `skills` for skill-based progressive skill loading (`skill_view`), supporting files, nested `metadata.sloppy`, agent-managed skill edits (`skill_manage`), proposed skill activation, and approval-gated persistent workspace/global writes
-- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, active skill-version context for routed children, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology pattern authoring should be expressed as skills over this state rather than long-term provider policy.
+- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, per-profile/per-agent skill-version context for routed children, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology pattern authoring should be expressed as skills over this state rather than long-term provider policy.
 - `browser` for tab state, navigation history, and simulated screenshots
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
 - `messaging` for channel/message history and send affordances
-- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP-backed child execution
+- `delegation` for subagent lifecycle state, cancellation, result retrieval, and optional ACP/CLI-backed child execution
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
 
@@ -313,7 +314,9 @@ such as `["bunx", "@agentclientprotocol/claude-agent-acp"]` or an installed
 `claude-agent-acp` binary.
 
 CLI mode runs a configured subprocess-backed child session. It is intended for
-tools such as Codex CLI or local custom agents that can complete from one prompt:
+tools such as Codex CLI or local custom agents that can complete from one prompt.
+Use `{prompt}` and `{model}` placeholders when the subprocess needs the user
+prompt or selected model as argv/env/cwd text:
 
 ```yaml
 providers:
@@ -323,7 +326,25 @@ providers:
       defaultTimeoutMs: 600000
       adapters:
         codex:
-          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
+          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]
+```
+
+ACP and CLI adapters are not limited to sub-agents. They can be selected as the
+main session model profile through the same `/llm` state used for native API
+providers:
+
+```yaml
+llm:
+  provider: cli
+  model: gpt-5.5
+  adapterId: codex
+  defaultProfileId: codex-gpt55
+  profiles:
+    - id: codex-gpt55
+      label: Codex GPT-5.5
+      provider: cli
+      model: gpt-5.5
+      adapterId: codex
 ```
 
 ## Config
@@ -349,9 +370,6 @@ llm:
       label: OpenAI Main
       provider: openai
       model: gpt-5.4
-tui:
-  keybinds:
-    leader: ctrl+x
 ```
 
 Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`) are opt-in. Enable them in `.sloppy/config.yaml`:
@@ -417,10 +435,11 @@ providers:
             filesystem_writes_allowed: true
 ```
 
-Then use `execution_mode: "acp:gemini"`, `execution_mode: "acp:claude"`, or
-`execution_mode: "acp:codex"` on `delegation.spawn_agent`; omitted execution
-mode still uses the native Sloppy sub-agent. Zed's Codex adapter is published as
-`@zed-industries/codex-acp` and exposes the `codex-acp` binary.
+Then pass an executor such as `{ kind: "acp", adapterId: "gemini" }` to
+`delegation.spawn_agent`, or create a meta-runtime executor binding with the
+same shape. Omit the executor to use the active session profile. Zed's Codex
+adapter is published as `@zed-industries/codex-acp` and exposes the
+`codex-acp` binary.
 Routed or allow-masked ACP spawns require the adapter `capabilities` block so the
 runtime can reject child bindings that exceed the adapter's declared surface.
 
@@ -440,8 +459,10 @@ providers:
           command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
 ```
 
-Then use `execution_mode: "cli:codex"` on `delegation.spawn_agent`, or create a
-meta-runtime executor binding with `{ kind: "cli", adapterId: "codex" }`.
+Then pass `{ kind: "cli", adapterId: "codex", modelOverride: "gpt-5.5" }` to
+`delegation.spawn_agent`, or create the same shape as a meta-runtime executor
+binding. `modelOverride` is optional; if present it expands `{model}` in the
+adapter command.
 
 Provider defaults:
 
@@ -450,8 +471,11 @@ Provider defaults:
 - `openrouter` -> `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`
 - `gemini` -> `GEMINI_API_KEY`
 - `ollama` -> `http://localhost:11434/v1` and no API key by default
+- `acp` and `cli` -> configured adapter profiles and no API key by default
 
-You can override the provider, model, or base URL with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, and `SLOPPY_LLM_BASE_URL`.
+You can override the provider, model, adapter id, or base URL with
+`SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, and
+`SLOPPY_LLM_BASE_URL`.
 
 The agent loop defaults to 32 model/tool iterations. For longer runs, set
 `agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
@@ -465,15 +489,22 @@ API keys are not written to YAML:
 - Linux stores them in Secret Service via `secret-tool`
 - environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
-- one-shot runs explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
+- one-shot runs explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
 
-The current TUI uses the session provider's `/llm` state to onboard and manage profiles, and its `/apps` state to surface external provider attachment status.
+The current TUI uses the session provider's `/llm` state to onboard and manage
+profiles, and its `/apps` state to surface external provider attachment status.
 
-TUI-specific settings are configured under `tui`.
+Useful TUI slash commands:
 
-- `tui.keybinds.leader` sets the leader sequence for TUI actions. The default is `ctrl+x`.
-- The TUI settings screen currently exposes only the leader key and writes changes back to `~/.sloppy/config.yaml`.
-- The composer stays immediately editable when focused; non-composer form fields enter edit mode with `enter`.
+- `/profile openai gpt-5.4 --base-url <url>` saves a profile without a key.
+- `/profile-secret openai gpt-5.4` opens masked API-key entry.
+- `/profile cli gpt-5.5 --adapter codex` saves an ACP/CLI adapter-backed profile.
+- `/default <profile-id>`, `/delete-profile <profile-id>`, and `/delete-key <profile-id>` manage exposed profiles.
+- `/query /llm 2` inspects the session provider; `/query <app-id>:/ 2` inspects a connected external provider listed under `/apps`.
+- `/invoke [app-id:]<path> <action> <json-object>` invokes a contextual affordance from the explicit inspector path.
+
+The composer stays immediately editable when focused. Pending approvals interrupt
+the normal input loop with `[o/a] approve once` and `[d/esc] deny`.
 
 ## Design references
 

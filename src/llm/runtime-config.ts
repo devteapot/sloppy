@@ -14,6 +14,7 @@ export function hasExplicitRuntimeLlmRouting(env: RuntimeEnvironment = Bun.env):
   return Boolean(
     trimOptional(env.SLOPPY_LLM_PROVIDER) ??
       trimOptional(env.SLOPPY_MODEL) ??
+      trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ??
       trimOptional(env.SLOPPY_LLM_BASE_URL) ??
       trimOptional(env.SLOPPY_LLM_API_KEY_ENV),
   );
@@ -32,6 +33,8 @@ export function buildRuntimeLlmConfig(
     ...baseConfig,
     provider,
     model: trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model,
+    adapterId:
+      trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ?? baseConfig.adapterId ?? defaults.adapterId,
     apiKeyEnv:
       trimOptional(env.SLOPPY_LLM_API_KEY_ENV) ?? baseConfig.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: trimOptional(env.SLOPPY_LLM_BASE_URL) ?? baseConfig.baseUrl ?? defaults.baseUrl,

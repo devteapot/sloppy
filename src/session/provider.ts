@@ -43,6 +43,7 @@ function buildContentChildren(content: TranscriptContentBlock[]): Record<string,
               uri: block.uri,
               name: block.name,
               summary: block.summary,
+              preview: block.preview,
             },
           } satisfies NodeDescriptor,
         ];
@@ -103,6 +104,7 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
       action: item.action,
       approval_id: item.approvalId,
       task_id: item.taskId,
+      tool_use_id: item.toolUseId,
     },
     summary: item.summary,
   };
@@ -115,6 +117,7 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      adapter_id: profile.adapterId,
       api_key_env: profile.apiKeyEnv,
       base_url: profile.baseUrl,
       is_default: profile.isDefault,
@@ -257,6 +260,10 @@ export class AgentSessionProvider {
             model: {
               type: "string",
               description: "Optional model override for the provider.",
+            },
+            adapter_id: {
+              type: "string",
+              description: "Optional ACP/CLI adapter id for external-agent profiles.",
             },
             base_url: {
               type: "string",

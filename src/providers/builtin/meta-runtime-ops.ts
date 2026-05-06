@@ -1,3 +1,4 @@
+import { executorBindingSchema } from "../../runtime/delegation/executor-binding";
 import type { MetaScope, TopologyChange } from "./meta-runtime-model";
 
 export function asString(value: unknown, field: string): string {
@@ -17,6 +18,11 @@ function asStringArray(value: unknown, field: string): string[] {
 function optionalStringArray(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   return asStringArray(value, "actions");
+}
+
+function optionalStringArrayField(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  return asStringArray(value, field);
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -75,7 +81,14 @@ export function parseChange(raw: unknown): TopologyChange {
           id: asString(profile?.id, "profile.id"),
           name: asString(profile?.name, "profile.name"),
           instructions: typeof profile.instructions === "string" ? profile.instructions : undefined,
-          defaultCapabilities: optionalStringArray(profile.defaultCapabilities),
+          defaultCapabilities: optionalStringArrayField(
+            profile.defaultCapabilities,
+            "profile.defaultCapabilities",
+          ),
+          defaultSkillVersionIds: optionalStringArrayField(
+            profile.defaultSkillVersionIds,
+            "profile.defaultSkillVersionIds",
+          ),
         },
       };
     }
@@ -93,6 +106,9 @@ export function parseChange(raw: unknown): TopologyChange {
             : [],
           capabilityMaskIds: Array.isArray(agent.capabilityMaskIds)
             ? asStringArray(agent.capabilityMaskIds, "agent.capabilityMaskIds")
+            : [],
+          skillVersionIds: Array.isArray(agent.skillVersionIds)
+            ? asStringArray(agent.skillVersionIds, "agent.skillVersionIds")
             : [],
           executorBindingId:
             typeof agent.executorBindingId === "string" ? agent.executorBindingId : undefined,
@@ -163,16 +179,18 @@ export function parseChange(raw: unknown): TopologyChange {
     }
     case "setExecutorBinding": {
       const binding = record.binding as Record<string, unknown>;
+      const parsed = executorBindingSchema.parse({
+        kind: binding.kind,
+        profileId: binding.profileId,
+        adapterId: binding.adapterId,
+        modelOverride: binding.modelOverride,
+        timeoutMs: binding.timeoutMs,
+      });
       return {
         type,
         binding: {
           id: asString(binding?.id, "binding.id"),
-          kind: binding.kind === "acp" || binding.kind === "cli" ? binding.kind : "llm",
-          profileId: typeof binding.profileId === "string" ? binding.profileId : undefined,
-          adapterId: typeof binding.adapterId === "string" ? binding.adapterId : undefined,
-          modelOverride:
-            typeof binding.modelOverride === "string" ? binding.modelOverride : undefined,
-          timeoutMs: typeof binding.timeoutMs === "number" ? binding.timeoutMs : undefined,
+          ...parsed,
         },
       };
     }

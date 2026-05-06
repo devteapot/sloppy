@@ -182,6 +182,12 @@ Agent dispatch invokes `delegation.spawn_agent` with:
 - the original typed route envelope as `routeEnvelope`
 - the agent executor binding
 - the resolved capability masks from the profile and agent node
+- the selected active skill versions from the profile and agent node
+
+Agent targets must resolve at least one explicit capability mask. A routed
+sub-agent without a mask records `route.failed` with
+`missing_capability_mask` instead of inheriting the parent's full provider
+surface.
 
 Channel dispatch invokes `messaging.channels/<id>.send` with both the envelope
 body and typed envelope. The source must be a channel participant.
@@ -272,10 +278,15 @@ Built-in runtime skills live under `skills/runtime/`:
 - `topology-pattern-author`
 
 Meta-runtime `activateSkillVersion` operations may reference a skills-provider
-proposal id; when the topology proposal applies, the meta-runtime invokes the
-skills provider and records activation success or failure on the skill version.
-Active skill versions are resolved during meta-runtime route dispatch and their
-loaded `SKILL.md` content is frozen into routed child-agent goals. If an active
+proposal id. Session skill proposals can be activated as part of applying the
+topology proposal. Workspace and global skill proposals must be activated
+through the skills provider first, because those writes have their own approval
+queue and should not be hidden inside meta-runtime approval.
+
+Skill versions are not global ambient prompt state. Profiles can list
+`defaultSkillVersionIds`; agent nodes can list `skillVersionIds`. During route
+dispatch, only those selected active skill versions are resolved through
+`skill_view`, loaded, and frozen into the routed child-agent goal. If a selected
 skill cannot be loaded, the route records `route.failed` instead of spawning a
 child without the declared procedural context.
 
@@ -321,8 +332,9 @@ Preferred migration order:
    evaluation, and topology pattern authoring. Done in `skills/runtime/`.
 2. Keep only substrate affordances in the long-term `/session` surface. Done for
    the removed trace/architect/evidence helpers.
-3. Teach child-agent spawning to resolve active skill versions at spawn time and
-   freeze them into the child prompt. Done for meta-runtime routed children.
+3. Teach child-agent spawning to resolve selected active skill versions at spawn
+   time and freeze them into the child prompt. Done for meta-runtime routed
+   children.
 4. Add usage telemetry and curator/review workflows before broad autonomous
    skill growth.
 
@@ -330,6 +342,4 @@ Preferred migration order:
 
 - richer route matchers beyond substring matching
 - UI treatment for proposals, typed envelopes, route events, and capability masks
-- profile/node-specific skill selection instead of applying every active skill
-  version to routed children
 - packaged export/import of identity, skills, and runtime state as one bundle

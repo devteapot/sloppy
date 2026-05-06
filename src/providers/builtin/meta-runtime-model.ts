@@ -13,6 +13,7 @@ export type AgentProfile = {
   name: string;
   instructions?: string;
   defaultCapabilities?: string[];
+  defaultSkillVersionIds?: string[];
 };
 
 export type AgentNode = {
@@ -21,6 +22,7 @@ export type AgentNode = {
   status: "planned" | "active" | "retired";
   channels: string[];
   capabilityMaskIds: string[];
+  skillVersionIds?: string[];
   executorBindingId?: string;
 };
 

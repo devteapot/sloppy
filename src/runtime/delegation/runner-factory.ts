@@ -42,6 +42,7 @@ export function attachSubAgentRunnerFactory(
         new AcpSessionAgent({
           adapterId,
           adapter,
+          modelOverride: executor.modelOverride,
           callbacks: agentCallbacks,
           workspaceRoot: config.providers.filesystem.root,
           defaultTimeoutMs: adapterTimeoutMs,
@@ -49,7 +50,8 @@ export function attachSubAgentRunnerFactory(
       requiresLlmProfile = false;
       externalAgentState = {
         provider: "acp",
-        model: adapterId,
+        model: executor.modelOverride ?? adapterId,
+        adapterId,
         profileId: `acp-${adapterId}`,
         label: `ACP ${adapterId}`,
         message: `Ready to chat with ACP adapter ${adapterId}.`,
@@ -62,6 +64,7 @@ export function attachSubAgentRunnerFactory(
         new CliSessionAgent({
           adapterId,
           adapter,
+          modelOverride: executor.modelOverride,
           callbacks: agentCallbacks,
           workspaceRoot: config.providers.filesystem.root,
           defaultTimeoutMs: adapterTimeoutMs,
@@ -69,7 +72,8 @@ export function attachSubAgentRunnerFactory(
       requiresLlmProfile = false;
       externalAgentState = {
         provider: "cli",
-        model: adapterId,
+        model: executor.modelOverride ?? adapterId,
+        adapterId,
         profileId: `cli-${adapterId}`,
         label: `CLI ${adapterId}`,
         message: `Ready to chat with CLI adapter ${adapterId}.`,

@@ -12,6 +12,7 @@ import { runRuntimeSmoke } from "../src/runtime/smoke-runner";
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
+const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 
@@ -146,6 +147,11 @@ function restoreEnv(): void {
     delete process.env.SLOPPY_MODEL;
   } else {
     process.env.SLOPPY_MODEL = originalModel;
+  }
+  if (originalAdapterId == null) {
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+  } else {
+    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
   }
   if (originalBaseUrl == null) {
     delete process.env.SLOPPY_LLM_BASE_URL;

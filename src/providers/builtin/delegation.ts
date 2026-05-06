@@ -58,7 +58,7 @@ type DelegationAgent = {
 function describeExecutorModel(executor: ExecutorBinding | undefined): string | undefined {
   if (!executor) return undefined;
   if (executor.kind === "llm") return executor.modelOverride ?? executor.profileId;
-  return executor.adapterId;
+  return executor.modelOverride ?? executor.adapterId;
 }
 
 function describeExecutionMode(executor: ExecutorBinding | undefined): string {
@@ -432,7 +432,7 @@ export class DelegationProvider {
             executor: {
               type: "object",
               description:
-                "Optional executor binding selecting which engine runs this agent. Omit for the session default. Shape: { kind: 'llm', profileId, modelOverride? } to bind to a configured LLM profile, { kind: 'acp', adapterId, timeoutMs? } to delegate to a configured ACP adapter, or { kind: 'cli', adapterId, timeoutMs? } to delegate to a configured CLI adapter.",
+                "Optional executor binding selecting which engine runs this agent. Omit for the session default. Shape: { kind: 'llm', profileId, modelOverride? } to bind to a configured LLM profile, { kind: 'acp', adapterId, modelOverride?, timeoutMs? } to delegate to a configured ACP adapter, or { kind: 'cli', adapterId, modelOverride?, timeoutMs? } to delegate to a configured CLI adapter.",
               optional: true,
               properties: {
                 kind: { type: "string", enum: ["llm", "acp", "cli"] },

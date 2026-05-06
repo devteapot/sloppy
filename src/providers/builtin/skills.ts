@@ -155,6 +155,8 @@ export class SkillsProvider {
   private proposals = new Map<string, SkillProposal>();
   private templateVars: boolean;
   private viewMaxBytes: number;
+  private discoveryReady: Promise<void>;
+  private discoveryLoading = false;
 
   constructor(options: {
     skillsDir?: string;
@@ -200,10 +202,7 @@ export class SkillsProvider {
     this.server.register("proposals", () => this.buildProposalsDescriptor());
     this.server.register("approvals", () => this.approvals.buildDescriptor());
 
-    void this.discoverSkills().then((skills) => {
-      this.skills = skills;
-      this.server.refresh();
-    });
+    this.discoveryReady = this.reloadSkills();
   }
 
   stop(): void {
@@ -266,6 +265,21 @@ export class SkillsProvider {
     return skills.sort(compareSkills);
   }
 
+  private async reloadSkills(): Promise<void> {
+    this.discoveryLoading = true;
+    this.server.refresh();
+    try {
+      this.skills = await this.discoverSkills();
+    } finally {
+      this.discoveryLoading = false;
+      this.server.refresh();
+    }
+  }
+
+  private async ensureDiscovered(): Promise<void> {
+    await this.discoveryReady;
+  }
+
   private findSkill(skillName: string, scope?: SkillScope): SkillInfo | undefined {
     const normalized = skillName.trim();
     return this.skills.find(
@@ -310,6 +324,7 @@ export class SkillsProvider {
     supporting_files: string[];
     content: string;
   }> {
+    await this.ensureDiscovered();
     const skill = this.findSkill(skillName);
     if (!skill) {
       throw new Error(`Unknown skill: ${skillName}`);
@@ -398,6 +413,7 @@ export class SkillsProvider {
     proposalId: string,
     approved = false,
   ): Promise<SkillProposal> {
+    await this.ensureDiscovered();
     const proposal = this.proposals.get(proposalId);
     if (!proposal) throw new Error(`Unknown skill proposal: ${proposalId}`);
     if (proposal.status !== "proposed") {
@@ -439,7 +455,8 @@ export class SkillsProvider {
         proposal.body.endsWith("\n") ? proposal.body : `${proposal.body}\n`,
         "utf8",
       );
-      this.skills = await this.discoverSkills();
+      this.discoveryReady = this.reloadSkills();
+      await this.discoveryReady;
     }
     proposal.status = "active";
     proposal.activated_at = new Date().toISOString();
@@ -505,6 +522,7 @@ export class SkillsProvider {
     params: Record<string, unknown>,
     approved = false,
   ): Promise<Record<string, unknown>> {
+    await this.ensureDiscovered();
     const operation = this.parseManageOperation(params.operation ?? params.action);
     const name = typeof params.name === "string" ? params.name.trim() : "";
     if (!name) throw new Error("name must be a non-empty string.");
@@ -743,15 +761,15 @@ export class SkillsProvider {
         categories,
         installed: this.skills.map((s) => s.name),
         proposals_count: this.proposals.size,
+        loading: this.discoveryLoading,
       },
       summary:
         "Discoverable agent skills. Use skill_view for progressive disclosure and skill_manage for agent-managed procedural memory.",
       actions: {
         refresh_skills: action(
           async () => {
-            const skills = await this.discoverSkills();
-            this.skills = skills;
-            this.server.refresh();
+            this.discoveryReady = this.reloadSkills();
+            await this.discoveryReady;
             return { skills_count: this.skills.length };
           },
           {

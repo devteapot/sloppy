@@ -625,6 +625,130 @@ describe("MetaRuntimeProvider", () => {
     }
   });
 
+  test("dispatch_route rejects agent targets without explicit capability masks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const meta = new MetaRuntimeProvider({
+      globalRoot: join(root, "global"),
+      workspaceRoot: join(root, "workspace"),
+    });
+    const delegation = delegationStub();
+    const metaRegistration = registeredMetaProvider(meta);
+    const hub = new ConsumerHub([metaRegistration, delegation.provider], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
+      const consumer = new SlopConsumer(new InProcessTransport(meta.server));
+      await connect(consumer);
+
+      const proposal = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Route to unmasked agent",
+        ops: [
+          {
+            type: "upsertAgentProfile",
+            profile: { id: "reviewer", name: "Reviewer" },
+          },
+          {
+            type: "spawnAgent",
+            agent: {
+              id: "agent-reviewer",
+              profileId: "reviewer",
+              status: "active",
+              channels: [],
+              capabilityMaskIds: [],
+            },
+          },
+          {
+            type: "upsertRoute",
+            route: {
+              id: "review-route",
+              source: "root",
+              match: "review",
+              target: "agent:agent-reviewer",
+              enabled: true,
+            },
+          },
+        ],
+      });
+      const proposalId = (proposal.data as { id: string }).id;
+      expect((await consumer.invoke(`/proposals/${proposalId}`, "apply_proposal", {})).status).toBe(
+        "error",
+      );
+      const approvals = await consumer.query("/approvals", 2);
+      const approvalId = approvals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof approvalId).toBe("string");
+      expect((await consumer.invoke(`/approvals/${approvalId}`, "approve", {})).status).toBe("ok");
+
+      const dispatched = await consumer.invoke("/session", "dispatch_route", {
+        source: "root",
+        message: "please review the runtime",
+      });
+      expect(dispatched.status).toBe("ok");
+      expect((dispatched.data as { routed: boolean; reason?: string }).routed).toBe(false);
+      expect(delegation.spawns).toHaveLength(0);
+      const events = await consumer.query("/events", 2);
+      const failure = events.children?.find((child) => child.properties?.kind === "route.failed");
+      expect(failure?.properties?.metadata).toMatchObject({
+        reason_code: "missing_capability_mask",
+        agent_id: "agent-reviewer",
+      });
+      stop?.stop();
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("rejects malformed executor bindings before they enter topology state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
+
+    try {
+      await connect(consumer);
+      const missingProfile = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Bad LLM executor",
+        ops: [
+          {
+            type: "setExecutorBinding",
+            binding: {
+              id: "bad-llm",
+              kind: "llm",
+            },
+          },
+        ],
+      });
+      expect(missingProfile.status).toBe("error");
+      expect(missingProfile.error?.message).toContain("profileId");
+
+      const unknownKind = await consumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Bad executor kind",
+        ops: [
+          {
+            type: "setExecutorBinding",
+            binding: {
+              id: "bad-kind",
+              kind: "worker",
+              adapterId: "codex",
+            },
+          },
+        ],
+      });
+      expect(unknownKind.status).toBe("error");
+      expect(unknownKind.error?.message).toContain("No matching discriminator");
+
+      const bindings = await consumer.query("/executor-bindings", 2);
+      expect(bindings.properties?.count).toBe(0);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("dispatch_route sends messages to routed channels", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
     tempPaths.push(root);
@@ -718,13 +842,22 @@ describe("MetaRuntimeProvider", () => {
             profile: { id: "reviewer", name: "Reviewer", instructions: "Review carefully." },
           },
           {
+            type: "setCapabilityMask",
+            mask: {
+              id: "review-read",
+              provider: "filesystem",
+              actions: ["read"],
+              mode: "allow",
+            },
+          },
+          {
             type: "spawnAgent",
             agent: {
               id: "agent-reviewer",
               profileId: "reviewer",
               status: "active",
               channels: [],
-              capabilityMaskIds: [],
+              capabilityMaskIds: ["review-read"],
             },
           },
           {
@@ -1414,13 +1547,23 @@ describe("MetaRuntimeProvider", () => {
             },
           },
           {
+            type: "setCapabilityMask",
+            mask: {
+              id: "review-read",
+              provider: "filesystem",
+              actions: ["read"],
+              mode: "allow",
+            },
+          },
+          {
             type: "spawnAgent",
             agent: {
               id: "agent-reviewer",
               profileId: "reviewer",
               status: "active",
               channels: [],
-              capabilityMaskIds: [],
+              capabilityMaskIds: ["review-read"],
+              skillVersionIds: ["review-runtime@1.0.0"],
             },
           },
           {
@@ -1458,6 +1601,88 @@ describe("MetaRuntimeProvider", () => {
       expect(String(delegation.spawns[0]?.goal)).toContain(
         "Active runtime skills are frozen into this routed child run.",
       );
+      stop?.stop();
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("refuses to activate persistent linked skill proposals through meta-runtime apply", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
+    tempPaths.push(root);
+    const meta = new MetaRuntimeProvider({
+      globalRoot: join(root, "global"),
+      workspaceRoot: join(root, "workspace"),
+    });
+    const skills = new SkillsProvider({
+      skillsDir: join(root, "skills"),
+      workspaceSkillsDir: join(root, "workspace-skills"),
+    });
+    const metaRegistration = registeredMetaProvider(meta);
+    const hub = new ConsumerHub([metaRegistration, registeredSkillsProvider(skills)], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
+      const metaConsumer = new SlopConsumer(new InProcessTransport(meta.server));
+      const skillsConsumer = new SlopConsumer(new InProcessTransport(skills.server));
+      await connect(metaConsumer);
+      await connect(skillsConsumer);
+
+      const skillProposal = await skillsConsumer.invoke("/session", "propose_skill", {
+        scope: "workspace",
+        name: "persistent-review-runtime",
+        version: "1.0.0",
+        body: "# Persistent Review Runtime\n\nReview topology changes.\n",
+      });
+      const skillProposalId = (skillProposal.data as { id: string }).id;
+
+      const metaProposal = await metaConsumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Activate persistent review skill",
+        ops: [
+          {
+            type: "activateSkillVersion",
+            skillVersion: {
+              id: "persistent-review-runtime@1.0.0",
+              skillId: "persistent-review-runtime",
+              version: "1.0.0",
+              scope: "workspace",
+              active: false,
+              proposalId: skillProposalId,
+              activationStatus: "pending",
+            },
+          },
+        ],
+      });
+      const metaProposalId = (metaProposal.data as { id: string }).id;
+      const blocked = await metaConsumer.invoke(
+        `/proposals/${metaProposalId}`,
+        "apply_proposal",
+        {},
+      );
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+
+      const approvals = await metaConsumer.query("/approvals", 2);
+      const approvalId = approvals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof approvalId).toBe("string");
+      const approved = await metaConsumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(approved.status).toBe("error");
+      expect(approved.error?.message).toContain(
+        "Activate it through the skills provider before applying this meta-runtime proposal",
+      );
+
+      const skillVersions = await metaConsumer.query("/skill-versions", 2);
+      expect(skillVersions.properties?.count).toBe(0);
+      const proposals = await skillsConsumer.query("/proposals", 2);
+      expect(proposals.children?.[0]?.properties?.status).toBe("proposed");
+      const skillApprovals = await skillsConsumer.query("/approvals", 2);
+      expect(skillApprovals.properties?.count).toBe(0);
+      const metaProposalNode = await metaConsumer.query(`/proposals/${metaProposalId}`, 1);
+      expect(metaProposalNode.properties?.status).toBe("proposed");
       stop?.stop();
     } finally {
       hub.shutdown();

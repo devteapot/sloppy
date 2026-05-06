@@ -124,6 +124,7 @@ export type LlmProfileSnapshot = {
   label?: string;
   provider: string;
   model: string;
+  adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
   isDefault: boolean;

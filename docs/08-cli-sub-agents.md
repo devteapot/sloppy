@@ -2,9 +2,11 @@
 
 ## Status
 
-ACP-backed and CLI-backed child-session paths are checked in behind the
-`delegation` provider. This document replaces the older orchestration-oriented
-draft that assumed a parent orchestrator, `/tasks`, and durable task handoff.
+ACP-backed and CLI-backed session-agent paths are checked in. They can run
+delegated children behind the `delegation` provider and can also be selected as
+the main session's LLM profile. This document replaces the older
+orchestration-oriented draft that assumed a parent orchestrator, `/tasks`, and
+durable task handoff.
 
 Current source areas:
 
@@ -37,9 +39,13 @@ Supported execution shapes:
 - ACP child agent through a configured stdio ACP adapter
 - CLI child agent through a configured one-shot subprocess adapter
 
+The same adapter configs are usable from `llm.profiles` with provider `acp` or
+`cli`. In that shape, `adapterId` selects the configured adapter and `model`
+remains the selected model identifier exposed through `/llm`.
+
 ## Delegation Boundary
 
-`delegation.spawn_agent` accepts a goal and optional execution selection. The
+`delegation.spawn_agent` accepts a goal and optional `executor` binding. The
 runtime creates a child `SessionAgent` implementation:
 
 - native `SessionAgent` for local LLM-backed children
@@ -82,13 +88,30 @@ providers:
       enabled: true
       adapters:
         codex:
-          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
+          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]
           timeoutMs: 600000
 ```
 
 Meta-runtime executor bindings can route an agent to these adapters with
-`{ kind: "acp", adapterId: "claude" }` or
-`{ kind: "cli", adapterId: "codex" }`.
+`{ kind: "acp", adapterId: "claude", modelOverride: "sonnet" }` or
+`{ kind: "cli", adapterId: "codex", modelOverride: "gpt-5.5" }`.
+`modelOverride` is optional and expands `{model}` in adapter commands.
+
+Main-session profile example:
+
+```yaml
+llm:
+  provider: cli
+  model: gpt-5.5
+  adapterId: codex
+  defaultProfileId: codex-gpt55
+  profiles:
+    - id: codex-gpt55
+      label: Codex GPT-5.5
+      provider: cli
+      model: gpt-5.5
+      adapterId: codex
+```
 
 ## Safety
 

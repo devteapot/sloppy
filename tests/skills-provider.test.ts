@@ -268,6 +268,31 @@ related_skills: [helper-skill]
     }
   });
 
+  test("skill_view waits for startup discovery before resolving a skill", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    await createSkill(
+      root,
+      "startup-reader",
+      "---\nname: startup-reader\n---",
+      "# Startup Reader\n\nLoaded during provider startup.\n",
+    );
+
+    const { provider, consumer } = createHarness(root);
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+      const viewResult = await consumer.invoke("/session", "skill_view", {
+        name: "startup-reader",
+      });
+      expect(viewResult.status).toBe("ok");
+      expect((viewResult.data as { content: string }).content).toContain("# Startup Reader");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("skill items expose a view_skill affordance", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);

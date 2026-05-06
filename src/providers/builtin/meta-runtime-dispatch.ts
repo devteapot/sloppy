@@ -66,14 +66,31 @@ function resolveAgentCapabilityMasks(
   });
 }
 
-function activeSkillVersions(context: MetaRuntimeDispatchContext): SkillVersion[] {
-  return [...context.skillVersions.values()]
-    .filter((skillVersion) => skillVersion.active && skillVersion.activationStatus !== "failed")
-    .sort((a, b) => a.id.localeCompare(b.id));
+function selectedSkillVersions(
+  context: MetaRuntimeDispatchContext,
+  agent: AgentNode,
+  profile: AgentProfile,
+): SkillVersion[] {
+  const ids = [...(profile.defaultSkillVersionIds ?? []), ...(agent.skillVersionIds ?? [])];
+  const uniqueIds = [...new Set(ids)];
+  return uniqueIds.map((id) => {
+    const skillVersion = context.skillVersions.get(id);
+    if (!skillVersion) {
+      throw new Error(`Agent ${agent.id} references unknown skill version ${id}.`);
+    }
+    if (!skillVersion.active || skillVersion.activationStatus === "failed") {
+      throw new Error(`Agent ${agent.id} references inactive skill version ${id}.`);
+    }
+    return skillVersion;
+  });
 }
 
-async function buildActiveSkillContext(context: MetaRuntimeDispatchContext): Promise<string> {
-  const skillVersions = activeSkillVersions(context);
+async function buildActiveSkillContext(
+  context: MetaRuntimeDispatchContext,
+  agent: AgentNode,
+  profile: AgentProfile,
+): Promise<string> {
+  const skillVersions = selectedSkillVersions(context, agent, profile);
   if (skillVersions.length === 0) return "";
   if (!context.hub) {
     throw new Error("Cannot load active skill versions without a runtime hub.");
@@ -175,9 +192,21 @@ async function dispatchSingleRoute(
       );
     }
     const capabilityMasks = resolveAgentCapabilityMasks(context, agent, profile);
+    if (capabilityMasks.length === 0) {
+      return routeFailure(
+        context,
+        route,
+        envelope,
+        `Target agent ${agent.id} has no explicit capability masks.`,
+        {
+          reason_code: "missing_capability_mask",
+          agent_id: agent.id,
+        },
+      );
+    }
     let skillContext = "";
     try {
-      skillContext = await buildActiveSkillContext(context);
+      skillContext = await buildActiveSkillContext(context, agent, profile);
     } catch (error) {
       return routeFailure(
         context,

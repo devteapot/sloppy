@@ -76,4 +76,34 @@ process.exit(7);
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
+
+  test("expands model placeholders for external model profiles", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-cli-agent-model-"));
+    try {
+      const script = await writeScript(
+        workspaceRoot,
+        "agent.mjs",
+        `
+const [model, prompt] = process.argv.slice(2);
+process.stdout.write(model + ":" + prompt);
+`,
+      );
+      const agent = new CliSessionAgent({
+        adapterId: "codex",
+        adapter: {
+          command: ["node", script, "{model}", "{prompt}"],
+        },
+        modelOverride: "gpt-5.5",
+        callbacks: {},
+        workspaceRoot,
+      });
+
+      const result = await agent.chat("from cli");
+
+      expect(result).toEqual({ status: "completed", response: "gpt-5.5:from cli" });
+      agent.shutdown();
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });

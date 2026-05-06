@@ -3,6 +3,10 @@ llm:
   model: <litellm-model>
   apiKeyEnv: LITELLM_API_KEY
   baseUrl: http://sloppy-mba.local:8001/v1
+  # To use Codex CLI as the main session model instead:
+  # provider: cli
+  # model: gpt-5.5
+  # adapterId: codex
 
 providers:
   builtin:
@@ -35,4 +39,4 @@ providers:
       defaultTimeoutMs: 600000
       adapters:
         codex:
-          command: ["codex", "exec", "--ephemeral", "--sandbox", "read-only"]
+          command: ["codex", "exec", "--model", "{model}", "--ephemeral", "--sandbox", "read-only", "{prompt}"]

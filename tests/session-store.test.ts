@@ -1552,9 +1552,8 @@ describe("SessionService — multi-session support", () => {
       // runtime.start() ran refreshLlmState before the listener opened, so
       // the snapshot reflects the injected profile manager (not the store's
       // pre-refresh placeholder).
-      expect(after.llm.profiles).toHaveLength(1);
-      expect(after.llm.profiles[0]?.id).toBe("test-openai");
-      expect(after.llm.profiles[0]?.ready).toBe(true);
+      const managedProfile = after.llm.profiles.find((profile) => profile.id === "test-openai");
+      expect(managedProfile?.ready).toBe(true);
       expect(after.llm.secureStoreKind).toBe("keychain");
       expect(after.llm.status).toBe("ready");
     } finally {

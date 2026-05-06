@@ -2,13 +2,12 @@ import type { ResultMessage } from "@slop-ai/consumer/browser";
 
 import { defaultConfigPromise } from "../config/load";
 import { llmProviderSchema, type SloppyConfig } from "../config/schema";
-import {
-  Agent,
-  type AgentCallbacks,
-  type AgentRunResult,
-  type AgentToolEvent,
-  type ResolvedApprovalToolResult,
-  type RoleProfile,
+import type {
+  AgentCallbacks,
+  AgentRunResult,
+  AgentToolEvent,
+  ResolvedApprovalToolResult,
+  RoleProfile,
 } from "../core/agent";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
@@ -31,6 +30,7 @@ import {
   syncExternalProviderStatesToSession,
   syncProviderSnapshotToSession,
 } from "./mirror-sync";
+import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
 import type { ApprovalItem } from "./types";
 
@@ -94,7 +94,7 @@ function createDefaultSessionAgent(
     policyRules?: InvokePolicy[];
   },
 ): SessionAgent {
-  return new Agent({
+  return new ProfileSessionAgent({
     config,
     llmProfileManager,
     llmProfileId: extras?.llmProfileId,
@@ -106,7 +106,7 @@ function createDefaultSessionAgent(
     publishEvent: extras?.publishEvent,
     mirrorProviderPaths: ["/approvals", "/tasks"],
     policyRules: extras?.policyRules,
-    ...callbacks,
+    callbacks,
   });
 }
 
@@ -276,6 +276,12 @@ export class SessionRuntime {
     const profileId = typeof params.profile_id === "string" ? params.profile_id : undefined;
     const label = typeof params.label === "string" ? params.label : undefined;
     const model = typeof params.model === "string" ? params.model : undefined;
+    const adapterId =
+      typeof params.adapter_id === "string"
+        ? params.adapter_id
+        : typeof params.adapterId === "string"
+          ? params.adapterId
+          : undefined;
     const baseUrl = typeof params.base_url === "string" ? params.base_url : undefined;
     const apiKey = typeof params.api_key === "string" ? params.api_key : undefined;
     const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
@@ -285,6 +291,7 @@ export class SessionRuntime {
       label,
       provider,
       model,
+      adapterId,
       baseUrl,
       apiKey,
       makeDefault,

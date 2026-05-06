@@ -18,6 +18,7 @@ export type CliAdapterConfig = {
 export type CliSessionAgentOptions = {
   adapterId: string;
   adapter: CliAdapterConfig;
+  modelOverride?: string;
   callbacks: AgentCallbacks;
   workspaceRoot: string;
   defaultTimeoutMs?: number;
@@ -30,13 +31,35 @@ function truncate(value: string, maxChars: number): string {
   return `${value.slice(0, maxChars - 16)}...[truncated]`;
 }
 
-function commandWithPrompt(adapter: CliAdapterConfig, userMessage: string): string[] {
+function commandWithPrompt(
+  adapter: CliAdapterConfig,
+  userMessage: string,
+  modelOverride?: string,
+): string[] {
   const command = [...adapter.command];
-  const replaced = command.map((part) => part.replaceAll("{prompt}", userMessage));
+  const replaced = command.map((part) =>
+    part.replaceAll("{prompt}", userMessage).replaceAll("{model}", modelOverride ?? ""),
+  );
   if (adapter.appendPrompt === false || replaced.some((part, index) => part !== command[index])) {
     return replaced;
   }
   return [...replaced, userMessage];
+}
+
+function expandModelTemplate(value: string, modelOverride?: string): string {
+  return value.replaceAll("{model}", modelOverride ?? "");
+}
+
+function expandEnvTemplates(
+  env: Record<string, string> | undefined,
+  modelOverride?: string,
+): Record<string, string> | undefined {
+  if (!env) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [key, expandModelTemplate(value, modelOverride)]),
+  );
 }
 
 export class CliSessionAgent implements SessionAgent {
@@ -45,6 +68,7 @@ export class CliSessionAgent implements SessionAgent {
   private readonly callbacks: AgentCallbacks;
   private readonly workspaceRoot: string;
   private readonly timeoutMs?: number;
+  private readonly modelOverride?: string;
   private child: ChildProcessByStdio<null, Readable, Readable> | null = null;
   private started = false;
   private activeReject: ((error: Error) => void) | null = null;
@@ -55,6 +79,7 @@ export class CliSessionAgent implements SessionAgent {
     this.callbacks = options.callbacks;
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.timeoutMs = options.adapter.timeoutMs ?? options.defaultTimeoutMs;
+    this.modelOverride = options.modelOverride;
   }
 
   async start(): Promise<void> {
@@ -73,7 +98,7 @@ export class CliSessionAgent implements SessionAgent {
       throw new Error(`CLI adapter '${this.adapterId}' already has an active turn.`);
     }
 
-    const command = commandWithPrompt(this.adapter, userMessage);
+    const command = commandWithPrompt(this.adapter, userMessage, this.modelOverride);
     const executable = command[0];
     if (!executable) {
       throw new Error(`CLI adapter '${this.adapterId}' has no command configured.`);
@@ -91,10 +116,12 @@ export class CliSessionAgent implements SessionAgent {
       };
       this.activeReject = fail;
       const child = spawn(executable, args, {
-        cwd: resolve(this.adapter.cwd ?? this.workspaceRoot),
+        cwd: resolve(
+          expandModelTemplate(this.adapter.cwd ?? this.workspaceRoot, this.modelOverride),
+        ),
         env: {
           ...process.env,
-          ...(this.adapter.env ?? {}),
+          ...(expandEnvTemplates(this.adapter.env, this.modelOverride) ?? {}),
         },
         stdio: ["ignore", "pipe", "pipe"],
       });

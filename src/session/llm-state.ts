@@ -4,6 +4,7 @@ import type { LlmStateSnapshot } from "./types";
 export type ExternalSessionAgentState = {
   provider: string;
   model: string;
+  adapterId?: string;
   profileId?: string;
   label?: string;
   message?: string;
@@ -23,6 +24,7 @@ export function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnaps
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,
       isDefault: profile.isDefault,
@@ -54,6 +56,7 @@ export function toExternalAgentLlmState(agent: ExternalSessionAgentState): LlmSt
         label,
         provider: agent.provider,
         model: agent.model,
+        adapterId: agent.adapterId,
         isDefault: true,
         hasKey: false,
         keySource: "not_required",

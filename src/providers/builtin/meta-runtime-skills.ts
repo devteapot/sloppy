@@ -3,17 +3,29 @@ import type { Proposal, SkillVersion, TopologyChange } from "./meta-runtime-mode
 
 type SkillActivationFailureRecorder = (skillVersionId: string, reason: string) => void;
 
-async function readSkillProposalStatus(
+type SkillProposalState = {
+  status?: string;
+  scope?: string;
+  requiresApproval?: boolean;
+};
+
+async function readSkillProposalState(
   hub: ProviderRuntimeHub,
   proposalId: string,
-): Promise<string | undefined> {
+): Promise<SkillProposalState> {
   const proposal = await hub.queryState({
     providerId: "skills",
     path: `/proposals/${proposalId}`,
     depth: 1,
   });
   const status = proposal.properties?.status;
-  return typeof status === "string" ? status : undefined;
+  const scope = proposal.properties?.scope;
+  const requiresApproval = proposal.properties?.requires_approval;
+  return {
+    status: typeof status === "string" ? status : undefined,
+    scope: typeof scope === "string" ? scope : undefined,
+    requiresApproval: typeof requiresApproval === "boolean" ? requiresApproval : undefined,
+  };
 }
 
 function activatedSkillVersion(skillVersion: SkillVersion): SkillVersion {
@@ -62,13 +74,20 @@ export async function activateLinkedSkills(
     const skillProposalId = op.skillVersion.proposalId;
     if (!skillProposalId) continue;
 
-    const beforeStatus = await readSkillProposalStatus(hub, skillProposalId).catch(() => undefined);
-    if (beforeStatus === "active") {
+    const before = await readSkillProposalState(hub, skillProposalId).catch(
+      (): SkillProposalState => ({}),
+    );
+    if (before.status === "active") {
       activated.set(op.skillVersion.id, activatedSkillVersion(op.skillVersion));
       continue;
     }
-    if (beforeStatus !== undefined && beforeStatus !== "proposed") {
-      const reason = `Linked skill proposal ${skillProposalId} is ${beforeStatus}, not proposed or active.`;
+    if (before.status !== undefined && before.status !== "proposed") {
+      const reason = `Linked skill proposal ${skillProposalId} is ${before.status}, not proposed or active.`;
+      recordFailure(op.skillVersion.id, reason);
+      throw new Error(reason);
+    }
+    if (before.status === "proposed" && (before.requiresApproval || before.scope !== "session")) {
+      const reason = `Linked skill proposal ${skillProposalId} is a persistent skill proposal. Activate it through the skills provider before applying this meta-runtime proposal.`;
       recordFailure(op.skillVersion.id, reason);
       throw new Error(reason);
     }
@@ -79,10 +98,10 @@ export async function activateLinkedSkills(
       "activate_skill_proposal",
     );
     if (result.status === "error") {
-      const afterStatus = await readSkillProposalStatus(hub, skillProposalId).catch(
-        () => undefined,
+      const after = await readSkillProposalState(hub, skillProposalId).catch(
+        (): SkillProposalState => ({}),
       );
-      if (afterStatus === "active") {
+      if (after.status === "active") {
         activated.set(op.skillVersion.id, activatedSkillVersion(op.skillVersion));
         continue;
       }

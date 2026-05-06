@@ -192,12 +192,13 @@ Required profile item props:
 Optional profile item props:
 
 - `label`: display label
+- `adapter_id`: ACP/CLI adapter id when the profile runs through an external session agent
 - `api_key_env`: environment variable name that can satisfy the profile for this process
 - `base_url`: provider base URL override
 
 Affordances:
 
-- `save_profile(profile_id?, label?, provider, model?, base_url?, api_key?, make_default?)`
+- `save_profile(profile_id?, label?, provider, model?, adapter_id?, base_url?, api_key?, make_default?)`
 - `set_default_profile(profile_id)`
 - `delete_profile(profile_id)`
 - `delete_api_key(profile_id)`
@@ -207,6 +208,7 @@ Rules:
 - secret values must never be exposed in state, transcript, activity, or logs
 - `api_key` is write-only input for secure persistence
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
+- ACP/CLI profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
 - the session should remain attachable even when `status=needs_credentials`
 
 ### `/composer`

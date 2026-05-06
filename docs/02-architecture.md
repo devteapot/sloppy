@@ -86,7 +86,8 @@ versions, and topology experiment records are state.
 Enabled routes dispatch typed message envelopes through the provider hub:
 
 - `agent:<id>` targets invoke `delegation.spawn_agent` using the target agent's
-  profile instructions, executor binding, and resolved capability masks.
+  profile instructions, executor binding, resolved capability masks, and
+  selected skill versions.
 - `channel:<id>` targets invoke `messaging.channels/{id}.send`.
 
 Dispatch can run in single-target mode or fanout mode. Routes can carry
@@ -150,9 +151,13 @@ meta-runtime roots:
 It also scans the configured builtin skill root, defaulting to `skills/`.
 
 Meta-runtime `activateSkillVersion` records can link to skills-provider
-proposals. When routed child agents are spawned through meta-runtime routes,
-active skill versions are resolved through `skill_view` and frozen into the
-child goal. A route fails visibly if an active skill cannot be loaded.
+proposals. Session skill proposals may activate during meta-runtime proposal
+apply; workspace/global skill proposals must be activated through the skills
+provider first. When routed child agents are spawned through meta-runtime
+routes, selected active skill versions from `profile.defaultSkillVersionIds` and
+`agent.skillVersionIds` are resolved through `skill_view` and frozen into the
+child goal. A route fails visibly if a selected skill cannot be loaded or if the
+agent has no explicit capability mask.
 
 Self-extensibility should primarily grow through skills. If a recurring
 procedure can be expressed as instructions plus existing SLOP affordances, it

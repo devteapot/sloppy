@@ -284,6 +284,15 @@ function buildTopologyOps(options: {
 
   ops.push(
     {
+      type: "setCapabilityMask",
+      mask: {
+        id: "smoke-filesystem-read",
+        provider: "filesystem",
+        actions: ["read"],
+        mode: "allow",
+      },
+    },
+    {
       type: "upsertAgentProfile",
       profile: {
         id: "smoke-worker",
@@ -299,7 +308,7 @@ function buildTopologyOps(options: {
         profileId: "smoke-worker",
         status: "active",
         channels: [options.channelId],
-        capabilityMaskIds: [],
+        capabilityMaskIds: ["smoke-filesystem-read"],
         executorBindingId: bindingId,
       },
     },

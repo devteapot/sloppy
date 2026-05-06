@@ -95,6 +95,13 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
     };
   }
 
+  if (Bun.env.SLOPPY_LLM_ADAPTER_ID) {
+    overrides.llm = {
+      ...(overrides.llm as JsonObject | undefined),
+      adapterId: Bun.env.SLOPPY_LLM_ADAPTER_ID,
+    };
+  }
+
   if (Bun.env.SLOPPY_LLM_BASE_URL) {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
@@ -134,6 +141,7 @@ function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): 
     label: profile.label,
     provider: profile.provider,
     model: profile.model ?? defaults.model,
+    adapterId: profile.adapterId ?? defaults.adapterId,
     apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: profile.baseUrl ?? defaults.baseUrl,
   };
@@ -145,6 +153,7 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
   return {
     provider: config.provider,
     model: config.model ?? defaults.model,
+    adapterId: config.adapterId ?? defaults.adapterId,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     defaultProfileId: config.defaultProfileId,

@@ -75,8 +75,11 @@ export class SubAgentRunner {
     // child runtime. The child runtime is constructed with the default role,
     // and the parent hub federates its session tree back via AgentSessionProvider.
     const disableSet = new Set(options.disableBuiltinProviders ?? []);
-    // The delegation provider is always disabled to prevent recursive spawning.
-    disableSet.add("delegation");
+    // Leaf child runtimes should not inherit the parent's self-restructuring
+    // plane unless a caller deliberately builds a custom child runtime.
+    for (const key of ["delegation", "metaRuntime", "cron", "messaging"]) {
+      disableSet.add(key);
+    }
     const overriddenBuiltins: Record<string, boolean> = {
       ...(options.parentConfig.providers.builtin as Record<string, boolean>),
     };

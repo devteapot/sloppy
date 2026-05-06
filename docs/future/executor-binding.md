@@ -19,13 +19,17 @@ Checked-in code supports three delegated child execution paths:
 
 ```ts
 type ExecutorBinding =
-  | { kind: "llm"; profileId?: string; modelOverride?: string; timeoutMs?: number }
-  | { kind: "acp"; adapterId?: string; timeoutMs?: number }
-  | { kind: "cli"; adapterId?: string; timeoutMs?: number };
+  | { kind: "llm"; profileId: string; modelOverride?: string }
+  | { kind: "acp"; adapterId: string; modelOverride?: string; timeoutMs?: number }
+  | { kind: "cli"; adapterId: string; modelOverride?: string; timeoutMs?: number };
 ```
 
 A routed `agent:<id>` dispatch passes the target agent's executor binding to
 `delegation.spawn_agent`.
+
+When no executor binding is supplied, the child uses the active session LLM
+profile. That profile can be native (`anthropic`, `openai`, `openrouter`,
+`ollama`, `gemini`) or external (`acp`, `cli`).
 
 ## Safety Boundary
 
@@ -36,6 +40,7 @@ checks; model-authored strategy should live in skills.
 Current safety rules:
 
 - capability masks are resolved by meta-runtime and enforced by hub policy
+- routed agents must have explicit capability masks
 - routed or allow-masked ACP spawns require adapter capability declarations
 - ACP adapter declarations must satisfy the requested child surface
 - unknown or undeclared powerful surfaces should fail closed or require human

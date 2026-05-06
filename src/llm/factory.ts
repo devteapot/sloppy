@@ -63,5 +63,10 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         model: config.model,
         baseUrl: config.baseUrl,
       });
+    case "acp":
+    case "cli":
+      throw new Error(
+        `${config.provider} profiles are external session-agent profiles and cannot be used by the native LLM adapter factory.`,
+      );
   }
 }

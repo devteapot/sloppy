@@ -10,6 +10,7 @@ const originalGeminiKey = process.env.GEMINI_API_KEY;
 const originalLiteLlmKey = process.env.LITELLM_API_KEY;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
+const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 
@@ -168,6 +169,12 @@ afterEach(() => {
     delete process.env.SLOPPY_LLM_BASE_URL;
   } else {
     process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
+
+  if (originalAdapterId == null) {
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+  } else {
+    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
   }
 
   if (originalApiKeyEnv == null) {
@@ -414,11 +421,78 @@ describe("LlmProfileManager", () => {
     });
 
     expect(state.status).toBe("ready");
-    expect(state.profiles).toHaveLength(1);
-    expect(state.profiles[0]?.provider).toBe("gemini");
-    expect(state.profiles[0]?.keySource).toBe("secure_store");
-    expect(persistedProfileId).toBe(state.profiles[0]?.id);
-    expect(store.secrets.get(state.profiles[0]?.id ?? "")).toBe("secret-key");
+    const managedProfile = state.profiles.find((profile) => profile.origin === "managed");
+    expect(managedProfile?.provider).toBe("gemini");
+    expect(managedProfile?.keySource).toBe("secure_store");
+    expect(persistedProfileId).toBe(managedProfile?.id);
+    expect(store.secrets.get(managedProfile?.id ?? "")).toBe("secret-key");
+  });
+
+  test("treats CLI adapter profiles as ready model profiles without API keys", async () => {
+    const manager = new LlmProfileManager({
+      config: {
+        ...TEST_CONFIG,
+        llm: {
+          ...TEST_CONFIG.llm,
+          provider: "cli",
+          model: "gpt-5.5",
+          adapterId: "codex",
+          apiKeyEnv: undefined,
+          defaultProfileId: "codex-gpt55",
+          profiles: [
+            {
+              id: "codex-gpt55",
+              label: "Codex GPT-5.5",
+              provider: "cli",
+              model: "gpt-5.5",
+              adapterId: "codex",
+            },
+          ],
+        },
+      },
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.status).toBe("ready");
+    expect(state.selectedProvider).toBe("cli");
+    expect(state.selectedModel).toBe("gpt-5.5");
+    expect(state.profiles[0]?.adapterId).toBe("codex");
+    expect(state.profiles[0]?.keySource).toBe("not_required");
+    expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
+  });
+
+  test("persists adapter ids when saving external agent profiles", async () => {
+    let persistedAdapterId: string | undefined;
+    const manager = new LlmProfileManager({
+      config: {
+        ...TEST_CONFIG,
+        llm: {
+          ...TEST_CONFIG.llm,
+          defaultProfileId: undefined,
+          profiles: [],
+        },
+      },
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async (config) => {
+        persistedAdapterId = config.profiles[0]?.adapterId;
+      },
+    });
+
+    const state = await manager.saveProfile({
+      label: "Codex GPT-5.5",
+      provider: "cli",
+      model: "gpt-5.5",
+      adapterId: "codex",
+      makeDefault: true,
+    });
+
+    expect(state.status).toBe("ready");
+    expect(state.profiles[0]?.provider).toBe("cli");
+    expect(state.profiles[0]?.adapterId).toBe("codex");
+    expect(persistedAdapterId).toBe("codex");
   });
 
   test("marks invalid OpenRouter keys as not ready before a model turn starts", async () => {

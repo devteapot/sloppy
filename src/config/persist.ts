@@ -8,6 +8,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
   return {
     provider: config.provider,
     model: config.model,
+    adapterId: config.adapterId,
     apiKeyEnv: config.apiKeyEnv,
     baseUrl: config.baseUrl,
     defaultProfileId: config.defaultProfileId,
@@ -17,6 +18,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
       label: profile.label,
       provider: profile.provider,
       model: profile.model,
+      adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,
     })),

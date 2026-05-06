@@ -10,6 +10,7 @@ const originalCwd = process.cwd();
 const originalHome = process.env.HOME;
 const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
 const originalModel = process.env.SLOPPY_MODEL;
+const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
 const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
 const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 const originalMaxIterations = process.env.SLOPPY_MAX_ITERATIONS;
@@ -53,6 +54,12 @@ afterEach(async () => {
     process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
   }
 
+  if (originalAdapterId == null) {
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+  } else {
+    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
+  }
+
   if (originalApiKeyEnv == null) {
     delete process.env.SLOPPY_LLM_API_KEY_ENV;
   } else {
@@ -83,7 +90,9 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -102,7 +111,9 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -123,6 +134,7 @@ describe("loadConfig", () => {
     process.env.SLOPPY_LLM_BASE_URL = "http://127.0.0.1:11434/v1";
     delete process.env.SLOPPY_LLM_API_KEY_ENV;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -142,6 +154,7 @@ describe("loadConfig", () => {
     process.env.SLOPPY_LLM_API_KEY_ENV = "LITELLM_API_KEY";
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
     process.chdir(workspace);
 
@@ -151,6 +164,55 @@ describe("loadConfig", () => {
     expect(config.llm.apiKeyEnv).toBe("LITELLM_API_KEY");
   });
 
+  test("loads CLI adapter profiles as first-class LLM profiles", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: cli",
+        "  model: gpt-5.5",
+        "  adapterId: codex",
+        "  profiles:",
+        "    - id: codex-gpt55",
+        "      label: Codex GPT-5.5",
+        "      provider: cli",
+        "      model: gpt-5.5",
+        "      adapterId: codex",
+        "providers:",
+        "  delegation:",
+        "    cli:",
+        "      enabled: true",
+        "      adapters:",
+        "        codex:",
+        '          command: ["codex", "exec", "--model", "{model}"]',
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.provider).toBe("cli");
+    expect(config.llm.model).toBe("gpt-5.5");
+    expect(config.llm.adapterId).toBe("codex");
+    expect(config.llm.apiKeyEnv).toBeUndefined();
+    expect(config.llm.profiles[0]?.adapterId).toBe("codex");
+    expect(config.providers.delegation.cli?.adapters.codex.command).toEqual([
+      "codex",
+      "exec",
+      "--model",
+      "{model}",
+    ]);
+  });
+
   test("expands ~ in skills.skillsDir to the user's home directory", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
@@ -158,7 +220,9 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -184,7 +248,9 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -203,7 +269,9 @@ describe("loadConfig", () => {
     process.env.SLOPPY_MAX_ITERATIONS = "80";
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -232,7 +300,9 @@ describe("loadConfig", () => {
     process.env.HOME = home;
     delete process.env.SLOPPY_LLM_PROVIDER;
     delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
