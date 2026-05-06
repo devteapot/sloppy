@@ -1,11 +1,43 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
+import { action, createSlopServer } from "@slop-ai/server";
 
+import type { SloppyConfig } from "../src/config/schema";
+import { ConsumerHub } from "../src/core/consumer";
+import { dangerousActionRule } from "../src/core/policy/rules";
 import {
   DelegationProvider,
   type DelegationRunnerFactory,
 } from "../src/providers/builtin/delegation";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
+
+const HUB_CONFIG = {
+  llm: {
+    provider: "openai",
+    model: "gpt-5.4",
+    profiles: [],
+    maxTokens: 4096,
+  },
+  agent: {
+    maxIterations: 12,
+    contextBudgetTokens: 24000,
+    minSalience: 0,
+    overviewDepth: 4,
+    overviewMaxNodes: 500,
+    detailDepth: 4,
+    detailMaxNodes: 500,
+    historyTurns: 8,
+    toolResultMaxChars: 16000,
+  },
+  maxToolResultSize: 4096,
+  providers: {
+    builtin: {},
+    discovery: {
+      enabled: false,
+      paths: [],
+    },
+  },
+} as unknown as SloppyConfig;
 
 const fastTestRunnerFactory: DelegationRunnerFactory = (spawn, callbacks) => {
   let cancelled = false;
@@ -554,6 +586,172 @@ describe("DelegationProvider", () => {
       expect(closed.affordances?.map((affordance) => affordance.action)).toEqual(["get_result"]);
     } finally {
       provider.stop();
+    }
+  });
+
+  test("parent approval gates forwarding child approvals", async () => {
+    const childServer = createSlopServer({ id: "child-session", name: "Child Session" });
+    const approved: string[] = [];
+    const rejected: Array<{ id: string; reason?: string }> = [];
+    let childApprovalStatus: "pending" | "approved" | "rejected" = "pending";
+
+    childServer.register("approvals", () => ({
+      type: "collection",
+      props: {
+        count: childApprovalStatus === "pending" ? 1 : 0,
+      },
+      items:
+        childApprovalStatus === "pending"
+          ? [
+              {
+                id: "approval-child",
+                props: {
+                  status: "pending",
+                  path: "/session",
+                  action: "write",
+                  reason: "Child wants to write a file.",
+                  created_at: "2026-05-06T00:00:00.000Z",
+                  params_preview: '{"path":"demo.txt"}',
+                  dangerous: true,
+                },
+                actions: {
+                  approve: action(async () => {
+                    approved.push("approval-child");
+                    childApprovalStatus = "approved";
+                    childServer.refresh();
+                    return { approval_id: "approval-child", status: "approved" };
+                  }),
+                  reject: action(
+                    {
+                      reason: {
+                        type: "string",
+                        optional: true,
+                      },
+                    },
+                    async ({ reason }) => {
+                      rejected.push({
+                        id: "approval-child",
+                        reason: typeof reason === "string" ? reason : undefined,
+                      });
+                      childApprovalStatus = "rejected";
+                      childServer.refresh();
+                      return { approval_id: "approval-child", status: "rejected" };
+                    },
+                  ),
+                },
+              },
+            ]
+          : [],
+    }));
+
+    const provider = new DelegationProvider({
+      runnerFactory: (_spawn, callbacks) => ({
+        async start() {
+          callbacks.onUpdate({
+            status: "running",
+            session_provider_id: "child-session",
+            turn_state: "waiting_approval",
+            turn_phase: "tool_use",
+          });
+        },
+        async cancel() {
+          callbacks.onUpdate({ status: "cancelled", completed_at: new Date().toISOString() });
+        },
+      }),
+    });
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "delegation",
+          name: "Delegation",
+          kind: "builtin",
+          transport: new InProcessTransport(provider.server),
+          transportLabel: "in-process",
+          stop: () => provider.stop(),
+          approvals: provider.approvals,
+        },
+        {
+          id: "child-session",
+          name: "Child Session",
+          kind: "builtin",
+          transport: new InProcessTransport(childServer),
+          transportLabel: "in-process",
+          stop: () => childServer.stop(),
+        },
+      ],
+      HUB_CONFIG,
+    );
+
+    try {
+      await hub.connect();
+      provider.setParentHub(hub);
+      hub.addPolicyRule(
+        dangerousActionRule((providerId, path, actionName) =>
+          hub.isDangerousAffordance(providerId, path, actionName),
+        ),
+      );
+
+      const spawn = await hub.invoke("delegation", "/session", "spawn_agent", {
+        name: "writer",
+        goal: "Write a file",
+      });
+      expect(spawn.status).toBe("ok");
+      const agentId = (spawn.data as { id: string }).id;
+
+      await waitFor(async () => {
+        const agent = await hub.queryState({
+          providerId: "delegation",
+          path: `/agents/${agentId}`,
+          depth: 2,
+        });
+        const pending = agent.properties?.pending_approvals;
+        return Array.isArray(pending) && pending.length > 0 ? pending : null;
+      });
+
+      await waitFor(async () =>
+        hub.isDangerousAffordance("delegation", `/agents/${agentId}`, "approve_child_approval")
+          ? true
+          : null,
+      );
+
+      const blocked = await hub.invoke(
+        "delegation",
+        `/agents/${agentId}`,
+        "approve_child_approval",
+        {
+          approval_id: "approval-child",
+        },
+      );
+      expect(blocked.status).toBe("error");
+      expect(blocked.error?.code).toBe("approval_required");
+      expect(approved).toEqual([]);
+
+      const approvals = await hub.queryState({
+        providerId: "delegation",
+        path: "/approvals",
+        depth: 2,
+      });
+      const item = approvals.children?.[0];
+      expect(item?.properties).toMatchObject({
+        status: "pending",
+        provider: "delegation",
+        path: `/agents/${agentId}`,
+        action: "approve_child_approval",
+      });
+      expect(item?.properties?.reason).toContain("dangerous");
+      expect(item?.affordances?.map((affordance) => affordance.action)).toEqual([
+        "approve",
+        "reject",
+      ]);
+
+      const approvalId = item?.id;
+      expect(typeof approvalId).toBe("string");
+      const approvedResult = await hub.approvals.approve(approvalId ?? "");
+      expect((approvedResult as { status?: string }).status).toBe("ok");
+      expect(approved).toEqual(["approval-child"]);
+      expect(rejected).toEqual([]);
+    } finally {
+      hub.shutdown();
     }
   });
 

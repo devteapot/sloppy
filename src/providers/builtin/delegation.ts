@@ -6,6 +6,7 @@ import {
   type ExecutorBinding,
   executorBindingSchema,
 } from "../../runtime/delegation/executor-binding";
+import { ProviderApprovalManager } from "../approvals";
 import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "./message-envelope";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "closed";
@@ -101,10 +102,15 @@ export type ChildApprovalSnapshot = {
   summary?: string;
   action?: string;
   path?: string;
+  created_at?: string;
+  resolved_at?: string;
+  params_preview?: string;
+  dangerous?: boolean;
 };
 
 export class DelegationProvider {
   readonly server: SlopServer;
+  readonly approvals: ProviderApprovalManager;
   private maxAgents: number;
   private agents = new Map<string, DelegationAgent>();
   private runnerFactory: DelegationRunnerFactory;
@@ -127,9 +133,11 @@ export class DelegationProvider {
       id: "delegation",
       name: "Delegation",
     });
+    this.approvals = new ProviderApprovalManager(this.server);
 
     this.server.register("session", () => this.buildSessionDescriptor());
     this.server.register("agents", () => this.buildAgentsDescriptor());
+    this.server.register("approvals", () => this.approvals.buildDescriptor());
   }
 
   stop(): void {
@@ -163,12 +171,23 @@ export class DelegationProvider {
           for (const child of tree?.children ?? []) {
             const props = (child.properties ?? {}) as Record<string, unknown>;
             if (props.status !== undefined && props.status !== "pending") continue;
+            const reason =
+              typeof props.reason === "string"
+                ? props.reason
+                : typeof child.meta?.summary === "string"
+                  ? child.meta.summary
+                  : undefined;
             pending.push({
               id: String(child.id ?? ""),
               status: typeof props.status === "string" ? props.status : undefined,
-              summary: typeof props.summary === "string" ? props.summary : undefined,
+              summary: reason,
               action: typeof props.action === "string" ? props.action : undefined,
               path: typeof props.path === "string" ? props.path : undefined,
+              created_at: typeof props.created_at === "string" ? props.created_at : undefined,
+              resolved_at: typeof props.resolved_at === "string" ? props.resolved_at : undefined,
+              params_preview:
+                typeof props.params_preview === "string" ? props.params_preview : undefined,
+              dangerous: typeof props.dangerous === "boolean" ? props.dangerous : undefined,
             });
           }
           const entry = this.approvalMirrors.get(agentId);
@@ -221,6 +240,10 @@ export class DelegationProvider {
       summary?: string;
       action?: string;
       path?: string;
+      created_at?: string;
+      resolved_at?: string;
+      params_preview?: string;
+      dangerous?: boolean;
     }>;
   }> {
     const agent = this.agents.get(agentId);
@@ -240,12 +263,23 @@ export class DelegationProvider {
     const approvals =
       tree.children?.map((child) => {
         const props = (child.properties ?? {}) as Record<string, unknown>;
+        const reason =
+          typeof props.reason === "string"
+            ? props.reason
+            : typeof child.meta?.summary === "string"
+              ? child.meta.summary
+              : undefined;
         return {
           id: String(child.id ?? ""),
           status: typeof props.status === "string" ? props.status : undefined,
-          summary: typeof props.summary === "string" ? props.summary : undefined,
+          summary: reason,
           action: typeof props.action === "string" ? props.action : undefined,
           path: typeof props.path === "string" ? props.path : undefined,
+          created_at: typeof props.created_at === "string" ? props.created_at : undefined,
+          resolved_at: typeof props.resolved_at === "string" ? props.resolved_at : undefined,
+          params_preview:
+            typeof props.params_preview === "string" ? props.params_preview : undefined,
+          dangerous: typeof props.dangerous === "boolean" ? props.dangerous : undefined,
         };
       }) ?? [];
     return { agent_id: agentId, approvals };

@@ -257,6 +257,7 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transport: new InProcessTransport(delegation.server),
       transportLabel: "in-process",
       stop: () => delegation.stop(),
+      approvals: delegation.approvals,
       systemPromptFragment: () =>
         [
           "Delegation child agents run as background child sessions.",
