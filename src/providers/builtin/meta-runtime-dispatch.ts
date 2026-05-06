@@ -9,6 +9,7 @@ import type {
   RouteDispatchResult,
   RouteMessageEnvelope,
   RouteRule,
+  SkillVersion,
 } from "./meta-runtime-model";
 import { matchingRoutes, normalizeRouteEnvelope } from "./meta-runtime-routing";
 
@@ -20,6 +21,7 @@ export type MetaRuntimeDispatchContext = {
   channels: Map<string, AgentChannel>;
   capabilities: Map<string, CapabilityMask>;
   executorBindings: Map<string, ExecutorBinding>;
+  skillVersions: Map<string, SkillVersion>;
   recordEvent: (event: Omit<MetaEvent, "id" | "createdAt">) => void;
   refresh: () => void;
 };
@@ -62,6 +64,51 @@ function resolveAgentCapabilityMasks(
     }
     return mask;
   });
+}
+
+function activeSkillVersions(context: MetaRuntimeDispatchContext): SkillVersion[] {
+  return [...context.skillVersions.values()]
+    .filter((skillVersion) => skillVersion.active && skillVersion.activationStatus !== "failed")
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function buildActiveSkillContext(context: MetaRuntimeDispatchContext): Promise<string> {
+  const skillVersions = activeSkillVersions(context);
+  if (skillVersions.length === 0) return "";
+  if (!context.hub) {
+    throw new Error("Cannot load active skill versions without a runtime hub.");
+  }
+
+  const sections: string[] = [];
+  for (const skillVersion of skillVersions) {
+    const result = await context.hub.invoke("skills", "/session", "skill_view", {
+      name: skillVersion.skillId,
+    });
+    if (result.status === "error") {
+      throw new Error(
+        `Failed to load active skill ${skillVersion.skillId}@${skillVersion.version}: ${result.error?.message ?? "unknown error"}.`,
+      );
+    }
+    const data =
+      result.data && typeof result.data === "object" && !Array.isArray(result.data)
+        ? (result.data as Record<string, unknown>)
+        : {};
+    const content = typeof data.content === "string" ? data.content.trim() : "";
+    if (!content) {
+      throw new Error(`Active skill ${skillVersion.skillId}@${skillVersion.version} is empty.`);
+    }
+    sections.push(
+      [
+        `### ${skillVersion.skillId}@${skillVersion.version}`,
+        skillVersion.notes ? `Notes: ${skillVersion.notes}` : "",
+        content,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
+  }
+
+  return ["Active runtime skills are frozen into this routed child run.", ...sections].join("\n\n");
 }
 
 async function dispatchSingleRoute(
@@ -128,8 +175,24 @@ async function dispatchSingleRoute(
       );
     }
     const capabilityMasks = resolveAgentCapabilityMasks(context, agent, profile);
+    let skillContext = "";
+    try {
+      skillContext = await buildActiveSkillContext(context);
+    } catch (error) {
+      return routeFailure(
+        context,
+        route,
+        envelope,
+        error instanceof Error ? error.message : String(error),
+        {
+          reason_code: "skill_context_failed",
+          agent_id: agent.id,
+        },
+      );
+    }
     const goal = [
       profile.instructions,
+      skillContext,
       `Route message ${envelope.id} from ${envelope.source}:`,
       envelope.body,
     ]

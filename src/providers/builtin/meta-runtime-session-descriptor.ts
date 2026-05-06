@@ -18,15 +18,9 @@ export type MetaRuntimeSessionDescriptorContext = {
   workspaceRoot: string;
   proposeChange: (params: Record<string, unknown>) => Proposal;
   dispatchRoute: (params: Record<string, unknown>) => unknown;
-  analyzeRuntimeTrace: (params: Record<string, unknown>) => unknown;
-  prepareArchitectBrief: (params: Record<string, unknown>) => unknown;
-  startArchitectCycle: (params: Record<string, unknown>) => unknown;
-  deriveProposalsFromEvents: (params: Record<string, unknown>) => unknown;
-  startEvolutionCycle: (params: Record<string, unknown>) => unknown;
   createExperiment: (params: Record<string, unknown>) => TopologyExperiment;
   recordEvaluation: (params: Record<string, unknown>) => unknown;
-  recordExperimentEvidence: (params: Record<string, unknown>) => unknown;
-  promoteExperiment: (experimentId: string) => unknown;
+  promoteExperiment: (params: Record<string, unknown>) => unknown;
   rollbackExperiment: (params: Record<string, unknown>) => unknown;
   archiveTopologyPattern: (params: Record<string, unknown>) => unknown;
   proposeFromPattern: (params: Record<string, unknown>) => unknown;
@@ -48,9 +42,10 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
       pending_proposals_count: context.counts.pendingProposals,
       global_root: context.globalRoot,
       workspace_root: context.workspaceRoot,
+      strategy_surface: "skills",
     },
     summary:
-      "Meta-runtime topology: agent graph, channels, routes, skills, experiments, and proposals.",
+      "Meta-runtime topology substrate: graph, channels, routes, skills, experiments, proposals, and pattern records. Reusable strategy lives in skills.",
     actions: {
       propose_change: action(
         {
@@ -103,111 +98,6 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           estimate: "fast",
         },
       ),
-      analyze_runtime_trace: action(
-        {
-          limit: {
-            type: "number",
-            optional: true,
-          },
-        },
-        (params) => context.analyzeRuntimeTrace(params),
-        {
-          label: "Analyze Runtime Trace",
-          description:
-            "Summarize recent SLOP route, proposal, and experiment events into coordination smells.",
-          estimate: "fast",
-        },
-      ),
-      prepare_architect_brief: action(
-        {
-          objective: {
-            type: "string",
-            optional: true,
-          },
-          limit: {
-            type: "number",
-            optional: true,
-          },
-        },
-        (params) => context.prepareArchitectBrief(params),
-        {
-          label: "Prepare Architect Brief",
-          description:
-            "Build a trace-backed prompt and affordance map for an agent-authored topology proposal.",
-          estimate: "fast",
-        },
-      ),
-      start_architect_cycle: action(
-        {
-          objective: {
-            type: "string",
-            optional: true,
-          },
-          name: {
-            type: "string",
-            optional: true,
-          },
-          limit: {
-            type: "number",
-            optional: true,
-          },
-          executor: {
-            type: "object",
-            optional: true,
-          },
-        },
-        (params) => context.startArchitectCycle(params),
-        {
-          label: "Start Architect Cycle",
-          description:
-            "Spawn a runtime architect agent with a trace-backed SLOP brief; the agent authors proposals through normal affordances.",
-          dangerous: true,
-          estimate: "fast",
-        },
-      ),
-      derive_proposals_from_events: action(
-        {
-          scope: {
-            type: "string",
-            enum: ["session", "workspace", "global"],
-            optional: true,
-          },
-          min_events: {
-            type: "number",
-            optional: true,
-          },
-          limit: {
-            type: "number",
-            optional: true,
-          },
-        },
-        (params) => context.deriveProposalsFromEvents(params),
-        {
-          label: "Derive Proposals",
-          description:
-            "Inspect recent meta-runtime events and create topology proposals for recognized failure patterns.",
-          estimate: "fast",
-        },
-      ),
-      start_evolution_cycle: action(
-        {
-          min_events: {
-            type: "number",
-            optional: true,
-          },
-          limit: {
-            type: "number",
-            optional: true,
-          },
-        },
-        (params) => context.startEvolutionCycle(params),
-        {
-          label: "Start Evolution Cycle",
-          description:
-            "Derive trace-backed topology proposals from recent events and attach each proposal to a session experiment.",
-          estimate: "fast",
-        },
-      ),
       create_experiment: action(
         {
           proposal_id: "string",
@@ -250,31 +140,19 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
           estimate: "fast",
         },
       ),
-      record_experiment_evidence: action(
-        {
-          experiment_id: "string",
-          window_ms: {
-            type: "number",
-            optional: true,
-          },
-        },
-        (params) => context.recordExperimentEvidence(params),
-        {
-          label: "Record Experiment Evidence",
-          description:
-            "Score a topology experiment from observed route events before and after its proposal pivot.",
-          estimate: "fast",
-        },
-      ),
       promote_experiment: action(
         {
           experiment_id: "string",
+          evaluation_id: {
+            type: "string",
+            optional: true,
+          },
         },
-        ({ experiment_id }) => context.promoteExperiment(String(experiment_id)),
+        (params) => context.promoteExperiment(params),
         {
           label: "Promote Experiment",
           description:
-            "Promote an experiment whose evaluations satisfy its criteria, applying its proposal if needed.",
+            "Mark an experiment promoted after an evaluator records evidence, applying its proposal if needed.",
           dangerous: true,
           estimate: "fast",
         },
@@ -311,12 +189,17 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
             type: "array",
             optional: true,
           },
+          ops: {
+            type: "array",
+            description:
+              "Explicit typed TopologyChange operations to archive. Supply these from a topology-pattern skill; they are not inferred from the source proposal.",
+          },
         },
         (params) => context.archiveTopologyPattern(params),
         {
           label: "Archive Topology Pattern",
           description:
-            "Archive a promoted experiment's applied topology changes as a reusable pattern.",
+            "Archive explicit topology operations as a reusable pattern linked to a promoted experiment.",
           estimate: "fast",
         },
       ),
@@ -340,11 +223,17 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
             type: "number",
             optional: true,
           },
+          ops: {
+            type: "array",
+            description:
+              "Explicit typed TopologyChange operations adapted from the pattern for the current graph.",
+          },
         },
         (params) => context.proposeFromPattern(params),
         {
           label: "Propose From Pattern",
-          description: "Create a normal topology proposal by instantiating an archived pattern.",
+          description:
+            "Create a normal topology proposal from a pattern using explicit adapted operations.",
           estimate: "fast",
         },
       ),

@@ -104,6 +104,8 @@ export function proposeFromPattern(
       source_experiment_id: pattern.sourceExperimentId,
     },
   });
+  pattern.usageCount = (pattern.usageCount ?? 0) + 1;
+  context.persist(pattern.scope);
   context.refresh();
   return proposal;
 }

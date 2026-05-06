@@ -2,9 +2,11 @@ import type {
   ExperimentEvaluation,
   MetaScope,
   Proposal,
+  TopologyChange,
   TopologyExperiment,
   TopologyPattern,
 } from "./meta-runtime-model";
+import { parseChange } from "./meta-runtime-ops";
 
 function asTags(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
@@ -12,6 +14,13 @@ function asTags(value: unknown): string[] | undefined {
     throw new Error("tags must be an array of strings.");
   }
   return value;
+}
+
+function asTopologyOps(value: unknown, field: string): TopologyChange[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${field} must be a non-empty array of typed topology changes.`);
+  }
+  return value.map(parseChange);
 }
 
 export function buildTopologyPattern(options: {
@@ -45,7 +54,7 @@ export function buildTopologyPattern(options: {
         : options.proposal.summary,
     sourceExperimentId: options.experiment.id,
     sourceProposalId: options.proposal.id,
-    ops: options.proposal.ops,
+    ops: asTopologyOps(options.params.ops, "ops"),
     tags: asTags(options.params.tags),
     evidence: latestEvaluation
       ? {
@@ -75,7 +84,7 @@ export function patternProposalParams(options: {
       typeof options.params.rationale === "string" && options.params.rationale.trim() !== ""
         ? options.params.rationale
         : `Reuses topology pattern ${options.pattern.id} archived from experiment ${options.pattern.sourceExperimentId}.`,
-    ops: options.pattern.ops,
+    ops: asTopologyOps(options.params.ops, "ops"),
     ttl_ms: options.params.ttl_ms,
   };
 }

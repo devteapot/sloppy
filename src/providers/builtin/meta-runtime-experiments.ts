@@ -73,16 +73,3 @@ export function createEvaluation(
     createdAt: new Date().toISOString(),
   };
 }
-
-export function experimentMeetsCriteria(
-  experiment: TopologyExperiment,
-  evaluations: ExperimentEvaluation[],
-): boolean {
-  const criteria = experiment.promotionCriteria ?? {};
-  const requiredEvaluations = criteria.requiredEvaluations ?? 1;
-  const minScore = criteria.minScore ?? 0;
-  if (evaluations.length < requiredEvaluations) return false;
-  const averageScore =
-    evaluations.reduce((total, evaluation) => total + evaluation.score, 0) / evaluations.length;
-  return averageScore >= minScore;
-}

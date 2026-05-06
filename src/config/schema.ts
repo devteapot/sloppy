@@ -175,10 +175,18 @@ export const sloppyConfigSchema = z.object({
         }),
       skills: z
         .object({
-          skillsDir: z.string().default("~/.hermes/skills"),
+          builtinSkillsDir: z.string().default("skills"),
+          skillsDir: z.string().default("~/.sloppy/skills"),
+          externalDirs: z.array(z.string()).default([]),
+          templateVars: z.boolean().default(true),
+          viewMaxBytes: z.number().int().min(1024).default(65536),
         })
         .default({
-          skillsDir: "~/.hermes/skills",
+          builtinSkillsDir: "skills",
+          skillsDir: "~/.sloppy/skills",
+          externalDirs: [],
+          templateVars: true,
+          viewMaxBytes: 65536,
         }),
       metaRuntime: z
         .object({
@@ -278,7 +286,11 @@ export const sloppyConfigSchema = z.object({
         compactThreshold: 0.2,
       },
       skills: {
-        skillsDir: "~/.hermes/skills",
+        builtinSkillsDir: "skills",
+        skillsDir: "~/.sloppy/skills",
+        externalDirs: [],
+        templateVars: true,
+        viewMaxBytes: 65536,
       },
       metaRuntime: {
         globalRoot: "~/.sloppy/meta-runtime",
@@ -331,8 +343,17 @@ export interface LlmConfig {
   maxTokens: number;
 }
 
-export interface SloppyConfig extends Omit<SloppyConfigBase, "llm"> {
+export interface SloppyConfig extends Omit<SloppyConfigBase, "llm" | "providers"> {
   llm: LlmConfig;
+  providers: Omit<SloppyConfigBase["providers"], "skills"> & {
+    skills: {
+      skillsDir: string;
+      builtinSkillsDir?: string;
+      externalDirs?: string[];
+      templateVars?: boolean;
+      viewMaxBytes?: number;
+    };
+  };
 }
 
 export type RawSloppyConfig = SloppyConfigBase;

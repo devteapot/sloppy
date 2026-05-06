@@ -195,7 +195,7 @@ const TEST_CONFIG: SloppyConfig = {
       previewBytes: 2048,
     },
     memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-    skills: { skillsDir: "~/.hermes/skills" },
+    skills: { skillsDir: "~/.sloppy/skills" },
     metaRuntime: {
       globalRoot: "~/.sloppy/meta-runtime",
       workspaceRoot: ".sloppy/meta-runtime",
@@ -811,81 +811,28 @@ describe("MetaRuntimeProvider", () => {
     }
   });
 
-  test("derives route repair proposals from repeated failure events", async () => {
+  test("keeps strategy helpers out of the public meta-runtime session surface", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
     tempPaths.push(root);
-    const meta = new MetaRuntimeProvider({
-      globalRoot: join(root, "global"),
-      workspaceRoot: join(root, "workspace"),
-    });
-    const metaRegistration = registeredMetaProvider(meta);
-    const hub = new ConsumerHub([metaRegistration], TEST_CONFIG);
+    const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
 
     try {
-      await hub.connect();
-      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
-      const consumer = new SlopConsumer(new InProcessTransport(meta.server));
       await connect(consumer);
 
-      const proposal = await consumer.invoke("/session", "propose_change", {
-        scope: "session",
-        summary: "Route reviews to a channel root cannot access",
-        ops: [
-          {
-            type: "upsertChannel",
-            channel: {
-              id: "review",
-              topic: "review",
-              participants: ["reviewer"],
-              visibility: "shared",
-            },
-          },
-          {
-            type: "upsertRoute",
-            route: {
-              id: "broken-route",
-              source: "root",
-              match: "review",
-              target: "channel:review",
-              enabled: true,
-            },
-          },
-        ],
-      });
-      const proposalId = (proposal.data as { id: string }).id;
-      expect((await consumer.invoke(`/proposals/${proposalId}`, "apply_proposal", {})).status).toBe(
-        "ok",
-      );
-
-      for (let index = 0; index < 2; index += 1) {
-        const dispatched = await consumer.invoke("/session", "dispatch_route", {
-          source: "root",
-          message: "please review this",
-        });
-        expect(dispatched.status).toBe("ok");
-        expect((dispatched.data as { routed: boolean }).routed).toBe(false);
-      }
-
-      const derived = await consumer.invoke("/session", "derive_proposals_from_events", {
-        min_events: 2,
-      });
-      expect(derived.status).toBe("ok");
-      expect((derived.data as { count: number }).count).toBe(1);
-
-      const proposals = await consumer.query("/proposals", 2);
-      const repair = proposals.children?.find((child) =>
-        String(child.properties?.summary).includes("Add root to channel review"),
-      );
-      expect(repair?.properties?.ops).toEqual([
-        {
-          type: "rewireChannel",
-          channelId: "review",
-          participants: ["reviewer", "root"],
-        },
-      ]);
-      stop?.stop();
+      const session = await consumer.query("/session", 2);
+      const actions = session.affordances?.map((affordance) => affordance.action) ?? [];
+      expect(session.properties?.strategy_surface).toBe("skills");
+      expect(session.properties?.strategy_skills).toBeUndefined();
+      expect(actions).toContain("propose_change");
+      expect(actions).toContain("record_evaluation");
+      expect(actions).not.toContain("analyze_runtime_trace");
+      expect(actions).not.toContain("prepare_architect_brief");
+      expect(actions).not.toContain("start_architect_cycle");
+      expect(actions).not.toContain("derive_proposals_from_events");
+      expect(actions).not.toContain("start_evolution_cycle");
+      expect(actions).not.toContain("record_experiment_evidence");
     } finally {
-      hub.shutdown();
+      provider.stop();
     }
   });
 
@@ -943,119 +890,6 @@ describe("MetaRuntimeProvider", () => {
       });
     } finally {
       provider.stop();
-    }
-  });
-
-  test("starts an evolution cycle that creates a triage agent for unmatched traffic", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
-    tempPaths.push(root);
-    const meta = new MetaRuntimeProvider({
-      globalRoot: join(root, "global"),
-      workspaceRoot: join(root, "workspace"),
-    });
-    const delegation = delegationStub();
-    const metaRegistration = registeredMetaProvider(meta);
-    const hub = new ConsumerHub([metaRegistration, delegation.provider], TEST_CONFIG);
-
-    try {
-      await hub.connect();
-      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
-      const consumer = new SlopConsumer(new InProcessTransport(meta.server));
-      await connect(consumer);
-
-      for (let index = 0; index < 2; index += 1) {
-        const dispatched = await consumer.invoke("/session", "dispatch_route", {
-          source: "root",
-          message: "triage this unhandled message",
-        });
-        expect(dispatched.status).toBe("ok");
-        expect((dispatched.data as { routed: boolean }).routed).toBe(false);
-      }
-
-      const evolved = await consumer.invoke("/session", "start_evolution_cycle", {
-        min_events: 2,
-      });
-      expect(evolved.status).toBe("ok");
-      const data = evolved.data as {
-        count: number;
-        items: Array<{ proposal: { id: string }; experiment: { id: string } }>;
-      };
-      expect(data.count).toBe(1);
-      expect(data.items[0]?.experiment.id).toStartWith("experiment-");
-      const proposalId = data.items[0]?.proposal.id;
-      expect(typeof proposalId).toBe("string");
-
-      const blocked = await consumer.invoke(`/proposals/${proposalId}`, "apply_proposal", {});
-      expect(blocked.status).toBe("error");
-      expect(blocked.error?.code).toBe("approval_required");
-      const approvals = await consumer.query("/approvals", 2);
-      const approvalId = approvals.children?.find(
-        (child) => child.properties?.status === "pending",
-      )?.id;
-      expect(typeof approvalId).toBe("string");
-      expect((await consumer.invoke(`/approvals/${approvalId}`, "approve", {})).status).toBe("ok");
-
-      const routed = await consumer.invoke("/session", "dispatch_route", {
-        source: "root",
-        message: "triage this unhandled message",
-      });
-      expect(routed.status).toBe("ok");
-      expect((routed.data as { routed: boolean }).routed).toBe(true);
-      expect(delegation.spawns).toHaveLength(1);
-      expect(delegation.spawns[0]?.name).toBe("Triage for root");
-      stop?.stop();
-    } finally {
-      hub.shutdown();
-    }
-  });
-
-  test("starts a runtime architect cycle with a trace-backed SLOP brief", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
-    tempPaths.push(root);
-    const meta = new MetaRuntimeProvider({
-      globalRoot: join(root, "global"),
-      workspaceRoot: join(root, "workspace"),
-    });
-    const delegation = delegationStub();
-    const metaRegistration = registeredMetaProvider(meta);
-    const hub = new ConsumerHub([metaRegistration, delegation.provider], TEST_CONFIG);
-
-    try {
-      await hub.connect();
-      const stop = metaRegistration.attachRuntime?.(hub, TEST_CONFIG);
-      const consumer = new SlopConsumer(new InProcessTransport(meta.server));
-      await connect(consumer);
-
-      for (let index = 0; index < 2; index += 1) {
-        const dispatched = await consumer.invoke("/session", "dispatch_route", {
-          source: "root",
-          message: "unmatched architecture traffic",
-        });
-        expect(dispatched.status).toBe("ok");
-      }
-
-      const analysis = await consumer.invoke("/session", "analyze_runtime_trace", {
-        limit: 20,
-      });
-      expect(analysis.status).toBe("ok");
-      expect(
-        (analysis.data as { smells: Array<{ kind: string }> }).smells.some(
-          (smell) => smell.kind === "unmatched_traffic",
-        ),
-      ).toBe(true);
-
-      const architect = await consumer.invoke("/session", "start_architect_cycle", {
-        objective: "Design a narrow triage topology for repeated unmatched traffic.",
-        limit: 20,
-      });
-      expect(architect.status).toBe("ok");
-      expect(delegation.spawns).toHaveLength(1);
-      expect(delegation.spawns[0]?.name).toBe("Runtime Architect");
-      expect(String(delegation.spawns[0]?.goal)).toContain("propose_change");
-      expect(String(delegation.spawns[0]?.goal)).toContain("route.traffic.sampleRate");
-      stop?.stop();
-    } finally {
-      hub.shutdown();
     }
   });
 
@@ -1123,7 +957,7 @@ describe("MetaRuntimeProvider", () => {
     }
   });
 
-  test("records evaluations and promotes topology experiments", async () => {
+  test("records evaluations and marks topology experiments promoted without provider scoring", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
     tempPaths.push(root);
     const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
@@ -1162,46 +996,25 @@ describe("MetaRuntimeProvider", () => {
         experiment_id: experimentId,
       });
       expect(premature.status).toBe("error");
-      expect(premature.error?.message).toContain("does not meet promotion criteria");
+      expect(premature.error?.message).toContain("requires at least one recorded evaluation");
 
       const evaluation = await consumer.invoke("/session", "record_evaluation", {
         experiment_id: experimentId,
-        score: 0.9,
-        summary: "The channel improved review handoff quality.",
+        score: 0.1,
+        summary: "The evaluator deliberately records a low score to prove scoring is skill-owned.",
         evaluator: "test",
       });
       expect(evaluation.status).toBe("ok");
-      const oneEvaluation = await consumer.invoke("/session", "promote_experiment", {
-        experiment_id: experimentId,
-      });
-      expect(oneEvaluation.status).toBe("error");
-      expect(oneEvaluation.error?.message).toContain("does not meet promotion criteria");
-
-      const weakEvaluation = await consumer.invoke("/session", "record_evaluation", {
-        experiment_id: experimentId,
-        score: 0.6,
-        summary: "The channel also added some coordination overhead.",
-        evaluator: "test",
-      });
-      expect(weakEvaluation.status).toBe("ok");
-      const weakAverage = await consumer.invoke("/session", "promote_experiment", {
-        experiment_id: experimentId,
-      });
-      expect(weakAverage.status).toBe("error");
-      expect(weakAverage.error?.message).toContain("does not meet promotion criteria");
-
-      const strongEvaluation = await consumer.invoke("/session", "record_evaluation", {
-        experiment_id: experimentId,
-        score: 1,
-        summary: "The adjusted channel consistently improved handoff quality.",
-        evaluator: "test",
-      });
-      expect(strongEvaluation.status).toBe("ok");
+      const evaluationId = (evaluation.data as { id: string }).id;
       const promoted = await consumer.invoke("/session", "promote_experiment", {
         experiment_id: experimentId,
+        evaluation_id: evaluationId,
       });
       expect(promoted.status).toBe("ok");
       expect((promoted.data as { status: string }).status).toBe("promoted");
+      expect((promoted.data as { promotionEvaluationId: string }).promotionEvaluationId).toBe(
+        evaluationId,
+      );
 
       const channels = await consumer.query("/channels", 2);
       expect(channels.children?.[0]?.id).toBe("experiment-review");
@@ -1210,7 +1023,7 @@ describe("MetaRuntimeProvider", () => {
     }
   });
 
-  test("records automatic experiment evidence and archives reusable topology patterns", async () => {
+  test("records explicit experiment evaluations and archives reusable topology patterns", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
     tempPaths.push(root);
     const meta = new MetaRuntimeProvider({
@@ -1275,9 +1088,13 @@ describe("MetaRuntimeProvider", () => {
       expect(routed.status).toBe("ok");
       expect((routed.data as { routed: boolean }).routed).toBe(true);
 
-      const evidence = await consumer.invoke("/session", "record_experiment_evidence", {
+      const evidence = await consumer.invoke("/session", "record_evaluation", {
         experiment_id: experimentId,
-        window_ms: 60_000,
+        score: 0.9,
+        summary: "Review traffic reached the review channel after applying the proposal.",
+        evidence: {
+          routed: true,
+        },
       });
       expect(evidence.status).toBe("ok");
       expect((evidence.data as { score: number }).score).toBeGreaterThanOrEqual(0.7);
@@ -1287,22 +1104,72 @@ describe("MetaRuntimeProvider", () => {
       });
       expect(promoted.status).toBe("ok");
 
+      const implicitArchive = await consumer.invoke("/session", "archive_topology_pattern", {
+        experiment_id: experimentId,
+        name: "Implicit route pattern",
+      });
+      expect(implicitArchive.status).toBe("error");
+      expect(implicitArchive.error?.message).toContain("ops");
+
+      const archivedOps = [
+        {
+          type: "upsertChannel",
+          channel: {
+            id: "review",
+            topic: "review",
+            participants: ["root"],
+            visibility: "shared",
+          },
+        },
+        {
+          type: "upsertRoute",
+          route: {
+            id: "review-route-template",
+            source: "root",
+            match: "review",
+            target: "channel:review",
+            enabled: true,
+          },
+        },
+      ];
       const archived = await consumer.invoke("/session", "archive_topology_pattern", {
         experiment_id: experimentId,
         name: "Review route pattern",
         tags: ["review", "channel"],
+        ops: archivedOps,
       });
       expect(archived.status).toBe("ok");
       const patternId = (archived.data as { id: string }).id;
       const patterns = await consumer.query("/patterns", 2);
       expect(patterns.children?.[0]?.id).toBe(patternId);
 
+      const implicitReuse = await consumer.invoke("/session", "propose_from_pattern", {
+        pattern_id: patternId,
+        summary: "Implicit reuse",
+      });
+      expect(implicitReuse.status).toBe("error");
+      expect(implicitReuse.error?.message).toContain("ops");
+
       const reused = await consumer.invoke("/session", "propose_from_pattern", {
         pattern_id: patternId,
         summary: "Reuse review route pattern",
+        ops: [
+          {
+            type: "upsertRoute",
+            route: {
+              id: "review-route-reuse",
+              source: "root",
+              match: "review",
+              target: "channel:review",
+              enabled: true,
+            },
+          },
+        ],
       });
       expect(reused.status).toBe("ok");
-      expect((reused.data as { ops: unknown[] }).ops).toHaveLength(2);
+      const reusedOps = (reused.data as { ops: Array<{ route?: { id?: string } }> }).ops;
+      expect(reusedOps).toHaveLength(1);
+      expect(reusedOps[0]?.route?.id).toBe("review-route-reuse");
       stop?.stop();
     } finally {
       hub.shutdown();
@@ -1472,8 +1339,12 @@ describe("MetaRuntimeProvider", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const skills = new SkillsProvider({ skillsDir: join(root, "skills") });
+    const delegation = delegationStub();
     const metaRegistration = registeredMetaProvider(meta);
-    const hub = new ConsumerHub([metaRegistration, registeredSkillsProvider(skills)], TEST_CONFIG);
+    const hub = new ConsumerHub(
+      [metaRegistration, registeredSkillsProvider(skills), delegation.provider],
+      TEST_CONFIG,
+    );
 
     try {
       await hub.connect();
@@ -1529,6 +1400,64 @@ describe("MetaRuntimeProvider", () => {
       expect(skillVersions.children?.[0]?.properties?.activationStatus).toBe("active");
       const proposals = await skillsConsumer.query("/proposals", 2);
       expect(proposals.children?.[0]?.properties?.status).toBe("active");
+
+      const routeProposal = await metaConsumer.invoke("/session", "propose_change", {
+        scope: "session",
+        summary: "Route with active runtime skill",
+        ops: [
+          {
+            type: "upsertAgentProfile",
+            profile: {
+              id: "reviewer",
+              name: "Reviewer",
+              instructions: "Review routed work.",
+            },
+          },
+          {
+            type: "spawnAgent",
+            agent: {
+              id: "agent-reviewer",
+              profileId: "reviewer",
+              status: "active",
+              channels: [],
+              capabilityMaskIds: [],
+            },
+          },
+          {
+            type: "upsertRoute",
+            route: {
+              id: "review-route",
+              source: "root",
+              match: "review",
+              target: "agent:agent-reviewer",
+              enabled: true,
+            },
+          },
+        ],
+      });
+      const routeProposalId = (routeProposal.data as { id: string }).id;
+      expect(
+        (await metaConsumer.invoke(`/proposals/${routeProposalId}`, "apply_proposal", {})).status,
+      ).toBe("error");
+      const routeApprovals = await metaConsumer.query("/approvals", 2);
+      const routeApprovalId = routeApprovals.children?.find(
+        (child) => child.properties?.status === "pending",
+      )?.id;
+      expect(typeof routeApprovalId).toBe("string");
+      expect(
+        (await metaConsumer.invoke(`/approvals/${routeApprovalId}`, "approve", {})).status,
+      ).toBe("ok");
+
+      const dispatched = await metaConsumer.invoke("/session", "dispatch_route", {
+        source: "root",
+        message: "please review this topology",
+      });
+      expect(dispatched.status).toBe("ok");
+      expect(delegation.spawns).toHaveLength(1);
+      expect(String(delegation.spawns[0]?.goal)).toContain("# Review Runtime");
+      expect(String(delegation.spawns[0]?.goal)).toContain(
+        "Active runtime skills are frozen into this routed child run.",
+      );
       stop?.stop();
     } finally {
       hub.shutdown();
@@ -1663,7 +1592,7 @@ describe("MetaRuntimeProvider", () => {
           previewBytes: 2048,
         },
         memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-        skills: { skillsDir: "~/.hermes/skills" },
+        skills: { skillsDir: "~/.sloppy/skills" },
         metaRuntime: {
           globalRoot: "~/.sloppy/meta-runtime",
           workspaceRoot: ".sloppy/meta-runtime",

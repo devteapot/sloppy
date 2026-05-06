@@ -163,7 +163,36 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.skills.skillsDir).toBe(join(home, ".hermes/skills"));
+    expect(config.providers.skills.skillsDir).toBe(join(home, ".sloppy/skills"));
+    expect(config.providers.skills.builtinSkillsDir).toBe(join(process.cwd(), "skills"));
+  });
+
+  test("normalizes external skill directories", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "providers:",
+        "  skills:",
+        "    externalDirs:",
+        "      - ~/team-skills",
+        "      - ./vendor-skills",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.providers.skills.externalDirs).toEqual([
+      join(home, "team-skills"),
+      join(process.cwd(), "vendor-skills"),
+    ]);
   });
 
   test("applies env override for max iterations", async () => {

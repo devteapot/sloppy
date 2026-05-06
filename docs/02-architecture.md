@@ -93,14 +93,14 @@ Dispatch can run in single-target mode or fanout mode. Routes can carry
 `traffic.sampleRate` metadata for deterministic canary delivery without adding a
 core scheduler.
 
-The checked-in provider still includes several experimental self-evolution
-helpers for trace analysis, architect briefs, trace-derived repairs, automatic
-route-event evidence, and topology pattern reuse. Treat those as compatibility
-affordances and skill-migration candidates, not as the long-term runtime shape.
-The intended boundary is smaller: meta-runtime stores topology, route events,
-proposals, experiments, approvals, and capability masks; skills provide reusable
-diagnosis, repair playbooks, architect prompts, and evaluation rubrics over that
-state.
+The checked-in provider keeps the public surface to substrate operations:
+topology mutation proposals, route dispatch, experiments/evaluations, rollback,
+pattern records, import/export, approvals, and capability masks. Reusable
+diagnosis, repair playbooks, architect prompts, and evaluation rubrics live in
+skills over that state. Experiment promotion requires recorded evaluation
+evidence, but evaluator skills own the scoring rubric. Pattern archive/reuse
+requires explicit topology operations from a pattern-authoring skill rather than
+copying source proposals automatically.
 
 The meta-runtime provider can also export merged/global/workspace state and
 import session/workspace/global state. Persistent imports are approval-gated.
@@ -128,18 +128,31 @@ skill activation.
 
 ## Skills
 
-The `skills` provider remains compatible with installed `SKILL.md` directories
-and now supports skill proposals. Session-scoped proposed skills activate
-in-memory. Workspace and global skill proposals route through approvals before
-writing persistent `SKILL.md` artifacts. Persistent activation refuses to
-overwrite an existing skill path. If skill names collide, precedence is session,
-workspace, global, then imported.
+The `skills` provider remains compatible with Hermes/agentskills.io-style
+`SKILL.md` directories and uses progressive disclosure. `/skills` exposes a
+compact index; `skill_view(name)` loads `SKILL.md`; `skill_view(name,
+file_path)` loads a supporting file under the skill directory. It reads nested
+`metadata.sloppy`, category, platform, tag, and supporting-file metadata.
+
+Agents can create and maintain procedural memory through `skill_manage`:
+`create`, `patch`, `edit`, `delete`, `write_file`, and `remove_file`.
+Session-scoped changes apply in memory. Workspace and global writes route
+through approvals before touching persistent skill artifacts. Persistent
+activation refuses to overwrite an existing skill path. If skill names collide,
+precedence is session, workspace, global, builtin, then imported.
 
 The registry mounts global/workspace skill layers beneath the configured
 meta-runtime roots:
 
 - `~/.sloppy/meta-runtime/skills`
 - `.sloppy/meta-runtime/skills`
+
+It also scans the configured builtin skill root, defaulting to `skills/`.
+
+Meta-runtime `activateSkillVersion` records can link to skills-provider
+proposals. When routed child agents are spawned through meta-runtime routes,
+active skill versions are resolved through `skill_view` and frozen into the
+child goal. A route fails visibly if an active skill cannot be loaded.
 
 Self-extensibility should primarily grow through skills. If a recurring
 procedure can be expressed as instructions plus existing SLOP affordances, it

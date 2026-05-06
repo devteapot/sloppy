@@ -2,13 +2,6 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 
 import type { ProviderRuntimeHub } from "../../core/hub";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../approvals";
-import {
-  analyzeRuntimeTrace as analyzeRuntimeTraceWithContext,
-  type MetaRuntimeArchitectContext,
-  prepareArchitectBrief as prepareArchitectBriefWithContext,
-  recordExperimentEvidence as recordExperimentEvidenceWithContext,
-  startRuntimeArchitectCycle,
-} from "./meta-runtime-architect-controller";
 import { dispatchMetaRuntimeRoute } from "./meta-runtime-dispatch";
 import {
   createTopologyExperiment,
@@ -56,7 +49,6 @@ import {
   type MetaRuntimePatternContext,
   proposeFromPattern as proposeFromPatternWithContext,
 } from "./meta-runtime-pattern-controller";
-import { deriveRuntimeEvolutionProposals } from "./meta-runtime-reflection";
 import { parseRouteMessage } from "./meta-runtime-routing";
 import { buildMetaRuntimeSessionDescriptor } from "./meta-runtime-session-descriptor";
 import { activateLinkedSkills, opsWithActivatedSkills } from "./meta-runtime-skills";
@@ -453,10 +445,10 @@ export class MetaRuntimeProvider {
   }
 
   private async promoteExperiment(
-    experimentId: string,
+    params: Record<string, unknown>,
     approved = false,
   ): Promise<TopologyExperiment> {
-    return promoteTopologyExperiment(this.experimentContext(), experimentId, approved);
+    return promoteTopologyExperiment(this.experimentContext(), params, approved);
   }
 
   private async markExperimentRolledBack(
@@ -464,41 +456,6 @@ export class MetaRuntimeProvider {
     approved = false,
   ): Promise<TopologyExperiment> {
     return markTopologyExperimentRolledBack(this.experimentContext(), params, approved);
-  }
-
-  private architectContext(): MetaRuntimeArchitectContext {
-    return {
-      hub: this.hub,
-      events: this.events,
-      routes: this.routes,
-      channels: this.channels,
-      agents: this.agents,
-      proposals: this.proposals,
-      experiments: this.experiments,
-      evaluations: this.evaluations,
-      recordEvaluation: (params, approved) => this.recordEvaluation(params, approved),
-      recordEvent: (event) => this.recordEvent(event),
-      refresh: () => this.server.refresh(),
-    };
-  }
-
-  private analyzeRuntimeTrace(params: Record<string, unknown>) {
-    return analyzeRuntimeTraceWithContext(this.architectContext(), params);
-  }
-
-  private prepareArchitectBrief(params: Record<string, unknown>) {
-    return prepareArchitectBriefWithContext(this.architectContext(), params);
-  }
-
-  private async startArchitectCycle(params: Record<string, unknown>) {
-    return startRuntimeArchitectCycle(this.architectContext(), params);
-  }
-
-  private recordExperimentEvidence(
-    params: Record<string, unknown>,
-    approved = false,
-  ): ExperimentEvaluation {
-    return recordExperimentEvidenceWithContext(this.architectContext(), params, approved);
   }
 
   private patternContext(): MetaRuntimePatternContext {
@@ -526,85 +483,6 @@ export class MetaRuntimeProvider {
     return proposeFromPatternWithContext(this.patternContext(), params);
   }
 
-  private deriveProposalsFromEvents(params: Record<string, unknown>): {
-    count: number;
-    proposals: Array<{ proposal: Proposal; source_event_ids: string[] }>;
-  } {
-    const scope = asScope(params.scope);
-    const minEvents = Math.max(
-      optionalNonNegativeInteger(params.min_events ?? params.min_failures, "min_events") ?? 2,
-      1,
-    );
-    const limit = Math.max(optionalNonNegativeInteger(params.limit, "limit") ?? 100, 1);
-    const drafts = deriveRuntimeEvolutionProposals({
-      events: this.events,
-      routes: listById(this.routes),
-      channels: listById(this.channels),
-      agents: listById(this.agents),
-      proposals: listById(this.proposals),
-      minEvents,
-      limit,
-    });
-    const proposals = drafts.map((draft) => ({
-      proposal: this.proposeChange({
-        scope,
-        summary: draft.summary,
-        rationale: `${draft.rationale} Source events: ${draft.sourceEventIds.join(", ")}.`,
-        ops: draft.ops,
-      }),
-      source_event_ids: draft.sourceEventIds,
-    }));
-    return { count: proposals.length, proposals };
-  }
-
-  private startEvolutionCycle(params: Record<string, unknown>): {
-    count: number;
-    items: Array<{
-      proposal: Proposal;
-      experiment: TopologyExperiment;
-      source_event_ids: string[];
-    }>;
-  } {
-    const scope = asScope(params.scope);
-    if (scope !== "session") {
-      throw new Error("start_evolution_cycle currently supports session scope only.");
-    }
-    const minEvents = Math.max(
-      optionalNonNegativeInteger(params.min_events ?? params.min_failures, "min_events") ?? 2,
-      1,
-    );
-    const limit = Math.max(optionalNonNegativeInteger(params.limit, "limit") ?? 100, 1);
-    const drafts = deriveRuntimeEvolutionProposals({
-      events: this.events,
-      routes: listById(this.routes),
-      channels: listById(this.channels),
-      agents: listById(this.agents),
-      proposals: listById(this.proposals),
-      minEvents,
-      limit,
-    });
-    const items = drafts.map((draft) => {
-      const proposal = this.proposeChange({
-        scope,
-        summary: draft.summary,
-        rationale: `${draft.rationale} Source events: ${draft.sourceEventIds.join(", ")}.`,
-        ops: draft.ops,
-      });
-      const experiment = this.createExperiment({
-        proposal_id: proposal.id,
-        name: draft.experiment.name,
-        objective: draft.experiment.objective,
-        promotion_criteria: draft.experiment.promotionCriteria,
-      });
-      return {
-        proposal,
-        experiment,
-        source_event_ids: draft.sourceEventIds,
-      };
-    });
-    return { count: items.length, items };
-  }
-
   private dispatchRoute(params: Record<string, unknown>) {
     const { source, message, envelope, fanout } = params;
     return dispatchMetaRuntimeRoute(
@@ -616,6 +494,7 @@ export class MetaRuntimeProvider {
         channels: this.channels,
         capabilities: this.capabilities,
         executorBindings: this.executorBindings,
+        skillVersions: this.skillVersions,
         recordEvent: (event) => this.recordEvent(event),
         refresh: () => this.server.refresh(),
       },
@@ -643,15 +522,9 @@ export class MetaRuntimeProvider {
       workspaceRoot: this.workspaceRoot,
       proposeChange: (params) => this.proposeChange(params),
       dispatchRoute: (params) => this.dispatchRoute(params),
-      analyzeRuntimeTrace: (params) => this.analyzeRuntimeTrace(params),
-      prepareArchitectBrief: (params) => this.prepareArchitectBrief(params),
-      startArchitectCycle: (params) => this.startArchitectCycle(params),
-      deriveProposalsFromEvents: (params) => this.deriveProposalsFromEvents(params),
-      startEvolutionCycle: (params) => this.startEvolutionCycle(params),
       createExperiment: (params) => this.createExperiment(params),
       recordEvaluation: (params) => this.recordEvaluation(params),
-      recordExperimentEvidence: (params) => this.recordExperimentEvidence(params),
-      promoteExperiment: (experimentId) => this.promoteExperiment(experimentId),
+      promoteExperiment: (params) => this.promoteExperiment(params),
       rollbackExperiment: (params) => this.markExperimentRolledBack(params),
       archiveTopologyPattern: (params) => this.archiveTopologyPattern(params),
       proposeFromPattern: (params) => this.proposeFromPattern(params),
@@ -720,11 +593,21 @@ export class MetaRuntimeProvider {
               type: "string",
               optional: true,
             },
+            ttl_ms: {
+              type: "number",
+              optional: true,
+            },
+            ops: {
+              type: "array",
+              description:
+                "Explicit typed TopologyChange operations adapted from this pattern for the current graph.",
+            },
           },
           (params) => this.proposeFromPattern({ ...params, pattern_id: pattern.id }),
           {
             label: "Propose From Pattern",
-            description: "Create a topology proposal from this archived pattern.",
+            description:
+              "Create a topology proposal from this archived pattern using explicit adapted operations.",
             estimate: "fast",
           },
         ),

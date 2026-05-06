@@ -55,7 +55,7 @@ const TEST_CONFIG: SloppyConfig = {
       previewBytes: 2048,
     },
     memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-    skills: { skillsDir: "~/.hermes/skills" },
+    skills: { skillsDir: "~/.sloppy/skills" },
     web: { historyLimit: 20 },
     browser: { viewportWidth: 1280, viewportHeight: 720 },
     cron: { maxJobs: 50 },

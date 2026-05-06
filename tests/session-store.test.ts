@@ -1502,7 +1502,7 @@ describe("SessionService — multi-session support", () => {
           previewBytes: 2048,
         },
         memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-        skills: { skillsDir: "~/.hermes/skills" },
+        skills: { skillsDir: "~/.sloppy/skills" },
         web: { historyLimit: 10 },
         browser: { viewportWidth: 1280, viewportHeight: 720 },
         cron: { maxJobs: 16 },

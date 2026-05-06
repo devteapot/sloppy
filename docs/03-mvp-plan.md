@@ -52,13 +52,13 @@ providers, skills, routes, and agent-to-agent channels.
      runtime policy and supporting fanout or sampled canary routes when
      requested.
    - Keep trace analysis, repair tactics, runtime architect prompts, automatic
-     evidence scoring, and topology pattern reuse out of the long-term provider
-     contract. The checked-in helper affordances are transitional and should
-     migrate into skills once the skills provider can host linked files and
-     authoring workflows cleanly.
-   - Promote topology experiments only after recorded evaluations satisfy their
-     criteria and record rollback lineage instead of hiding it in ad hoc
-     proposals.
+     evidence scoring, and topology pattern reuse out of the provider contract.
+     The hardcoded trace/architect/evidence helpers have been removed from the
+     public meta-runtime surface; reusable strategy lives in skills.
+   - Keep topology experiment scoring skill-owned: the provider stores criteria
+     metadata and evaluations, while `promote_experiment` only requires
+     recorded evaluation evidence and records rollback lineage instead of
+     hiding it in ad hoc proposals.
    - Export merged/global/workspace state and import session/workspace/global
      state with approvals for persistent scopes while preserving storage layer
      boundaries.
@@ -71,13 +71,20 @@ providers, skills, routes, and agent-to-agent channels.
      precedence.
    - Link meta-runtime `activateSkillVersion` records to skills-provider
      proposal activation when a topology proposal applies.
+   - Freeze active skill versions into meta-runtime routed child-agent goals so
+     skill activation changes the spawned runtime context instead of remaining
+     inert metadata.
+   - Support Hermes-style progressive disclosure: compact skill list,
+     `skill_view(name)`, `skill_view(name, file_path)`, supporting files, nested
+     `metadata.sloppy`, builtin/imported roots, and external skill directories.
    - Treat reusable self-evolution behavior as skills: runtime architecture,
      route repair, topology experiment evaluation, and topology pattern
      authoring should be skill playbooks over provider state, not hardcoded
      runtime policy.
    - Add enough skill authoring surface for agent-maintained procedural memory:
-     linked-file reads, patch/edit/write support, usage telemetry, and a
-     curator/review path before enabling broad autonomous skill growth.
+     linked-file reads and patch/edit/write support are implemented through
+     `skill_view` and `skill_manage`; usage telemetry and a curator/review path
+     remain before enabling broad autonomous skill growth.
 
 5. Keep session routing lightweight.
    - Represent channels and routes as SLOP state.
@@ -90,9 +97,8 @@ providers, skills, routes, and agent-to-agent channels.
   provider state JSON.
 - Evolve route matching beyond substring matches when real usage needs richer
   predicates over typed message envelopes.
-- Migrate the trace-derived repair and topology-pattern helper affordances into
-  built-in skills, then shrink the long-term meta-runtime `/session` surface to
-  substrate operations.
+- Add usage telemetry and curator/review workflows before enabling broad
+  autonomous skill growth.
 
 ## Verification
 

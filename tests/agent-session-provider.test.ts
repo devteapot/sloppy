@@ -81,7 +81,7 @@ const TEST_CONFIG: SloppyConfig = {
       compactThreshold: 0.2,
     },
     skills: {
-      skillsDir: "~/.hermes/skills",
+      skillsDir: "~/.sloppy/skills",
     },
     web: {
       historyLimit: 20,

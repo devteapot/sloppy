@@ -185,7 +185,14 @@ export function normalizeConfig(config: RawSloppyConfig): SloppyConfig {
       },
       skills: {
         ...config.providers.skills,
+        builtinSkillsDir: resolve(
+          filesystemRoot,
+          expandHomePath(config.providers.skills.builtinSkillsDir ?? "skills"),
+        ),
         skillsDir: resolve(expandHomePath(config.providers.skills.skillsDir)),
+        externalDirs: (config.providers.skills.externalDirs ?? []).map((path) =>
+          resolve(expandHomePath(path)),
+        ),
       },
       metaRuntime: {
         ...config.providers.metaRuntime,

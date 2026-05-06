@@ -81,6 +81,7 @@ export type TopologyExperiment = {
   rolledBackAt?: string;
   parentExperimentId?: string;
   rollbackProposalId?: string;
+  promotionEvaluationId?: string;
   promotionCriteria?: ExperimentPromotionCriteria;
 };
 

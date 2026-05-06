@@ -61,11 +61,14 @@ Stable substrate affordances on `/session`:
 - `record_evaluation`
 - `promote_experiment`
 - `rollback_experiment`
+- `archive_topology_pattern`
+- `propose_from_pattern`
 - `export_state`
 - `import_state`
 
-Compatibility affordances that exist in code today but should be treated as
-skill-migration candidates:
+Strategy helpers are intentionally not part of the public `/session` surface.
+These older hardcoded affordances were removed and should be expressed as
+skills over `/events`, `/routes`, `/proposals`, `/experiments`, and `/patterns`:
 
 - `analyze_runtime_trace`
 - `prepare_architect_brief`
@@ -73,15 +76,12 @@ skill-migration candidates:
 - `derive_proposals_from_events`
 - `start_evolution_cycle`
 - `record_experiment_evidence`
-- `archive_topology_pattern`
-- `propose_from_pattern`
 
-Those helpers encode diagnosis, prompt construction, repair tactics, scoring
-formulas, and pattern-reuse policy. They are useful prototypes, but they should
-not become the long-term runtime API. The long-term shape is a small
-meta-runtime substrate plus skills such as `runtime-architect`,
-`runtime-route-repair`, `topology-experiment-evaluator`, and
-`topology-pattern-author` operating over that substrate.
+Those helpers encoded diagnosis, prompt construction, repair tactics, and
+scoring formulas. The long-term shape is a small meta-runtime substrate plus
+skills such as `runtime-architect`, `runtime-route-repair`,
+`topology-experiment-evaluator`, and `topology-pattern-author` operating over
+that substrate.
 
 `/proposals/<id>` exposes proposal affordances while a proposal is pending:
 
@@ -197,21 +197,27 @@ Topology proposals can be attached to experiments. An experiment records:
 - the proposal under test
 - the experiment objective
 - optional parent experiment lineage
-- promotion criteria
+- promotion criteria metadata for evaluator skills
 - scored evaluations with evidence
 - promotion or rollback status
 
-`min_score` is evaluated against the average of recorded evaluation scores, not
-against a single best run. `promote_experiment` applies the linked proposal only
-after recorded evaluations meet the criteria and requests approval before
-applying privileged or persistent changes. `rollback_experiment` records
-rollback lineage and applies a provided rollback proposal when it is still
-pending.
+The provider does not decide whether an experiment's scores satisfy the
+objective. Evaluator skills read the criteria, events, proposal, and evidence,
+then record an explicit evaluation. `promote_experiment` requires at least one
+recorded evaluation, stores the evaluation used for promotion, applies the
+linked proposal if needed, and requests approval before applying privileged or
+persistent changes. `rollback_experiment` records rollback lineage and applies a
+provided rollback proposal when it is still pending.
 
 The runtime should store evaluations, not decide domain-specific truth. Route
 event scoring and pattern promotion heuristics are useful skills or diagnostic
 scripts over `/events`, `/routes`, `/proposals`, and `/experiments`; they should
 not keep expanding as hardcoded provider policy.
+
+Topology pattern records follow the same boundary. `archive_topology_pattern`
+and `propose_from_pattern` require explicit typed operations supplied by a
+pattern-authoring skill. The provider stores pattern lineage and creates normal
+proposals; it does not infer reusable operations by copying the source proposal.
 
 ## Capability Masks
 
@@ -243,20 +249,35 @@ invocations actually happen.
 ## Skills And Self-Evolution
 
 The skills provider is adjacent to the meta-runtime. It loads `SKILL.md` files
-from imported, global, workspace, and session scopes. When names collide,
+from builtin, imported, global, workspace, and session scopes. When names collide,
 precedence is:
 
 1. session
 2. workspace
 3. global
-4. imported
+4. builtin
+5. imported
 
 Skill proposals can activate session skills directly. Workspace and global skill
 activation require approval and refuse to overwrite an existing `SKILL.md` path.
+`skill_manage` gives agents Hermes-style procedural-memory maintenance for
+creating, patching, editing, deleting, and adding supporting files; persistent
+workspace/global writes are approval-gated.
+
+Built-in runtime skills live under `skills/runtime/`:
+
+- `runtime-architect`
+- `runtime-route-repair`
+- `topology-experiment-evaluator`
+- `topology-pattern-author`
 
 Meta-runtime `activateSkillVersion` operations may reference a skills-provider
 proposal id; when the topology proposal applies, the meta-runtime invokes the
 skills provider and records activation success or failure on the skill version.
+Active skill versions are resolved during meta-runtime route dispatch and their
+loaded `SKILL.md` content is frozen into routed child-agent goals. If an active
+skill cannot be loaded, the route records `route.failed` instead of spawning a
+child without the declared procedural context.
 
 The important boundary:
 
@@ -290,25 +311,25 @@ logic.
 
 ## Migration Notes
 
-Current code still includes trace-derived repair and topology-pattern helper
-affordances. Treat them as transitional compatibility affordances until the
-skills provider has enough authoring and linked-file support to host those
-playbooks cleanly.
+The trace-derived repair, architect-brief, automatic evidence-scoring, and
+evolution-cycle helper affordances have been removed from the public
+meta-runtime surface. Their reusable strategy now belongs in built-in skills.
 
 Preferred migration order:
 
 1. Add built-in skills for runtime architecture, route repair, experiment
-   evaluation, and topology pattern authoring.
-2. Teach child-agent spawning to resolve active skill versions at spawn time and
-   freeze them into the child prompt.
-3. Move hardcoded repair synthesis and scoring formulas into skills or skill
-   scripts.
-4. Keep only substrate affordances in the long-term `/session` surface.
+   evaluation, and topology pattern authoring. Done in `skills/runtime/`.
+2. Keep only substrate affordances in the long-term `/session` surface. Done for
+   the removed trace/architect/evidence helpers.
+3. Teach child-agent spawning to resolve active skill versions at spawn time and
+   freeze them into the child prompt. Done for meta-runtime routed children.
+4. Add usage telemetry and curator/review workflows before broad autonomous
+   skill growth.
 
 ## Remaining Work
 
 - richer route matchers beyond substring matching
 - UI treatment for proposals, typed envelopes, route events, and capability masks
-- skill-backed runtime architect and route-repair playbooks
-- spawn-time skill resolution for profiles and nodes
+- profile/node-specific skill selection instead of applying every active skill
+  version to routed children
 - packaged export/import of identity, skills, and runtime state as one bundle

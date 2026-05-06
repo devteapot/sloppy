@@ -59,7 +59,7 @@ Current checked-in implementation includes:
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes the public session-provider socket
 - canvas + HTML dashboard prototype under `apps/dashboard/`
-- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, skill versions, topology experiments/evaluations, proposals, scoped storage, events, and import/export. Some checked-in trace-analysis and topology-pattern helper affordances remain as compatibility prototypes, but reusable self-evolution strategy is expected to move into skills.
+- optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, active skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, and import/export. Reusable self-evolution strategy lives in skills over this substrate.
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
 
 ## Interface direction
@@ -124,8 +124,8 @@ The runtime now ships with a broader first-party provider surface beyond termina
 These providers are currently implemented as in-process SLOP providers:
 
 - `memory` for persistent recall-like state, search, compaction, and approval-gated destructive clears
-- `skills` for discovering installed skills, proposing new skill versions, activating session/workspace/global skill artifacts, and preventing persistent skill overwrites
-- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology patterns should be expressed as skills over this state rather than long-term provider policy.
+- `skills` for skill-based progressive skill loading (`skill_view`), supporting files, nested `metadata.sloppy`, agent-managed skill edits (`skill_manage`), proposed skill activation, and approval-gated persistent workspace/global writes
+- `meta-runtime` for evolving internal agent-to-agent topology through SLOP state, including route dispatch to delegated agents or messaging channels, topology proposals, experiment/evaluation records, active skill-version context for routed children, scoped persistence, and child capability-mask enforcement. Runtime architect prompts, repair/triage playbooks, automatic evidence scoring, and reusable topology pattern authoring should be expressed as skills over this state rather than long-term provider policy.
 - `browser` for tab state, navigation history, and simulated screenshots
 - `web` for search/read operations plus browsed-history state
 - `cron` for scheduled jobs and job lifecycle state
@@ -365,10 +365,21 @@ providers:
     delegation: true
     metaRuntime: true
     spec: true
+  skills:
+    builtinSkillsDir: skills
+    skillsDir: ~/.sloppy/skills
+    externalDirs: []
+    templateVars: true
+    viewMaxBytes: 65536
   metaRuntime:
     globalRoot: ~/.sloppy/meta-runtime
     workspaceRoot: .sloppy/meta-runtime
 ```
+
+Skills follow the `SKILL.md` directory pattern used by Hermes and agentskills.io:
+`SKILL.md` is loaded on demand, while supporting files under `references/`,
+`templates/`, or `scripts/` are read with `skill_view(name, file_path)`.
+Workspace and global changes made through `skill_manage` require approval.
 
 Delegation can also launch configured Agent Client Protocol agents as child sessions while preserving the same SLOP session surface:
 

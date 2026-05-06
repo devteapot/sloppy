@@ -121,9 +121,13 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
 
   if (config.providers.builtin.skills) {
     const skills = new SkillsProvider({
+      builtinSkillsDir: config.providers.skills.builtinSkillsDir,
       skillsDir: config.providers.skills.skillsDir,
       globalSkillsDir: join(config.providers.metaRuntime.globalRoot, "skills"),
       workspaceSkillsDir: join(config.providers.metaRuntime.workspaceRoot, "skills"),
+      externalDirs: config.providers.skills.externalDirs ?? [],
+      templateVars: config.providers.skills.templateVars ?? true,
+      viewMaxBytes: config.providers.skills.viewMaxBytes ?? 65536,
     });
     providers.push({
       id: "skills",
@@ -133,6 +137,13 @@ export function createBuiltinProviders(config: SloppyConfig): RegisteredProvider
       transportLabel: "in-process",
       stop: () => skills.stop(),
       approvals: skills.approvals,
+      systemPromptFragment: () =>
+        [
+          "Skills use progressive disclosure.",
+          "Use the skills provider's compact /skills list to decide relevance, then call skill_view with a skill name to load SKILL.md.",
+          "If a skill advertises supporting_files, call skill_view with file_path to load only the needed reference, template, or script.",
+          "When a repeatable workflow should become procedural memory, use skill_manage; persistent workspace/global skill changes require approval.",
+        ].join("\n"),
     });
   }
 

@@ -1,10 +1,6 @@
 import type { ProviderRuntimeHub } from "../../core/hub";
 import { createApprovalRequiredError, type ProviderApprovalManager } from "../approvals";
-import {
-  createExperiment as buildExperiment,
-  createEvaluation,
-  experimentMeetsCriteria,
-} from "./meta-runtime-experiments";
+import { createExperiment as buildExperiment, createEvaluation } from "./meta-runtime-experiments";
 import type {
   ExperimentEvaluation,
   MetaEvent,
@@ -118,9 +114,11 @@ export function recordTopologyExperimentEvaluation(
 
 export async function promoteTopologyExperiment(
   context: MetaRuntimeExperimentContext,
-  experimentId: string,
+  params: Record<string, unknown> | string,
   approved = false,
 ): Promise<TopologyExperiment> {
+  const experimentId =
+    typeof params === "string" ? params : asString(params.experiment_id, "experiment_id");
   const experiment = context.experiments.get(experimentId);
   if (!experiment) {
     throw new Error(`Unknown experiment: ${experimentId}`);
@@ -128,11 +126,25 @@ export async function promoteTopologyExperiment(
   if (experiment.status !== "candidate") {
     throw new Error(`Experiment ${experimentId} is already ${experiment.status}.`);
   }
-  const evaluations = listById(context.evaluations).filter(
-    (evaluation) => evaluation.experimentId === experiment.id,
-  );
-  if (!experimentMeetsCriteria(experiment, evaluations)) {
-    throw new Error(`Experiment ${experimentId} does not meet promotion criteria.`);
+  const evaluations = listById(context.evaluations)
+    .filter((evaluation) => evaluation.experimentId === experiment.id)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const evaluationId =
+    typeof params === "string"
+      ? undefined
+      : typeof params.evaluation_id === "string"
+        ? params.evaluation_id
+        : undefined;
+  const promotionEvaluation = evaluationId
+    ? evaluations.find((evaluation) => evaluation.id === evaluationId)
+    : evaluations.at(-1);
+  if (evaluationId && !promotionEvaluation) {
+    throw new Error(`Evaluation ${evaluationId} does not belong to experiment ${experimentId}.`);
+  }
+  if (!promotionEvaluation) {
+    throw new Error(
+      `Experiment ${experimentId} requires at least one recorded evaluation before promotion.`,
+    );
   }
   const proposal = context.proposals.get(experiment.proposalId);
   if (!proposal) {
@@ -152,12 +164,13 @@ export async function promoteTopologyExperiment(
       reason: `Promoting experiment ${experimentId} applies or records privileged meta-runtime state.`,
       paramsPreview: JSON.stringify({
         experiment_id: experimentId,
+        evaluation_id: promotionEvaluation.id,
         proposal_id: proposal.id,
         proposal_scope: proposal.scope,
         proposal_ops: proposal.ops.map((op) => op.type),
       }),
       dangerous: true,
-      execute: () => promoteTopologyExperiment(context, experimentId, true),
+      execute: () => promoteTopologyExperiment(context, params, true),
     });
     throw createApprovalRequiredError(
       `Promoting experiment ${experimentId} requires approval via /approvals/${approvalId}.`,
@@ -166,7 +179,12 @@ export async function promoteTopologyExperiment(
   if (proposal.status === "proposed") {
     await context.applyProposal(proposal.id, true);
   }
-  const promoted = { ...experiment, status: "promoted" as const, promotedAt: now() };
+  const promoted = {
+    ...experiment,
+    status: "promoted" as const,
+    promotedAt: now(),
+    promotionEvaluationId: promotionEvaluation.id,
+  };
   context.layers[experiment.scope].experiments.set(promoted.id, promoted);
   context.rebuildMergedState();
   context.recordEvent({

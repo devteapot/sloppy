@@ -44,6 +44,13 @@ function createLayeredHarness(skillsDir: string, workspaceSkillsDir: string) {
   return { provider, consumer };
 }
 
+function createCustomHarness(options: ConstructorParameters<typeof SkillsProvider>[0]) {
+  const provider = new SkillsProvider(options);
+  const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+  return { provider, consumer };
+}
+
 async function connectAndRefresh(consumer: SlopConsumer): Promise<void> {
   await consumer.connect();
   await consumer.subscribe("/", 3);
@@ -124,6 +131,37 @@ tags: [demo]
     }
   });
 
+  test("discovers builtin and external skill roots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const builtin = join(root, "builtin");
+    const external = join(root, "external");
+    await createSkill(builtin, "runtime/architect", "---\nname: runtime-architect\n---");
+    await createSkill(external, "team/workflow", "---\nname: team-workflow\n---");
+
+    const { provider, consumer } = createCustomHarness({
+      skillsDir: join(root, "empty"),
+      builtinSkillsDir: builtin,
+      externalDirs: [external],
+    });
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const skills = await consumer.query("/skills", 2);
+      expect(skills.children?.map((child) => child.properties?.name)).toEqual([
+        "runtime-architect",
+        "team-workflow",
+      ]);
+      expect(skills.children?.map((child) => child.properties?.scope)).toEqual([
+        "builtin",
+        "imported",
+      ]);
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("exposes session counts, installed names, and refresh affordance", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);
@@ -143,7 +181,9 @@ tags: [demo]
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
         "refresh_skills",
         "view_skill",
+        "skill_view",
         "propose_skill",
+        "skill_manage",
       ]);
     } finally {
       provider.stop();
@@ -243,7 +283,10 @@ related_skills: [helper-skill]
       expect(typeof skillId).toBe("string");
 
       const skill = skills.children?.[0];
-      expect(skill?.affordances?.map((affordance) => affordance.action)).toEqual(["view_skill"]);
+      expect(skill?.affordances?.map((affordance) => affordance.action)).toEqual([
+        "view_skill",
+        "skill_view",
+      ]);
       expect(skill?.affordances?.[0]?.idempotent).toBe(true);
     } finally {
       provider.stop();
@@ -270,6 +313,62 @@ related_skills: [helper-skill]
     }
   });
 
+  test("reads nested Sloppy metadata and supporting files on demand", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    await createSkill(
+      root,
+      "research/demo",
+      `---
+name: research-demo
+description: Demo with support files
+version: 1.2.0
+platforms: [macos, linux]
+metadata:
+  sloppy:
+    tags: [research, demo]
+    category: research
+---`,
+      `# Research Demo\n\nUse ${"$"}{SLOPPY_SKILL_DIR}/scripts/run.sh.\n`,
+    );
+    await mkdir(join(root, "research/demo/references"), { recursive: true });
+    await writeFile(join(root, "research/demo/references/notes.md"), "Reference details", "utf8");
+
+    const { provider, consumer } = createHarness(root);
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const skills = await consumer.query("/skills", 2);
+      const skill = skills.children?.[0];
+      expect(skill?.properties?.name).toBe("research-demo");
+      expect(skill?.properties?.tags).toEqual(["research", "demo"]);
+      expect(skill?.properties?.category).toBe("research");
+      expect(skill?.properties?.platforms).toEqual(["macos", "linux"]);
+      expect(skill?.properties?.supporting_files).toEqual(["references/notes.md"]);
+
+      const main = await consumer.invoke("/session", "skill_view", { name: "research-demo" });
+      expect(main.status).toBe("ok");
+      expect((main.data as { content: string }).content).toContain(`${root}/research/demo`);
+
+      const reference = await consumer.invoke("/session", "skill_view", {
+        name: "research-demo",
+        file_path: "references/notes.md",
+      });
+      expect(reference.status).toBe("ok");
+      expect((reference.data as { content: string }).content).toBe("Reference details");
+
+      const escaped = await consumer.invoke("/session", "skill_view", {
+        name: "research-demo",
+        file_path: "../SKILL.md",
+      });
+      expect(escaped.status).toBe("error");
+      expect(escaped.error?.message).toContain("escapes the skill directory");
+    } finally {
+      provider.stop();
+    }
+  });
+
   test("returns an empty collection when the skills directory is missing", async () => {
     const root = join(tmpdir(), `sloppy-missing-skills-${crypto.randomUUID()}`);
     const { provider, consumer } = createHarness(root);
@@ -283,6 +382,102 @@ related_skills: [helper-skill]
       const skills = await consumer.query("/skills", 2);
       expect(skills.properties?.count).toBe(0);
       expect(skills.children ?? []).toEqual([]);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("skill_manage creates, patches, and manages supporting files with approval for workspace scope", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const imported = join(root, "imported");
+    const workspace = join(root, "workspace");
+    const { provider, consumer } = createLayeredHarness(imported, workspace);
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const createBlocked = await consumer.invoke("/session", "skill_manage", {
+        operation: "create",
+        scope: "workspace",
+        category: "runtime",
+        name: "managed-skill",
+        content: "---\nname: managed-skill\n---\n# Managed Skill\n\nOld step\n",
+      });
+      expect(createBlocked.status).toBe("error");
+      expect(createBlocked.error?.code).toBe("approval_required");
+
+      let approvals = await consumer.query("/approvals", 2);
+      let approvalId = approvals.children?.[0]?.id;
+      expect(typeof approvalId).toBe("string");
+      const created = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(created.status).toBe("ok");
+      expect(await readFile(join(workspace, "runtime/managed-skill/SKILL.md"), "utf8")).toContain(
+        "Old step",
+      );
+
+      const patchBlocked = await consumer.invoke("/session", "skill_manage", {
+        operation: "patch",
+        name: "managed-skill",
+        old_string: "Old step",
+        new_string: "New step",
+      });
+      expect(patchBlocked.status).toBe("error");
+      approvals = await consumer.query("/approvals", 2);
+      approvalId = approvals.children?.find((child) => child.properties?.status === "pending")?.id;
+      expect(typeof approvalId).toBe("string");
+      const patched = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(patched.status).toBe("ok");
+      expect(await readFile(join(workspace, "runtime/managed-skill/SKILL.md"), "utf8")).toContain(
+        "New step",
+      );
+
+      const writeBlocked = await consumer.invoke("/session", "skill_manage", {
+        operation: "write_file",
+        name: "managed-skill",
+        file_path: "references/example.md",
+        file_content: "Example reference",
+      });
+      expect(writeBlocked.status).toBe("error");
+      approvals = await consumer.query("/approvals", 2);
+      approvalId = approvals.children?.find((child) => child.properties?.status === "pending")?.id;
+      expect(typeof approvalId).toBe("string");
+      const written = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
+      expect(written.status).toBe("ok");
+
+      await consumer.invoke("/session", "refresh_skills", {});
+      const reference = await consumer.invoke("/session", "skill_view", {
+        name: "managed-skill",
+        file_path: "references/example.md",
+      });
+      expect(reference.status).toBe("ok");
+      expect((reference.data as { content: string }).content).toBe("Example reference");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("skill_manage creates session skills without approval", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
+    tempPaths.push(root);
+    const { provider, consumer } = createHarness(root);
+
+    try {
+      await connectAndRefresh(consumer);
+
+      const created = await consumer.invoke("/session", "skill_manage", {
+        operation: "create",
+        scope: "session",
+        name: "managed-session",
+        content: "---\nname: managed-session\n---\n# Managed Session\n",
+      });
+      expect(created.status).toBe("ok");
+
+      const viewed = await consumer.invoke("/session", "skill_view", {
+        name: "managed-session",
+      });
+      expect(viewed.status).toBe("ok");
+      expect((viewed.data as { content: string }).content).toContain("# Managed Session");
     } finally {
       provider.stop();
     }
