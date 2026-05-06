@@ -35,27 +35,34 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function inferLegacyMirrorLineage(sourceId: string): string[] {
-  const matches = sourceId.matchAll(/(?:^|-)approval-([a-zA-Z0-9_-]+?)(?=-approval-)/g);
+function inferLegacyMirrorLineage(itemPrefix: "approval" | "task", sourceId: string): string[] {
+  const matches = sourceId.matchAll(
+    new RegExp(`(?:^|-)${itemPrefix}-([a-zA-Z0-9_-]+?)(?=-${itemPrefix}-)`, "g"),
+  );
   return [...matches].map((match) => match[1]).filter((entry): entry is string => !!entry);
 }
 
-function sourceMirrorLineage(properties: Record<string, unknown>, sourceId: string): string[] {
+function sourceMirrorLineage(
+  itemPrefix: "approval" | "task",
+  properties: Record<string, unknown>,
+  sourceId: string,
+): string[] {
   const explicit = stringArray(properties.mirror_lineage);
   if (explicit.length > 0) {
     return explicit;
   }
-  return inferLegacyMirrorLineage(sourceId);
+  return inferLegacyMirrorLineage(itemPrefix, sourceId);
 }
 
 function hasLocalMirrorLineage(args: {
+  itemPrefix: "approval" | "task";
   localProviderIds: Set<string>;
   localMirrorIds: Set<string>;
   properties: Record<string, unknown>;
   sourceId: string;
   lineage: string[];
 }): boolean {
-  const { localProviderIds, localMirrorIds, properties, sourceId, lineage } = args;
+  const { itemPrefix, localProviderIds, localMirrorIds, properties, sourceId, lineage } = args;
   if (localProviderIds.size === 0) {
     return false;
   }
@@ -72,7 +79,7 @@ function hasLocalMirrorLineage(args: {
   }
 
   for (const localMirrorId of localMirrorIds) {
-    if (sourceId.includes(`approval-${localMirrorId}-`)) {
+    if (sourceId.includes(`${itemPrefix}-${localMirrorId}-`)) {
       return true;
     }
   }
@@ -104,9 +111,10 @@ export function parseApprovalsTree(
 
   return tree.children.flatMap((node) => {
     const properties = node.properties ?? {};
-    const lineage = sourceMirrorLineage(properties, node.id);
+    const lineage = sourceMirrorLineage("approval", properties, node.id);
     if (
       hasLocalMirrorLineage({
+        itemPrefix: "approval",
         localProviderIds,
         localMirrorIds,
         properties,
@@ -158,13 +166,39 @@ export function parseApprovalsTree(
   });
 }
 
-export function parseTasksTree(providerId: string, tree: SlopNode | null): SessionTask[] {
+export function parseTasksTree(
+  providerId: string,
+  tree: SlopNode | null,
+  options?: {
+    localProviderIds?: Iterable<string>;
+  },
+): SessionTask[] {
   if (!tree?.children) {
     return [];
   }
 
-  return tree.children.map((node) => {
+  const localProviderIds = new Set(options?.localProviderIds ?? []);
+  if (localProviderIds.has(providerId)) {
+    return [];
+  }
+  const localMirrorIds = new Set([...localProviderIds].map((id) => cleanMirrorIdSegment(id)));
+
+  const tasks = tree.children.flatMap((node) => {
     const properties = node.properties ?? {};
+    const lineage = sourceMirrorLineage("task", properties, node.id);
+    if (
+      hasLocalMirrorLineage({
+        itemPrefix: "task",
+        localProviderIds,
+        localMirrorIds,
+        properties,
+        sourceId: node.id,
+        lineage,
+      })
+    ) {
+      return [];
+    }
+
     const sourceTaskId =
       typeof properties.provider_task_id === "string"
         ? properties.provider_task_id
@@ -172,32 +206,37 @@ export function parseTasksTree(providerId: string, tree: SlopNode | null): Sessi
           ? properties.task_id
           : node.id;
 
-    return {
-      id: buildMirroredItemId("task", providerId, sourceTaskId),
-      status: normalizeTaskStatus(properties.status),
-      provider: providerId,
-      providerTaskId: sourceTaskId,
-      startedAt:
-        typeof properties.started_at === "string"
-          ? properties.started_at
-          : typeof properties.startedAt === "string"
-            ? properties.startedAt
+    return [
+      {
+        id: buildMirroredItemId("task", providerId, sourceTaskId),
+        status: normalizeTaskStatus(properties.status),
+        provider: providerId,
+        providerTaskId: sourceTaskId,
+        startedAt:
+          typeof properties.started_at === "string"
+            ? properties.started_at
+            : typeof properties.startedAt === "string"
+              ? properties.startedAt
+              : new Date().toISOString(),
+        updatedAt:
+          typeof properties.updated_at === "string"
+            ? properties.updated_at
             : new Date().toISOString(),
-      updatedAt:
-        typeof properties.updated_at === "string"
-          ? properties.updated_at
-          : new Date().toISOString(),
-      message:
-        typeof properties.message === "string"
-          ? properties.message
-          : typeof properties.summary === "string"
-            ? properties.summary
-            : "Provider task update",
-      progress: typeof properties.progress === "number" ? properties.progress : undefined,
-      error: typeof properties.error === "string" ? properties.error : undefined,
-      sourceTaskId,
-      sourcePath: `/tasks/${node.id}`,
-      canCancel: hasAffordance(node, "cancel"),
-    } satisfies SessionTask;
+        message:
+          typeof properties.message === "string"
+            ? properties.message
+            : typeof properties.summary === "string"
+              ? properties.summary
+              : "Provider task update",
+        progress: typeof properties.progress === "number" ? properties.progress : undefined,
+        error: typeof properties.error === "string" ? properties.error : undefined,
+        sourceTaskId,
+        sourcePath: `/tasks/${node.id}`,
+        mirrorLineage: [providerId, ...lineage],
+        canCancel: hasAffordance(node, "cancel"),
+      } satisfies SessionTask,
+    ];
   });
+
+  return [...new Map(tasks.map((task) => [task.id, task])).values()];
 }

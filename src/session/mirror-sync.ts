@@ -46,7 +46,12 @@ export function syncProviderSnapshotToSession(
   }
 
   if (update.path === "/tasks") {
-    store.syncProviderTasks(update.providerId, parseTasksTree(update.providerId, update.tree));
+    store.syncProviderTasks(
+      update.providerId,
+      parseTasksTree(update.providerId, update.tree, {
+        localProviderIds: options?.localProviderIds,
+      }),
+    );
     return;
   }
 }

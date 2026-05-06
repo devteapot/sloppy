@@ -135,6 +135,7 @@ export type SessionTask = {
   error?: string;
   sourceTaskId?: string;
   sourcePath?: string;
+  mirrorLineage?: string[];
   canCancel?: boolean;
   turnId?: string;
 };

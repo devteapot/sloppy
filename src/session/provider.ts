@@ -668,6 +668,7 @@ export class AgentSessionProvider {
           progress: task.progress,
           linked_activity_id: task.linkedActivityId,
           error: task.error,
+          mirror_lineage: task.mirrorLineage,
         },
         summary: task.message,
         actions:

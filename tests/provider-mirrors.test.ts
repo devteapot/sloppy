@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { parseApprovalsTree } from "../src/session/provider-mirrors";
+import { parseApprovalsTree, parseTasksTree } from "../src/session/provider-mirrors";
 
 describe("provider mirror parsing", () => {
   test("drops approvals that already include the local session in mirror lineage", () => {
@@ -90,5 +90,100 @@ describe("provider mirror parsing", () => {
     expect(approvals[0]?.provider).toBe("sloppy-session-child");
     expect(approvals[0]?.sourceApprovalId).toBe("approval-skills-approval-1");
     expect(approvals[0]?.mirrorLineage).toEqual(["sloppy-session-child", "skills"]);
+  });
+
+  test("drops tasks that already include the local session in mirror lineage", () => {
+    const tasks = parseTasksTree(
+      "sloppy-session-parent",
+      {
+        id: "tasks",
+        type: "collection",
+        children: [
+          {
+            id: "task-sloppy-session-child-task-terminal-task-1",
+            type: "item",
+            properties: {
+              status: "running",
+              provider: "sloppy-session-child",
+              provider_task_id: "task-1",
+              message: "Already mirrored through child.",
+              mirror_lineage: ["sloppy-session-child", "terminal"],
+            },
+            affordances: [{ action: "cancel" }],
+          },
+        ],
+      },
+      { localProviderIds: ["sloppy-session-child"] },
+    );
+
+    expect(tasks).toEqual([]);
+  });
+
+  test("infers legacy mirror lineage from nested mirrored task ids", () => {
+    const tasks = parseTasksTree(
+      "sloppy-session-parent",
+      {
+        id: "tasks",
+        type: "collection",
+        children: [
+          {
+            id: "task-sloppy-session-child-task-terminal-task-1",
+            type: "item",
+            properties: {
+              status: "running",
+              provider_task_id: "task-1",
+              message: "Legacy mirrored child task.",
+            },
+            affordances: [{ action: "cancel" }],
+          },
+        ],
+      },
+      { localProviderIds: ["sloppy-session-child"] },
+    );
+
+    expect(tasks).toEqual([]);
+  });
+
+  test("preserves forwardable child-session tasks and dedupes by mirrored id", () => {
+    const tasks = parseTasksTree(
+      "sloppy-session-child",
+      {
+        id: "tasks",
+        type: "collection",
+        children: [
+          {
+            id: "task-terminal-task-1",
+            type: "item",
+            properties: {
+              status: "running",
+              provider: "terminal",
+              provider_task_id: "task-1",
+              message: "First task update.",
+              mirror_lineage: ["terminal"],
+            },
+            affordances: [{ action: "cancel" }],
+          },
+          {
+            id: "duplicate-task-terminal-task-1",
+            type: "item",
+            properties: {
+              status: "done",
+              provider: "terminal",
+              provider_task_id: "task-1",
+              message: "Latest task update.",
+              mirror_lineage: ["terminal"],
+            },
+          },
+        ],
+      },
+      { localProviderIds: ["sloppy-session-parent"] },
+    );
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.provider).toBe("sloppy-session-child");
+    expect(tasks[0]?.providerTaskId).toBe("task-1");
+    expect(tasks[0]?.status).toBe("completed");
+    expect(tasks[0]?.message).toBe("Latest task update.");
+    expect(tasks[0]?.mirrorLineage).toEqual(["sloppy-session-child", "terminal"]);
   });
 });
