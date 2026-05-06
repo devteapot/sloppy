@@ -9,6 +9,12 @@ import type { LlmProfileManager, LlmStateSnapshot } from "../src/llm/profile-man
 import type { LlmAdapter } from "../src/llm/types";
 import { runRuntimeSmoke } from "../src/runtime/smoke-runner";
 
+const originalOpenAIKey = process.env.OPENAI_API_KEY;
+const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
+const originalModel = process.env.SLOPPY_MODEL;
+const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
+const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
+
 const TEST_CONFIG: SloppyConfig = {
   llm: {
     provider: "openai",
@@ -124,6 +130,34 @@ const READY_LLM_STATE: LlmStateSnapshot = {
     },
   ],
 };
+
+function restoreEnv(): void {
+  if (originalOpenAIKey == null) {
+    delete process.env.OPENAI_API_KEY;
+  } else {
+    process.env.OPENAI_API_KEY = originalOpenAIKey;
+  }
+  if (originalProvider == null) {
+    delete process.env.SLOPPY_LLM_PROVIDER;
+  } else {
+    process.env.SLOPPY_LLM_PROVIDER = originalProvider;
+  }
+  if (originalModel == null) {
+    delete process.env.SLOPPY_MODEL;
+  } else {
+    process.env.SLOPPY_MODEL = originalModel;
+  }
+  if (originalBaseUrl == null) {
+    delete process.env.SLOPPY_LLM_BASE_URL;
+  } else {
+    process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
+  }
+  if (originalApiKeyEnv == null) {
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+  } else {
+    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
+  }
+}
 
 async function createFakeAcpAgent(workspaceRoot: string): Promise<string> {
   const scriptPath = join(workspaceRoot, "fake-acp-agent.mjs");
@@ -260,6 +294,66 @@ describe("runtime smoke runner", () => {
       expect(result.delegatedAgent?.status).toBe("completed");
       expect(result.delegatedAgent?.resultPreview).toContain("native received:");
     } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("native smoke honors explicit runtime env routing instead of managed profiles", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-env-"));
+    process.env.OPENAI_API_KEY = "router-key";
+    process.env.SLOPPY_LLM_PROVIDER = "openai";
+    process.env.SLOPPY_MODEL = "local/test-model";
+    process.env.SLOPPY_LLM_BASE_URL = "http://192.168.1.96:8001/v1";
+    process.env.SLOPPY_LLM_API_KEY_ENV = "OPENAI_API_KEY";
+
+    const config: SloppyConfig = {
+      ...TEST_CONFIG,
+      llm: {
+        ...TEST_CONFIG.llm,
+        defaultProfileId: "managed-openai",
+        profiles: [
+          {
+            id: "managed-openai",
+            label: "Managed OpenAI",
+            provider: "openai",
+            model: "gpt-5.4",
+            apiKeyEnv: "OPENAI_API_KEY",
+          },
+        ],
+      },
+    };
+    const manager = {
+      ensureReady: async () => READY_LLM_STATE,
+      getState: async () => READY_LLM_STATE,
+      getConfig: () => config,
+      updateConfig: () => undefined,
+      createAdapter: async (profileId?: string) => {
+        expect(profileId).toBeUndefined();
+        return {
+          async chat(options) {
+            options.onText?.("env-routed native received");
+            return {
+              content: [{ type: "text", text: "env-routed native received" }],
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        } satisfies LlmAdapter;
+      },
+    } satisfies Partial<LlmProfileManager> as unknown as LlmProfileManager;
+
+    try {
+      const result = await runRuntimeSmoke({
+        config,
+        llmProfileManager: manager,
+        mode: "native",
+        workspaceRoot,
+      });
+
+      expect(result.delegatedAgent?.status).toBe("completed");
+      expect(result.delegatedAgent?.resultPreview).toContain("env-routed native received");
+    } finally {
+      restoreEnv();
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

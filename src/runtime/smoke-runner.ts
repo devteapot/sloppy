@@ -12,6 +12,7 @@ import type { LlmProfileConfig, SloppyConfig } from "../config/schema";
 import { ConsumerHub } from "../core/consumer";
 import { RoleRegistry } from "../core/role";
 import { LlmConfigurationError, type LlmProfileManager } from "../llm/profile-manager";
+import { buildRuntimeSloppyConfig } from "../llm/runtime-config";
 import { createBuiltinProviders, type RegisteredProvider } from "../providers/registry";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
@@ -350,11 +351,12 @@ export async function runRuntimeSmoke(
     ? undefined
     : await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-"));
   const workspaceRoot = resolve(options.workspaceRoot ?? tempRoot ?? process.cwd());
-  const baseConfig =
+  const loadedConfig =
     options.config ??
     (options.workspaceRoot
       ? await loadConfigFromPaths(getHomeConfigPath(), getWorkspaceConfigPath(workspaceRoot))
       : DEFAULT_CONFIG);
+  const baseConfig = buildRuntimeSloppyConfig(loadedConfig);
   const profile = mode === "native" ? activeProfile(baseConfig, options.profileId) : undefined;
   if (mode === "native" && options.profileId && !profile) {
     throw new LlmConfigurationError(`LLM profile '${options.profileId}' is not configured.`);
