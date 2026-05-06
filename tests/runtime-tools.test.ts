@@ -83,6 +83,11 @@ describe("buildRuntimeToolSet", () => {
         (toolName) => toolName.startsWith("filesystem__") && toolName.includes("read"),
       ),
     ).toBe(true);
+    expect(toolSet.resolve("filesystem__workspace__search")).toMatchObject({
+      kind: "affordance",
+      dangerous: false,
+      idempotent: false,
+    });
   });
 
   test("normalizes affordance params to strict JSON Schema for LLM tools", () => {
@@ -135,6 +140,51 @@ describe("buildRuntimeToolSet", () => {
     });
     expect(writeTool?.function.description).toContain("Required parameters: path, content.");
     expect(writeTool?.function.description).toContain("Optional parameters: expected_version.");
+  });
+
+  test("preserves dangerous and idempotent affordance metadata in resolutions", () => {
+    const overviewTree: SlopNode = {
+      id: "filesystem",
+      type: "root",
+      children: [
+        {
+          id: "workspace",
+          type: "collection",
+          affordances: [
+            {
+              action: "read",
+              description: "Read a file.",
+              idempotent: true,
+            },
+            {
+              action: "delete",
+              description: "Delete a file.",
+              dangerous: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const toolSet = buildRuntimeToolSet([
+      {
+        providerId: "filesystem",
+        providerName: "Filesystem",
+        kind: "builtin",
+        overviewTree,
+      },
+    ]);
+
+    expect(toolSet.resolve("filesystem__workspace__read")).toMatchObject({
+      kind: "affordance",
+      dangerous: false,
+      idempotent: true,
+    });
+    expect(toolSet.resolve("filesystem__workspace__delete")).toMatchObject({
+      kind: "affordance",
+      dangerous: true,
+      idempotent: false,
+    });
   });
 
   test("preserves nested array item schemas when normalizing affordance params", () => {

@@ -7,9 +7,12 @@ import {
   EMPTY_SESSION_VIEW,
   mapLlmNode,
   mapQueueNode,
+  mapSessionNode,
   mapTranscriptNode,
 } from "../apps/tui/src/slop/node-mappers";
 import { SessionClient } from "../apps/tui/src/slop/session-client";
+import type { TuiRoute } from "../apps/tui/src/slop/types";
+import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
 import { parseLocalCommand } from "../apps/tui/src/state/commands";
 import { ComposerHistory } from "../apps/tui/src/state/composer-history";
 import { reconcileInitialRoute } from "../apps/tui/src/state/initial-route";
@@ -116,6 +119,24 @@ describe("TUI node mappers", () => {
     expect(next.transcript).toEqual([]);
   });
 
+  test("maps workspace and project scope from session state", () => {
+    const session = mapSessionNode({
+      id: "session",
+      type: "context",
+      properties: {
+        session_id: "sess-scope",
+        status: "active",
+        workspace_root: "/work/main/apps/app",
+        workspace_id: "main",
+        project_id: "app",
+      },
+    });
+
+    expect(session.workspaceRoot).toBe("/work/main/apps/app");
+    expect(session.workspaceId).toBe("main");
+    expect(session.projectId).toBe("app");
+  });
+
   test("maps ACP adapter ids from LLM profile state", () => {
     const llm = mapLlmNode({
       id: "llm",
@@ -181,8 +202,150 @@ describe("TUI local state", () => {
     expect(history.list()).toEqual(["b", "c"]);
   });
 
+  test("command palette commands include routes and live session actions", () => {
+    const snapshot = {
+      ...EMPTY_SESSION_VIEW,
+      goal: {
+        ...EMPTY_SESSION_VIEW.goal,
+        exists: true,
+        status: "active" as const,
+        canPause: true,
+        canComplete: true,
+        canClear: true,
+      },
+      queue: [
+        {
+          id: "msg-1",
+          text: "queued text",
+          status: "queued",
+          position: 1,
+          summary: "queued text",
+          canCancel: true,
+        },
+      ],
+      apps: [
+        {
+          id: "filesystem",
+          name: "Filesystem",
+          transport: "in-process",
+          status: "connected",
+        },
+      ],
+    };
+
+    const commands = buildCommandPaletteCommands(snapshot, true, {
+      connection: {
+        status: "connected",
+        socketPath: "/tmp/supervisor.sock",
+      },
+      activeSessionId: "sess-1",
+      activeSocketPath: "/tmp/session-1.sock",
+      sessions: [
+        {
+          id: "sess-1",
+          title: "Runtime",
+          socketPath: "/tmp/session-1.sock",
+          turnState: "idle",
+          goalStatus: "none",
+          goalTotalTokens: 0,
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          selected: true,
+          canSwitch: true,
+          canStop: true,
+        },
+        {
+          id: "sess-2",
+          title: "Docs",
+          socketPath: "/tmp/session-2.sock",
+          turnState: "running",
+          goalStatus: "active",
+          goalObjective: "Ship docs",
+          goalTotalTokens: 120,
+          queuedCount: 1,
+          pendingApprovalCount: 0,
+          runningTaskCount: 1,
+          selected: false,
+          canSwitch: true,
+          canStop: true,
+        },
+      ],
+      scopes: [
+        {
+          id: "main/app",
+          name: "App",
+          root: "/work/apps/app",
+          workspaceId: "main",
+          projectId: "app",
+          canCreate: true,
+        },
+      ],
+    });
+    const byId = new Map(commands.map((command) => [command.id, command]));
+
+    expect(byId.get("route:apps")?.command).toEqual({
+      type: "route",
+      route: "apps",
+    });
+    expect(byId.get("mouse:toggle")?.command).toEqual({ type: "mouse", mode: "off" });
+    expect(byId.get("goal:pause")?.command).toEqual({ type: "goal", action: "pause" });
+    expect(byId.get("queue:msg-1")?.command).toEqual({
+      type: "queue_cancel",
+      target: "msg-1",
+    });
+    expect(byId.get("app:filesystem:inspect")?.command).toEqual({
+      type: "query",
+      path: "/",
+      depth: 2,
+      targetId: "filesystem",
+    });
+    expect(byId.get("session:new:main/app")?.command).toEqual({
+      type: "session_new",
+      workspaceId: "main",
+      projectId: "app",
+      title: "App",
+    });
+    expect(byId.get("session:switch:sess-2")?.command).toEqual({
+      type: "session_switch",
+      sessionId: "sess-2",
+    });
+    expect(byId.get("inspect:open")?.command).toEqual({ type: "inspect_open" });
+  });
+
   test("local command parser recognizes routes, query, invoke, and secret profile setup", () => {
     expect(parseLocalCommand("/apps")).toEqual({ type: "route", route: "apps" });
+    expect(parseLocalCommand("/runtime")).toEqual({ type: "route", route: "runtime" });
+    expect(parseLocalCommand("/runtime refresh")).toEqual({
+      type: "runtime",
+      action: "refresh",
+    });
+    expect(parseLocalCommand("/runtime inspect proposal-1")).toEqual({
+      type: "runtime",
+      action: "inspect",
+      proposalId: "proposal-1",
+    });
+    expect(parseLocalCommand("/runtime apply proposal-1")).toEqual({
+      type: "runtime",
+      action: "apply",
+      proposalId: "proposal-1",
+    });
+    expect(parseLocalCommand("/runtime export")).toEqual({
+      type: "runtime",
+      action: "export",
+    });
+    expect(parseLocalCommand("/inspect")).toEqual({ type: "inspect_open" });
+    expect(parseLocalCommand("/session-new --workspace-id main --project-id app")).toEqual({
+      type: "session_new",
+      workspaceId: "main",
+      projectId: "app",
+      title: undefined,
+      sessionId: undefined,
+    });
+    expect(parseLocalCommand("/session-switch sess-2")).toEqual({
+      type: "session_switch",
+      sessionId: "sess-2",
+    });
     expect(parseLocalCommand("/query /llm 3")).toEqual({
       type: "query",
       path: "/llm",
@@ -299,8 +462,29 @@ describe("TUI local state", () => {
     expect(parseLocalCommand("/queue-cancel")).toEqual({ type: "unknown", name: "/queue-cancel" });
   });
 
+  test("local command parser parses persistent goal controls", () => {
+    expect(parseLocalCommand("/goal ship the runtime --token-budget 5000")).toEqual({
+      type: "goal",
+      action: "create",
+      objective: "ship the runtime",
+      tokenBudget: 5000,
+    });
+    expect(parseLocalCommand("/goal pause waiting for review")).toEqual({
+      type: "goal",
+      action: "pause",
+      message: "waiting for review",
+    });
+    expect(parseLocalCommand("/goal resume")).toEqual({ type: "goal", action: "resume" });
+    expect(parseLocalCommand("/goal complete verified")).toEqual({
+      type: "goal",
+      action: "complete",
+      message: "verified",
+    });
+    expect(parseLocalCommand("/goal clear")).toEqual({ type: "goal", action: "clear" });
+    expect(parseLocalCommand("/goal")).toEqual({ type: "goal", action: "show" });
+  });
+
   test("reconcileInitialRoute lands on setup once when /llm reports needs_credentials", () => {
-    type TuiRoute = "chat" | "setup" | "approvals" | "tasks" | "apps" | "inspect" | "settings";
     let state: { firstStatusSeen: boolean; route: TuiRoute } = {
       firstStatusSeen: false,
       route: "chat",
@@ -400,6 +584,7 @@ describe("SessionClient", () => {
         waiting_on: null,
       },
     });
+    server.register("goal", { type: "control", props: { exists: false, status: "none" } });
     server.register("composer", {
       type: "control",
       props: {
@@ -469,6 +654,7 @@ describe("SessionClient", () => {
       },
     });
     sessionServer.register("turn", { type: "status", props: { state: "idle" } });
+    sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
     sessionServer.register("composer", { type: "control", props: { ready: true } });
     sessionServer.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
     sessionServer.register("activity", { type: "collection", props: { count: 0 }, items: [] });
@@ -524,6 +710,7 @@ describe("SessionClient", () => {
     sessionServer.register("session", { type: "context", props: { session_id: "sess-apps" } });
     sessionServer.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
     sessionServer.register("turn", { type: "status", props: { state: "idle" } });
+    sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
     sessionServer.register("composer", { type: "control", props: { ready: true } });
     sessionServer.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
     sessionServer.register("activity", { type: "collection", props: { count: 0 }, items: [] });
@@ -570,6 +757,100 @@ describe("SessionClient", () => {
     }
   });
 
+  test("queries and invokes built-in providers through the session apps proxy", async () => {
+    const sessionSocketPath = `/tmp/slop/tui-proxy-test-${crypto.randomUUID()}.sock`;
+    const queries: Array<Record<string, unknown>> = [];
+    const invocations: Array<Record<string, unknown>> = [];
+    const sessionServer = createSlopServer({ id: "mock-session", name: "Mock Session" });
+
+    sessionServer.register("session", { type: "context", props: { session_id: "sess-proxy" } });
+    sessionServer.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    sessionServer.register("turn", { type: "status", props: { state: "idle" } });
+    sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
+    sessionServer.register("composer", { type: "control", props: { ready: true } });
+    sessionServer.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("activity", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("apps", {
+      type: "collection",
+      props: { count: 1 },
+      items: [
+        {
+          id: "session-proxy:meta-runtime",
+          props: {
+            provider_id: "meta-runtime",
+            name: "Meta Runtime",
+            transport: "in-process",
+            status: "connected",
+          },
+        },
+      ],
+      actions: {
+        query_provider: action(
+          { provider_id: "string", path: "string", depth: "number" },
+          async (params) => {
+            queries.push(params);
+            return {
+              id: "proposals",
+              type: "collection",
+              properties: { count: 0 },
+              children: [],
+            };
+          },
+        ),
+        invoke_provider: action(
+          {
+            provider_id: "string",
+            path: "string",
+            action: "string",
+            params: { type: "object", optional: true },
+          },
+          async (params) => {
+            invocations.push(params);
+            return { exported: true };
+          },
+        ),
+      },
+    });
+    sessionServer.register("queue", { type: "collection", props: { count: 0 }, items: [] });
+    listeners.push(listenUnix(sessionServer, sessionSocketPath, { register: false }));
+
+    const client = new SessionClient(sessionSocketPath);
+    try {
+      await client.connect();
+      const tree = await client.queryInspect("/proposals", 2, "session-proxy:meta-runtime");
+      const result = await client.invokeInspect(
+        "/session",
+        "export_bundle",
+        { include_skills: true },
+        "session-proxy:meta-runtime",
+      );
+
+      expect(tree.id).toBe("proposals");
+      expect(queries).toEqual([
+        {
+          provider_id: "meta-runtime",
+          path: "/proposals",
+          depth: 2,
+        },
+      ]);
+      expect(result.status).toBe("ok");
+      expect(result.data).toEqual({ exported: true });
+      expect(invocations).toEqual([
+        {
+          provider_id: "meta-runtime",
+          path: "/session",
+          action: "export_bundle",
+          params: { include_skills: true },
+        },
+      ]);
+    } finally {
+      client.disconnect();
+      sessionServer.stop();
+    }
+  });
+
   test("subscribes to /queue and cancels by id via the per-item affordance", async () => {
     const socketPath = `/tmp/slop/tui-queue-test-${crypto.randomUUID()}.sock`;
     const cancelled: string[] = [];
@@ -578,6 +859,7 @@ describe("SessionClient", () => {
     server.register("session", { type: "context", props: { session_id: "sess-q" } });
     server.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
     server.register("turn", { type: "status", props: { state: "running" } });
+    server.register("goal", { type: "control", props: { exists: false, status: "none" } });
     server.register("composer", { type: "control", props: { ready: true } });
     server.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
     server.register("activity", { type: "collection", props: { count: 0 }, items: [] });

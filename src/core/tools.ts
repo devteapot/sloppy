@@ -18,6 +18,7 @@ export type RuntimeToolResolution =
       path: string | null;
       targets?: string[];
       dangerous: boolean;
+      idempotent: boolean;
     };
 
 export interface RuntimeToolSet {
@@ -233,6 +234,39 @@ function normalizeTreeForTools(node: SlopNode, fallbackId: string, path: string)
   };
 }
 
+function affordanceMetadataForResolution(
+  node: SlopNode,
+  action: string,
+  path: string | null,
+  targets?: string[],
+): { dangerous: boolean; idempotent: boolean } {
+  const targetSet = path == null ? new Set(targets ?? []) : new Set([path]);
+  let matched = 0;
+  let dangerous = false;
+  let idempotent = true;
+
+  const visit = (candidate: SlopNode, candidatePath: string) => {
+    if (targetSet.has(candidatePath)) {
+      for (const affordance of candidate.affordances ?? []) {
+        if (affordance.action !== action) continue;
+        matched += 1;
+        dangerous ||= affordance.dangerous === true;
+        idempotent &&= affordance.idempotent === true;
+      }
+    }
+
+    for (const child of candidate.children ?? []) {
+      visit(child, candidatePath === "/" ? `/${child.id}` : `${candidatePath}/${child.id}`);
+    }
+  };
+
+  visit(node, "/");
+  return {
+    dangerous,
+    idempotent: matched > 0 && idempotent,
+  };
+}
+
 export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
   const tools: LlmTool[] = [];
   const resolutions = new Map<string, RuntimeToolResolution>();
@@ -276,6 +310,12 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         schemaPath: "$",
       });
       const description = withParameterContractDescription(tool.function.description, parameters);
+      const affordanceMetadata = affordanceMetadataForResolution(
+        visibleTree,
+        resolution.action,
+        resolution.path,
+        resolution.targets,
+      );
 
       resolutions.set(prefixedName, {
         kind: "affordance",
@@ -283,7 +323,9 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         action: resolution.action,
         path: resolution.path,
         targets: resolution.targets,
-        dangerous: description.includes("[DANGEROUS - confirm first]"),
+        dangerous:
+          affordanceMetadata.dangerous || description.includes("[DANGEROUS - confirm first]"),
+        idempotent: affordanceMetadata.idempotent,
       });
       tools.push({
         ...tool,

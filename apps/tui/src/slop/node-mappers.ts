@@ -5,6 +5,7 @@ import type {
   AppItem,
   ApprovalItem,
   ComposerState,
+  GoalState,
   InspectState,
   LlmProfile,
   LlmState,
@@ -24,6 +25,22 @@ const EMPTY_INSPECT: InspectState = {
   depth: 2,
   tree: null,
   result: null,
+};
+
+const EMPTY_GOAL: GoalState = {
+  exists: false,
+  status: "none",
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  elapsedMs: 0,
+  continuationCount: 0,
+  evidence: [],
+  canCreate: false,
+  canPause: false,
+  canResume: false,
+  canComplete: false,
+  canClear: false,
 };
 
 export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
@@ -49,6 +66,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
     waitingOn: null,
     canCancel: false,
   },
+  goal: EMPTY_GOAL,
   composer: {
     ready: false,
     acceptsAttachments: false,
@@ -107,6 +125,13 @@ function progressProp(source: Record<string, unknown>, key: string): number | un
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function stringArrayProp(source: Record<string, unknown>, key: string): string[] {
+  const value = source[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 function roleProp(value: string): TranscriptMessage["role"] {
   if (value === "user" || value === "assistant" || value === "system") {
     return value;
@@ -140,12 +165,43 @@ export function mapSessionNode(node: SlopNode | null | undefined): SessionMeta {
     status: stringProp(p, "status", "unknown"),
     title: optionalStringProp(p, "title"),
     workspaceRoot: optionalStringProp(p, "workspace_root"),
+    workspaceId: optionalStringProp(p, "workspace_id"),
+    projectId: optionalStringProp(p, "project_id"),
     modelProvider: optionalStringProp(p, "model_provider"),
     model: optionalStringProp(p, "model"),
     startedAt: optionalStringProp(p, "started_at"),
     updatedAt: optionalStringProp(p, "updated_at"),
     clientCount: progressProp(p, "client_count"),
     lastError: optionalStringProp(p, "last_error"),
+  };
+}
+
+export function mapGoalNode(node: SlopNode | null | undefined): GoalState {
+  const p = props(node);
+  return {
+    exists: booleanProp(p, "exists"),
+    goalId: optionalStringProp(p, "goal_id"),
+    objective: optionalStringProp(p, "objective"),
+    status: stringProp(p, "status", "none"),
+    createdAt: optionalStringProp(p, "created_at"),
+    updatedAt: optionalStringProp(p, "updated_at"),
+    completedAt: optionalStringProp(p, "completed_at"),
+    tokenBudget: progressProp(p, "token_budget"),
+    inputTokens: numberProp(p, "input_tokens"),
+    outputTokens: numberProp(p, "output_tokens"),
+    totalTokens: numberProp(p, "total_tokens"),
+    elapsedMs: numberProp(p, "elapsed_ms"),
+    continuationCount: numberProp(p, "continuation_count"),
+    lastTurnId: optionalStringProp(p, "last_turn_id"),
+    message: optionalStringProp(p, "message"),
+    evidence: stringArrayProp(p, "evidence"),
+    updateSource: optionalStringProp(p, "update_source"),
+    completionSource: optionalStringProp(p, "completion_source"),
+    canCreate: hasAction(node, "create_goal"),
+    canPause: hasAction(node, "pause_goal"),
+    canResume: hasAction(node, "resume_goal"),
+    canComplete: hasAction(node, "complete_goal"),
+    canClear: hasAction(node, "clear_goal"),
   };
 }
 
@@ -266,6 +322,7 @@ export function mapActivityNode(node: SlopNode | null | undefined): ActivityItem
       taskId: optionalStringProp(p, "task_id"),
       approvalId: optionalStringProp(p, "approval_id"),
       toolUseId: optionalStringProp(p, "tool_use_id"),
+      paramsPreview: optionalStringProp(p, "params_preview"),
       startedAt: optionalStringProp(p, "started_at"),
       updatedAt: optionalStringProp(p, "updated_at"),
       completedAt: optionalStringProp(p, "completed_at"),
@@ -354,6 +411,8 @@ export function applyPathSnapshot(
       return { ...snapshot, llm: mapLlmNode(node) };
     case "/turn":
       return { ...snapshot, turn: mapTurnNode(node) };
+    case "/goal":
+      return { ...snapshot, goal: mapGoalNode(node) };
     case "/composer":
       return { ...snapshot, composer: mapComposerNode(node) };
     case "/transcript":

@@ -12,6 +12,8 @@ Checked in now:
 - native Anthropic, Gemini, OpenAI-compatible, and OpenAI Codex subscription
   adapters
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
+- bounded same-turn parallel execution for `slop_query_state` and explicitly
+  idempotent, non-dangerous affordance calls, preserving original result order
 - default built-ins: `terminal`, `filesystem`, `memory`, `skills`
 - optional built-ins: `web`, `browser`, `cron`, `messaging`, `delegation`,
   `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
@@ -53,6 +55,9 @@ providers, skills, routes, and agent-to-agent channels.
    - Providers expose observable state first.
    - Affordances mutate provider-owned state.
    - UIs consume the same provider/session boundary as agents.
+   - Parallel model-emitted tool calls are a scheduling optimization only:
+     read-only state queries and explicit idempotent affordances can overlap,
+     while mutating, approval-gated, local, or unknown calls remain ordered.
 
 3. Ship the meta-runtime as an optional provider.
    - Model agent profiles, nodes, channels, routes, capabilities, executor

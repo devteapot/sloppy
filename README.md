@@ -54,6 +54,9 @@ Current checked-in implementation includes:
   - `slop_query_state`
   - `slop_focus_state`
 - dynamic affordance tools generated from visible SLOP state
+- bounded same-turn parallel execution for `slop_query_state` and explicitly
+  idempotent, non-dangerous affordance tools, with tool results returned to the
+  model in original call order
 - CLI single-shot mode and interactive REPL
 - initial `src/session/` scaffold for a headless agent-session provider
 - idle session startup without an API key
@@ -109,7 +112,7 @@ RuntimeToolSet
 Agent Loop
   - history
   - ephemeral <slop-state> context tail
-  - tool execution
+  - ordered tool execution with safe concurrent read/idempotent runs
         |
         v
 ConsumerHub
@@ -603,6 +606,13 @@ You can override the provider, model, adapter id, or base URL with
 The agent loop defaults to 32 model/tool iterations. For longer runs, set
 `agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
 run.
+
+Within a model turn, the loop may execute a contiguous run of parallel-safe tool
+calls concurrently. Parallel-safe means `slop_query_state` or a SLOP affordance
+that is explicitly `idempotent: true` and not `dangerous`; focus changes, local
+session controls, malformed calls, unknown tools, approvals, and unmarked or
+mutating affordances remain sequential barriers. Results are still appended to
+conversation history in the original model-emitted order.
 
 Managed profile metadata is stored in `~/.sloppy/config.yaml`.
 

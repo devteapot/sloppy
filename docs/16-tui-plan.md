@@ -10,13 +10,17 @@ The TUI should make Sloppy's runtime shape visible:
 - transcript and composer as the primary working loop
 - turn/activity/task/approval state as live operational context
 - `/llm` onboarding as an in-app flow, not a setup cliff
+- `/goal` state and controls for persistent long-running work
 - `/apps` attachment state as first-class context for external providers
 - deeper provider inspection through explicit query/invoke views, not a flat
   tool catalog
 
 Implementation status: `apps/tui` now contains a TypeScript/OpenTUI client that
-attaches to the public agent-session provider socket, with a managed-session
-startup path for local use.
+attaches to public agent-session provider sockets. Local managed mode starts a
+public session supervisor, creates an initial scoped session, and can create,
+switch, or stop additional scoped sessions through that supervisor. The
+inspector can compare supervised sessions using only supervisor-published
+session state.
 
 ## Prior Art Notes
 
@@ -115,6 +119,8 @@ Useful lessons:
 - keep backend stdout/stderr isolated from terminal rendering
 - prompts should be state branches in the main app, not separate screens
 - queueing while the agent is busy is a major UX improvement
+- persistent goal controls should be visible in the status area without
+  replacing the normal chat/composer loop
 - local slash commands should handle only client-owned behavior; provider-owned
   commands should fall through to the backend/session surface
 
@@ -170,7 +176,7 @@ Optional later dependencies:
 
 ## Architecture
 
-The TUI should have three boundaries.
+The TUI should have four boundaries.
 
 ### 1. Session Client
 
@@ -179,12 +185,17 @@ The TUI should have three boundaries.
 Responsibilities:
 
 - connect to a session provider over a Unix socket
-- subscribe shallowly to `/session`, `/llm`, `/turn`, `/composer`,
-  `/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps`
+- subscribe shallowly to `/session`, `/llm`, `/turn`, `/goal`, `/composer`,
+  `/transcript`, `/activity`, `/approvals`, `/tasks`, `/queue`, and `/apps`
 - expose a typed client-side store
 - invoke public session affordances:
   - `/composer.send_message`
   - `/turn.cancel_turn`
+  - `/goal.create_goal`
+  - `/goal.pause_goal`
+  - `/goal.resume_goal`
+  - `/goal.complete_goal`
+  - `/goal.clear_goal`
   - `/approvals/{id}.approve`
   - `/approvals/{id}.reject`
   - `/tasks/{id}.cancel`
@@ -206,7 +217,27 @@ await consumer.connect();
 const transcript = await consumer.subscribe("/transcript", 2);
 ```
 
-### 2. UI Store
+### 2. Session Supervisor Client
+
+`apps/tui/src/slop/supervisor-client.ts`
+
+Responsibilities:
+
+- connect to a session supervisor over a Unix socket
+- subscribe to `/session`, `/sessions`, and `/scopes`
+- expose the active session socket plus running session list
+- invoke public supervisor affordances:
+  - `/session.create_session`
+  - `/session.set_active_session`
+  - `/sessions/{id}.set_active`
+  - `/sessions/{id}.stop`
+- keep session lifecycle separate from per-session transcript/turn state
+
+The supervisor is a SLOP provider, not an in-process TUI manager. Switching a
+session tells the `SessionClient` to attach to a different session-provider
+socket.
+
+### 3. UI Store
 
 `apps/tui/src/state/`
 
@@ -222,6 +253,7 @@ Remote state:
 - approvals
 - tasks
 - apps
+- runtime proposals
 
 Local UI state:
 
@@ -238,19 +270,37 @@ Local UI state:
 Do not write local UI state back into the session provider. The session provider
 explicitly excludes drafts, cursor position, pane focus, and layout.
 
-### 3. UI Shell
+### 4. UI Shell
 
 `apps/tui/src/ui/`
 
-Routes:
+Routes (only `chat` renders persistently; the others render inside
+overlays):
 
-- `chat`: default route; transcript, live activity, composer
-- `setup`: LLM profile onboarding when `/llm.status=needs_credentials`
-- `approvals`: pending/resolved approval review
-- `tasks`: long-running provider tasks
-- `apps`: external provider attachment state
-- `inspect`: SLOP provider tree inspector for direct query/invoke debugging
-- `settings`: model/profile/theme/keybinding settings
+- `chat`: persistent transcript + composer surface
+- `setup`: LLM profile onboarding overlay (auto on `needs_credentials`)
+- `approvals`: pending approval review overlay (mostly redundant with the
+  inline approval cards; kept for resolved-history review)
+- `tasks`: long-running provider task overlay (inline cards cover the live
+  state)
+- `apps`: external provider attachment overlay
+- `runtime`: meta-runtime proposal/route/capability overlay
+- `inspect`: SLOP state tree query/invoke overlay
+- `settings`: model/profile/theme overlay
+
+Routes still exist as a typed enum because the palette, slash parser, and
+secret-prompt flow refer to them, but only the `chat` route is rendered as
+the persistent surface. Every other route renders inside an overlay frame
+when opened. The command palette is built from the same navigation registry
+plus live session, supervisor, and meta-runtime state. Current shortcuts:
+
+- `Ctrl+K`: command palette (primary nav)
+- `Ctrl+I`: inspector overlay
+- `Shift+Tab`: cycle mode (default → auto-approve → plan)
+- `Esc`: close topmost overlay (or cancel approval)
+- `Ctrl+C`: cancel turn · clear draft · or exit
+- `@path`, `!cmd`, `/cmd`: composer sigils for file mention, inline bash,
+  slash command
 
 The shell should support attach mode first:
 
@@ -258,46 +308,127 @@ The shell should support attach mode first:
 bun run tui --socket /tmp/slop/sloppy-session-<id>.sock
 ```
 
-Then add managed mode:
+Managed mode starts a supervisor and attaches to the active session:
 
 ```sh
 bun run tui
+bun run tui -- --workspace-id sloppy --project-id runtime
 ```
 
-Managed mode can spawn `bun run src/session/server.ts --socket ...` and then
-connect to it. Attach mode must remain the cleaner contract for tests and future
-multi-UI attachment.
+The TUI can also attach through an existing supervisor:
+
+```sh
+bun run tui -- --supervisor-socket /tmp/slop/sloppy-supervisor.sock
+```
+
+Direct session attach mode must remain the cleaner contract for tests and
+single-session multi-UI attachment. Managed supervisor mode forwards
+workspace/project scope flags to the session launcher; the launcher loads
+home/workspace/project config layers and pins terminal/filesystem roots to the
+selected scope.
 
 ## UX Model
 
-### Default Screen
+### Direction (post-2026-05 redesign)
 
-Use a quiet full-screen layout:
+The earlier plan called for an 8-route horizontal tab strip plus a 34%
+always-on right "inspector" pane that could be toggled between six modes. In
+practice this created two parallel navigation systems (route + inspector
+mode) that drift out of sync, ate transcript width on wide terminals, and
+disappeared entirely on narrow terminals while the modes they hosted had no
+fallback. None of the references we surveyed (Claude Code, Factory droid,
+opencode, hermes-agent, openclaw, pi-mono) use a horizontal tab strip for
+primary navigation. The convergent pattern is **one linear chat stream, a
+command palette for navigation, a mode chip near the input, and overlays for
+configuration**.
+
+The redesign adopts that pattern. Specifically:
+
+- The chat stream is the only persistent view. Approvals, tasks, runtime
+  proposals, and goal status render as inline interactive blocks within the
+  stream — not as separate routes.
+- Configuration surfaces (setup, settings, apps detail, inspect, runtime
+  proposal review) are **overlays** opened from the palette or by slash
+  command. They float on top of the chat; closing returns to chat.
+- A **command palette** (Ctrl+K) is the primary navigation. Its contents are
+  built from the navigation registry plus live SLOP affordances discovered
+  from `/apps`, supervised sessions, and the meta-runtime — not a hard-coded
+  registry. This is the SLOP-native point: the palette grows when providers
+  attach.
+- The **horizontal tab strip is removed.** A thin **session strip** is
+  rendered only when the supervisor reports more than one running session,
+  and lists session id / turn state / goal / pending counts as a top bar.
+- The **always-on right inspector pane is removed.** The state-tree
+  inspector becomes a full-screen overlay (Ctrl+I) — power-user surface, not
+  primary UX.
+- A **mode chip** sits next to the composer. Shift+Tab cycles
+  `default → auto-approve → plan`. Plan mode wires to the meta-runtime when
+  attached and otherwise notices that no planner is available.
+- `@path`, `!cmd`, and `/cmd` sigils in the composer (file mention, inline
+  bash, slash command) are the unified fast paths.
+
+### Default screen
 
 ```text
-┌ session/status bar: workspace · model · turn phase · apps · tokens later ┐
-│ transcript                                                               │
+┌ session strip (only when >1 sessions): ● a · ○ b · ○ c                   ┐
+├ status bar: workspace · model · secure store · turn phase · goal · mode  ┤
 │                                                                          │
-│ live activity lane: model/tool/task/approval summaries                   │
-├ composer: multiline input, queue count, disabled reason when not ready ──┤
-└ hints: /help  ctrl+c cancel  tab complete  alt+enter newline             ┘
+│ chat transcript                                                          │
+│   [user] …                                                               │
+│   [assistant] …                                                          │
+│   ┌─ approval needed: terminal.execute  [a] approve [d] deny ─────       │
+│   ┌─ runtime proposal: enable A2A capability  [a]pply [r]evert ────      │
+│   ┌─ task: long-running provider work  3/5  [x] cancel ─────────         │
+│                                                                          │
+├ mode: PLAN ───────────────────────────────────────── goal: rewrite … ────┤
+│ > _                                                                       │
+│ Ctrl+K palette · ⇧⇥ mode · Ctrl+I inspect · @file · !bash                │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The first screen is the working chat surface, not a welcome page.
+The first screen is still the working chat surface, not a welcome page.
 
-### Right/Bottom Inspector
+### Overlays
 
-Use an inspector that can be toggled between:
+Anything that is not the live chat conversation is an overlay opened from
+the palette (or by slash command). Overlays float over the chat, accept
+their own keyboard, and close on Esc.
 
-- Activity
-- Approvals
-- Tasks
-- Apps
-- State
+Current overlays:
 
-On narrow terminals, collapse the inspector into modal routes. On wide
-terminals, keep it as a right pane. The transcript should always retain enough
-width for readable code blocks.
+- **Help** — hotkeys and slash command reference.
+- **Command palette** — primary nav.
+- **Setup** — LLM profile creation when `/llm.status=needs_credentials` (or
+  on demand). Auto-opened on first connect when credentials are missing.
+- **Settings** — read-only model/profile listing with delete/default
+  actions.
+- **Apps** — external provider list. Selecting an app opens the inspector
+  overlay scoped to that app.
+- **Inspect** — SLOP state-tree query/invoke debugger. Opened with Ctrl+I or
+  `/query` / `/invoke`.
+- **Runtime** — meta-runtime proposals, routes, capability masks. Opened
+  with `/runtime` or from the palette.
+- **Secret prompt / approval prompt** — already overlays in the prior
+  implementation; these stay.
+
+There are no full-screen "routes" anymore. The TUI shell renders chat
+underneath every overlay so the user never loses transcript context.
+
+### Inline blocks in chat
+
+Things that were previously dedicated routes are surfaced as live
+interactive cards inside the transcript:
+
+- **Pending approvals** — bordered card with provider/action/reason and
+  `[a] approve / [d] deny` keys (Shift+A required for dangerous).
+- **Runtime proposals** (when meta-runtime attached) — proposal card with
+  `[a]pply / [r]evert / [i]nspect`.
+- **Long-running tasks** — task card with progress and `[x] cancel`.
+- **Todo / plan blocks** — when the meta-runtime publishes a structured
+  plan, the TUI renders it as an inline mutating checkbox stream (Claude
+  Code's idiom). The block updates in place rather than re-printing.
+
+This gives the *feel* of dashboard panels without leaving the linear stream.
 
 ### Composer
 
@@ -307,6 +438,7 @@ Expected behavior:
 - `Alt+Enter` or `Shift+Enter`: newline
 - `Ctrl+C`: cancel active turn, otherwise clear draft, otherwise exit
 - `Ctrl+D`: exit when idle
+- `Ctrl+N` / `Ctrl+P`: cycle routes
 - `Tab`: complete slash command or path token
 - `Up/Down`: queued drafts first, then history
 - `Ctrl+U`, `Ctrl+K`, `Ctrl+W`, `Ctrl+A`, `Ctrl+E`: shell-like editing
@@ -325,6 +457,63 @@ input to that queue, and the runtime drains it FIFO when the active turn
 finishes.
 
 Unsubmitted drafts remain local UI state only.
+
+### Goals
+
+The session provider exposes persistent long-running work through `/goal`.
+
+TUI commands:
+
+- `/goal <objective> [--token-budget N]`
+- `/goal`
+- `/goal pause [message]`
+- `/goal resume [message]`
+- `/goal complete [message]`
+- `/goal clear`
+
+The status bar should show active goal status, token usage, elapsed time, and a
+truncated objective. Goal state remains runtime-owned shared state, not local
+TUI state. Native model-driven goal turns can also report progress, blockers,
+or completion through the runtime-local `slop_goal_update` tool; those reports
+surface back through `/goal` as message, evidence, and update/completion source
+fields.
+
+### Sessions
+
+When a supervisor is attached, the TUI can manage multiple scoped sessions
+without reading runtime internals.
+
+TUI commands:
+
+- `/session-new [--workspace-id id] [--project-id id] [--title text]`
+- `/session-switch <session-id>`
+- `/session-stop <session-id>`
+
+The command palette also exposes one-click creation from configured
+workspace/project scopes and switching/stopping for running sessions. Session
+lists and scopes come from the supervisor; each session item includes live
+turn state, goal status, queued-message count, pending approval count, running
+task count, and last activity time. Transcript, detailed turn, detailed goal,
+approvals, queue, and apps still come from the currently attached session
+provider. `/inspector sessions` renders this comparison state without merging
+provider trees or importing runtime internals.
+
+### Runtime Proposals
+
+The `runtime` route treats the optional `meta-runtime` provider as an external
+SLOP app, not as a privileged in-process integration. It discovers the connected
+app from `/apps`, queries `meta-runtime:/proposals`, and invokes
+`apply_proposal` or `revert_proposal` on `/proposals/{id}`. Persistent or
+privileged proposals still flow through the provider approval path, so the
+ordinary `/approvals` prompt remains the authority for final approval.
+
+The route lists proposed items first, shows scope, approval requirement, summary,
+rationale, and typed operation names, and supports refresh, inspect, apply, and
+revert commands. It also shows route matchers, capability masks, and recent
+meta-runtime events so typed-envelope delivery and capability-mask failures are
+visible without dropping into the raw inspector. `/runtime export` invokes
+`meta-runtime:/session export_bundle` and shows the portable bundle result in
+the inspector. The command palette mirrors proposal actions and bundle export.
 
 ### Approvals
 
@@ -367,6 +556,10 @@ The `/apps` route should list external providers:
 - transport
 - status
 - last error
+
+The `runtime` route is the richer treatment for the built-in `meta-runtime` app;
+the generic `apps` and `inspect` routes remain available for direct provider
+debugging.
 
 Selecting an app should open the `inspect` route for direct SLOP query. This is
 important for Sloppy because external app state is the main integration surface.
@@ -418,6 +611,7 @@ apps/tui/
     app.tsx                 # top-level providers/routes
     slop/
       session-client.ts     # SLOP consumer wrapper
+      supervisor-client.ts  # session-supervisor consumer wrapper
       node-mappers.ts       # SlopNode -> typed snapshots
       actions.ts            # invoke helpers
     state/
@@ -462,6 +656,7 @@ apps/tui/
 - connect to `--socket`
 - subscribe to session-provider paths
 - render transcript, turn state, activity, approvals, tasks, apps
+- render meta-runtime proposals through the runtime route
 - send text through `/composer.send_message`
 - approve/reject pending approvals
 - cancel active turn
@@ -480,7 +675,8 @@ Validation:
 - API key secret entry
 - default profile switching
 - delete profile/key confirmations
-- settings route and command palette
+- settings route
+- command palette with live route/goal/session/queue/app/runtime actions
 
 Validation:
 
@@ -516,13 +712,25 @@ Validation:
 - no MCP-style tool catalog
 - no privileged direct imports from runtime internals
 - no hidden model reasoning display
-- no multi-session manager until the session provider exposes a public session
-  listing/creation surface
+- no hidden in-process multi-session manager; session lifecycle must go through
+  the public supervisor provider
 - no attachments until `/composer` supports them
 
 ## Recommendation Summary
 
-Build `apps/tui` as a Bun/TypeScript SLOP consumer using OpenTUI/Solid. Keep the
-runtime headless and communicate only through the session provider. Use Codex for
-terminal restraint, OpenCode for the full-screen routed TypeScript app model, Pi
-for rendering/test discipline, and Hermes for chat/composer/approval UX.
+Build `apps/tui` as a Bun/TypeScript SLOP consumer using OpenTUI/Solid. Keep
+the runtime headless and communicate only through the session provider.
+
+The 2026-05 redesign tightens the UX around one chat stream + overlays +
+palette, drawing the following lessons from prior art: from **opencode** the
+Cmd+K palette and the unification of slash + keybind + category; from
+**Claude Code** the Shift+Tab mode chip, inline mutating todo block, and
+collapsible tool-call cards; from **factory droid** the `!` bash escape and
+session verbs (`/fork`, `/rewind`); from **pi-mono** the steering vs
+follow-up message queueing and editor border-color as ambient state; from
+**hermes-agent** incremental markdown reuse for streaming; from
+**openclaw** the streaming reconciliation logic and double-tap Ctrl+C.
+Sloppy adds two SLOP-native concerns the references do not have: an
+affordance-driven palette (items grow when providers attach) and a thin
+session strip rendered only when the supervisor reports more than one
+session.

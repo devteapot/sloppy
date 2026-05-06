@@ -1,12 +1,26 @@
-import type { InspectorMode, TuiRoute } from "../slop/types";
+import type { TuiRoute } from "../slop/types";
+import type { Verbosity } from "./verbosity";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }
-  | { type: "inspector"; mode: InspectorMode }
+  | { type: "inspect_open" }
   | { type: "help" }
   | { type: "clear" }
   | { type: "quit" }
   | { type: "mouse"; mode: "on" | "off" | "toggle" }
+  | { type: "verbosity"; mode: Verbosity | "cycle" }
+  | {
+      type: "goal";
+      action: "show" | "create" | "pause" | "resume" | "complete" | "clear";
+      objective?: string;
+      tokenBudget?: number;
+      message?: string;
+    }
+  | {
+      type: "runtime";
+      action: "refresh" | "export" | "inspect" | "apply" | "revert";
+      proposalId?: string;
+    }
   | {
       type: "query";
       path: string;
@@ -33,7 +47,6 @@ export type LocalCommand =
       baseUrl?: string;
       makeDefault: boolean;
     }
-  | { type: "rejected"; reason: string }
   | {
       type: "profile_secret";
       profileId?: string;
@@ -45,23 +58,20 @@ export type LocalCommand =
       baseUrl?: string;
       makeDefault: boolean;
     }
-  | { type: "set_default_profile"; profileId: string }
-  | { type: "delete_profile"; profileId: string }
-  | { type: "delete_api_key"; profileId: string }
+  | { type: "rejected"; reason: string }
   | { type: "queue_cancel"; target: string | number }
+  | {
+      type: "session_new";
+      workspaceId?: string;
+      projectId?: string;
+      title?: string;
+      sessionId?: string;
+    }
+  | { type: "session_switch"; sessionId: string }
+  | { type: "session_stop"; sessionId: string }
   | { type: "unknown"; name: string };
 
-const ROUTE_NAMES = new Set<TuiRoute>([
-  "chat",
-  "setup",
-  "approvals",
-  "tasks",
-  "apps",
-  "inspect",
-  "settings",
-]);
-
-const INSPECTOR_NAMES = new Set<InspectorMode>(["activity", "approvals", "tasks", "apps", "state"]);
+const ROUTE_NAMES = new Set<TuiRoute>(["chat", "setup", "approvals", "tasks", "apps"]);
 
 export function parseLocalCommand(input: string): LocalCommand | null {
   const trimmed = input.trim();
@@ -92,16 +102,81 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     return { type: "unknown", name: trimmed };
   }
 
-  if (ROUTE_NAMES.has(name as TuiRoute)) {
-    return { type: "route", route: name as TuiRoute };
+  if (name === "verbosity" || name === "verbose" || name === "compact" || name === "normal") {
+    if (name === "verbose") return { type: "verbosity", mode: "verbose" };
+    if (name === "compact") return { type: "verbosity", mode: "compact" };
+    if (name === "normal") return { type: "verbosity", mode: "normal" };
+    const mode = args[0]?.toLowerCase();
+    if (mode === "compact" || mode === "normal" || mode === "verbose") {
+      return { type: "verbosity", mode };
+    }
+    return { type: "verbosity", mode: "cycle" };
   }
 
-  if (name === "inspector" || name === "pane") {
-    const mode = args[0]?.toLowerCase();
-    if (INSPECTOR_NAMES.has(mode as InspectorMode)) {
-      return { type: "inspector", mode: mode as InspectorMode };
+  if (name === "inspect" || name === "tree" || name === "inspector") {
+    return { type: "inspect_open" };
+  }
+
+  if (name === "goal") {
+    if (args.length === 0) {
+      return { type: "goal", action: "show" };
+    }
+    const subcommand = args[0]?.toLowerCase();
+    if (subcommand === "pause") {
+      return { type: "goal", action: "pause", message: args.slice(1).join(" ") || undefined };
+    }
+    if (subcommand === "resume") {
+      return { type: "goal", action: "resume", message: args.slice(1).join(" ") || undefined };
+    }
+    if (subcommand === "complete" || subcommand === "done") {
+      return {
+        type: "goal",
+        action: "complete",
+        message: args.slice(1).join(" ") || undefined,
+      };
+    }
+    if (subcommand === "clear") {
+      return { type: "goal", action: "clear" };
+    }
+    const parsed = parseCommandOptions(
+      subcommand === "set" || subcommand === "create" ? args.slice(1) : args,
+    );
+    const objective = parsed.positionals.join(" ").trim();
+    if (!objective) {
+      return { type: "unknown", name: trimmed };
+    }
+    return {
+      type: "goal",
+      action: "create",
+      objective,
+      tokenBudget: parsePositiveInteger(
+        parsed.values["token-budget"] ?? parsed.values.budget ?? parsed.values.tokens,
+      ),
+    };
+  }
+
+  if (name === "runtime") {
+    const action = args[0]?.toLowerCase();
+    if (!action) {
+      return { type: "route", route: "runtime" };
+    }
+    if (action === "refresh" || action === "export") {
+      return { type: "runtime", action };
+    }
+    if (action === "inspect") {
+      return { type: "runtime", action, proposalId: args[1] };
+    }
+    if (action === "apply" || action === "revert") {
+      const proposalId = args[1];
+      return proposalId
+        ? { type: "runtime", action, proposalId }
+        : { type: "unknown", name: trimmed };
     }
     return { type: "unknown", name: trimmed };
+  }
+
+  if (ROUTE_NAMES.has(name as TuiRoute)) {
+    return { type: "route", route: name as TuiRoute };
   }
 
   if (name === "query") {
@@ -182,18 +257,6 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     };
   }
 
-  if (name === "default" || name === "set-default") {
-    const profileId = args[0];
-    return profileId
-      ? { type: "set_default_profile", profileId }
-      : { type: "unknown", name: trimmed };
-  }
-
-  if (name === "delete-profile" || name === "remove-profile") {
-    const profileId = args[0];
-    return profileId ? { type: "delete_profile", profileId } : { type: "unknown", name: trimmed };
-  }
-
   if (name === "queue-cancel") {
     const raw = args[0];
     if (!raw) {
@@ -204,9 +267,25 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     return { type: "queue_cancel", target: isPosition ? asNumber : raw };
   }
 
-  if (name === "delete-key" || name === "remove-key") {
-    const profileId = args[0];
-    return profileId ? { type: "delete_api_key", profileId } : { type: "unknown", name: trimmed };
+  if (name === "session-new" || name === "new-session") {
+    const parsed = parseCommandOptions(args);
+    return {
+      type: "session_new",
+      workspaceId: parsed.values["workspace-id"] ?? parsed.values.workspace,
+      projectId: parsed.values["project-id"] ?? parsed.values.project,
+      title: parsed.values.title,
+      sessionId: parsed.values["session-id"] ?? parsed.values.id,
+    };
+  }
+
+  if (name === "session-switch" || name === "switch-session") {
+    const sessionId = args[0];
+    return sessionId ? { type: "session_switch", sessionId } : { type: "unknown", name: trimmed };
+  }
+
+  if (name === "session-stop" || name === "stop-session") {
+    const sessionId = args[0];
+    return sessionId ? { type: "session_stop", sessionId } : { type: "unknown", name: trimmed };
   }
 
   return { type: "unknown", name: trimmed };
@@ -250,12 +329,6 @@ function looksLikeSecretValue(value: string): boolean {
   return false;
 }
 
-/**
- * Catches every shape that could persist a secret through the /profile parser:
- * `--api-key=…`, `--key foo`, secret-shaped positionals (sk-…, ghp_…, …), or
- * a recognized key flag with a high-entropy value. Returns a reason if rejected,
- * otherwise undefined. Conservative on false positives: prefix-matched only.
- */
 export function detectInlineSecret(args: string[]): string | undefined {
   const REJECT =
     "Use /profile-secret <provider> [model] for API keys — secrets must not be passed inline.";
@@ -269,7 +342,6 @@ export function detectInlineSecret(args: string[]): string | undefined {
       const inlineValue = eq === -1 ? undefined : arg.slice(eq + 1);
 
       if (SECRET_KEY_NAMES.has(flagName)) {
-        // `--api-key=foo` or `--api-key foo` — both are inline secret carriers.
         if (inlineValue !== undefined && inlineValue.length > 0) {
           return REJECT;
         }

@@ -4,17 +4,24 @@ import { type CliRenderer, type CliRendererConfig, createCliRenderer } from "@op
 import { render } from "@opentui/solid";
 
 import { App } from "./app";
+import { unlinkOwnedSocketPath } from "./lib/socket-cleanup";
 import { SessionClient } from "./slop/session-client";
+import { SessionSupervisorClient } from "./slop/supervisor-client";
 
 type Args = {
   socket?: string;
+  supervisorSocket?: string;
   sessionId?: string;
+  workspaceId?: string;
+  projectId?: string;
+  title?: string;
   noManaged?: boolean;
   mouse?: boolean;
 };
 
 type ManagedSession = {
   socketPath: string;
+  supervisor?: SessionSupervisorClient;
   stop: () => void;
 };
 
@@ -25,8 +32,20 @@ function readArgs(argv: string[]): Args {
     if (value === "--socket") {
       args.socket = argv[index + 1];
       index += 1;
+    } else if (value === "--supervisor-socket") {
+      args.supervisorSocket = argv[index + 1];
+      index += 1;
     } else if (value === "--session-id") {
       args.sessionId = argv[index + 1];
+      index += 1;
+    } else if (value === "--workspace-id") {
+      args.workspaceId = argv[index + 1];
+      index += 1;
+    } else if (value === "--project-id") {
+      args.projectId = argv[index + 1];
+      index += 1;
+    } else if (value === "--title") {
+      args.title = argv[index + 1];
       index += 1;
     } else if (value === "--no-managed") {
       args.noManaged = true;
@@ -46,10 +65,15 @@ function helpText(): string {
   return [
     "Usage: bun run tui [--socket /tmp/slop/session.sock]",
     "",
-    "Without --socket, the TUI starts a managed session provider and attaches to it.",
+    "Without --socket, the TUI starts a managed session supervisor and attaches to its active session.",
     "Options:",
     "  --socket <path>      Attach to an existing agent-session SLOP provider",
+    "  --supervisor-socket <path>",
+    "                       Attach through an existing session supervisor",
     "  --session-id <id>    Session id for managed mode",
+    "  --workspace-id <id>  Launch managed session with a configured workspace scope",
+    "  --project-id <id>    Launch managed session with a configured project scope",
+    "  --title <text>       Title for the managed session",
     "  --no-managed         Require --socket instead of starting a provider",
     "  --mouse              Enable terminal mouse reporting at startup",
     "  --no-mouse           Disable terminal mouse reporting at startup (default)",
@@ -57,16 +81,20 @@ function helpText(): string {
   ].join("\n");
 }
 
-async function startManagedSession(sessionId?: string): Promise<ManagedSession> {
-  const socketPath = `/tmp/slop/sloppy-tui-${process.pid}.sock`;
+async function startManagedSession(args: Args): Promise<ManagedSession> {
+  const supervisorSocketPath = `/tmp/slop/sloppy-tui-supervisor-${process.pid}.sock`;
   const proc = Bun.spawn(
     [
       "bun",
       "run",
       "src/session/server.ts",
+      "--supervisor",
       "--socket",
-      socketPath,
-      ...(sessionId ? ["--session-id", sessionId] : []),
+      supervisorSocketPath,
+      ...(args.sessionId ? ["--session-id", args.sessionId] : []),
+      ...(args.workspaceId ? ["--workspace-id", args.workspaceId] : []),
+      ...(args.projectId ? ["--project-id", args.projectId] : []),
+      ...(args.title ? ["--title", args.title] : []),
     ],
     {
       stdout: "pipe",
@@ -76,14 +104,63 @@ async function startManagedSession(sessionId?: string): Promise<ManagedSession> 
 
   void drain(proc.stdout);
   void drain(proc.stderr);
-  await waitForSocket(socketPath);
+  const supervisor = await connectSupervisor(supervisorSocketPath);
+  const socketPath = requireActiveSocket(supervisor.getSnapshot());
 
   return {
     socketPath,
+    supervisor,
     stop: () => {
+      const sockets = [
+        supervisorSocketPath,
+        socketPath,
+        ...supervisor.getSnapshot().sessions.map((session) => session.socketPath),
+      ];
+      supervisor.disconnect();
       proc.kill("SIGTERM");
+      for (const socket of sockets) {
+        unlinkOwnedSocketPath(socket);
+      }
     },
   };
+}
+
+async function attachSupervisor(socketPath: string): Promise<ManagedSession> {
+  const supervisor = await connectSupervisor(socketPath);
+  return {
+    socketPath: requireActiveSocket(supervisor.getSnapshot()),
+    supervisor,
+    stop: () => {
+      supervisor.disconnect();
+    },
+  };
+}
+
+async function connectSupervisor(socketPath: string): Promise<SessionSupervisorClient> {
+  const deadline = Date.now() + 10_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    const supervisor = new SessionSupervisorClient(socketPath);
+    try {
+      await supervisor.connect();
+      return supervisor;
+    } catch (error) {
+      supervisor.disconnect();
+      lastError = error;
+      await Bun.sleep(100);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Timed out waiting for supervisor socket: ${socketPath}`);
+}
+
+function requireActiveSocket(snapshot: { activeSocketPath?: string }): string {
+  if (!snapshot.activeSocketPath) {
+    throw new Error("Session supervisor did not expose an active session socket.");
+  }
+  return snapshot.activeSocketPath;
 }
 
 async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
@@ -94,26 +171,6 @@ async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
       return;
     }
   }
-}
-
-async function waitForSocket(socketPath: string): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    const client = new SessionClient(socketPath);
-    try {
-      await client.connect();
-      client.disconnect();
-      return;
-    } catch (error) {
-      lastError = error;
-      await Bun.sleep(100);
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Timed out waiting for session socket: ${socketPath}`);
 }
 
 const args = readArgs(Bun.argv.slice(2));
@@ -127,11 +184,14 @@ let managed: ManagedSession | null = null;
 let socketPath: string;
 if (args.socket) {
   socketPath = args.socket;
+} else if (args.supervisorSocket) {
+  managed = await attachSupervisor(args.supervisorSocket);
+  socketPath = managed.socketPath;
 } else {
   if (args.noManaged) {
     throw new Error("--socket is required when --no-managed is set.");
   }
-  managed = await startManagedSession(args.sessionId);
+  managed = await startManagedSession(args);
   socketPath = managed.socketPath;
 }
 
@@ -149,6 +209,7 @@ let shutdownCode = 0;
 
 function cleanupSession(): void {
   client.disconnect();
+  managed?.supervisor?.disconnect();
   managed?.stop();
   managed = null;
 }
@@ -182,10 +243,7 @@ const rendererConfig: CliRendererConfig = {
   screenMode: "alternate-screen",
   externalOutputMode: "passthrough",
   useKittyKeyboard: {},
-  // Do not enable terminal mouse reporting by default: it prevents normal
-  // terminal text selection/copy in many emulators unless users hold a
-  // terminal-specific modifier. Users can opt in with --mouse or toggle in-app.
-  useMouse: args.mouse ?? false,
+  useMouse: args.mouse ?? true,
   backgroundColor: "#111319",
   targetFps: 30,
   onDestroy: () => {
@@ -199,7 +257,15 @@ const rendererConfig: CliRendererConfig = {
 try {
   renderer = await createCliRenderer(rendererConfig);
   await render(
-    () => <App client={client} initialSnapshot={initialSnapshot} onExit={() => shutdown(0)} />,
+    () => (
+      <App
+        client={client}
+        supervisor={managed?.supervisor}
+        initialSnapshot={initialSnapshot}
+        initialSupervisorSnapshot={managed?.supervisor?.getSnapshot()}
+        onExit={() => shutdown(0)}
+      />
+    ),
     renderer,
   );
 } catch (error) {

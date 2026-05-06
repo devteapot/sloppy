@@ -2,7 +2,15 @@ import type { Affordance, ResultMessage, SlopNode } from "@slop-ai/consumer";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "disconnected" | "error";
 
-export type TuiRoute = "chat" | "setup" | "approvals" | "tasks" | "apps" | "inspect" | "settings";
+export type TuiRoute =
+  | "chat"
+  | "setup"
+  | "approvals"
+  | "tasks"
+  | "apps"
+  | "inspect"
+  | "runtime"
+  | "settings";
 
 export type InspectorMode = "activity" | "approvals" | "tasks" | "apps" | "state";
 
@@ -11,6 +19,8 @@ export type SessionMeta = {
   status: string;
   title?: string;
   workspaceRoot?: string;
+  workspaceId?: string;
+  projectId?: string;
   modelProvider?: string;
   model?: string;
   startedAt?: string;
@@ -62,6 +72,32 @@ export type TurnState = {
   canCancel: boolean;
 };
 
+export type GoalState = {
+  exists: boolean;
+  goalId?: string;
+  objective?: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  tokenBudget?: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  elapsedMs: number;
+  continuationCount: number;
+  lastTurnId?: string;
+  message?: string;
+  evidence: string[];
+  updateSource?: string;
+  completionSource?: string;
+  canCreate: boolean;
+  canPause: boolean;
+  canResume: boolean;
+  canComplete: boolean;
+  canClear: boolean;
+};
+
 export type ComposerState = {
   ready: boolean;
   acceptsAttachments: boolean;
@@ -104,6 +140,7 @@ export type ActivityItem = {
   taskId?: string;
   approvalId?: string;
   toolUseId?: string;
+  paramsPreview?: string;
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
@@ -187,6 +224,7 @@ export type SessionViewSnapshot = {
   session: SessionMeta;
   llm: LlmState;
   turn: TurnState;
+  goal: GoalState;
   composer: ComposerState;
   transcript: TranscriptMessage[];
   activity: ActivityItem[];
@@ -207,6 +245,11 @@ export type SaveProfileInput = {
   baseUrl?: string;
   apiKey?: string;
   makeDefault?: boolean;
+};
+
+export type CreateGoalInput = {
+  objective: string;
+  tokenBudget?: number;
 };
 
 export type SessionClientEvent =

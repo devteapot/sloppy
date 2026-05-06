@@ -33,6 +33,11 @@ Everything visible to the agent is a provider state tree with affordances:
 - provider-native affordances are converted into model-native tool definitions
 - fixed observation tools (`slop_query_state`, `slop_focus_state`) are consumer
   controls, not provider capabilities
+- same-turn tool execution is conservative: the loop can run contiguous
+  `slop_query_state` calls and explicitly idempotent, non-dangerous affordance
+  calls concurrently, but preserves result order and treats focus changes,
+  local controls, approvals, malformed calls, unknown tools, and unmarked
+  mutating affordances as sequential barriers
 
 Built-in capabilities are providers, not privileged runtime branches. Optional
 providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,

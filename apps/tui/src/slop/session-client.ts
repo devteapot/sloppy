@@ -14,6 +14,7 @@ import {
   withInspectTree,
 } from "./node-mappers";
 import type {
+  CreateGoalInput,
   InspectQueryOptions,
   SaveProfileInput,
   SessionClientEvent,
@@ -25,6 +26,7 @@ const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
   { path: "/session", depth: 1 },
   { path: "/llm", depth: 2 },
   { path: "/turn", depth: 1 },
+  { path: "/goal", depth: 1 },
   { path: "/composer", depth: 1 },
   { path: "/transcript", depth: 3 },
   { path: "/activity", depth: 2 },
@@ -42,7 +44,7 @@ export class SessionClient {
   private pathBySubscriptionId = new Map<string, string>();
   private inspectConsumers = new Map<string, SlopConsumer>();
 
-  constructor(readonly socketPath: string) {
+  constructor(private socketPath: string) {
     this.snapshot = withConnectionState(EMPTY_SESSION_VIEW, {
       socketPath,
     });
@@ -154,6 +156,24 @@ export class SessionClient {
     );
   }
 
+  async switchSocket(socketPath: string): Promise<SessionViewSnapshot> {
+    this.consumer?.disconnect();
+    this.consumer = null;
+    for (const consumer of this.inspectConsumers.values()) {
+      consumer.disconnect();
+    }
+    this.inspectConsumers.clear();
+    this.pathBySubscriptionId.clear();
+    this.socketPath = socketPath;
+    this.updateSnapshot(
+      withConnectionState(EMPTY_SESSION_VIEW, {
+        socketPath,
+        status: "idle",
+      }),
+    );
+    return this.connect();
+  }
+
   async sendMessage(text: string): Promise<ResultMessage> {
     return this.invoke("/composer", "send_message", { text });
   }
@@ -176,6 +196,29 @@ export class SessionClient {
 
   async cancelQueuedMessage(id: string): Promise<ResultMessage> {
     return this.invoke(`/queue/${id}`, "cancel");
+  }
+
+  async createGoal(input: CreateGoalInput): Promise<ResultMessage> {
+    return this.invoke("/goal", "create_goal", {
+      objective: input.objective,
+      ...(input.tokenBudget !== undefined && { token_budget: input.tokenBudget }),
+    });
+  }
+
+  async pauseGoal(message?: string): Promise<ResultMessage> {
+    return this.invoke("/goal", "pause_goal", message ? { message } : undefined);
+  }
+
+  async resumeGoal(message?: string): Promise<ResultMessage> {
+    return this.invoke("/goal", "resume_goal", message ? { message } : undefined);
+  }
+
+  async completeGoal(message?: string): Promise<ResultMessage> {
+    return this.invoke("/goal", "complete_goal", message ? { message } : undefined);
+  }
+
+  async clearGoal(): Promise<ResultMessage> {
+    return this.invoke("/goal", "clear_goal");
   }
 
   async saveProfile(input: SaveProfileInput): Promise<ResultMessage> {
@@ -273,10 +316,6 @@ export class SessionClient {
     }
 
     await this.connect();
-    return this.requireConsumer();
-  }
-
-  private requireConsumer(): SlopConsumer {
     if (!this.consumer) {
       throw new Error("Session client is not connected.");
     }
@@ -287,7 +326,7 @@ export class SessionClient {
     id: string;
     name: string;
     transport?: string;
-    consumer: SlopConsumer;
+    consumer: { query: SlopConsumer["query"]; invoke: SlopConsumer["invoke"] };
   }> {
     if (!targetId || targetId === "session") {
       return {
@@ -297,6 +336,38 @@ export class SessionClient {
           ? `unix:${this.snapshot.connection.socketPath}`
           : undefined,
         consumer: await this.ensureConsumer(),
+      };
+    }
+
+    if (targetId.startsWith("session-proxy:")) {
+      const providerId = targetId.slice("session-proxy:".length);
+      const session = await this.ensureConsumer();
+      return {
+        id: targetId,
+        name: providerId === "meta-runtime" ? "Meta Runtime" : providerId,
+        transport: targetId,
+        consumer: {
+          query: async (path, depth, options) => {
+            const result = await session.invoke("/apps", "query_provider", {
+              provider_id: providerId,
+              path,
+              depth,
+              ...(options?.max_nodes !== undefined && { max_nodes: options.max_nodes }),
+              ...(options?.window !== undefined && { window: options.window }),
+            });
+            if (result.status === "error") {
+              throw new Error(result.error?.message ?? `Failed to query ${providerId}:${path}`);
+            }
+            return result.data as SlopNode;
+          },
+          invoke: async (path, action, params) =>
+            session.invoke("/apps", "invoke_provider", {
+              provider_id: providerId,
+              path,
+              action,
+              ...(params !== undefined && { params }),
+            }),
+        },
       };
     }
 
@@ -352,10 +423,7 @@ export class SessionClient {
     previous: SessionViewSnapshot,
     next: SessionViewSnapshot,
   ): void {
-    if (previous.apps === next.apps) {
-      return;
-    }
-    if (this.inspectConsumers.size === 0) {
+    if (previous.apps === next.apps || this.inspectConsumers.size === 0) {
       return;
     }
     const liveByCacheKey = new Map<string, "connected" | "other">();

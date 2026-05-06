@@ -1,9 +1,11 @@
 import type { KeyEvent } from "@opentui/core";
 
+import type { SupervisorSessionItem } from "../slop/supervisor-client";
 import type {
   ActivityItem,
   AppItem,
   ApprovalItem,
+  GoalState,
   SessionViewSnapshot,
   TaskItem,
 } from "../slop/types";
@@ -28,6 +30,32 @@ export function formatAppLine(item: AppItem): string {
   return `${item.status} ${item.name} · ${item.transport}`;
 }
 
+export function formatSupervisorSessionLine(item: SupervisorSessionItem): string {
+  const scope =
+    item.workspaceId && item.projectId
+      ? `${item.workspaceId}/${item.projectId}`
+      : (item.workspaceId ?? item.workspaceRoot ?? "unscoped");
+  const selected = item.selected ? "active" : "idle";
+  const goal =
+    item.goalStatus && item.goalStatus !== "none"
+      ? ` · goal=${item.goalStatus} tokens=${item.goalTotalTokens}`
+      : "";
+  const pressure =
+    item.queuedCount > 0 || item.pendingApprovalCount > 0 || item.runningTaskCount > 0
+      ? ` · queue=${item.queuedCount} approvals=${item.pendingApprovalCount} tasks=${item.runningTaskCount}`
+      : "";
+  return `${selected} ${item.title ?? item.id} · ${scope} · turn=${item.turnState ?? "unknown"}${goal}${pressure}`;
+}
+
+export function formatGoalLine(goal: GoalState): string {
+  if (!goal.exists) {
+    return "no goal";
+  }
+  const budget = goal.tokenBudget ? `/${goal.tokenBudget}` : "";
+  const elapsedSeconds = Math.round(goal.elapsedMs / 1000);
+  return `${goal.status} · tokens=${goal.totalTokens}${budget} · ${elapsedSeconds}s · ${goal.objective ?? ""}`;
+}
+
 export function firstPendingApproval(snapshot: SessionViewSnapshot): ApprovalItem | undefined {
   return snapshot.approvals.find((approval) => approval.status === "pending");
 }
@@ -36,25 +64,23 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function isPrintableSequence(sequence: string): boolean {
-  if (sequence.length === 0) {
-    return false;
-  }
-  for (let index = 0; index < sequence.length; index += 1) {
-    const code = sequence.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) {
-      return false;
-    }
-  }
-  return true;
-}
-
 export function isControlKey(key: KeyEvent, name: string, codePoint: number): boolean {
   const normalizedName = key.name.toLowerCase();
   if (key.ctrl && normalizedName === name) {
     return true;
   }
   return key.sequence.charCodeAt(0) === codePoint || key.raw.charCodeAt(0) === codePoint;
+}
+
+export function isPrintableSequence(sequence: string): boolean {
+  if (sequence.length === 0) return false;
+  for (const char of sequence) {
+    const code = char.charCodeAt(0);
+    if (code < 32 || code === 127) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function composerHint(snapshot: SessionViewSnapshot, queued: number): string {
@@ -75,5 +101,5 @@ export function composerHint(snapshot: SessionViewSnapshot, queued: number): str
 }
 
 export function commandHelp(): string {
-  return "/setup /approvals /tasks /apps /inspect /settings · /mouse [on|off|toggle] (F7) · /query [app-id:]path depth --window 0:20 --max-nodes 100 · /invoke [app-id:]path action {json} · /profile provider model --reasoning-effort high --adapter id --base-url url · /profile-secret provider model · /default profile";
+  return "/setup /approvals /tasks /apps /inspect · /goal <objective>|pause|resume|complete|clear · /verbosity [compact|normal|verbose] · /query [app-id:]path depth · /invoke [app-id:]path action {json} · /profile provider model · /profile-secret provider model · /queue-cancel <id|pos> · /mouse [on|off] · /clear · /quit";
 }

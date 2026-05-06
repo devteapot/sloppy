@@ -5,7 +5,13 @@ import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { ConversationHistory } from "../src/core/history";
 import { type AgentToolEvent, runLoop, truncateToolResult } from "../src/core/loop";
-import type { LlmAdapter, LlmChatOptions, LlmResponse } from "../src/llm/types";
+import type {
+  LlmAdapter,
+  LlmChatOptions,
+  LlmResponse,
+  ToolResultContentBlock,
+  ToolUseContentBlock,
+} from "../src/llm/types";
 import { InProcessTransport } from "../src/providers/builtin/in-process";
 
 const TEST_CONFIG: SloppyConfig = {
@@ -128,6 +134,37 @@ class InvalidToolArgumentsLlm implements LlmAdapter {
   }
 }
 
+class ToolBatchProbeLlm implements LlmAdapter {
+  calls = 0;
+  observedToolResults: ToolResultContentBlock[] = [];
+
+  constructor(private readonly toolCalls: ToolUseContentBlock[]) {}
+
+  async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        content: this.toolCalls,
+        stopReason: "tool_use",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      };
+    }
+
+    this.observedToolResults = options.messages
+      .flatMap((message) => message.content)
+      .filter((block): block is ToolResultContentBlock => block.type === "tool_result");
+    return {
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("truncateToolResult", () => {
   test("does not modify results under the limit", () => {
     const result = "Hello, world!";
@@ -223,6 +260,200 @@ describe("runLoop tool execution", () => {
           errorCode: "invalid_tool_arguments",
         }),
       );
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("runs idempotent non-dangerous affordance calls concurrently and preserves result order", async () => {
+    let secondStarted!: () => void;
+    const secondStartedPromise = new Promise<void>((resolve) => {
+      secondStarted = resolve;
+    });
+    let firstSawSecondStarted = false;
+    const invocationOrder: string[] = [];
+
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        read_a: action(
+          async () => {
+            invocationOrder.push("a");
+            firstSawSecondStarted = await Promise.race([
+              secondStartedPromise.then(() => true),
+              sleep(100).then(() => false),
+            ]);
+            return { value: "a", firstSawSecondStarted };
+          },
+          {
+            label: "Read A",
+            description: "Read A.",
+            idempotent: true,
+            estimate: "fast",
+          },
+        ),
+        read_b: action(
+          async () => {
+            invocationOrder.push("b");
+            secondStarted();
+            return { value: "b" };
+          },
+          {
+            label: "Read B",
+            description: "Read B.",
+            idempotent: true,
+            estimate: "fast",
+          },
+        ),
+      },
+    }));
+
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "builtin",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    const llm = new ToolBatchProbeLlm([
+      {
+        type: "tool_use",
+        id: "call-a",
+        name: "demo__workspace__read_a",
+        input: {},
+      },
+      {
+        type: "tool_use",
+        id: "call-b",
+        name: "demo__workspace__read_b",
+        input: {},
+      },
+    ]);
+    history.addUserText("read both values");
+
+    try {
+      await hub.connect();
+      const result = await runLoop({
+        config: TEST_CONFIG,
+        hub,
+        history,
+        llm,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(firstSawSecondStarted).toBe(true);
+      expect(invocationOrder).toEqual(["a", "b"]);
+      expect(llm.observedToolResults.map((toolResult) => toolResult.toolUseId)).toEqual([
+        "call-a",
+        "call-b",
+      ]);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("keeps non-idempotent affordance calls sequential", async () => {
+    let secondStarted!: () => void;
+    const secondStartedPromise = new Promise<void>((resolve) => {
+      secondStarted = resolve;
+    });
+    let firstSawSecondStarted = false;
+    const invocationOrder: string[] = [];
+
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        write_a: action(
+          async () => {
+            invocationOrder.push("a");
+            firstSawSecondStarted = await Promise.race([
+              secondStartedPromise.then(() => true),
+              sleep(60).then(() => false),
+            ]);
+            return { value: "a", firstSawSecondStarted };
+          },
+          {
+            label: "Write A",
+            description: "Write A.",
+            estimate: "fast",
+          },
+        ),
+        write_b: action(
+          async () => {
+            invocationOrder.push("b");
+            secondStarted();
+            return { value: "b" };
+          },
+          {
+            label: "Write B",
+            description: "Write B.",
+            estimate: "fast",
+          },
+        ),
+      },
+    }));
+
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "builtin",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    const llm = new ToolBatchProbeLlm([
+      {
+        type: "tool_use",
+        id: "call-a",
+        name: "demo__workspace__write_a",
+        input: {},
+      },
+      {
+        type: "tool_use",
+        id: "call-b",
+        name: "demo__workspace__write_b",
+        input: {},
+      },
+    ]);
+    history.addUserText("write both values");
+
+    try {
+      await hub.connect();
+      const result = await runLoop({
+        config: TEST_CONFIG,
+        hub,
+        history,
+        llm,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(firstSawSecondStarted).toBe(false);
+      expect(invocationOrder).toEqual(["a", "b"]);
+      expect(llm.observedToolResults.map((toolResult) => toolResult.toolUseId)).toEqual([
+        "call-a",
+        "call-b",
+      ]);
     } finally {
       hub.shutdown();
     }
