@@ -275,6 +275,15 @@ OPENAI_API_KEY=<router-key-or-dummy> \
 bun run runtime:smoke -- --mode native
 ```
 
+Check live runtime dependencies before a smoke run:
+
+```sh
+bun run runtime:doctor \
+  --litellm-url http://sloppy-mba.local:8001/v1 \
+  --acp-adapter claude \
+  --cli-adapter codex
+```
+
 CLI mode runs a configured subprocess-backed child session. It is intended for
 tools such as Codex CLI or local custom agents that can complete from one prompt:
 

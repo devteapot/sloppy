@@ -20,6 +20,8 @@ Checked in now:
   behind the same session-provider boundary
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native, ACP, and CLI delegated-child modes
+- runtime doctor (`bun run runtime:doctor`) for checking live OpenAI-compatible
+  routers and configured ACP/CLI adapters before a smoke run
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from
@@ -85,6 +87,7 @@ bun test tests/meta-runtime-provider.test.ts
 bun test tests/skills-provider.test.ts
 bun test tests/delegation-provider.test.ts
 bun test tests/kernel-boundary.test.ts
+bun test tests/runtime-doctor.test.ts
 bun test tests/runtime-smoke.test.ts
 ```
 
