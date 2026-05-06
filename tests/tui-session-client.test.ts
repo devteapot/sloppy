@@ -5,11 +5,14 @@ import { listenUnix } from "@slop-ai/server/unix";
 import {
   applyPathSnapshot,
   EMPTY_SESSION_VIEW,
+  mapLlmNode,
+  mapQueueNode,
   mapTranscriptNode,
 } from "../apps/tui/src/slop/node-mappers";
 import { SessionClient } from "../apps/tui/src/slop/session-client";
 import { parseLocalCommand } from "../apps/tui/src/state/commands";
-import { DraftQueue } from "../apps/tui/src/state/draft-queue";
+import { ComposerHistory } from "../apps/tui/src/state/composer-history";
+import { reconcileInitialRoute } from "../apps/tui/src/state/initial-route";
 
 const listeners: Array<{ close: () => void }> = [];
 
@@ -47,6 +50,15 @@ describe("TUI node mappers", () => {
                     text: "hello",
                   },
                 },
+                {
+                  id: "block-2",
+                  type: "media",
+                  properties: {
+                    mime: "image/png",
+                    name: "screenshot.png",
+                    preview: "terminal preview",
+                  },
+                },
               ],
             },
           ],
@@ -69,6 +81,15 @@ describe("TUI node mappers", () => {
             type: "text",
             mime: "text/plain",
             text: "hello",
+          },
+          {
+            id: "block-2",
+            type: "media",
+            mime: "image/png",
+            name: "screenshot.png",
+            uri: undefined,
+            summary: undefined,
+            preview: "terminal preview",
           },
         ],
       },
@@ -94,21 +115,70 @@ describe("TUI node mappers", () => {
     expect(next.turn.canCancel).toBe(true);
     expect(next.transcript).toEqual([]);
   });
+
+  test("maps ACP adapter ids from LLM profile state", () => {
+    const llm = mapLlmNode({
+      id: "llm",
+      type: "collection",
+      properties: {
+        status: "ready",
+        message: "Ready",
+      },
+      children: [
+        {
+          id: "claude-acp",
+          type: "item",
+          properties: {
+            provider: "acp",
+            model: "sonnet",
+            adapter_id: "claude",
+            origin: "managed",
+            is_default: true,
+            has_key: false,
+            key_source: "not_required",
+            ready: true,
+            managed: true,
+          },
+        },
+      ],
+    });
+
+    expect(llm.profiles[0]?.adapterId).toBe("claude");
+    expect(llm.profiles[0]?.keySource).toBe("not_required");
+  });
 });
 
 describe("TUI local state", () => {
-  test("draft queue is FIFO and ignores empty drafts", () => {
-    const queue = new DraftQueue();
+  test("label() emits hair-spaced uppercase blueprint text", async () => {
+    const { label } = await import("../apps/tui/src/lib/theme");
+    const HAIR = " ";
+    expect(label("inspect")).toBe(`I${HAIR}N${HAIR}S${HAIR}P${HAIR}E${HAIR}C${HAIR}T`);
+  });
 
-    expect(queue.enqueue("   ")).toBeNull();
-    const first = queue.enqueue("first");
-    const second = queue.enqueue("second");
+  test("composer history walks back, edits, and resets on push", () => {
+    const history = new ComposerHistory(3);
+    expect(history.previous()).toBeNull();
+    history.push("alpha");
+    history.push("beta");
+    history.push("beta"); // duplicate of last entry → ignored
+    history.push("gamma");
+    expect(history.size).toBe(3);
+    expect(history.previous()).toBe("gamma");
+    expect(history.previous()).toBe("beta");
+    expect(history.previous()).toBe("alpha");
+    expect(history.previous()).toBe("alpha");
+    expect(history.next()).toBe("beta");
+    expect(history.next()).toBe("gamma");
+    expect(history.next()).toBe("");
+    expect(history.next()).toBeNull();
+  });
 
-    expect(queue.size).toBe(2);
-    expect(queue.peek()?.id).toBe(first?.id);
-    expect(queue.dequeue()?.id).toBe(first?.id);
-    expect(queue.dequeue()?.id).toBe(second?.id);
-    expect(queue.dequeue()).toBeNull();
+  test("composer history is bounded by capacity", () => {
+    const history = new ComposerHistory(2);
+    history.push("a");
+    history.push("b");
+    history.push("c");
+    expect(history.list()).toEqual(["b", "c"]);
   });
 
   test("local command parser recognizes routes, query, invoke, and secret profile setup", () => {
@@ -117,20 +187,176 @@ describe("TUI local state", () => {
       type: "query",
       path: "/llm",
       depth: 3,
+      targetId: "session",
+    });
+    expect(
+      parseLocalCommand("/query native-demo:/workspace 2 --window 0:10 --max-nodes 25"),
+    ).toEqual({
+      type: "query",
+      path: "/workspace",
+      depth: 2,
+      targetId: "native-demo",
+      window: [0, 10],
+      maxNodes: 25,
     });
     expect(parseLocalCommand('/invoke /composer send_message {"text":"hi"}')).toEqual({
       type: "invoke",
       path: "/composer",
       action: "send_message",
       params: { text: "hi" },
+      targetId: "session",
     });
-    expect(parseLocalCommand("/profile-secret openai gpt-5.4")).toEqual({
+    expect(parseLocalCommand("/profile-secret acp sonnet --adapter claude --no-default")).toEqual({
       type: "profile_secret",
+      profileId: undefined,
+      label: undefined,
+      provider: "acp",
+      model: "sonnet",
+      reasoningEffort: undefined,
+      adapterId: "claude",
+      baseUrl: undefined,
+      makeDefault: false,
+    });
+
+    expect(parseLocalCommand("/profile openai gpt-5.4 --reasoning-effort high")).toEqual({
+      type: "profile",
+      profileId: undefined,
+      label: undefined,
       provider: "openai",
       model: "gpt-5.4",
+      reasoningEffort: "high",
+      adapterId: undefined,
       baseUrl: undefined,
       makeDefault: true,
     });
+  });
+
+  test("local command parser rejects /profile with --api-key (security)", () => {
+    const result = parseLocalCommand(
+      "/profile openai gpt-5.4 --reasoning-effort high --api-key sk-test12345",
+    );
+    expect(result?.type).toBe("rejected");
+    if (result?.type === "rejected") {
+      expect(result.reason).toMatch(/profile-secret/);
+    }
+
+    const trailing = parseLocalCommand("/profile openai gpt-5.4 https://example sk-testabcdef");
+    expect(trailing?.type).toBe("rejected");
+  });
+
+  test("local command parser rejects every /profile inline-secret shape", () => {
+    const cases = [
+      "/profile openai gpt-5.4 sk-test12345",
+      "/profile openai sk-test12345",
+      "/profile openai gpt-5.4 --api-key=sk-test12345",
+      "/profile openai gpt-5.4 --apiKey=sk-test12345",
+      "/profile openai gpt-5.4 --api_key sk-test12345",
+      "/profile openai gpt-5.4 --key sk-test12345",
+      "/profile openai gpt-5.4 --token ghp_abcdefghijklmnopqr",
+      "/profile openai gpt-5.4 --base-url https://example --secret xoxb-12345abcdef",
+      "/profile openai gpt-5.4 ghp_abcdefghijklmnopqr",
+      "/profile openai gpt-5.4 github_pat_abcdefghijklmnopqrstu",
+    ];
+    for (const input of cases) {
+      const result = parseLocalCommand(input);
+      expect(result?.type, `expected rejected for: ${input}`).toBe("rejected");
+    }
+  });
+
+  test("local command parser still saves clean /profile invocations", () => {
+    expect(
+      parseLocalCommand("/profile openai gpt-5.4 https://api.openai.com --reasoning-effort high"),
+    ).toEqual({
+      type: "profile",
+      profileId: undefined,
+      label: undefined,
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      adapterId: undefined,
+      baseUrl: "https://api.openai.com",
+      makeDefault: true,
+    });
+  });
+
+  test("unknown slashes parse as `unknown` so the dispatcher can fall through to send_message", () => {
+    expect(parseLocalCommand("/notarealcommand hello")).toEqual({
+      type: "unknown",
+      name: "/notarealcommand hello",
+    });
+    expect(parseLocalCommand("/skill foo arg")).toEqual({
+      type: "unknown",
+      name: "/skill foo arg",
+    });
+  });
+
+  test("local command parser parses /queue-cancel by id and position", () => {
+    expect(parseLocalCommand("/queue-cancel 3")).toEqual({ type: "queue_cancel", target: 3 });
+    expect(parseLocalCommand("/queue-cancel msg-abc")).toEqual({
+      type: "queue_cancel",
+      target: "msg-abc",
+    });
+    expect(parseLocalCommand("/queue-cancel")).toEqual({ type: "unknown", name: "/queue-cancel" });
+  });
+
+  test("reconcileInitialRoute lands on setup once when /llm reports needs_credentials", () => {
+    type TuiRoute = "chat" | "setup" | "approvals" | "tasks" | "apps" | "inspect" | "settings";
+    let state: { firstStatusSeen: boolean; route: TuiRoute } = {
+      firstStatusSeen: false,
+      route: "chat",
+    };
+    const tick = (llmStatus: "ready" | "needs_credentials" | "unknown", userNavigated = false) => {
+      const out = reconcileInitialRoute({
+        currentRoute: state.route,
+        llmStatus,
+        firstStatusSeen: state.firstStatusSeen,
+        userNavigated,
+      });
+      state = { firstStatusSeen: out.firstStatusSeen, route: out.route };
+      return out;
+    };
+
+    expect(tick("unknown")).toEqual({ route: "chat", firstStatusSeen: false });
+    expect(tick("needs_credentials")).toEqual({ route: "setup", firstStatusSeen: true });
+    expect(tick("ready")).toEqual({ route: "setup", firstStatusSeen: true });
+
+    state = { firstStatusSeen: false, route: "chat" };
+    expect(tick("ready")).toEqual({ route: "chat", firstStatusSeen: true });
+
+    state = { firstStatusSeen: false, route: "chat" };
+    expect(tick("needs_credentials", true)).toEqual({ route: "chat", firstStatusSeen: true });
+  });
+
+  test("mapQueueNode maps items with position, summary, and cancel affordance", () => {
+    const items = mapQueueNode({
+      id: "queue",
+      type: "collection",
+      properties: { count: 2 },
+      children: [
+        {
+          id: "msg-1",
+          type: "item",
+          properties: {
+            text: "alpha",
+            status: "queued",
+            position: 1,
+            summary: "alpha",
+            author: "user",
+            created_at: "2026-05-06T00:00:00Z",
+          },
+          affordances: [{ action: "cancel" }],
+        },
+        {
+          id: "msg-2",
+          type: "item",
+          properties: { text: "beta", status: "queued", position: 2, summary: "beta" },
+        },
+      ],
+    });
+    expect(items[0]?.canCancel).toBe(true);
+    expect(items[0]?.position).toBe(1);
+    expect(items[1]?.canCancel).toBe(false);
+    expect(items[1]?.summary).toBe("beta");
   });
 });
 
@@ -197,6 +423,7 @@ describe("SessionClient", () => {
     server.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
     server.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
     server.register("apps", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("queue", { type: "collection", props: { count: 0 }, items: [] });
 
     listeners.push(listenUnix(server, socketPath, { register: false }));
 
@@ -210,6 +437,188 @@ describe("SessionClient", () => {
       const result = await client.sendMessage("hello from tui");
       expect(result.status).toBe("ok");
       expect(sentMessages).toEqual(["hello from tui"]);
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("forwards reasoning_effort through save_profile", async () => {
+    const sessionSocketPath = `/tmp/slop/tui-reasoning-test-${crypto.randomUUID()}.sock`;
+    const savedParams: Array<Record<string, unknown>> = [];
+    const sessionServer = createSlopServer({ id: "mock-session", name: "Mock Session" });
+
+    sessionServer.register("session", { type: "context", props: { session_id: "sess-r" } });
+    sessionServer.register("llm", {
+      type: "collection",
+      props: { status: "ready", message: "Ready" },
+      items: [],
+      actions: {
+        save_profile: action(
+          {
+            provider: "string",
+            model: { type: "string" },
+            reasoning_effort: { type: "string" },
+          },
+          async (params) => {
+            savedParams.push(params as Record<string, unknown>);
+            return { ok: true };
+          },
+          { label: "Save Profile" },
+        ),
+      },
+    });
+    sessionServer.register("turn", { type: "status", props: { state: "idle" } });
+    sessionServer.register("composer", { type: "control", props: { ready: true } });
+    sessionServer.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("activity", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("apps", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("queue", { type: "collection", props: { count: 0 }, items: [] });
+
+    listeners.push(listenUnix(sessionServer, sessionSocketPath, { register: false }));
+
+    const client = new SessionClient(sessionSocketPath);
+    try {
+      await client.connect();
+      const result = await client.saveProfile({
+        provider: "openai",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        makeDefault: true,
+      });
+      expect(result.status).toBe("ok");
+      expect(savedParams).toEqual([
+        {
+          provider: "openai",
+          model: "gpt-5.4",
+          reasoning_effort: "high",
+          make_default: true,
+        },
+      ]);
+    } finally {
+      client.disconnect();
+      sessionServer.stop();
+    }
+  });
+
+  test("queries connected external providers listed under apps", async () => {
+    const sessionSocketPath = `/tmp/slop/tui-session-test-${crypto.randomUUID()}.sock`;
+    const appSocketPath = `/tmp/slop/tui-app-test-${crypto.randomUUID()}.sock`;
+    const sessionServer = createSlopServer({
+      id: "mock-session",
+      name: "Mock Session",
+    });
+    const appServer = createSlopServer({
+      id: "native-demo",
+      name: "Native Demo",
+    });
+
+    appServer.register("workspace", {
+      type: "context",
+      props: {
+        status: "ready",
+      },
+    });
+    sessionServer.register("session", { type: "context", props: { session_id: "sess-apps" } });
+    sessionServer.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    sessionServer.register("turn", { type: "status", props: { state: "idle" } });
+    sessionServer.register("composer", { type: "control", props: { ready: true } });
+    sessionServer.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("activity", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
+    sessionServer.register("apps", {
+      type: "collection",
+      props: { count: 1 },
+      items: [
+        {
+          id: "native-demo",
+          props: {
+            provider_id: "native-demo",
+            name: "Native Demo",
+            transport: `unix:${appSocketPath}`,
+            status: "connected",
+          },
+        },
+      ],
+    });
+    sessionServer.register("queue", { type: "collection", props: { count: 0 }, items: [] });
+
+    listeners.push(listenUnix(appServer, appSocketPath, { register: false }));
+    listeners.push(listenUnix(sessionServer, sessionSocketPath, { register: false }));
+
+    const client = new SessionClient(sessionSocketPath);
+    try {
+      await client.connect();
+      const tree = await client.queryInspect("/workspace", 1, "native-demo", {
+        maxNodes: 10,
+        window: [0, 10],
+      });
+
+      expect(tree.id).toBe("workspace");
+      expect(tree.properties?.status).toBe("ready");
+      expect(client.getSnapshot().inspect.targetId).toBe("native-demo");
+      expect(client.getSnapshot().inspect.targetTransport).toBe(`unix:${appSocketPath}`);
+      expect(client.getSnapshot().inspect.maxNodes).toBe(10);
+      expect(client.getSnapshot().inspect.window).toEqual([0, 10]);
+    } finally {
+      client.disconnect();
+      sessionServer.stop();
+      appServer.stop();
+    }
+  });
+
+  test("subscribes to /queue and cancels by id via the per-item affordance", async () => {
+    const socketPath = `/tmp/slop/tui-queue-test-${crypto.randomUUID()}.sock`;
+    const cancelled: string[] = [];
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+
+    server.register("session", { type: "context", props: { session_id: "sess-q" } });
+    server.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    server.register("turn", { type: "status", props: { state: "running" } });
+    server.register("composer", { type: "control", props: { ready: true } });
+    server.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("activity", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("apps", { type: "collection", props: { count: 0 }, items: [] });
+    server.register("queue", {
+      type: "collection",
+      props: { count: 1 },
+      items: [
+        {
+          id: "msg-q1",
+          props: {
+            text: "queued message",
+            status: "queued",
+            position: 1,
+            summary: "queued message",
+            author: "user",
+          },
+          actions: {
+            cancel: action({}, async () => {
+              cancelled.push("msg-q1");
+              return { ok: true };
+            }),
+          },
+        },
+      ],
+    });
+
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      const snapshot = await client.connect();
+      expect(snapshot.queue).toHaveLength(1);
+      expect(snapshot.queue[0]?.id).toBe("msg-q1");
+      expect(snapshot.queue[0]?.canCancel).toBe(true);
+
+      const result = await client.cancelQueuedMessage("msg-q1");
+      expect(result.status).toBe("ok");
+      expect(cancelled).toEqual(["msg-q1"]);
     } finally {
       client.disconnect();
       server.stop();
