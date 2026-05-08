@@ -66,12 +66,16 @@ Current checked-in implementation includes:
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
+- session-provider `/plugins` registry for first-party session runtime plugins,
+  including declarative TUI manifests for contributed subscriptions and slash
+  command discovery
 - session-provider `/usage` state for session-owned token accounting, showing
   provider-reported model usage when available and `N/A` semantics otherwise,
   alongside provider-counted SLOP state-tail size when supported and the known
   model context window
 - session-provider `/goal` state for persistent long-running objectives, backed
-  by generic session extension metadata under `/extensions/goal`, including
+  by the first-party `persistent-goal` session plugin and generic session
+  extension metadata under `/extensions/goal`, including
   create/pause/resume/complete/clear controls, usage accounting, cleanup
   retention, and automatic continuation while the goal is active. Native goal
   turns load the `persistent-goal` skill and expose a model-owned

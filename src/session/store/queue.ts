@@ -6,7 +6,10 @@ export function enqueueMessage(
   state: SessionStoreState,
   text: string,
   options?: {
-    author?: "user" | "goal";
+    author?: string;
+    source?: "user" | "plugin";
+    pluginId?: string;
+    pluginRunId?: string;
     goalId?: string;
     continuation?: boolean;
   },
@@ -18,6 +21,9 @@ export function enqueueMessage(
     text,
     createdAt: time,
     author: options?.author ?? "user",
+    ...(options?.source && { source: options.source }),
+    ...(options?.pluginId && { pluginId: options.pluginId }),
+    ...(options?.pluginRunId && { pluginRunId: options.pluginRunId }),
     ...(options?.goalId && { goalId: options.goalId }),
     ...(options?.continuation !== undefined && { continuation: options.continuation }),
   };

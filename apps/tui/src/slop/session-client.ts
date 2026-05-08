@@ -22,7 +22,7 @@ import type {
   SessionViewSnapshot,
 } from "./types";
 
-const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
+const SUBSCRIPTIONS: Array<{ path: string; depth: number; optional?: boolean }> = [
   { path: "/session", depth: 1 },
   { path: "/llm", depth: 2 },
   { path: "/usage", depth: 1 },
@@ -34,6 +34,7 @@ const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
   { path: "/approvals", depth: 2 },
   { path: "/tasks", depth: 2 },
   { path: "/apps", depth: 2 },
+  { path: "/plugins", depth: 2, optional: true },
   { path: "/queue", depth: 2 },
 ];
 
@@ -124,7 +125,18 @@ export class SessionClient {
       });
 
       for (const subscription of SUBSCRIPTIONS) {
-        const { id, snapshot } = await consumer.subscribe(subscription.path, subscription.depth);
+        const result = await consumer
+          .subscribe(subscription.path, subscription.depth)
+          .catch((error: unknown) => {
+            if (subscription.optional) {
+              return null;
+            }
+            throw error;
+          });
+        if (!result) {
+          continue;
+        }
+        const { id, snapshot } = result;
         this.pathBySubscriptionId.set(id, subscription.path);
         this.updateSnapshot(applyPathSnapshot(this.snapshot, subscription.path, snapshot));
       }

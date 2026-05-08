@@ -257,9 +257,13 @@ propose minimal `skill_manage` changes without adding a scheduler or repair
 policy to the runtime.
 
 The public session provider has a generic `/extensions` metadata substrate for
-skill-backed session features. `/goal` is now a stable projection over the
-`goal` extension record owned by the bundled `persistent-goal` skill; the
-runtime guarantees persistence, revision checks, restart recovery, and cleanup
+skill-backed session features and a `/plugins` registry for first-party session
+runtime plugins. Plugins can contribute session nodes, runtime-local turn tools,
+queued or automatic turns, and declarative TUI manifests without adding
+feature-specific branches to the provider or TUI core. `/goal` is now a stable
+projection contributed by the bundled `persistent-goal` plugin over the `goal`
+extension record owned by the bundled `persistent-goal` skill; the runtime
+guarantees persistence, revision checks, restart recovery, and cleanup
 retention, while the skill defines the working procedure and completion
 evidence expectations. Extension cleanup is manual plus TTL, so missing or
 unloaded skills do not delete state automatically.

@@ -217,7 +217,7 @@ export function App(props: AppProps) {
     // Only show suggestions while the user is still typing the command
     // name — once a space has been entered, fall back to argument mode.
     if (text.includes(" ")) return [];
-    return matchSlashEntries(text);
+    return matchSlashEntries(text, 8, snapshot().plugins);
   });
 
   createEffect(() => {
@@ -553,6 +553,16 @@ export function App(props: AppProps) {
     if (!pendingApproval() && !secretProfile() && composerRef) {
       renderer.focusRenderable(composerRef);
     }
+  });
+
+  let previousGoalStatus: string | undefined;
+  createEffect(() => {
+    const goal = snapshot().goal;
+    const nextStatus = goal.exists ? goal.status : "none";
+    if (previousGoalStatus && previousGoalStatus !== "complete" && nextStatus === "complete") {
+      pushNotice({ kind: "ok", message: "Goal complete." });
+    }
+    previousGoalStatus = nextStatus;
   });
 
   async function submitDraft(): Promise<void> {
@@ -1122,7 +1132,7 @@ export function App(props: AppProps) {
       </box>
       <Footer mouseEnabled={mouseEnabled()} />
       <Show when={helpOpen()}>
-        <HelpOverlay onClose={() => setHelpOpen(false)} />
+        <HelpOverlay plugins={snapshot().plugins} onClose={() => setHelpOpen(false)} />
       </Show>
       <Show when={paletteOpen()}>
         <CommandPalette

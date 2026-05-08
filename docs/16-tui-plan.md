@@ -185,8 +185,9 @@ The TUI should have four boundaries.
 Responsibilities:
 
 - connect to a session provider over a Unix socket
-- subscribe shallowly to `/session`, `/llm`, `/turn`, `/goal`, `/composer`,
-  `/transcript`, `/activity`, `/approvals`, `/tasks`, `/queue`, and `/apps`
+- subscribe shallowly to `/session`, `/llm`, `/turn`, `/plugins`, `/goal`,
+  `/composer`, `/transcript`, `/activity`, `/approvals`, `/tasks`, `/queue`,
+  and `/apps`
 - expose a typed client-side store
 - invoke public session affordances:
   - `/composer.send_message`
@@ -460,10 +461,16 @@ Unsubmitted drafts remain local UI state only.
 
 ### Goals
 
-The session provider exposes persistent long-running work through `/goal`.
-Internally this is backed by `/extensions/goal`, but the TUI should continue to
-use `/goal` as the stable UX contract and reserve `/extensions` for inspectors
-and cleanup diagnostics.
+The session provider exposes persistent long-running work through `/goal`, which
+is contributed by the first-party `persistent-goal` session plugin. Internally
+this is backed by `/extensions/goal`, but the TUI should continue to use `/goal`
+as the stable UX contract and reserve `/extensions` for inspectors and cleanup
+diagnostics.
+
+The TUI discovers plugin-owned slash commands from `/plugins` declarative
+manifests. `/goal` remains a normal local command parser path, but its command
+catalog entry, subscription hint, and completion notification are advertised by
+the `persistent-goal` plugin manifest.
 
 TUI commands:
 

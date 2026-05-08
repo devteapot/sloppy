@@ -20,10 +20,13 @@ Checked in now:
 - session provider and headless session server
 - public session supervisor for scoped session creation, active-session
   switching, and stopping while keeping each session on its own provider socket
+- first-party session runtime plugin manager, surfaced through `/plugins`, for
+  contributed session nodes, runtime-local turn tools, queued or automatic
+  plugin turns, and declarative TUI manifests
 - generic public session extension metadata, with `/goal` projected from the
-  extension-backed `persistent-goal` skill state for persistent objective
-  controls, usage accounting, cleanup retention, and automatic continuation
-  while active
+  extension-backed `persistent-goal` skill state by the `persistent-goal`
+  session plugin for persistent objective controls, usage accounting, cleanup
+  retention, and automatic continuation while active
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
   agent-session provider socket, can attach through the session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert

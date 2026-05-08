@@ -234,8 +234,8 @@ export class AgentSessionProvider {
     this.server.register("llm", () => this.buildLlmDescriptor());
     this.server.register("usage", () => this.buildUsageDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
-    this.server.register("goal", () => this.buildGoalDescriptor());
     this.server.register("extensions", () => this.buildExtensionsDescriptor());
+    this.server.register("plugins", () => this.runtime.buildPluginsDescriptor());
     this.server.register("composer", () => this.buildComposerDescriptor());
     this.server.register("queue", () => this.buildQueueDescriptor());
     this.server.register("transcript", () => this.buildTranscriptDescriptor());
@@ -243,6 +243,11 @@ export class AgentSessionProvider {
     this.server.register("approvals", () => this.buildApprovalsDescriptor());
     this.server.register("tasks", () => this.buildTasksDescriptor());
     this.server.register("apps", () => this.buildAppsDescriptor());
+    for (const contribution of this.runtime.getPluginSessionNodes()) {
+      this.server.register(contribution.path.replace(/^\//, ""), () =>
+        contribution.build(this.runtime.getPluginRuntimeContext()),
+      );
+    }
 
     this.unsubscribeStore = this.runtime.store.onChange(() => {
       this.server.refresh();
@@ -303,133 +308,6 @@ export class AgentSessionProvider {
             }),
           }
         : undefined,
-    };
-  }
-
-  private buildGoalDescriptor(): NodeDescriptor {
-    const goal = this.runtime.store.getSnapshot().goal;
-    const baseActions = {
-      create_goal: action(
-        {
-          objective: "string",
-          token_budget: {
-            type: "number",
-            optional: true,
-            description: "Optional total token budget for this goal.",
-          },
-        },
-        async (params) => this.runtime.createGoal(params),
-        {
-          label: "Create Goal",
-          description:
-            "Create or replace the persistent session goal and start or queue the first goal turn.",
-          estimate: "instant",
-        },
-      ),
-    };
-
-    if (!goal) {
-      return {
-        type: "control",
-        props: {
-          exists: false,
-          status: "none",
-          message: "No active goal.",
-        },
-        summary: "Persistent session goal state.",
-        actions: baseActions,
-      };
-    }
-
-    return {
-      type: "control",
-      props: {
-        exists: true,
-        goal_id: goal.goalId,
-        objective: goal.objective,
-        status: goal.status,
-        created_at: goal.createdAt,
-        updated_at: goal.updatedAt,
-        completed_at: goal.completedAt,
-        token_budget: goal.tokenBudget,
-        input_tokens: goal.inputTokens,
-        output_tokens: goal.outputTokens,
-        total_tokens: goal.totalTokens,
-        elapsed_ms: goal.elapsedMs,
-        continuation_count: goal.continuationCount,
-        last_turn_id: goal.lastTurnId,
-        message: goal.message,
-        evidence: goal.evidence ?? [],
-        update_source: goal.updateSource,
-        completion_source: goal.completionSource,
-      },
-      summary: goal.objective,
-      actions: {
-        ...baseActions,
-        ...(goal.status === "active"
-          ? {
-              pause_goal: action(
-                {
-                  message: {
-                    type: "string",
-                    description: "Optional pause reason.",
-                  },
-                },
-                async ({ message }) =>
-                  this.runtime.pauseGoal(typeof message === "string" ? message : undefined),
-                {
-                  label: "Pause Goal",
-                  description: "Pause automatic goal continuation.",
-                  estimate: "instant",
-                },
-              ),
-            }
-          : {}),
-        ...(goal.status === "paused" || goal.status === "budget_limited"
-          ? {
-              resume_goal: action(
-                {
-                  message: {
-                    type: "string",
-                    description: "Optional resume note.",
-                  },
-                },
-                async ({ message }) =>
-                  this.runtime.resumeGoal(typeof message === "string" ? message : undefined),
-                {
-                  label: "Resume Goal",
-                  description: "Resume automatic goal continuation.",
-                  estimate: "instant",
-                },
-              ),
-            }
-          : {}),
-        ...(goal.status !== "complete"
-          ? {
-              complete_goal: action(
-                {
-                  message: {
-                    type: "string",
-                    description: "Optional completion note.",
-                  },
-                },
-                async ({ message }) =>
-                  this.runtime.completeGoal(typeof message === "string" ? message : undefined),
-                {
-                  label: "Complete Goal",
-                  description: "Mark the persistent session goal complete.",
-                  estimate: "instant",
-                },
-              ),
-            }
-          : {}),
-        clear_goal: action(async () => this.runtime.clearGoal(), {
-          label: "Clear Goal",
-          description: "Remove the persistent session goal state.",
-          dangerous: true,
-          estimate: "instant",
-        }),
-      },
     };
   }
 
@@ -642,6 +520,9 @@ export class AgentSessionProvider {
           text: message.text,
           created_at: message.createdAt,
           author: message.author,
+          source: message.source,
+          plugin_id: message.pluginId,
+          plugin_run_id: message.pluginRunId,
           goal_id: message.goalId,
           continuation: message.continuation === true,
           position: index + 1,

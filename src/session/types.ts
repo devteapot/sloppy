@@ -43,7 +43,10 @@ export type QueuedSessionMessage = {
   status: "queued";
   text: string;
   createdAt: string;
-  author: "user" | "goal";
+  author: string;
+  source?: "user" | "plugin";
+  pluginId?: string;
+  pluginRunId?: string;
   goalId?: string;
   continuation?: boolean;
 };

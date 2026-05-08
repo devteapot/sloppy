@@ -71,6 +71,7 @@ The root tree should expose these top-level children:
 - `/llm`
 - `/usage`
 - `/turn`
+- `/plugins`
 - `/goal`
 - `/composer`
 - `/queue`
@@ -93,6 +94,8 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
     [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [context] usage (last_model_call_input_tokens=4200, last_model_call_output_tokens=700, last_state_context_tokens=1800, last_state_context_token_source=provider, model_context_window_tokens=1050000, available_context_tokens=1045800, total_tokens=4900)
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
+  [collection] plugins (count=1, ui_manifest_version=1)
+    [item] persistent-goal (version="1.0.0", status="active", session_paths=["/goal"])
   [control] goal (exists=true, status="active", objective="Ship the runtime", total_tokens=12000, token_budget=200000, elapsed_ms=900000)  actions: {create_goal, pause_goal, complete_goal, clear_goal}
   [control] composer (accepts_attachments=false, max_attachments=0, ready=false, queued_count=1, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
   [collection] queue (count=1)
@@ -290,12 +293,39 @@ Rules:
 - `/usage` is the only public token-accounting surface; `/llm` is reserved for
   profile and credential state
 
+### `/plugins`
+
+Node type: `collection`
+
+`/plugins` lists active first-party session runtime plugins. It is a discovery
+surface for generic consumers and a declarative manifest surface for first-party
+TUI features. It is not an external plugin loader.
+
+Per-plugin item props:
+
+- `id`: stable plugin id
+- `version`: plugin implementation version
+- `status`: currently `active`
+- `description`: optional human-readable summary
+- `session_paths`: public session paths contributed by the plugin
+- `tui`: declarative TUI manifest
+
+The current TUI manifest version is declared by `/plugins.ui_manifest_version`.
+Manifest fields are intentionally data-only:
+
+- `subscriptions`: `{path, depth}` entries the TUI may subscribe to
+- `commands`: slash-command discovery entries with `id`, `name`, optional
+  `aliases`, optional `signature`, and `description`
+- `palette`, `status`, and `notifications`: reserved declarative contribution
+  slots for first-party TUI affordances
+
 ### `/goal`
 
 Node type: `control`
 
-`/goal` is the stable public projection for persistent objectives. Its source
-of truth is the generic extension record at `/extensions/goal`, owned by the
+`/goal` is the stable public projection for persistent objectives. It is
+contributed by the first-party `persistent-goal` session plugin. Its source of
+truth is the generic extension record at `/extensions/goal`, owned by the
 bundled `persistent-goal` skill. Consumers should keep using `/goal` unless they
 need generic extension inspection or cleanup.
 
@@ -333,8 +363,9 @@ Affordances:
 
 Rules:
 
-- `create_goal` loads the `persistent-goal` skill before creating extension
-  metadata; if the skill cannot be resolved, no goal state is created
+- `create_goal` is implemented by the `persistent-goal` session plugin and
+  loads the `persistent-goal` skill before creating extension metadata; if the
+  skill cannot be resolved, no goal state is created
 - creating a goal starts the first goal turn immediately when idle, otherwise
   queues it behind the active turn
 - queued user input takes priority over automatic goal continuation

@@ -273,7 +273,10 @@ export class SessionStore {
   enqueueMessage(
     text: string,
     options?: {
-      author?: "user" | "goal";
+      author?: string;
+      source?: "user" | "plugin";
+      pluginId?: string;
+      pluginRunId?: string;
       goalId?: string;
       continuation?: boolean;
     },

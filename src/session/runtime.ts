@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
@@ -35,9 +34,15 @@ import {
   syncExternalProviderStatesToSession,
   syncProviderSnapshotToSession,
 } from "./mirror-sync";
+import {
+  type ActivePluginTurn,
+  createBuiltinSessionPlugins,
+  type PluginRuntimeContext,
+  type PluginTurnRequest,
+  SessionPluginManager,
+} from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
-import { GOAL_EXTENSION_NAMESPACE } from "./store/goal";
 import type { ApprovalItem } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
@@ -94,7 +99,6 @@ function buildToolResultBlock(toolUseId: string, result: ResultMessage): ToolRes
 
 const PARAMS_PREVIEW_BYTE_LIMIT = 1500;
 const PARAMS_PREVIEW_LINE_LIMIT = 24;
-const PERSISTENT_GOAL_SKILL_NAME = "persistent-goal";
 
 // Compact a tool's params into a multi-line preview for the activity feed.
 // Edit-shaped actions (write/edit/patch) put the new content/hunks first so
@@ -191,55 +195,6 @@ function clampPreview(value: string): string {
   return `${out.slice(0, PARAMS_PREVIEW_BYTE_LIMIT)}…`;
 }
 
-function renderGoalSkillSection(skillContent: string): string {
-  return ["", "Loaded persistent-goal skill:", "", skillContent].join("\n");
-}
-
-function buildGoalStartPrompt(objective: string, skillContent: string): string {
-  return [
-    "Start working toward this persistent session goal.",
-    "",
-    objective,
-    "",
-    "Continue until the objective is genuinely complete or you are blocked. Keep the core runtime lean: use existing SLOP provider state and affordances, and prefer reusable skill updates over hardcoded runtime policy when the work discovers a repeatable procedure.",
-    "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence.",
-    renderGoalSkillSection(skillContent),
-  ].join("\n");
-}
-
-function buildGoalContinuationPrompt(
-  goal: {
-    objective: string;
-    totalTokens: number;
-    tokenBudget?: number;
-  },
-  skillContent: string,
-): string {
-  const budget =
-    goal.tokenBudget === undefined
-      ? "No token budget is configured."
-      : `Token usage so far is ${goal.totalTokens}/${goal.tokenBudget}.`;
-  return [
-    "Continue the active persistent session goal from the current runtime state.",
-    "",
-    goal.objective,
-    "",
-    budget,
-    "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence. If the goal is now complete, mark it complete before your concise completion summary. If work remains, take the next concrete action. If you are blocked, report the blocker.",
-    renderGoalSkillSection(skillContent),
-  ].join("\n");
-}
-
-function compactEvidence(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  return value
-    .flatMap((item) => (typeof item === "string" ? [item.trim()] : []))
-    .filter((item) => item.length > 0)
-    .slice(0, 12);
-}
-
 export interface SessionAgent {
   start(): Promise<void>;
   chat(userMessage: string): Promise<AgentRunResult>;
@@ -327,9 +282,8 @@ export class SessionRuntime {
   private readonly localProviderIds = new Set<string>();
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
-  private currentTurnContinuation = false;
-  private currentTurnGoalId: string | null = null;
-  private goalSkillContent: string | null = null;
+  private currentPluginTurn: ActivePluginTurn | null = null;
+  private readonly plugins: SessionPluginManager;
   private readonly startedRuntimeConfigFingerprint: string;
 
   constructor(options?: {
@@ -385,6 +339,10 @@ export class SessionRuntime {
           options?.sessionPersistencePath,
         ),
       });
+    this.plugins = new SessionPluginManager(
+      createBuiltinSessionPlugins(),
+      this.createPluginContext(),
+    );
 
     if (!this.requiresLlmProfile) {
       this.store.syncLlmState(
@@ -475,8 +433,46 @@ export class SessionRuntime {
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
   }
 
+  private createPluginContext(): PluginRuntimeContext {
+    return {
+      config: () => this.config,
+      store: this.store,
+      snapshot: () => this.store.getSnapshot(),
+      ensureReady: async () => {
+        await this.start();
+        if (this.requiresLlmProfile) {
+          await this.refreshLlmState({ requireReady: true });
+        }
+      },
+      invokeProvider: async (providerId, path, action, params) =>
+        this.agent.invokeProvider(providerId, path, action, params),
+      queryProvider: async (providerId, path, options) => {
+        if (!this.agent.queryProvider) {
+          throw new Error("Provider state query is not available for this session agent.");
+        }
+        return this.agent.queryProvider(providerId, path, options);
+      },
+      startTurn: (request) => this.startPluginTurn(request),
+      queueTurn: (request) => this.queuePluginTurn(request),
+      drainQueue: () => this.startNextQueuedTurn(),
+      audit: (event) => this.audit(event),
+    };
+  }
+
   registerSessionProviderId(providerId: string): void {
     this.localProviderIds.add(providerId);
+  }
+
+  getPluginSessionNodes() {
+    return this.plugins.sessionNodes();
+  }
+
+  getPluginRuntimeContext(): PluginRuntimeContext {
+    return this.createPluginContext();
+  }
+
+  buildPluginsDescriptor() {
+    return this.plugins.buildPluginsDescriptor();
   }
 
   async start(): Promise<void> {
@@ -494,246 +490,13 @@ export class SessionRuntime {
     this.started = true;
   }
 
-  private async loadPersistentGoalSkillContent(): Promise<string> {
-    if (this.goalSkillContent) {
-      return this.goalSkillContent;
-    }
-
-    const providerContent = await this.loadPersistentGoalSkillFromProvider();
-    if (providerContent) {
-      this.goalSkillContent = providerContent;
-      return providerContent;
-    }
-
-    const builtinContent = this.loadPersistentGoalSkillFromDisk();
-    if (builtinContent) {
-      this.goalSkillContent = builtinContent;
-      return builtinContent;
-    }
-
-    throw new Error(
-      "Cannot create a persistent goal because the persistent-goal skill could not be resolved.",
-    );
-  }
-
-  private goalSkillContentForContinuation(): string | null {
-    if (this.goalSkillContent) {
-      return this.goalSkillContent;
-    }
-    const builtinContent = this.loadPersistentGoalSkillFromDisk();
-    if (builtinContent) {
-      this.goalSkillContent = builtinContent;
-      return builtinContent;
-    }
-    return null;
-  }
-
-  private async loadPersistentGoalSkillFromProvider(): Promise<string | null> {
-    try {
-      const result = await this.agent.invokeProvider("skills", "/session", "skill_view", {
-        name: PERSISTENT_GOAL_SKILL_NAME,
-      });
-      if (result.status !== "ok") {
-        return null;
-      }
-      const data = (result as { data?: unknown }).data;
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        return null;
-      }
-      const content = (data as Record<string, unknown>).content;
-      return typeof content === "string" && content.trim().length > 0 ? content : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private loadPersistentGoalSkillFromDisk(): string | null {
-    const builtinSkillsDir = this.config.providers.skills.builtinSkillsDir ?? "skills";
-    const path = join(builtinSkillsDir, "runtime", PERSISTENT_GOAL_SKILL_NAME, "SKILL.md");
-    try {
-      const content = readFileSync(path, "utf8");
-      return content.trim().length > 0 ? content : null;
-    } catch {
-      return null;
-    }
-  }
-
   private buildLocalTools(): LocalRuntimeTool[] {
     const tools: LocalRuntimeTool[] = [];
     if (this.config.providers.builtin.delegation) {
       tools.push(createDelegationWaitTool());
     }
-
-    const snapshot = this.store.getSnapshot();
-    const goal = snapshot.goal;
-    const goalExtension = snapshot.extensions[GOAL_EXTENSION_NAMESPACE];
-    if (!goal || goal.status === "complete" || goal.goalId !== this.currentTurnGoalId) {
-      return tools;
-    }
-
-    tools.push({
-      providerId: "session",
-      path: "/goal",
-      tool: {
-        type: "function",
-        function: {
-          name: "slop_goal_update",
-          description:
-            "Report progress for the active persistent session goal. Use status=progress for evidence of forward movement, status=blocked when work cannot continue, and status=complete only when the objective is genuinely achieved.",
-          parameters: {
-            type: "object",
-            properties: {
-              status: {
-                type: "string",
-                enum: ["progress", "blocked", "complete"],
-                description: "Goal report status.",
-              },
-              message: {
-                type: "string",
-                description: "Concise progress, blocker, or completion message.",
-              },
-              evidence: {
-                type: "array",
-                items: { type: "string" },
-                description:
-                  "Optional concrete evidence such as file paths changed, tests run, audit logs, or blockers observed.",
-              },
-            },
-            required: ["status", "message"],
-            additionalProperties: false,
-          },
-        },
-      },
-      execute: (params) => this.reportGoalUpdate(params, goal.goalId, goalExtension?.revision),
-    });
-
+    tools.push(...this.plugins.localTools(this.currentPluginTurn));
     return tools;
-  }
-
-  private reportGoalUpdate(
-    params: Record<string, unknown>,
-    expectedGoalId: string,
-    expectedRevision: number | undefined,
-  ): {
-    status: "ok" | "error";
-    summary: string;
-    content: unknown;
-    isError?: boolean;
-  } {
-    const goal = this.store.getSnapshot().goal;
-    if (!goal || goal.goalId !== expectedGoalId || this.currentTurnGoalId !== expectedGoalId) {
-      return {
-        status: "error",
-        summary: "Goal update no longer matches the active goal turn.",
-        content: {
-          status: "error",
-          error: {
-            code: "goal_mismatch",
-            message:
-              "The goal update was produced by a stale goal turn and was not applied to the current goal.",
-          },
-        },
-        isError: true,
-      };
-    }
-
-    const reportStatus = typeof params.status === "string" ? params.status : "";
-    if (reportStatus !== "progress" && reportStatus !== "blocked" && reportStatus !== "complete") {
-      return {
-        status: "error",
-        summary: "Goal update status must be progress, blocked, or complete.",
-        content: {
-          status: "error",
-          error: {
-            code: "invalid_goal_status",
-            message: "Goal update status must be progress, blocked, or complete.",
-          },
-        },
-        isError: true,
-      };
-    }
-
-    const message = typeof params.message === "string" ? params.message.trim() : "";
-    if (!message) {
-      return {
-        status: "error",
-        summary: "Goal update message cannot be empty.",
-        content: {
-          status: "error",
-          error: {
-            code: "invalid_goal_message",
-            message: "Goal update message cannot be empty.",
-          },
-        },
-        isError: true,
-      };
-    }
-
-    const evidence = compactEvidence(params.evidence);
-    try {
-      if (reportStatus === "progress") {
-        this.store.updateGoalStatus(
-          "active",
-          {
-            message,
-            evidence,
-            source: "model",
-          },
-          { expectedGoalId, expectedRevision },
-        );
-      } else if (reportStatus === "blocked") {
-        this.store.updateGoalStatus(
-          "paused",
-          {
-            message: `Blocked: ${message}`,
-            evidence,
-            source: "model",
-          },
-          { expectedGoalId, expectedRevision },
-        );
-      } else {
-        this.store.updateGoalStatus(
-          "complete",
-          {
-            message,
-            evidence,
-            source: "model",
-          },
-          { expectedGoalId, expectedRevision },
-        );
-      }
-    } catch {
-      return {
-        status: "error",
-        summary: "Goal update no longer matches the active goal turn.",
-        content: {
-          status: "error",
-          error: {
-            code: "goal_mismatch",
-            message:
-              "The goal update was produced by a stale goal turn and was not applied to the current goal.",
-          },
-        },
-        isError: true,
-      };
-    }
-
-    const updated = this.store.getSnapshot().goal;
-    return {
-      status: "ok",
-      summary: `Goal ${reportStatus}: ${message}`,
-      content: {
-        status: "ok",
-        data: {
-          goal_id: updated?.goalId,
-          status: updated?.status,
-          message: updated?.message,
-          evidence_count: updated?.evidence?.length ?? 0,
-          update_source: updated?.updateSource,
-          completion_source: updated?.completionSource,
-        },
-      },
-    };
   }
 
   async sendMessage(text: string): Promise<SendMessageResult> {
@@ -779,8 +542,7 @@ export class SessionRuntime {
     const turnId = this.store.beginTurn(userMessage);
     this.currentTurnStartedAt = Date.now();
     this.currentTurnUsedTools = false;
-    this.currentTurnContinuation = false;
-    this.currentTurnGoalId = null;
+    this.currentPluginTurn = null;
     this.currentTurnId = turnId;
     this.audit({
       kind: "turn_started",
@@ -792,135 +554,60 @@ export class SessionRuntime {
     return { status: "started", turnId };
   }
 
-  private startGoalTurn(
-    userMessage: string,
-    continuation: boolean,
-    goalId = this.store.getSnapshot().goal?.goalId,
-  ): { status: "started"; turnId: string } {
-    const turnId = this.store.beginTurn(userMessage, {
-      role: continuation ? "system" : "user",
-      author: continuation ? "goal" : "user",
+  private startPluginTurn(request: PluginTurnRequest): { status: "started"; turnId: string } {
+    const turnId = this.store.beginTurn(request.text, {
+      role: request.role ?? (request.continuation ? "system" : "user"),
+      author: request.author,
     });
     this.currentTurnStartedAt = Date.now();
     this.currentTurnUsedTools = false;
-    this.currentTurnContinuation = continuation;
-    this.currentTurnGoalId = goalId ?? null;
+    this.currentPluginTurn = {
+      pluginId: request.pluginId,
+      runId: request.runId,
+      author: request.author,
+      continuation: request.continuation === true,
+      metadata: request.metadata,
+    };
     this.currentTurnId = turnId;
     this.audit({
       kind: "turn_started",
       turnId,
-      source: "goal",
-      goalId,
-      continuation,
+      source: "plugin",
+      pluginId: request.pluginId,
+      pluginRunId: request.runId,
+      author: request.author,
+      continuation: request.continuation === true,
+      ...(request.metadata ?? {}),
     });
-    this.activeTurnPromise = this.runTurn(turnId, userMessage);
+    this.activeTurnPromise = this.runTurn(turnId, request.text);
     return { status: "started", turnId };
   }
 
-  async createGoal(params: Record<string, unknown>): Promise<{
-    status: "started" | "queued";
-    goalId: string;
-    turnId?: string;
-    queuedMessageId?: string;
-    position?: number;
-  }> {
-    const objective = typeof params.objective === "string" ? params.objective.trim() : "";
-    if (!objective) {
-      throw new Error("Goal objective cannot be empty.");
-    }
-
-    const tokenBudget =
-      typeof params.token_budget === "number" && Number.isFinite(params.token_budget)
-        ? Math.max(1, Math.floor(params.token_budget))
-        : undefined;
-
-    await this.start();
-    if (this.requiresLlmProfile) {
-      await this.refreshLlmState({ requireReady: true });
-    }
-    const goalSkillContent = await this.loadPersistentGoalSkillContent();
-
-    const goalId = this.store.createGoal({
-      objective,
-      tokenBudget,
-      message: "Goal active.",
+  private queuePluginTurn(request: PluginTurnRequest): {
+    status: "queued";
+    queuedMessageId: string;
+    position: number;
+  } {
+    const queued = this.store.enqueueMessage(request.text, {
+      author: request.author,
+      source: "plugin",
+      pluginId: request.pluginId,
+      pluginRunId: request.runId,
+      goalId: typeof request.metadata?.goalId === "string" ? request.metadata.goalId : undefined,
+      continuation: request.continuation === true,
     });
-    this.audit({
-      kind: "goal_created",
-      goalId,
-      tokenBudget,
-    });
-    const prompt = buildGoalStartPrompt(objective, goalSkillContent);
-
-    if (this.currentTurnId) {
-      const queued = this.store.enqueueMessage(prompt, {
-        author: "goal",
-        goalId,
-        continuation: false,
-      });
-      const position =
-        this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
-      this.audit({
-        kind: "turn_queued",
-        queuedMessageId: queued.id,
-        position,
-        source: "goal",
-        goalId,
-        continuation: false,
-      });
-      return {
-        status: "queued",
-        goalId,
-        queuedMessageId: queued.id,
-        position,
-      };
-    }
-
-    const started = this.startGoalTurn(prompt, false, goalId);
+    const position =
+      this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
     return {
-      status: "started",
-      goalId,
-      turnId: started.turnId,
+      status: "queued",
+      queuedMessageId: queued.id,
+      position,
     };
   }
 
-  pauseGoal(message?: string): { status: string } {
-    const goalId = this.store.getSnapshot().goal?.goalId;
-    this.store.updateGoalStatus("paused", { message, source: "user" });
-    this.audit({ kind: "goal_status", goalId, status: "paused", source: "user" });
-    return { status: "paused" };
-  }
-
-  resumeGoal(message?: string): { status: string } {
-    const goalId = this.store.getSnapshot().goal?.goalId;
-    this.store.updateGoalStatus("active", { message, source: "user" });
-    this.audit({ kind: "goal_status", goalId, status: "active", source: "user" });
-    this.startNextQueuedTurn();
-    return { status: "active" };
-  }
-
-  completeGoal(message?: string): { status: string } {
-    const goalId = this.store.getSnapshot().goal?.goalId;
-    this.store.updateGoalStatus("complete", { message, source: "user" });
-    this.audit({ kind: "goal_status", goalId, status: "complete", source: "user" });
-    return { status: "complete" };
-  }
-
-  clearGoal(): { status: string } {
-    const goalId = this.store.getSnapshot().goal?.goalId;
-    this.store.clearGoal();
-    this.audit({ kind: "goal_cleared", goalId });
-    return { status: "cleared" };
-  }
-
   clearExtension(namespace: string): { status: string; namespace: string; removed: boolean } {
-    const goalId =
-      namespace === GOAL_EXTENSION_NAMESPACE ? this.store.getSnapshot().goal?.goalId : undefined;
     const removed = this.store.clearExtension(namespace);
     this.audit({ kind: "extension_cleared", namespace, removed });
-    if (removed && namespace === GOAL_EXTENSION_NAMESPACE) {
-      this.audit({ kind: "goal_cleared", goalId });
-    }
     return { status: removed ? "cleared" : "missing", namespace, removed };
   }
 
@@ -1225,6 +912,7 @@ export class SessionRuntime {
         // Best-effort provider cleanup should not block ending the local turn.
       }
 
+      const pluginTurn = this.currentPluginTurn;
       this.agent.clearPendingApproval();
       this.pendingApproval = null;
       this.currentTurnId = null;
@@ -1243,8 +931,15 @@ export class SessionRuntime {
         sessionApprovalId: pendingApproval.sessionApprovalId,
         approvalStatus,
       });
-      this.pauseActiveGoal("Goal paused after turn cancellation.");
-      this.currentTurnGoalId = null;
+      if (pluginTurn) {
+        this.plugins.onTurnFailure({
+          turnId,
+          pluginTurn,
+          message,
+          cancelled: true,
+        });
+      }
+      this.currentPluginTurn = null;
       this.startNextQueuedTurn();
       return {
         status: "cancelled",
@@ -1419,18 +1114,27 @@ export class SessionRuntime {
       return;
     }
 
-    const goalId = this.currentTurnGoalId;
-    const continuation = this.currentTurnContinuation;
-    this.accountGoalTurn(turnId, result);
+    const pluginTurn = this.currentPluginTurn;
+    const elapsedMs = this.currentTurnStartedAt > 0 ? Date.now() - this.currentTurnStartedAt : 0;
+    if (pluginTurn) {
+      this.plugins.onTurnComplete({
+        turnId,
+        pluginTurn,
+        result,
+        elapsedMs,
+        usedTools: this.currentTurnUsedTools,
+      });
+    }
     this.pendingApproval = null;
     this.currentTurnId = null;
-    this.currentTurnGoalId = null;
+    this.currentPluginTurn = null;
     this.store.completeTurn(turnId, result.response);
     this.audit({
       kind: "turn_completed",
       turnId,
-      goalId,
-      continuation,
+      pluginId: pluginTurn?.pluginId,
+      pluginRunId: pluginTurn?.runId,
+      continuation: pluginTurn?.continuation ?? false,
       inputTokens: result.usage?.inputTokens,
       outputTokens: result.usage?.outputTokens,
     });
@@ -1439,25 +1143,41 @@ export class SessionRuntime {
 
   private failTurn(turnId: string, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
+    const pluginTurn = this.currentPluginTurn;
     this.pendingApproval = null;
     this.currentTurnId = null;
     this.store.failTurn(turnId, message);
     this.audit({ kind: "turn_failed", turnId, errorMessage: message });
-    this.pauseActiveGoal(`Goal paused after turn failure: ${message}`);
-    this.currentTurnGoalId = null;
+    if (pluginTurn) {
+      this.plugins.onTurnFailure({
+        turnId,
+        pluginTurn,
+        message,
+        cancelled: false,
+      });
+    }
+    this.currentPluginTurn = null;
     this.startNextQueuedTurn();
   }
 
   private handleTurnFailure(turnId: string, error: unknown): void {
     if (isLlmAbortError(error)) {
+      const pluginTurn = this.currentPluginTurn;
       this.pendingApproval = null;
       this.currentTurnId = null;
       this.store.cancelTurn(turnId, {
         message: "Turn cancelled by user.",
       });
       this.audit({ kind: "turn_cancelled", turnId, reason: "llm_abort" });
-      this.pauseActiveGoal("Goal paused after turn cancellation.");
-      this.currentTurnGoalId = null;
+      if (pluginTurn) {
+        this.plugins.onTurnFailure({
+          turnId,
+          pluginTurn,
+          message: "Turn cancelled by user.",
+          cancelled: true,
+        });
+      }
+      this.currentPluginTurn = null;
       this.startNextQueuedTurn();
       return;
     }
@@ -1471,73 +1191,22 @@ export class SessionRuntime {
     }
     const next = this.store.dequeueMessage();
     if (!next) {
-      this.startGoalContinuationTurn();
+      const pluginTurn = this.plugins.nextTurn();
+      if (pluginTurn) {
+        this.startPluginTurn(pluginTurn);
+      }
       return;
     }
-    if (next.author === "goal") {
-      const goal = this.store.getSnapshot().goal;
-      if (goal && goal.status === "active" && goal.goalId === next.goalId) {
-        this.startGoalTurn(next.text, next.continuation === true, next.goalId);
-        return;
-      }
+    const pluginTurn = this.plugins.acceptQueuedTurn(next);
+    if (pluginTurn) {
+      this.startPluginTurn(pluginTurn);
+      return;
+    }
+    if (next.source === "plugin" || next.author === "goal") {
       this.startNextQueuedTurn();
       return;
     }
     this.startTurn(next.text);
-  }
-
-  private startGoalContinuationTurn(): void {
-    if (this.currentTurnId) {
-      return;
-    }
-    const goal = this.store.getSnapshot().goal;
-    if (!goal || goal.status !== "active") {
-      return;
-    }
-    const goalSkillContent = this.goalSkillContentForContinuation();
-    if (!goalSkillContent) {
-      this.store.updateGoalStatus("paused", {
-        message: "Goal paused because the persistent-goal skill could not be resolved.",
-        source: "runtime",
-      });
-      this.audit({
-        kind: "goal_status",
-        goalId: goal.goalId,
-        status: "paused",
-        source: "runtime",
-      });
-      return;
-    }
-    this.startGoalTurn(buildGoalContinuationPrompt(goal, goalSkillContent), true, goal.goalId);
-  }
-
-  private pauseActiveGoal(message: string): void {
-    const goal = this.store.getSnapshot().goal;
-    if (goal?.status === "active" && goal.goalId === this.currentTurnGoalId) {
-      this.store.updateGoalStatus("paused", { message, source: "runtime" });
-      this.audit({
-        kind: "goal_status",
-        goalId: goal.goalId,
-        status: "paused",
-        source: "runtime",
-      });
-    }
-  }
-
-  private accountGoalTurn(turnId: string, result: AgentRunResult): void {
-    const goal = this.store.getSnapshot().goal;
-    if (!goal || goal.goalId !== this.currentTurnGoalId) {
-      return;
-    }
-    const elapsedMs = this.currentTurnStartedAt > 0 ? Date.now() - this.currentTurnStartedAt : 0;
-    this.store.accountGoalTurn({
-      turnId,
-      inputTokens: result.usage?.inputTokens,
-      outputTokens: result.usage?.outputTokens,
-      elapsedMs,
-      continuation: this.currentTurnContinuation,
-      usedTools: this.currentTurnUsedTools,
-    });
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {

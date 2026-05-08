@@ -9,6 +9,9 @@ import type {
   InspectState,
   LlmProfile,
   LlmState,
+  PluginCommandContribution,
+  PluginItem,
+  PluginTuiManifest,
   QueuedItem,
   SessionMeta,
   SessionViewSnapshot,
@@ -88,6 +91,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
   approvals: [],
   tasks: [],
   apps: [],
+  plugins: [],
   queue: [],
   inspect: EMPTY_INSPECT,
 };
@@ -138,6 +142,22 @@ function stringArrayProp(source: Record<string, unknown>, key: string): string[]
   const value = source[key];
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function recordProp(source: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = source[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function recordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          item !== null && typeof item === "object" && !Array.isArray(item),
+      )
     : [];
 }
 
@@ -432,6 +452,51 @@ export function mapAppsNode(node: SlopNode | null | undefined): AppItem[] {
   });
 }
 
+function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest {
+  return {
+    subscriptions: recordArray(value.subscriptions)
+      .map((entry) => ({
+        path: optionalStringProp(entry, "path") ?? "",
+        depth: numberProp(entry, "depth", 1),
+      }))
+      .filter((entry) => entry.path.startsWith("/")),
+    commands: recordArray(value.commands).flatMap((entry): PluginCommandContribution[] => {
+      const id = optionalStringProp(entry, "id");
+      const name = optionalStringProp(entry, "name");
+      const description = optionalStringProp(entry, "description");
+      if (!id || !name || !description) {
+        return [];
+      }
+      return [
+        {
+          id,
+          name,
+          aliases: stringArrayProp(entry, "aliases"),
+          signature: optionalStringProp(entry, "signature"),
+          description,
+        },
+      ];
+    }),
+    palette: recordArray(value.palette),
+    status: recordArray(value.status),
+    notifications: recordArray(value.notifications),
+  };
+}
+
+export function mapPluginsNode(node: SlopNode | null | undefined): PluginItem[] {
+  return children(node).map((item) => {
+    const p = props(item);
+    return {
+      id: stringProp(p, "id", item.id),
+      version: stringProp(p, "version", "0.0.0"),
+      status: stringProp(p, "status", "unknown"),
+      description: optionalStringProp(p, "description"),
+      sessionPaths: stringArrayProp(p, "session_paths"),
+      tui: mapPluginTuiManifest(recordProp(p, "tui")),
+    };
+  });
+}
+
 export function applyPathSnapshot(
   snapshot: SessionViewSnapshot,
   path: string,
@@ -460,6 +525,8 @@ export function applyPathSnapshot(
       return { ...snapshot, tasks: mapTasksNode(node) };
     case "/apps":
       return { ...snapshot, apps: mapAppsNode(node) };
+    case "/plugins":
+      return { ...snapshot, plugins: mapPluginsNode(node) };
     case "/queue":
       return { ...snapshot, queue: mapQueueNode(node) };
     default:

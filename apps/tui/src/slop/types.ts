@@ -216,6 +216,31 @@ export type AppItem = {
   lastError?: string;
 };
 
+export type PluginCommandContribution = {
+  id: string;
+  name: string;
+  aliases?: string[];
+  signature?: string;
+  description: string;
+};
+
+export type PluginTuiManifest = {
+  subscriptions?: Array<{ path: string; depth: number }>;
+  commands?: PluginCommandContribution[];
+  palette?: Array<Record<string, unknown>>;
+  status?: Array<Record<string, unknown>>;
+  notifications?: Array<Record<string, unknown>>;
+};
+
+export type PluginItem = {
+  id: string;
+  version: string;
+  status: string;
+  description?: string;
+  sessionPaths: string[];
+  tui: PluginTuiManifest;
+};
+
 export type InspectState = {
   targetId: string;
   targetName: string;
@@ -253,6 +278,7 @@ export type SessionViewSnapshot = {
   approvals: ApprovalItem[];
   tasks: TaskItem[];
   apps: AppItem[];
+  plugins: PluginItem[];
   queue: QueuedItem[];
   inspect: InspectState;
 };

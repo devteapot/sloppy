@@ -17,6 +17,7 @@ import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palet
 import { parseLocalCommand } from "../apps/tui/src/state/commands";
 import { ComposerHistory } from "../apps/tui/src/state/composer-history";
 import { reconcileInitialRoute } from "../apps/tui/src/state/initial-route";
+import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
 
 const listeners: Array<{ close: () => void }> = [];
 
@@ -118,6 +119,49 @@ describe("TUI node mappers", () => {
     expect(next.turn.state).toBe("running");
     expect(next.turn.canCancel).toBe(true);
     expect(next.transcript).toEqual([]);
+  });
+
+  test("maps plugin manifests into slash command discovery", () => {
+    const next = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
+      id: "plugins",
+      type: "collection",
+      properties: {
+        count: 1,
+        ui_manifest_version: 1,
+      },
+      children: [
+        {
+          id: "persistent-goal",
+          type: "item",
+          properties: {
+            id: "persistent-goal",
+            version: "1.0.0",
+            status: "active",
+            description: "Persistent long-running session objective controls.",
+            session_paths: ["/goal"],
+            tui: {
+              subscriptions: [{ path: "/goal", depth: 1 }],
+              commands: [
+                {
+                  id: "goal",
+                  name: "goal",
+                  signature: "<objective>|pause|resume|complete|clear",
+                  description: "Persistent session goal controls",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(next.plugins[0]?.id).toBe("persistent-goal");
+    expect(next.plugins[0]?.sessionPaths).toEqual(["/goal"]);
+    expect(next.plugins[0]?.tui.subscriptions?.[0]).toEqual({ path: "/goal", depth: 1 });
+
+    expect(buildSlashEntries().some((entry) => entry.name === "goal")).toBe(false);
+    expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "goal")).toBe(true);
+    expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("goal");
   });
 
   test("maps workspace and project scope from session state", () => {

@@ -1013,6 +1013,57 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("exposes session plugin manifests and contributed session nodes", async () => {
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-plugins",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-plugins",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const plugins = await consumer.query("/plugins", 2);
+      expect(plugins.properties?.count).toBeGreaterThanOrEqual(1);
+      expect(plugins.properties?.ui_manifest_version).toBe(1);
+
+      const goalPlugin = plugins.children?.find((item) => item.id === "persistent-goal");
+      expect(goalPlugin?.properties?.status).toBe("active");
+      expect(goalPlugin?.properties?.session_paths).toContain("/goal");
+
+      const tui = goalPlugin?.properties?.tui as
+        | {
+            commands?: Array<Record<string, unknown>>;
+            subscriptions?: Array<Record<string, unknown>>;
+          }
+        | undefined;
+      expect(tui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
+      expect(tui?.commands?.some((command) => command.name === "goal")).toBe(true);
+
+      const manifest = await consumer.invoke("/plugins/persistent-goal", "inspect_manifest", {});
+      expect(manifest.status).toBe("ok");
+      const manifestData = manifest.data as {
+        manifest?: { commands?: Array<{ name?: string }> };
+      };
+      expect(manifestData.manifest?.commands?.[0]?.name).toBe("goal");
+
+      const goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.status).toBe("none");
+      expect(goal.affordances?.some((affordance) => affordance.action === "create_goal")).toBe(
+        true,
+      );
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("exposes persistent goal controls and pauses continuation after no tool activity", async () => {
     const harness = createNoToolGoalHarnessFactory();
     const runtime = new SessionRuntime({

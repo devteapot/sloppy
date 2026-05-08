@@ -1,4 +1,6 @@
-// Catalog of slash commands surfaced in the autocomplete popover.
+import type { PluginItem } from "../slop/types";
+
+// Catalog of built-in slash commands surfaced in the autocomplete popover.
 // Keep entries terse — `name` is the canonical form (no leading slash);
 // `signature` shows arguments hint; `description` is one short line.
 
@@ -9,7 +11,7 @@ export type SlashEntry = {
   description: string;
 };
 
-export const SLASH_ENTRIES: SlashEntry[] = [
+export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
   { name: "help", description: "Show hotkeys and slash commands" },
   { name: "quit", aliases: ["q", "exit"], description: "Exit the TUI" },
   { name: "clear", aliases: ["new"], description: "Discard the queued message buffer" },
@@ -21,11 +23,6 @@ export const SLASH_ENTRIES: SlashEntry[] = [
   { name: "apps", description: "List attached external providers" },
   { name: "inspect", aliases: ["tree"], description: "Open the SLOP state inspector" },
 
-  {
-    name: "goal",
-    signature: "<objective>|pause|resume|complete|clear",
-    description: "Persistent session goal controls",
-  },
   {
     name: "verbosity",
     aliases: ["verbose", "compact", "normal"],
@@ -87,6 +84,20 @@ export const SLASH_ENTRIES: SlashEntry[] = [
   },
 ];
 
+export function buildSlashEntries(plugins: PluginItem[] = []): SlashEntry[] {
+  const pluginEntries = plugins.flatMap((plugin) =>
+    (plugin.tui.commands ?? []).map(
+      (command): SlashEntry => ({
+        name: command.name,
+        aliases: command.aliases,
+        signature: command.signature,
+        description: command.description,
+      }),
+    ),
+  );
+  return [...BUILTIN_SLASH_ENTRIES, ...pluginEntries];
+}
+
 export type SlashSuggestion = {
   entry: SlashEntry;
   // The canonical form to insert — `name` for primary, alias name otherwise.
@@ -95,19 +106,24 @@ export type SlashSuggestion = {
 
 // Match draft like "/qu" against entries. Prefix match on names + aliases,
 // then fuzzy-substring for everything else, capped at `limit`.
-export function matchSlashEntries(input: string, limit = 8): SlashSuggestion[] {
+export function matchSlashEntries(
+  input: string,
+  limit = 8,
+  plugins: PluginItem[] = [],
+): SlashSuggestion[] {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) return [];
   const head = trimmed.slice(1).split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  const entries = buildSlashEntries(plugins);
   if (head.length === 0) {
-    return SLASH_ENTRIES.slice(0, limit).map((entry) => ({ entry, insertion: entry.name }));
+    return entries.slice(0, limit).map((entry) => ({ entry, insertion: entry.name }));
   }
 
   const seen = new Set<string>();
   const exact: SlashSuggestion[] = [];
   const prefix: SlashSuggestion[] = [];
   const fuzzy: SlashSuggestion[] = [];
-  for (const entry of SLASH_ENTRIES) {
+  for (const entry of entries) {
     const candidates = [entry.name, ...(entry.aliases ?? [])];
     for (const candidate of candidates) {
       if (seen.has(entry.name)) continue;
