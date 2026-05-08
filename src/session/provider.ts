@@ -128,6 +128,7 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       adapter_id: profile.adapterId,
       api_key_env: profile.apiKeyEnv,
       base_url: profile.baseUrl,
+      context_window_tokens: profile.contextWindowTokens,
       is_default: profile.isDefault,
       has_key: profile.hasKey,
       key_source: profile.keySource,
@@ -231,6 +232,7 @@ export class AgentSessionProvider {
 
     this.server.register("session", () => this.buildSessionDescriptor());
     this.server.register("llm", () => this.buildLlmDescriptor());
+    this.server.register("usage", () => this.buildUsageDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
     this.server.register("goal", () => this.buildGoalDescriptor());
     this.server.register("extensions", () => this.buildExtensionsDescriptor());
@@ -469,6 +471,7 @@ export class AgentSessionProvider {
         active_profile_id: snapshot.llm.activeProfileId,
         selected_provider: snapshot.llm.selectedProvider,
         selected_model: snapshot.llm.selectedModel,
+        selected_context_window_tokens: snapshot.llm.selectedContextWindowTokens,
         secure_store_kind: snapshot.llm.secureStoreKind,
         secure_store_status: snapshot.llm.secureStoreStatus,
         count: snapshot.llm.profiles.length,
@@ -555,6 +558,40 @@ export class AgentSessionProvider {
         ),
       },
       items: snapshot.llm.profiles.map((profile) => buildLlmProfileItem(profile)),
+    };
+  }
+
+  private buildUsageDescriptor(): NodeDescriptor {
+    const usage = this.runtime.store.getSnapshot().usage;
+
+    return {
+      type: "context",
+      props: {
+        last_turn_id: usage.lastTurnId,
+        last_model_call_input_tokens: usage.lastModelCallInputTokens,
+        last_model_call_output_tokens: usage.lastModelCallOutputTokens,
+        last_model_call_input_source: usage.lastModelCallInputSource,
+        last_model_call_output_source: usage.lastModelCallOutputSource,
+        current_turn_input_tokens: usage.currentTurnInputTokens,
+        current_turn_output_tokens: usage.currentTurnOutputTokens,
+        current_turn_model_calls: usage.currentTurnModelCalls,
+        total_input_tokens: usage.totalInputTokens,
+        total_output_tokens: usage.totalOutputTokens,
+        total_tokens:
+          usage.totalInputTokens === undefined && usage.totalOutputTokens === undefined
+            ? undefined
+            : (usage.totalInputTokens ?? 0) + (usage.totalOutputTokens ?? 0),
+        last_state_context_tokens: usage.lastStateContextTokens,
+        last_state_context_token_source: usage.lastStateContextTokenSource,
+        model_context_window_tokens: usage.modelContextWindowTokens,
+        available_context_tokens: usage.availableContextTokens,
+        updated_at: usage.updatedAt,
+      },
+      summary:
+        "Session-owned token accounting. State-context values describe the SLOP state tail, not the model context window.",
+      meta: {
+        salience: 0.9,
+      },
     };
   }
 

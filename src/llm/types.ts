@@ -24,8 +24,18 @@ export interface ToolResultContentBlock {
   isError?: boolean;
 }
 
+export interface ImageContentBlock {
+  type: "image";
+  mediaType: string;
+  data: string;
+}
+
 export type AssistantContentBlock = TextContentBlock | ToolUseContentBlock;
-export type MessageContentBlock = TextContentBlock | ToolUseContentBlock | ToolResultContentBlock;
+export type MessageContentBlock =
+  | TextContentBlock
+  | ToolUseContentBlock
+  | ToolResultContentBlock
+  | ImageContentBlock;
 
 export interface ConversationMessage {
   role: "user" | "assistant";
@@ -36,9 +46,16 @@ export interface LlmResponse {
   content: AssistantContentBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
   usage: {
-    inputTokens: number;
-    outputTokens: number;
+    inputTokens?: number;
+    outputTokens?: number;
   };
+}
+
+export type LlmTokenCountSource = "provider" | "local" | "unavailable";
+
+export interface LlmTokenCount {
+  tokens?: number;
+  source: LlmTokenCountSource;
 }
 
 export interface LlmChatOptions {
@@ -52,6 +69,7 @@ export interface LlmChatOptions {
 
 export interface LlmAdapter {
   chat(options: LlmChatOptions): Promise<LlmResponse>;
+  countTextTokens?(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount>;
 }
 
 export class LlmAbortError extends Error {

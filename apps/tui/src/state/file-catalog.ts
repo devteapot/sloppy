@@ -5,6 +5,7 @@
 // fast on large repos. Falls back to a bounded recursive walk that
 // skips common heavy directories.
 
+import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 
@@ -83,7 +84,7 @@ async function walkFallback(root: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {
     if (out.length >= FALLBACK_MAX_FILES) return;
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {

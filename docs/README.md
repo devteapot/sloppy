@@ -25,6 +25,7 @@ These documents describe intended directions that should not be treated as imple
 ## Research
 
 - `research/prior-art.md` — OpenClaw, Hermes Agent, and adjacent runtime/auth notes.
+- `research/agent-harnesses-and-tui-audit.md` — May 2026 comparison of Hermes Agent, OpenClaw, pi-mono, Claude Code, Factory Droid, OpenCode, and Sloppy, with a detailed current TUI audit.
 
 ## Archive
 

@@ -28,6 +28,7 @@ export const llmProfileSchema = z.object({
   adapterId: z.string().optional(),
   apiKeyEnv: z.string().optional(),
   baseUrl: z.string().optional(),
+  contextWindowTokens: z.number().int().min(1).optional(),
 });
 
 const acpDelegationConfigSchema = z.object({
@@ -136,6 +137,7 @@ export const sloppyConfigSchema = z.object({
       adapterId: z.string().optional(),
       apiKeyEnv: z.string().optional(),
       baseUrl: z.string().optional(),
+      contextWindowTokens: z.number().int().min(1).optional(),
       defaultProfileId: z.string().optional(),
       profiles: z.array(llmProfileSchema).default([]),
       maxTokens: z.number().int().min(256).default(4096),
@@ -148,7 +150,6 @@ export const sloppyConfigSchema = z.object({
   agent: z
     .object({
       maxIterations: z.number().int().min(1).default(32),
-      contextBudgetTokens: z.number().int().min(1024).default(24000),
       minSalience: z.number().min(0).max(1).default(0.2),
       overviewDepth: z.number().int().min(1).default(2),
       overviewMaxNodes: z.number().int().min(10).default(200),
@@ -159,7 +160,6 @@ export const sloppyConfigSchema = z.object({
     })
     .default({
       maxIterations: 32,
-      contextBudgetTokens: 24000,
       minSalience: 0.2,
       overviewDepth: 2,
       overviewMaxNodes: 200,
@@ -464,6 +464,7 @@ export type LlmProfileConfig = {
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
 };
 
 export interface LlmConfig {
@@ -473,6 +474,7 @@ export interface LlmConfig {
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
   defaultProfileId?: string;
   profiles: LlmProfileConfig[];
   maxTokens: number;

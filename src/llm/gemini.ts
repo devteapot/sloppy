@@ -14,6 +14,7 @@ import type {
   LlmAdapter,
   LlmChatOptions,
   LlmResponse,
+  LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
@@ -21,6 +22,7 @@ import { LlmAbortError, normalizeLlmAbortError } from "./types";
 
 interface GeminiClient {
   models: {
+    countTokens?(parameters: Record<string, unknown>): Promise<{ totalTokens?: number }>;
     generateContent(parameters: Record<string, unknown>): Promise<GenerateContentResponse>;
     generateContentStream(
       parameters: Record<string, unknown>,
@@ -32,8 +34,8 @@ export interface GeminiStreamState {
   text: string;
   functionCalls: FunctionCall[];
   finishReason?: FinishReason;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 function parseToolResultValue(content: string): unknown {
@@ -115,12 +117,15 @@ function toGeminiContents(messages: ConversationMessage[]): Content[] {
 
     contents.push({
       role: "user",
-      parts: message.content
-        .filter(
-          (block): block is Extract<ConversationMessage["content"][number], { type: "text" }> =>
-            block.type === "text",
-        )
-        .map((block) => createPartFromText(block.text)),
+      parts: message.content.flatMap((block) => {
+        if (block.type === "text") {
+          return [createPartFromText(block.text)];
+        }
+        if (block.type === "image") {
+          return [{ inlineData: { mimeType: block.mediaType, data: block.data } }];
+        }
+        return [];
+      }),
     });
   }
 
@@ -185,8 +190,8 @@ function normalizeGeminiResponse(response: GenerateContentResponse): LlmResponse
     content: buildAssistantContent(text, functionCalls),
     stopReason: normalizeFinishReason(finishReason, functionCalls),
     usage: {
-      inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+      inputTokens: response.usageMetadata?.promptTokenCount,
+      outputTokens: response.usageMetadata?.candidatesTokenCount,
     },
   } satisfies LlmResponse;
 }
@@ -195,8 +200,6 @@ function createGeminiStreamState(): GeminiStreamState {
   return {
     text: "",
     functionCalls: [],
-    inputTokens: 0,
-    outputTokens: 0,
   };
 }
 
@@ -303,6 +306,31 @@ export class GeminiAdapter implements LlmAdapter {
           : undefined,
       }) as unknown as GeminiClient);
     this.model = options.model;
+  }
+
+  async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
+    if (options?.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
+    if (!this.client.models.countTokens) {
+      return { source: "unavailable" };
+    }
+
+    try {
+      const response = await this.client.models.countTokens({
+        model: this.model,
+        contents: toGeminiContents([{ role: "user", content: [{ type: "text", text }] }]),
+        config: {
+          abortSignal: options?.signal,
+        },
+      });
+      return response.totalTokens === undefined
+        ? { source: "unavailable" }
+        : { tokens: response.totalTokens, source: "provider" };
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options?.signal);
+    }
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {

@@ -6,7 +6,7 @@ import {
 } from "../config/schema";
 import type { CredentialStore } from "./credential-store";
 import { LlmProfileManager } from "./profile-manager";
-import { getProviderDefaults } from "./provider-defaults";
+import { getProviderDefaults, resolveModelContextWindowTokens } from "./provider-defaults";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -37,17 +37,22 @@ export function buildRuntimeLlmConfig(
     ? llmReasoningEffortSchema.parse(trimOptional(env.SLOPPY_LLM_REASONING_EFFORT))
     : baseConfig.reasoningEffort;
   const defaults = getProviderDefaults(provider);
+  const model = trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model;
 
   return {
     ...baseConfig,
     provider,
-    model: trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model,
+    model,
     reasoningEffort,
     adapterId:
       trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ?? baseConfig.adapterId ?? defaults.adapterId,
     apiKeyEnv:
       trimOptional(env.SLOPPY_LLM_API_KEY_ENV) ?? baseConfig.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: trimOptional(env.SLOPPY_LLM_BASE_URL) ?? baseConfig.baseUrl ?? defaults.baseUrl,
+    contextWindowTokens:
+      baseConfig.contextWindowTokens ??
+      resolveModelContextWindowTokens(provider, model) ??
+      defaults.contextWindowTokens,
     defaultProfileId: undefined,
     profiles: [],
   };

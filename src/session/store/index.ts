@@ -9,6 +9,7 @@ import type {
   SessionStoreChangeListener,
   SessionStoreGranularListener,
   SessionTask,
+  TokenAccountingSource,
 } from "../types";
 import * as activity from "./activity";
 import * as apps from "./apps";
@@ -32,6 +33,7 @@ import {
 } from "./state";
 import * as transcript from "./transcript";
 import * as turn from "./turn";
+import * as usage from "./usage";
 
 export { buildMirroredItemId } from "./helpers";
 
@@ -149,12 +151,36 @@ export class SessionStore {
     return this.registry.subscribeGranular("llm", fn);
   }
 
+  onUsageChange(fn: SessionStoreGranularListener): () => void {
+    return this.registry.subscribeGranular("usage", fn);
+  }
+
   onSessionChange(fn: SessionStoreGranularListener): () => void {
     return this.registry.subscribeGranular("session", fn);
   }
 
   syncLlmState(state: LlmStateSnapshot): void {
     llm.syncLlmState(this.state, state);
+    this.emit();
+  }
+
+  recordUsage(options: {
+    turnId?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    inputTokenSource: TokenAccountingSource;
+    outputTokenSource: TokenAccountingSource;
+    stateContextTokens?: number;
+    stateContextTokenSource?: TokenAccountingSource;
+    modelContextWindowTokens?: number;
+    availableContextTokens?: number;
+  }): void {
+    usage.recordUsage(this.state, options);
+    this.emit();
+  }
+
+  syncUsageModelContext(options: { modelContextWindowTokens?: number }): void {
+    usage.syncModelContext(this.state, options);
     this.emit();
   }
 

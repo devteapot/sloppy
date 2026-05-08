@@ -171,6 +171,69 @@ describe("OpenAICompatibleAdapter", () => {
     });
   });
 
+  test("counts text tokens with the OpenAI input token endpoint", async () => {
+    let receivedParameters: Record<string, unknown> | undefined;
+    const client = {
+      chat: {
+        completions: {
+          create: async () => createCompletion(),
+          stream: () => ({
+            on: () => undefined,
+            finalChatCompletion: async () => createCompletion(),
+          }),
+        },
+      },
+      responses: {
+        inputTokens: {
+          count: async (parameters: Record<string, unknown>) => {
+            receivedParameters = parameters;
+            return { input_tokens: 23 };
+          },
+        },
+      },
+    };
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "gpt-5.4",
+      provider: "openai",
+      client,
+    });
+
+    const count = await adapter.countTextTokens("state tail");
+
+    expect(count).toEqual({ tokens: 23, source: "provider" });
+    expect(receivedParameters).toEqual({
+      model: "gpt-5.4",
+      input: "state tail",
+    });
+  });
+
+  test("leaves text token count unavailable for OpenAI-compatible providers without counters", async () => {
+    const client = {
+      chat: {
+        completions: {
+          create: async () => createCompletion(),
+          stream: () => ({
+            on: () => undefined,
+            finalChatCompletion: async () => createCompletion(),
+          }),
+        },
+      },
+    };
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "open-model",
+      provider: "openrouter",
+      client,
+    });
+
+    await expect(adapter.countTextTokens("state tail")).resolves.toEqual({
+      source: "unavailable",
+    });
+  });
+
   test("repairs an extra trailing brace in OpenAI-compatible tool-call JSON", async () => {
     const completion = createCompletion();
     const call = completion.choices[0]?.message.tool_calls?.[0];

@@ -9,6 +9,7 @@ import {
   mapQueueNode,
   mapSessionNode,
   mapTranscriptNode,
+  mapUsageNode,
 } from "../apps/tui/src/slop/node-mappers";
 import { SessionClient } from "../apps/tui/src/slop/session-client";
 import type { TuiRoute } from "../apps/tui/src/slop/types";
@@ -166,6 +167,35 @@ describe("TUI node mappers", () => {
 
     expect(llm.profiles[0]?.adapterId).toBe("claude");
     expect(llm.profiles[0]?.keySource).toBe("not_required");
+  });
+
+  test("maps session-owned usage state distinctly from LLM profiles", () => {
+    const usage = mapUsageNode({
+      id: "usage",
+      type: "context",
+      properties: {
+        last_turn_id: "turn-1",
+        last_model_call_input_tokens: 42,
+        last_model_call_input_source: "reported",
+        last_model_call_output_source: "unavailable",
+        current_turn_input_tokens: 50,
+        current_turn_model_calls: 2,
+        total_input_tokens: 100,
+        last_state_context_tokens: 1200,
+        last_state_context_token_source: "provider",
+        model_context_window_tokens: 123456,
+      },
+    });
+
+    expect(usage.lastTurnId).toBe("turn-1");
+    expect(usage.lastModelCallInputTokens).toBe(42);
+    expect(usage.lastModelCallOutputTokens).toBeUndefined();
+    expect(usage.lastModelCallOutputSource).toBe("unavailable");
+    expect(usage.currentTurnModelCalls).toBe(2);
+    expect(usage.totalTokens).toBeUndefined();
+    expect(usage.lastStateContextTokens).toBe(1200);
+    expect(usage.lastStateContextTokenSource).toBe("provider");
+    expect(usage.modelContextWindowTokens).toBe(123456);
   });
 });
 
@@ -573,6 +603,7 @@ describe("SessionClient", () => {
       },
       items: [],
     });
+    server.register("usage", { type: "context", props: {} });
     server.register("turn", {
       type: "status",
       props: {
@@ -653,6 +684,7 @@ describe("SessionClient", () => {
         ),
       },
     });
+    sessionServer.register("usage", { type: "context", props: {} });
     sessionServer.register("turn", { type: "status", props: { state: "idle" } });
     sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
     sessionServer.register("composer", { type: "control", props: { ready: true } });
@@ -709,6 +741,7 @@ describe("SessionClient", () => {
     });
     sessionServer.register("session", { type: "context", props: { session_id: "sess-apps" } });
     sessionServer.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    sessionServer.register("usage", { type: "context", props: {} });
     sessionServer.register("turn", { type: "status", props: { state: "idle" } });
     sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
     sessionServer.register("composer", { type: "control", props: { ready: true } });
@@ -765,6 +798,7 @@ describe("SessionClient", () => {
 
     sessionServer.register("session", { type: "context", props: { session_id: "sess-proxy" } });
     sessionServer.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    sessionServer.register("usage", { type: "context", props: {} });
     sessionServer.register("turn", { type: "status", props: { state: "idle" } });
     sessionServer.register("goal", { type: "control", props: { exists: false, status: "none" } });
     sessionServer.register("composer", { type: "control", props: { ready: true } });
@@ -858,6 +892,7 @@ describe("SessionClient", () => {
 
     server.register("session", { type: "context", props: { session_id: "sess-q" } });
     server.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+    server.register("usage", { type: "context", props: {} });
     server.register("turn", { type: "status", props: { state: "running" } });
     server.register("goal", { type: "control", props: { exists: false, status: "none" } });
     server.register("composer", { type: "control", props: { ready: true } });

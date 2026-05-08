@@ -43,6 +43,7 @@ import {
   type RuntimeContext,
   type RuntimeEvent,
 } from "./role";
+import { parseUserMessageBlocks } from "./user-message";
 
 export type { AgentToolEvent, AgentToolInvocation, LocalRuntimeTool } from "./loop";
 export type { RoleProfile } from "./role";
@@ -81,6 +82,14 @@ export interface AgentCallbacks {
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
+  onTurnUsage?: (usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    inputTokenSource: "reported" | "unavailable";
+    outputTokenSource: "reported" | "unavailable";
+    stateContextTokens?: number;
+    stateContextTokenSource: "provider" | "local" | "unavailable";
+  }) => void;
   onExternalProviderStates?: (states: ExternalProviderState[]) => void;
   onProviderSnapshot?: (update: {
     providerId: string;
@@ -143,6 +152,7 @@ export class Agent {
         }
         userOnToolEvent?.(event);
       },
+      onTurnUsage: options?.onTurnUsage,
       onExternalProviderStates: options?.onExternalProviderStates,
       onProviderSnapshot: options?.onProviderSnapshot,
     };
@@ -283,7 +293,7 @@ export class Agent {
       throw new Error("Agent has not been started.");
     }
 
-    this.history.addUserText(userMessage);
+    this.history.addUserMessage(parseUserMessageBlocks(userMessage));
     return this.runLoopWithAbort(async (signal) => {
       const llm = await this.llmProfileManager.createAdapter(
         this.llmProfileId,
@@ -300,6 +310,7 @@ export class Agent {
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
+          onTurnUsage: this.callbacks.onTurnUsage,
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
         }),
@@ -349,6 +360,7 @@ export class Agent {
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
+          onTurnUsage: this.callbacks.onTurnUsage,
           resume: {
             continuation: pendingApproval,
             resolvedToolResult: result.block,

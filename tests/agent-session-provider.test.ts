@@ -41,7 +41,6 @@ const TEST_CONFIG: SloppyConfig = {
   },
   agent: {
     maxIterations: 12,
-    contextBudgetTokens: 24000,
     minSalience: 0.2,
     overviewDepth: 2,
     overviewMaxNodes: 200,
@@ -877,11 +876,137 @@ describe("AgentSessionProvider", () => {
       expect(llm.properties?.active_profile_id).toBe("test-openai");
       expect(llm.children?.[0]?.properties?.ready).toBe(false);
 
+      const usage = await consumer.query("/usage", 1);
+      expect(usage.properties?.current_turn_model_calls).toBe(0);
+
       const composer = await consumer.query("/composer", 2);
       expect(
         composer.affordances?.some((affordance) => affordance.action === "send_message") ?? false,
       ).toBe(false);
       expect(composer.properties?.disabled_reason).toBeTruthy();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("exposes native loop token usage only under usage state", async () => {
+    const config = {
+      ...TEST_CONFIG,
+      llm: {
+        ...TEST_CONFIG.llm,
+        profiles: [
+          {
+            ...TEST_CONFIG.llm.profiles[0]!,
+            contextWindowTokens: 123_456,
+          },
+        ],
+      },
+    };
+    const llmProfileManager = createTestProfileManager();
+    llmProfileManager.updateConfig(config);
+    llmProfileManager.createAdapter = async () =>
+      ({
+        chat: async (options: LlmChatOptions) => {
+          options.onText?.("usage tracked");
+          return {
+            content: [{ type: "text", text: "usage tracked" }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 42, outputTokens: 9 },
+          } satisfies LlmResponse;
+        },
+        countTextTokens: async () => ({ tokens: 12, source: "provider" }),
+      }) satisfies LlmAdapter;
+    const runtime = new SessionRuntime({
+      config,
+      sessionId: "sess-usage",
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-usage",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/composer", "send_message", {
+        text: "track usage",
+      });
+      expect(result.status).toBe("ok");
+      await runtime.waitForIdle();
+
+      const usage = await consumer.query("/usage", 1);
+      expect(usage.properties?.last_model_call_input_tokens).toBe(42);
+      expect(usage.properties?.last_model_call_output_tokens).toBe(9);
+      expect(usage.properties?.last_model_call_input_source).toBe("reported");
+      expect(usage.properties?.last_model_call_output_source).toBe("reported");
+      expect(usage.properties?.current_turn_input_tokens).toBe(42);
+      expect(usage.properties?.current_turn_output_tokens).toBe(9);
+      expect(usage.properties?.current_turn_model_calls).toBe(1);
+      expect(usage.properties?.total_input_tokens).toBe(42);
+      expect(usage.properties?.total_output_tokens).toBe(9);
+      expect(usage.properties?.last_state_context_tokens).toBe(12);
+      expect(usage.properties?.last_state_context_token_source).toBe("provider");
+      expect(usage.properties?.model_context_window_tokens).toBe(123_456);
+      expect(usage.properties?.available_context_tokens).toBe(123_414);
+
+      const llm = await consumer.query("/llm", 1);
+      expect(llm.properties?.last_input_tokens).toBeUndefined();
+      expect(llm.properties?.context_budget_tokens).toBeUndefined();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("marks model token usage unavailable when the adapter omits usage", async () => {
+    const llmProfileManager = createTestProfileManager();
+    llmProfileManager.createAdapter = async () =>
+      ({
+        chat: async (options: LlmChatOptions) => {
+          options.onText?.("usage unavailable");
+          return {
+            content: [{ type: "text", text: "usage unavailable" }],
+            stopReason: "end_turn",
+            usage: {},
+          } satisfies LlmResponse;
+        },
+      }) satisfies LlmAdapter;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-usage-unavailable",
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-usage-unavailable",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/composer", "send_message", {
+        text: "track unavailable usage",
+      });
+      expect(result.status).toBe("ok");
+      await runtime.waitForIdle();
+
+      const usage = await consumer.query("/usage", 1);
+      expect(usage.properties?.last_model_call_input_tokens).toBeUndefined();
+      expect(usage.properties?.last_model_call_output_tokens).toBeUndefined();
+      expect(usage.properties?.last_model_call_input_source).toBe("unavailable");
+      expect(usage.properties?.last_model_call_output_source).toBe("unavailable");
+      expect(usage.properties?.current_turn_input_tokens).toBeUndefined();
+      expect(usage.properties?.current_turn_output_tokens).toBeUndefined();
+      expect(usage.properties?.total_input_tokens).toBeUndefined();
+      expect(usage.properties?.total_output_tokens).toBeUndefined();
+      expect(usage.properties?.total_tokens).toBeUndefined();
+      expect(usage.properties?.current_turn_model_calls).toBe(1);
+      expect(usage.properties?.last_state_context_tokens).toBeUndefined();
+      expect(usage.properties?.last_state_context_token_source).toBe("unavailable");
     } finally {
       provider.stop();
       runtime.shutdown();

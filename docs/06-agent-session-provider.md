@@ -69,6 +69,7 @@ The root tree should expose these top-level children:
 
 - `/session`
 - `/llm`
+- `/usage`
 - `/turn`
 - `/goal`
 - `/composer`
@@ -90,6 +91,7 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
   [context] session (session_id="sess-123", status="active", model_provider="anthropic", model="claude-sonnet", client_count=2)
   [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_provider="openai", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
     [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
+  [context] usage (last_model_call_input_tokens=4200, last_model_call_output_tokens=700, last_state_context_tokens=1800, last_state_context_token_source=provider, model_context_window_tokens=1050000, available_context_tokens=1045800, total_tokens=4900)
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
   [control] goal (exists=true, status="active", objective="Ship the runtime", total_tokens=12000, token_budget=200000, elapsed_ms=900000)  actions: {create_goal, pause_goal, complete_goal, clear_goal}
   [control] composer (accepts_attachments=false, max_attachments=0, ready=false, queued_count=1, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
@@ -237,6 +239,56 @@ Rules:
 - `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
 - ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
 - the session should remain attachable even when `status=needs_credentials`
+
+### `/usage`
+
+Node type: `context`
+
+Purpose:
+
+- expose session-owned token and context accounting separately from LLM profile
+  and credential state
+
+Required props:
+
+- `last_model_call_input_source`: `reported | provider | local | unavailable`
+- `last_model_call_output_source`: `reported | provider | local | unavailable`
+- `current_turn_model_calls`: number of model calls accounted for that turn
+- `last_state_context_token_source`: `provider | local | unavailable` source
+  for `last_state_context_tokens`
+
+Optional props:
+
+- `last_turn_id`: turn id associated with the latest model-call usage sample
+- `last_model_call_input_tokens`: latest model-call input tokens, omitted when
+  provider usage is unavailable
+- `last_model_call_output_tokens`: latest model-call output tokens, omitted
+  when provider usage is unavailable
+- `current_turn_input_tokens`: aggregate reported input tokens for the current
+  or most recent turn, omitted until reported by the provider
+- `current_turn_output_tokens`: aggregate reported output tokens for the current
+  or most recent turn, omitted until reported by the provider
+- `total_input_tokens`: session aggregate reported input tokens
+- `total_output_tokens`: session aggregate reported output tokens
+- `total_tokens`: input plus output aggregate when either aggregate is reported
+- `last_state_context_tokens`: token size of the last generated
+  `<slop-state>` tail, omitted when no tokenizer is available for the active
+  adapter/model
+- `model_context_window_tokens`: selected model context window, when the runtime
+  can determine it from explicit profile metadata or known provider metadata
+- `available_context_tokens`: remaining context for the last model request, only
+  when both a reliable context window and provider-reported input usage are known
+- `updated_at`: ISO timestamp of the latest usage update
+
+Rules:
+
+- `last_state_context_tokens` is not provider-reported model-call usage; it is
+  counted separately through the active adapter's optional tokenizer/count API
+  and omitted when unavailable
+- model usage should not be guessed; when provider usage is absent, omit the
+  token value and set the relevant `*_source` prop to `unavailable`
+- `/usage` is the only public token-accounting surface; `/llm` is reserved for
+  profile and credential state
 
 ### `/goal`
 

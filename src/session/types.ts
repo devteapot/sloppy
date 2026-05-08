@@ -197,6 +197,7 @@ export type LlmProfileSnapshot = {
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
   isDefault: boolean;
   hasKey: boolean;
   keySource: LlmKeySource;
@@ -207,12 +208,33 @@ export type LlmProfileSnapshot = {
   canDeleteApiKey: boolean;
 };
 
+export type TokenAccountingSource = "reported" | "provider" | "local" | "unavailable";
+
+export type SessionUsageSnapshot = {
+  lastTurnId?: string;
+  lastModelCallInputTokens?: number;
+  lastModelCallOutputTokens?: number;
+  lastModelCallInputSource: TokenAccountingSource;
+  lastModelCallOutputSource: TokenAccountingSource;
+  currentTurnInputTokens?: number;
+  currentTurnOutputTokens?: number;
+  currentTurnModelCalls: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  lastStateContextTokens?: number;
+  lastStateContextTokenSource: TokenAccountingSource;
+  modelContextWindowTokens?: number;
+  availableContextTokens?: number;
+  updatedAt?: string;
+};
+
 export type LlmStateSnapshot = {
   status: "ready" | "needs_credentials";
   message: string;
   activeProfileId: string;
   selectedProvider: string;
   selectedModel: string;
+  selectedContextWindowTokens?: number;
   secureStoreKind: string;
   secureStoreStatus: LlmSecureStoreStatus;
   profiles: LlmProfileSnapshot[];
@@ -262,6 +284,7 @@ export type TurnStateSnapshot = {
 export type AgentSessionSnapshot = {
   session: SessionMetadata;
   llm: LlmStateSnapshot;
+  usage: SessionUsageSnapshot;
   turn: TurnStateSnapshot;
   goal: SessionGoalSnapshot | null;
   extensions: Record<string, SessionExtensionRecord>;
@@ -281,6 +304,7 @@ export type SessionStoreEventType =
   | "tasks"
   | "apps"
   | "llm"
+  | "usage"
   | "session"
   | "goal"
   | "extensions"

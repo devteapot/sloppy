@@ -38,7 +38,6 @@ const TEST_CONFIG: SloppyConfig = {
   },
   agent: {
     maxIterations: 12,
-    contextBudgetTokens: 24000,
     minSalience: 0.2,
     overviewDepth: 2,
     overviewMaxNodes: 200,
@@ -217,6 +216,30 @@ describe("LlmProfileManager", () => {
     expect(state.activeProfileId).toBe("openai-main");
     expect(state.profiles[0]?.ready).toBe(false);
     expect(state.message).toContain("OPENAI_API_KEY");
+  });
+
+  test("exposes context window metadata from the active profile", async () => {
+    const manager = new LlmProfileManager({
+      config: {
+        ...TEST_CONFIG,
+        llm: {
+          ...TEST_CONFIG.llm,
+          profiles: [
+            {
+              ...TEST_CONFIG.llm.profiles[0]!,
+              contextWindowTokens: 123_456,
+            },
+          ],
+        },
+      },
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.selectedContextWindowTokens).toBe(123_456);
+    expect(state.profiles[0]?.contextWindowTokens).toBe(123_456);
   });
 
   test("uses a provider-agnostic onboarding message before any managed profile exists", async () => {

@@ -172,6 +172,43 @@ describe("GeminiAdapter", () => {
     });
   });
 
+  test("counts text tokens with Gemini countTokens when available", async () => {
+    let receivedParameters: Record<string, unknown> | undefined;
+    const client = {
+      models: {
+        countTokens: async (parameters: Record<string, unknown>) => {
+          receivedParameters = parameters;
+          return { totalTokens: 17 };
+        },
+        generateContent: async () => createToolChunk(),
+        generateContentStream: async () => createStream(),
+      },
+    };
+
+    async function* createStream(): AsyncGenerator<GenerateContentResponse> {
+      yield createToolChunk();
+    }
+
+    const adapter = new GeminiAdapter({
+      apiKey: "test-key",
+      model: "gemini-2.5-pro",
+      client,
+    });
+
+    const count = await adapter.countTextTokens("state tail");
+
+    expect(count).toEqual({ tokens: 17, source: "provider" });
+    expect(receivedParameters).toMatchObject({
+      model: "gemini-2.5-pro",
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: "state tail" }],
+        },
+      ],
+    });
+  });
+
   test("passes abort signals into Gemini requests and normalizes cancellation", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;

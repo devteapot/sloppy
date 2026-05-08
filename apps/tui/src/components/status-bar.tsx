@@ -29,18 +29,9 @@ export function StatusBar(props: {
       ? `${s.workspaceId}/${s.projectId}`
       : (s.workspaceId ?? s.workspaceRoot ?? "workspace");
   };
-  const model = () => {
-    const s = session();
-    const l = llm();
-    return (
-      [l.selectedProvider ?? s.modelProvider, l.selectedModel ?? s.model]
-        .filter(Boolean)
-        .join("/") || "no model"
-    );
-  };
 
   const leftContent = () => {
-    const left = ` Sloppy · ${connection().status} · ${scope()} · ${model()}`;
+    const left = ` Sloppy · ${connection().status} · ${scope()}`;
     const g = goal();
     const goalSegment = g.exists ? ` · goal ${formatGoalLine(g)}` : "";
     return `${left}${goalSegment}`;

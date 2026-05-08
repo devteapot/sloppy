@@ -43,8 +43,28 @@ export type LlmProfile = {
   managed: boolean;
   baseUrl?: string;
   apiKeyEnv?: string;
+  contextWindowTokens?: number;
   canDeleteProfile: boolean;
   canDeleteApiKey: boolean;
+};
+
+export type UsageState = {
+  lastTurnId?: string;
+  lastModelCallInputTokens?: number;
+  lastModelCallOutputTokens?: number;
+  lastModelCallInputSource: string;
+  lastModelCallOutputSource: string;
+  currentTurnInputTokens?: number;
+  currentTurnOutputTokens?: number;
+  currentTurnModelCalls: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalTokens?: number;
+  lastStateContextTokens?: number;
+  lastStateContextTokenSource: string;
+  modelContextWindowTokens?: number;
+  availableContextTokens?: number;
+  updatedAt?: string;
 };
 
 export type LlmState = {
@@ -53,6 +73,7 @@ export type LlmState = {
   activeProfileId?: string;
   selectedProvider?: string;
   selectedModel?: string;
+  selectedContextWindowTokens?: number;
   secureStoreKind?: string;
   secureStoreStatus?: string;
   profiles: LlmProfile[];
@@ -223,6 +244,7 @@ export type SessionViewSnapshot = {
   };
   session: SessionMeta;
   llm: LlmState;
+  usage: UsageState;
   turn: TurnState;
   goal: GoalState;
   composer: ComposerState;

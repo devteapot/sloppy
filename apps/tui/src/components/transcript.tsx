@@ -18,7 +18,7 @@ export function MessageRow(props: { message: TranscriptMessage }) {
             block.name ?? block.uri ?? block.summary ?? block.preview ?? block.id
           }`;
         }
-        return block.text ?? "";
+        return (block.text ?? "").replace(/\[Image #(\d+)\]\(file:\/\/[^)]+\)/g, "[Image #$1]");
       })
       .join("\n");
 

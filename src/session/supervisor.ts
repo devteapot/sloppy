@@ -507,17 +507,16 @@ export async function startSessionSupervisor(options: {
   const provider = new SessionSupervisorProvider({
     cwd: options.cwd,
   });
-  const listener = listenUnix(provider.server, options.socketPath, {
-    register: options.register ?? true,
-  });
   let initialSession: SessionRecord;
   try {
     initialSession = await provider.startInitialSession(options.initial ?? {});
   } catch (error) {
-    closeUnixListener(listener, options.socketPath);
     provider.stop();
     throw error;
   }
+  const listener = listenUnix(provider.server, options.socketPath, {
+    register: options.register ?? true,
+  });
   return {
     provider,
     listener: {

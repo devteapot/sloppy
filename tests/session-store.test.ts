@@ -1102,6 +1102,55 @@ describe("SessionStore — LLM state", () => {
   });
 });
 
+describe("SessionStore — usage accounting", () => {
+  test("records session-owned usage without mirroring counters into llm state", () => {
+    const store = createStore();
+
+    store.recordUsage({
+      turnId: "turn-1",
+      inputTokens: 42,
+      inputTokenSource: "reported",
+      outputTokenSource: "unavailable",
+      stateContextTokens: 1200,
+      stateContextTokenSource: "provider",
+    });
+    store.recordUsage({
+      turnId: "turn-1",
+      inputTokens: 3,
+      outputTokens: 2,
+      inputTokenSource: "reported",
+      outputTokenSource: "reported",
+      stateContextTokens: 1300,
+      stateContextTokenSource: "provider",
+    });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.usage.lastTurnId).toBe("turn-1");
+    expect(snapshot.usage.lastModelCallInputTokens).toBe(3);
+    expect(snapshot.usage.lastModelCallOutputTokens).toBe(2);
+    expect(snapshot.usage.currentTurnInputTokens).toBe(45);
+    expect(snapshot.usage.currentTurnOutputTokens).toBe(2);
+    expect(snapshot.usage.currentTurnModelCalls).toBe(2);
+    expect(snapshot.usage.totalInputTokens).toBe(45);
+    expect(snapshot.usage.totalOutputTokens).toBe(2);
+    expect(snapshot.usage.lastStateContextTokens).toBe(1300);
+    expect(snapshot.usage.lastStateContextTokenSource).toBe("provider");
+    expect("usage" in snapshot.llm).toBe(false);
+  });
+
+  test("syncs model context window without counting a model call", () => {
+    const store = createStore();
+
+    store.syncUsageModelContext({
+      modelContextWindowTokens: 123_456,
+    });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.usage.modelContextWindowTokens).toBe(123_456);
+    expect(snapshot.usage.currentTurnModelCalls).toBe(0);
+  });
+});
+
 describe("SessionStore — listeners", () => {
   test("onChange fires on every mutation and returns an unsubscribe fn", () => {
     const store = createStore();
@@ -1757,7 +1806,6 @@ describe("SessionService — multi-session support", () => {
       },
       agent: {
         maxIterations: 12,
-        contextBudgetTokens: 24000,
         minSalience: 0.2,
         overviewDepth: 2,
         overviewMaxNodes: 200,

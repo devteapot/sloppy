@@ -17,6 +17,7 @@ export function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnaps
     activeProfileId: state.activeProfileId,
     selectedProvider: state.selectedProvider,
     selectedModel: state.selectedModel,
+    selectedContextWindowTokens: state.selectedContextWindowTokens,
     secureStoreKind: state.secureStoreKind,
     secureStoreStatus: state.secureStoreStatus,
     profiles: state.profiles.map((profile) => ({
@@ -28,6 +29,7 @@ export function toSessionLlmState(state: RuntimeLlmStateSnapshot): LlmStateSnaps
       adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,
+      contextWindowTokens: profile.contextWindowTokens,
       isDefault: profile.isDefault,
       hasKey: profile.hasKey,
       keySource: profile.keySource,
@@ -49,6 +51,7 @@ export function toExternalAgentLlmState(agent: ExternalSessionAgentState): LlmSt
     activeProfileId: profileId,
     selectedProvider: agent.provider,
     selectedModel: agent.model,
+    selectedContextWindowTokens: undefined,
     secureStoreKind: "none",
     secureStoreStatus: "unsupported",
     profiles: [
@@ -58,6 +61,7 @@ export function toExternalAgentLlmState(agent: ExternalSessionAgentState): LlmSt
         provider: agent.provider,
         model: agent.model,
         adapterId: agent.adapterId,
+        contextWindowTokens: undefined,
         isDefault: true,
         hasKey: false,
         keySource: "not_required",

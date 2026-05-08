@@ -83,21 +83,77 @@ export function isPrintableSequence(sequence: string): boolean {
   return true;
 }
 
+export function formatModelLabel(snapshot: SessionViewSnapshot): string {
+  const s = snapshot.session;
+  const l = snapshot.llm;
+  return (
+    [l.selectedProvider ?? s.modelProvider, l.selectedModel ?? s.model].filter(Boolean).join("/") ||
+    "no model"
+  );
+}
+
+export function formatUsageLine(snapshot: SessionViewSnapshot): string {
+  const u = snapshot.usage;
+  if (!u) return "";
+  const segments: string[] = [];
+  if (u.lastModelCallInputSource === "reported" || u.lastModelCallOutputSource === "reported") {
+    segments.push(
+      `last ${formatMaybeTokens(u.lastModelCallInputTokens)} in/${formatMaybeTokens(
+        u.lastModelCallOutputTokens,
+      )} out`,
+    );
+  } else if (u.currentTurnModelCalls > 0) {
+    segments.push("last N/A in/N/A out");
+  }
+  if (
+    u.lastStateContextTokens !== undefined &&
+    (u.lastStateContextTokenSource === "provider" || u.lastStateContextTokenSource === "local")
+  ) {
+    segments.push(`state tail ${formatTokens(u.lastStateContextTokens)}`);
+  } else if (u.currentTurnModelCalls > 0) {
+    segments.push("state tail N/A");
+  }
+  if (u.modelContextWindowTokens !== undefined) {
+    if (u.availableContextTokens === undefined) {
+      segments.push(`window ${formatTokens(u.modelContextWindowTokens)}`);
+    } else {
+      const consumed = Math.max(0, u.modelContextWindowTokens - u.availableContextTokens);
+      segments.push(`ctx ${formatTokens(consumed)}/${formatTokens(u.modelContextWindowTokens)}`);
+    }
+  }
+  return segments.join(" · ");
+}
+
+function formatMaybeTokens(n: number | undefined): string {
+  return n === undefined ? "N/A" : formatTokens(n);
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const value = n / 1_000_000;
+  return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}M`;
+}
+
 export function composerHint(snapshot: SessionViewSnapshot, queued: number): string {
   if (!snapshot.composer.canSend) {
     return snapshot.composer.disabledReason ?? "Composer disabled.";
   }
 
+  const model = formatModelLabel(snapshot);
+  const modelSuffix = ` · ${model}`;
+
   const pendingApproval = snapshot.approvals.some((a) => a.status === "pending");
   if (pendingApproval) {
-    return `Approval pending — resolve it first; new messages will queue. queued=${queued}`;
+    return `Approval pending — resolve it first; new messages will queue. queued=${queued}${modelSuffix}`;
   }
 
   if (snapshot.turn.state === "running" || snapshot.turn.state === "waiting_approval") {
-    return `Turn ${snapshot.turn.state}; new messages append to the session queue. queued=${queued}`;
+    return `Turn ${snapshot.turn.state}; new messages append to the session queue. queued=${queued}${modelSuffix}`;
   }
 
-  return queued > 0 ? `Ready. queued=${queued}` : "Ready.";
+  return queued > 0 ? `Ready. queued=${queued}${modelSuffix}` : `Ready.${modelSuffix}`;
 }
 
 export function commandHelp(): string {

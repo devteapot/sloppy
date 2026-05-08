@@ -25,6 +25,7 @@ import type {
 const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
   { path: "/session", depth: 1 },
   { path: "/llm", depth: 2 },
+  { path: "/usage", depth: 1 },
   { path: "/turn", depth: 1 },
   { path: "/goal", depth: 1 },
   { path: "/composer", depth: 1 },

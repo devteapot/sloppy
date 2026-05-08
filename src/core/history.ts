@@ -1,6 +1,7 @@
 import type {
   AssistantContentBlock,
   ConversationMessage,
+  MessageContentBlock,
   TextContentBlock,
   ToolResultContentBlock,
 } from "../llm/types";
@@ -43,6 +44,14 @@ export class ConversationHistory {
       role: "user",
       kind: "user",
       content: [{ type: "text", text }],
+    });
+  }
+
+  addUserMessage(content: MessageContentBlock[]): void {
+    this.entries.push({
+      role: "user",
+      kind: "user",
+      content,
     });
   }
 

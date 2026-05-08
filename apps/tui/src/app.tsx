@@ -1,5 +1,8 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { type KeyEvent, TextAttributes, type TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import { useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import {
   createEffect,
   createMemo,
@@ -31,6 +34,7 @@ import {
   composerHint,
   errorMessage,
   firstPendingApproval,
+  formatUsageLine,
   isControlKey,
 } from "./lib/format";
 import { copyToClipboard } from "./lib/osc52";
@@ -59,6 +63,116 @@ type AppProps = {
   onExit: () => void;
 };
 
+const IMAGE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".heic",
+  ".heif",
+  ".avif",
+  ".svg",
+]);
+
+function shellSplit(input: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaping = false;
+
+  for (const char of input) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+    if ((char === '"' || char === "'") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (quote === char) {
+      quote = null;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaping) current += "\\";
+  if (current) words.push(current);
+  return words;
+}
+
+function imageUriFromReference(reference: string, workspaceRoot?: string | null): string | null {
+  const trimmed = reference.trim();
+  if (!trimmed) return null;
+
+  let filesystemPath: string;
+  if (trimmed.startsWith("file://")) {
+    try {
+      filesystemPath = fileURLToPath(trimmed);
+    } catch {
+      return null;
+    }
+  } else {
+    filesystemPath = path.isAbsolute(trimmed)
+      ? trimmed
+      : path.resolve(workspaceRoot ?? process.cwd(), trimmed);
+  }
+
+  if (!IMAGE_EXTENSIONS.has(path.extname(filesystemPath).toLowerCase())) return null;
+  if (!existsSync(filesystemPath)) return null;
+  return pathToFileURL(filesystemPath).href;
+}
+
+function imageUrisFromPastedText(pastedText: string, workspaceRoot?: string | null): string[] {
+  const fileUrls = pastedText.match(/file:\/\/[^\s]+/g) ?? [];
+  const withoutUrls = pastedText.replace(/file:\/\/[^\s]+/g, " ");
+  const references = [...fileUrls, ...shellSplit(withoutUrls)];
+  const seen = new Set<string>();
+  return references
+    .map((reference) => imageUriFromReference(reference, workspaceRoot))
+    .filter((uri): uri is string => Boolean(uri))
+    .filter((uri) => {
+      if (seen.has(uri)) return false;
+      seen.add(uri);
+      return true;
+    });
+}
+
+function nextImageIndex(existingDraft: string): number {
+  let imageIndex = 1;
+  for (const match of existingDraft.matchAll(/\[Image #(\d+)\]/g)) {
+    imageIndex = Math.max(imageIndex, Number(match[1]) + 1);
+  }
+  return imageIndex;
+}
+
+export function expandImageAttachments(
+  text: string,
+  attachments: ReadonlyMap<string, string>,
+): string {
+  if (attachments.size === 0) return text;
+  return text.replace(/\[Image #(\d+)\](?!\()/g, (match, n: string) => {
+    const url = attachments.get(`[Image #${n}]`);
+    return url ? `[Image #${n}](${url})` : match;
+  });
+}
+
 export function App(props: AppProps) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
@@ -84,6 +198,7 @@ export function App(props: AppProps) {
   const [mode, setMode] = createSignal<AgentMode>("default");
   const [verbosity, setVerbosity] = createSignal<Verbosity>("normal");
   const [draft, setDraft] = createSignal("");
+  const attachments = new Map<string, string>();
   const [notice, setNotice] = createSignal<Notice>({
     kind: "info",
     message: "Connected. Type /help for commands.",
@@ -165,6 +280,45 @@ export function App(props: AppProps) {
     setFileSelectedIndex(0);
     return true;
   }
+
+  function insertComposerText(insertion: string): void {
+    if (!composerRef) return;
+    const text = composerRef.plainText ?? draft();
+    const cursor = Math.max(0, Math.min(composerRef.cursorOffset ?? text.length, text.length));
+    const next = `${text.slice(0, cursor)}${insertion}${text.slice(cursor)}`;
+    composerRef.setText(next);
+    composerRef.cursorOffset = cursor + insertion.length;
+    setDraft(next);
+    history.reset();
+  }
+
+  usePaste((event) => {
+    if (pendingApproval() || secretProfile() || !composerRef) return;
+
+    const pastedText = new TextDecoder().decode(event.bytes);
+    const uris = imageUrisFromPastedText(pastedText, snapshot().session.workspaceRoot);
+    if (uris.length === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const currentText = composerRef.plainText ?? draft();
+    let imageIndex = nextImageIndex(currentText);
+    const placeholders: string[] = [];
+    for (const uri of uris) {
+      const placeholder = `[Image #${imageIndex}]`;
+      attachments.set(placeholder, uri);
+      placeholders.push(placeholder);
+      imageIndex += 1;
+    }
+
+    const prefix = currentText && !/\s$/.test(currentText) ? " " : "";
+    insertComposerText(`${prefix}${placeholders.join(" ")} `);
+    pushNotice({
+      kind: "ok",
+      message: `${uris.length === 1 ? "Image" : `${uris.length} images`} added to composer.`,
+    });
+  });
 
   function pushNotice(next: Notice): void {
     setNotice(next.at ? next : { ...next, at: new Date().toISOString().slice(11, 19) });
@@ -402,7 +556,8 @@ export function App(props: AppProps) {
   });
 
   async function submitDraft(): Promise<void> {
-    const text = composerRef?.plainText ?? draft();
+    const rawText = composerRef?.plainText ?? draft();
+    const text = expandImageAttachments(rawText, attachments);
     const command = parseLocalCommand(text);
     clearComposer();
 
@@ -753,6 +908,7 @@ export function App(props: AppProps) {
   function clearComposer(): void {
     composerRef?.clear();
     setDraft("");
+    attachments.clear();
   }
 
   async function saveSecretProfile(apiKey: string): Promise<void> {
@@ -853,7 +1009,7 @@ export function App(props: AppProps) {
       <SlashSuggestions
         suggestions={slashSuggestions()}
         selectedIndex={slashSelectedIndex()}
-        query={draft().startsWith("/") ? draft().slice(1).split(/\s+/, 1)[0] ?? "" : ""}
+        query={draft().startsWith("/") ? (draft().slice(1).split(/\s+/, 1)[0] ?? "") : ""}
       />
       <FileSuggestions
         suggestions={fileSuggestions()}
@@ -862,7 +1018,18 @@ export function App(props: AppProps) {
       />
       <NoticeLine notice={notice()} />
       <box height={5} flexDirection="column" paddingX={1} backgroundColor={COLORS.panelHigh}>
-        <text fg={COLORS.dim} content={composerHint(snapshot(), queuedItems().length)} />
+        <box height={1} flexDirection="row">
+          <box flexGrow={1} flexShrink={1} flexBasis={0}>
+            <text
+              truncate
+              fg={COLORS.dim}
+              content={composerHint(snapshot(), queuedItems().length)}
+            />
+          </box>
+          <box flexShrink={0}>
+            <text fg={COLORS.dim} content={formatUsageLine(snapshot())} />
+          </box>
+        </box>
         <textarea
           ref={composerRef}
           height={3}

@@ -7,7 +7,6 @@ import type { ProviderTreeView } from "../src/core/subscriptions";
 
 const TEST_CONFIG = {
   agent: {
-    contextBudgetTokens: 1024,
     minSalience: 0.2,
     detailDepth: 4,
     detailMaxNodes: 200,
@@ -43,6 +42,24 @@ describe("SLOP context tail", () => {
     expect(stateContext).toContain("<slop-apps-available-escaped>");
     expect(stateContext).toContain("<slop-state-escaped>");
     expect(stateContext.match(/<\/slop-state>/g)).toHaveLength(1);
+  });
+
+  test("does not truncate the state tail with a token budget", () => {
+    const longProviderName = `Long provider ${"x".repeat(6000)}`;
+    const view: ProviderTreeView = {
+      providerId: "long",
+      providerName: longProviderName,
+      kind: "external",
+      overviewTree: {
+        id: "root",
+        type: "context",
+      },
+    };
+
+    const stateContext = buildStateContext([view], TEST_CONFIG);
+
+    expect(stateContext).toContain(longProviderName);
+    expect(stateContext).not.toContain("[truncated]");
   });
 
   test("does not persist previous state tails into conversation history", () => {

@@ -243,7 +243,6 @@ export class ProviderApprovalManager {
             approve: action(async () => this.approveQueueId(record.id), {
               label: "Approve",
               description: "Approve and run the blocked action.",
-              dangerous: true,
               estimate: "fast",
             }),
             reject: action(
@@ -289,7 +288,6 @@ export class ProviderApprovalManager {
               approve: action(async () => this.approveLocal(approval.id), {
                 label: "Approve",
                 description: "Approve and run the blocked action.",
-                dangerous: true,
                 estimate: "fast",
               }),
               reject: action(

@@ -12,6 +12,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
     adapterId: config.adapterId,
     apiKeyEnv: config.apiKeyEnv,
     baseUrl: config.baseUrl,
+    contextWindowTokens: config.contextWindowTokens,
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
     profiles: config.profiles.map((profile) => ({
@@ -23,6 +24,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
       adapterId: profile.adapterId,
       apiKeyEnv: profile.apiKeyEnv,
       baseUrl: profile.baseUrl,
+      contextWindowTokens: profile.contextWindowTokens,
     })),
   };
 }

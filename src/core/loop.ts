@@ -1,8 +1,13 @@
 import { formatTree, type LlmTool } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
-import type { LlmAdapter, ToolResultContentBlock, ToolUseContentBlock } from "../llm/types";
-import { LlmAbortError } from "../llm/types";
+import type {
+  LlmAdapter,
+  LlmTokenCount,
+  ToolResultContentBlock,
+  ToolUseContentBlock,
+} from "../llm/types";
+import { isLlmAbortError, LlmAbortError } from "../llm/types";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
@@ -189,6 +194,28 @@ type ExecuteToolCallsOptions = {
 };
 
 export { truncateToolResult };
+
+export async function countStateContextTokens(
+  llm: LlmAdapter,
+  stateContext: string,
+  signal?: AbortSignal,
+): Promise<LlmTokenCount> {
+  if (!llm.countTextTokens) {
+    return { source: "unavailable" };
+  }
+
+  try {
+    return await llm.countTextTokens(stateContext, { signal });
+  } catch (error) {
+    if (signal?.aborted || isLlmAbortError(error)) {
+      throw error;
+    }
+    debug("loop", "state token count unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { source: "unavailable" };
+  }
+}
 
 function invalidToolArgumentsResult(
   toolUse: ToolUseContentBlock,
@@ -818,6 +845,14 @@ export async function runLoop(options: {
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
+  onTurnUsage?: (usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    inputTokenSource: "reported" | "unavailable";
+    outputTokenSource: "reported" | "unavailable";
+    stateContextTokens?: number;
+    stateContextTokenSource: "provider" | "local" | "unavailable";
+  }) => void;
   resume?: {
     continuation: PendingApprovalContinuation;
     resolvedToolResult: ToolResultContentBlock;
@@ -884,18 +919,36 @@ export async function runLoop(options: {
     }
 
     const stateContext = buildStateContext(options.hub.getProviderViews(), options.config);
+    const stateContextTokenCount = await countStateContextTokens(
+      options.llm,
+      stateContext,
+      options.signal,
+    );
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
+    const requestMessages = options.history.buildRequestMessages(stateContext);
     const response = await options.llm.chat({
       system,
-      messages: options.history.buildRequestMessages(stateContext),
+      messages: requestMessages,
       tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
       maxTokens: options.config.llm.maxTokens,
       onText: options.onText,
       signal: options.signal,
     });
-    usage.inputTokens += response.usage.inputTokens;
-    usage.outputTokens += response.usage.outputTokens;
+    const reportedInput = response.usage.inputTokens;
+    const reportedOutput = response.usage.outputTokens;
+    const inputTokenSource = reportedInput === undefined ? "unavailable" : "reported";
+    const outputTokenSource = reportedOutput === undefined ? "unavailable" : "reported";
+    usage.inputTokens += reportedInput ?? 0;
+    usage.outputTokens += reportedOutput ?? 0;
+    options.onTurnUsage?.({
+      inputTokens: reportedInput,
+      outputTokens: reportedOutput,
+      inputTokenSource,
+      outputTokenSource,
+      stateContextTokens: stateContextTokenCount.tokens,
+      stateContextTokenSource: stateContextTokenCount.source,
+    });
 
     options.history.addAssistantContent(response.content);
 

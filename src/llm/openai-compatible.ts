@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import type {
   ChatCompletion,
   ChatCompletionAssistantMessageParam,
+  ChatCompletionContentPart,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
@@ -12,6 +13,7 @@ import type {
   LlmAdapter,
   LlmChatOptions,
   LlmResponse,
+  LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
@@ -34,6 +36,14 @@ interface OpenAICompatibleClient {
         finalChatCompletion(): Promise<ChatCompletion>;
         abort?(): void;
       };
+    };
+  };
+  responses?: {
+    inputTokens: {
+      count(
+        parameters: Record<string, unknown>,
+        options?: { signal?: AbortSignal },
+      ): Promise<{ input_tokens?: number }>;
     };
   };
 }
@@ -193,18 +203,25 @@ function toOpenAIMessages(
       continue;
     }
 
-    const text = message.content
-      .filter(
-        (block): block is Extract<ConversationMessage["content"][number], { type: "text" }> =>
-          block.type === "text",
-      )
-      .map((block) => block.text)
-      .join("");
-
-    converted.push({
-      role: "user",
-      content: text,
-    });
+    const parts: ChatCompletionContentPart[] = [];
+    for (const block of message.content) {
+      if (block.type === "text") {
+        parts.push({ type: "text", text: block.text });
+      } else if (block.type === "image") {
+        parts.push({
+          type: "image_url",
+          image_url: { url: `data:${block.mediaType};base64,${block.data}` },
+        });
+      }
+    }
+    if (parts.some((part) => part.type === "image_url")) {
+      converted.push({ role: "user", content: parts });
+    } else {
+      converted.push({
+        role: "user",
+        content: parts.map((part) => (part.type === "text" ? part.text : "")).join(""),
+      });
+    }
   }
 
   return converted;
@@ -285,6 +302,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
   private client: OpenAICompatibleClient;
   private model: string;
   private provider: OpenAICompatibleProvider;
+  private baseUrl?: string;
 
   constructor(options: {
     apiKey: string;
@@ -301,6 +319,38 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       }) as unknown as OpenAICompatibleClient);
     this.model = options.model;
     this.provider = options.provider;
+    this.baseUrl = options.baseUrl;
+  }
+
+  async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
+    if (options?.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
+    if (
+      this.provider !== "openai" ||
+      (this.baseUrl && !isOpenAIBaseUrl(this.baseUrl)) ||
+      !this.client.responses
+    ) {
+      return { source: "unavailable" };
+    }
+
+    try {
+      const count = await this.client.responses.inputTokens.count(
+        {
+          model: this.model,
+          input: text,
+        },
+        {
+          signal: options?.signal,
+        },
+      );
+      return count.input_tokens === undefined
+        ? { source: "unavailable" }
+        : { tokens: count.input_tokens, source: "provider" };
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options?.signal);
+    }
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {
@@ -320,8 +370,8 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
         content: normalizeAssistantContent(completion),
         stopReason: normalizeStopReason(completion),
         usage: {
-          inputTokens: completion.usage?.prompt_tokens ?? 0,
-          outputTokens: completion.usage?.completion_tokens ?? 0,
+          inputTokens: completion.usage?.prompt_tokens,
+          outputTokens: completion.usage?.completion_tokens,
         },
       } satisfies LlmResponse;
     } catch (error) {
@@ -350,6 +400,15 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
     } finally {
       signal?.removeEventListener("abort", abortStream);
     }
+  }
+}
+
+function isOpenAIBaseUrl(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname === "api.openai.com" || hostname.endsWith(".api.openai.com");
+  } catch {
+    return false;
   }
 }
 

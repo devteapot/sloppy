@@ -20,6 +20,7 @@ import {
   getProviderDefaults,
   providerRequiresApiKey,
   providerUsesCodexAuth,
+  resolveModelContextWindowTokens,
 } from "./provider-defaults";
 import type { LlmAdapter } from "./types";
 
@@ -42,6 +43,7 @@ export type LlmProfileState = LlmProfileConfig & {
   origin: LlmProfileOrigin;
   canDeleteProfile: boolean;
   canDeleteApiKey: boolean;
+  contextWindowTokens?: number;
   invalidReason?: string;
 };
 
@@ -51,6 +53,7 @@ export type LlmStateSnapshot = {
   activeProfileId: string;
   selectedProvider: string;
   selectedModel: string;
+  selectedContextWindowTokens?: number;
   secureStoreKind: CredentialStoreKind;
   secureStoreStatus: CredentialStoreStatus;
   profiles: LlmProfileState[];
@@ -64,6 +67,7 @@ export type SaveProfileInput = {
   reasoningEffort?: LlmReasoningEffort;
   adapterId?: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
   apiKey?: string;
   makeDefault?: boolean;
 };
@@ -139,7 +143,16 @@ function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     adapterId: config.adapterId ?? defaults.adapterId,
+    contextWindowTokens: config.contextWindowTokens,
   };
+}
+
+function resolveProfileContextWindowTokens(
+  profile: Pick<LlmProfileConfig, "provider" | "model" | "contextWindowTokens">,
+): number | undefined {
+  return (
+    profile.contextWindowTokens ?? resolveModelContextWindowTokens(profile.provider, profile.model)
+  );
 }
 
 function buildEnvironmentProfileId(
@@ -221,6 +234,7 @@ function buildNextLlmConfig(
     adapterId: activeProfile.adapterId,
     apiKeyEnv: activeProfile.apiKeyEnv,
     baseUrl: activeProfile.baseUrl,
+    contextWindowTokens: activeProfile.contextWindowTokens,
     defaultProfileId: activeProfile.origin === "fallback" ? undefined : activeProfile.id,
     profiles,
   };
@@ -273,6 +287,7 @@ export class LlmProfileManager {
           origin: profile.origin,
           canDeleteProfile: profile.origin === "managed",
           canDeleteApiKey: profile.origin === "managed" && providerRequiresApiKey(profile.provider),
+          contextWindowTokens: resolveProfileContextWindowTokens(profile),
         } satisfies LlmProfileState;
       }),
     );
@@ -289,6 +304,9 @@ export class LlmProfileManager {
         origin: "fallback",
         canDeleteProfile: false,
         canDeleteApiKey: false,
+        contextWindowTokens: resolveProfileContextWindowTokens(
+          buildFallbackProfile(this.config.llm),
+        ),
       };
     const profileStates = baseProfileStates.map((profile) => ({
       ...profile,
@@ -302,6 +320,7 @@ export class LlmProfileManager {
       activeProfileId: activeProfile.id,
       selectedProvider: activeProfile.provider,
       selectedModel: activeProfile.model,
+      selectedContextWindowTokens: activeProfile.contextWindowTokens,
       secureStoreKind: this.credentialStore.kind,
       secureStoreStatus,
       profiles: profileStates,
@@ -395,6 +414,7 @@ export class LlmProfileManager {
         (existingProfile && existingProfile.provider === input.provider
           ? existingProfile.baseUrl
           : defaults.baseUrl),
+      contextWindowTokens: input.contextWindowTokens ?? existingProfile?.contextWindowTokens,
     };
 
     const nextProfiles = [...this.config.llm.profiles];
@@ -725,6 +745,7 @@ export class LlmProfileManager {
         model: defaults.model,
         apiKeyEnv: defaults.apiKeyEnv,
         baseUrl: defaults.baseUrl,
+        contextWindowTokens: defaults.contextWindowTokens,
       });
     }
 

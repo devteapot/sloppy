@@ -414,6 +414,12 @@ export class SessionRuntime {
         }
         this.handleToolEvent(this.currentTurnId, event);
       },
+      onTurnUsage: (usage) => {
+        this.store.recordUsage({
+          ...usage,
+          turnId: this.currentTurnId ?? undefined,
+        });
+      },
       onProviderSnapshot: (update) => {
         syncProviderSnapshotToSession(this.store, update, this.pendingApproval, {
           localProviderIds: this.localProviderIds,
@@ -480,6 +486,11 @@ export class SessionRuntime {
 
     await this.agent.start();
     await this.refreshLlmState();
+    this.store.recordUsage({
+      inputTokenSource: "unavailable",
+      outputTokenSource: "unavailable",
+      stateContextTokenSource: "unavailable",
+    });
     this.started = true;
   }
 
@@ -1571,5 +1582,8 @@ export class SessionRuntime {
         : undefined,
     );
     this.store.syncLlmState(toSessionLlmState(state));
+    this.store.syncUsageModelContext({
+      modelContextWindowTokens: state.selectedContextWindowTokens,
+    });
   }
 }

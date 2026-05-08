@@ -88,11 +88,15 @@ type CodexStreamEvent = {
   };
 };
 
+export type CodexInputContentPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string };
+
 export type CodexRequestInputItem =
   | {
       type: "message";
       role: "user" | "assistant" | "system" | "developer";
-      content: string;
+      content: string | CodexInputContentPart[];
       phase?: "final_answer";
     }
   | {
@@ -393,18 +397,38 @@ function toCodexInput(messages: ConversationMessage[]): CodexRequestInputItem[] 
       continue;
     }
 
+    if (message.role === "user") {
+      const parts: CodexInputContentPart[] = [];
+      for (const block of message.content) {
+        if (block.type === "text" && block.text.length > 0) {
+          parts.push({ type: "input_text", text: block.text });
+        } else if (block.type === "image") {
+          parts.push({
+            type: "input_image",
+            image_url: `data:${block.mediaType};base64,${block.data}`,
+          });
+        }
+      }
+      if (parts.length > 0) {
+        input.push({
+          type: "message",
+          role: "user",
+          content: parts.some((part) => part.type === "input_image")
+            ? parts
+            : parts.map((part) => (part.type === "input_text" ? part.text : "")).join(""),
+        });
+      }
+      continue;
+    }
+
     const text = textFromMessage(message);
     if (text.length > 0) {
       input.push({
         type: "message",
         role: message.role,
         content: text,
-        phase: message.role === "assistant" ? "final_answer" : undefined,
+        phase: "final_answer",
       });
-    }
-
-    if (message.role !== "assistant") {
-      continue;
     }
 
     for (const block of message.content) {
@@ -705,8 +729,8 @@ export class OpenAICodexAdapter implements LlmAdapter {
         content,
         stopReason: normalizeCodexStopReason(codexResponse.response, content),
         usage: {
-          inputTokens: codexResponse.response.usage?.input_tokens ?? 0,
-          outputTokens: codexResponse.response.usage?.output_tokens ?? 0,
+          inputTokens: codexResponse.response.usage?.input_tokens,
+          outputTokens: codexResponse.response.usage?.output_tokens,
         },
       };
     } catch (error) {

@@ -66,6 +66,10 @@ Current checked-in implementation includes:
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
+- session-provider `/usage` state for session-owned token accounting, showing
+  provider-reported model usage when available and `N/A` semantics otherwise,
+  alongside provider-counted SLOP state-tail size when supported and the known
+  model context window
 - session-provider `/goal` state for persistent long-running objectives, backed
   by generic session extension metadata under `/extensions/goal`, including
   create/pause/resume/complete/clear controls, usage accounting, cleanup
@@ -655,6 +659,7 @@ the normal input loop with `[o/a] approve once` and `[d/esc] deny`.
 
 - `docs/README.md` for the current documentation map
 - `docs/research/prior-art.md` for notes on OpenClaw, Hermes, and nearby auth/runtime approaches
+- `docs/research/agent-harnesses-and-tui-audit.md` for the May 2026 agent-harness comparison and current TUI completeness audit
 - `docs/02-architecture.md` for the current runtime design
 - `docs/03-mvp-plan.md` for the implementation plan and near-term roadmap
 - `docs/04-slop-protocol-reference.md` for the local protocol summary

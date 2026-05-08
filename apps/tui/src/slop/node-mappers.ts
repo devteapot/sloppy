@@ -16,6 +16,7 @@ import type {
   TranscriptBlock,
   TranscriptMessage,
   TurnState,
+  UsageState,
 } from "./types";
 
 const EMPTY_INSPECT: InspectState = {
@@ -43,6 +44,13 @@ const EMPTY_GOAL: GoalState = {
   canClear: false,
 };
 
+const EMPTY_USAGE: UsageState = {
+  lastModelCallInputSource: "unavailable",
+  lastModelCallOutputSource: "unavailable",
+  currentTurnModelCalls: 0,
+  lastStateContextTokenSource: "unavailable",
+};
+
 export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
   connection: {
     status: "idle",
@@ -57,6 +65,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
     profiles: [],
     actions: [],
   },
+  usage: EMPTY_USAGE,
   turn: {
     turnId: null,
     state: "unknown",
@@ -213,10 +222,33 @@ export function mapLlmNode(node: SlopNode | null | undefined): LlmState {
     activeProfileId: optionalStringProp(p, "active_profile_id"),
     selectedProvider: optionalStringProp(p, "selected_provider"),
     selectedModel: optionalStringProp(p, "selected_model"),
+    selectedContextWindowTokens: progressProp(p, "selected_context_window_tokens"),
     secureStoreKind: optionalStringProp(p, "secure_store_kind"),
     secureStoreStatus: optionalStringProp(p, "secure_store_status"),
     actions: node?.affordances?.map((affordance) => affordance.action) ?? [],
     profiles: children(node).map(mapLlmProfileNode),
+  };
+}
+
+export function mapUsageNode(node: SlopNode | null | undefined): UsageState {
+  const p = props(node);
+  return {
+    lastTurnId: optionalStringProp(p, "last_turn_id"),
+    lastModelCallInputTokens: progressProp(p, "last_model_call_input_tokens"),
+    lastModelCallOutputTokens: progressProp(p, "last_model_call_output_tokens"),
+    lastModelCallInputSource: stringProp(p, "last_model_call_input_source", "unavailable"),
+    lastModelCallOutputSource: stringProp(p, "last_model_call_output_source", "unavailable"),
+    currentTurnInputTokens: progressProp(p, "current_turn_input_tokens"),
+    currentTurnOutputTokens: progressProp(p, "current_turn_output_tokens"),
+    currentTurnModelCalls: numberProp(p, "current_turn_model_calls"),
+    totalInputTokens: progressProp(p, "total_input_tokens"),
+    totalOutputTokens: progressProp(p, "total_output_tokens"),
+    totalTokens: progressProp(p, "total_tokens"),
+    lastStateContextTokens: progressProp(p, "last_state_context_tokens"),
+    lastStateContextTokenSource: stringProp(p, "last_state_context_token_source", "unavailable"),
+    modelContextWindowTokens: progressProp(p, "model_context_window_tokens"),
+    availableContextTokens: progressProp(p, "available_context_tokens"),
+    updatedAt: optionalStringProp(p, "updated_at"),
   };
 }
 
@@ -236,6 +268,7 @@ function mapLlmProfileNode(node: SlopNode): LlmProfile {
     managed: booleanProp(p, "managed"),
     baseUrl: optionalStringProp(p, "base_url"),
     apiKeyEnv: optionalStringProp(p, "api_key_env"),
+    contextWindowTokens: progressProp(p, "context_window_tokens"),
     canDeleteProfile: booleanProp(p, "can_delete_profile"),
     canDeleteApiKey: booleanProp(p, "can_delete_api_key"),
   };
@@ -409,6 +442,8 @@ export function applyPathSnapshot(
       return { ...snapshot, session: mapSessionNode(node) };
     case "/llm":
       return { ...snapshot, llm: mapLlmNode(node) };
+    case "/usage":
+      return { ...snapshot, usage: mapUsageNode(node) };
     case "/turn":
       return { ...snapshot, turn: mapTurnNode(node) };
     case "/goal":

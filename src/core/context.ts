@@ -4,7 +4,6 @@ import { countNodes, prepareTree } from "@slop-ai/core";
 import type { SloppyConfig } from "../config/schema";
 import { buildVisibleTree, type ProviderTreeView } from "./subscriptions";
 
-const CHARS_PER_TOKEN_ESTIMATE = 4;
 const SLOP_CONTEXT_TAG_REPLACEMENTS: Array<[RegExp, string]> = [
   [/<\s*slop-state\b[^>]*>/gi, "<slop-state-escaped>"],
   [/<\s*\/\s*slop-state\b[^>]*>/gi, "<\\/slop-state>"],
@@ -45,17 +44,11 @@ function formatContextSections(
   });
 }
 
-function wrapSlopState(body: string, maxChars: number): string {
+function wrapSlopState(body: string): string {
   const generatedAt = new Date().toISOString();
   const openTag = `<slop-state generated_at="${generatedAt}" format="text/tree">`;
   const closeTag = "</slop-state>";
-  const reserved = openTag.length + closeTag.length + 2;
-  const maxBodyChars = Math.max(0, maxChars - reserved);
-  const truncated =
-    body.length <= maxBodyChars
-      ? body
-      : `${body.slice(0, Math.max(0, maxBodyChars - 20))}\n...[truncated]...`;
-  return `${openTag}\n${truncated}\n${closeTag}`;
+  return `${openTag}\n${body}\n${closeTag}`;
 }
 
 export function buildSystemPrompt(_config?: SloppyConfig, fragments: string[] = []): string {
@@ -78,50 +71,16 @@ export function buildSystemPrompt(_config?: SloppyConfig, fragments: string[] = 
 }
 
 export function buildStateContext(views: ProviderTreeView[], config: SloppyConfig): string {
-  const maxChars = config.agent.contextBudgetTokens * CHARS_PER_TOKEN_ESTIMATE;
   if (views.length === 0) {
-    return wrapSlopState("No SLOP providers are currently connected.", maxChars);
+    return wrapSlopState("No SLOP providers are currently connected.");
   }
 
-  const attempts = [
-    {
-      minSalience: config.agent.minSalience,
-      maxDepth: config.agent.detailDepth,
-      maxNodes: config.agent.detailMaxNodes,
-    },
-    {
-      minSalience: Math.max(config.agent.minSalience, 0.35),
-      maxDepth: Math.max(2, config.agent.detailDepth - 1),
-      maxNodes: Math.max(120, Math.floor(config.agent.detailMaxNodes * 0.75)),
-    },
-    {
-      minSalience: 0.5,
-      maxDepth: 2,
-      maxNodes: 80,
-    },
-    {
-      minSalience: 0.7,
-      maxDepth: 1,
-      maxNodes: 40,
-    },
-  ];
-
-  for (const attempt of attempts) {
-    const sections = formatContextSections(views, attempt);
-    const combined = sections.map((section) => section.text).join("\n\n");
-    const wrapped = wrapSlopState(combined, Number.MAX_SAFE_INTEGER);
-    if (wrapped.length <= maxChars) {
-      return wrapped;
-    }
-  }
-
-  const fallback = formatContextSections(views, {
-    minSalience: 0.8,
-    maxDepth: 1,
-    maxNodes: 25,
+  const combined = formatContextSections(views, {
+    minSalience: config.agent.minSalience,
+    maxDepth: config.agent.detailDepth,
+    maxNodes: config.agent.detailMaxNodes,
   })
     .map((section) => section.text)
     .join("\n\n");
-
-  return wrapSlopState(fallback, maxChars);
+  return wrapSlopState(combined);
 }

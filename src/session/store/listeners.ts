@@ -48,6 +48,7 @@ export class ListenerRegistry {
     if (state.appsChanged) changedTypes.push("apps");
     if (state.extensionsChanged) changedTypes.push("extensions");
     if (state.llmChanged) changedTypes.push("llm");
+    if (state.usageChanged) changedTypes.push("usage");
     if (state.sessionChanged) changedTypes.push("session");
 
     for (const eventType of changedTypes) {
@@ -69,6 +70,7 @@ export class ListenerRegistry {
     state.appsChanged = false;
     state.extensionsChanged = false;
     state.llmChanged = false;
+    state.usageChanged = false;
     state.sessionChanged = false;
   }
 }

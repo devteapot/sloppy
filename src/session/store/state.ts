@@ -1,6 +1,7 @@
 import type { AgentSessionSnapshot, SessionStoreEventType } from "../types";
 import { cloneExtensions } from "./extensions";
 import { selectGoalSnapshot } from "./goal";
+import { emptyUsage, normalizeUsage } from "./usage";
 
 export interface SessionStoreState {
   snapshot: AgentSessionSnapshot;
@@ -18,6 +19,7 @@ export interface SessionStoreState {
   appsChanged: boolean;
   extensionsChanged: boolean;
   llmChanged: boolean;
+  usageChanged: boolean;
   sessionChanged: boolean;
 }
 
@@ -34,6 +36,7 @@ export function createInitialState(options: {
   startedAt: string;
 }): SessionStoreState {
   const { startedAt } = options;
+  const usage = emptyUsage();
   return {
     snapshot: {
       session: {
@@ -61,6 +64,7 @@ export function createInitialState(options: {
         secureStoreStatus: "unsupported",
         profiles: [],
       },
+      usage,
       turn: {
         turnId: null,
         state: "idle",
@@ -93,18 +97,23 @@ export function createInitialState(options: {
     appsChanged: false,
     extensionsChanged: false,
     llmChanged: false,
+    usageChanged: false,
     sessionChanged: false,
   };
 }
 
 export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
+  const { usage: _legacyUsage, ...llmSnapshot } = snapshot.llm as typeof snapshot.llm & {
+    usage?: unknown;
+  };
   return {
     session: {
       ...snapshot.session,
       connectedClients: snapshot.session.connectedClients.map((client) => ({ ...client })),
     },
+    usage: normalizeUsage(snapshot.usage),
     llm: {
-      ...snapshot.llm,
+      ...llmSnapshot,
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },
@@ -139,6 +148,7 @@ export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): Session
     appsChanged: false,
     extensionsChanged: false,
     llmChanged: false,
+    usageChanged: false,
     sessionChanged: false,
   };
 }

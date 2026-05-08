@@ -2,7 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlock,
   ContentBlockParam,
+  Message,
+  MessageCountTokensParams,
   MessageParam,
+  MessageTokensCount,
   Tool,
   ToolResultBlockParam,
   ToolUseBlockParam,
@@ -14,9 +17,31 @@ import type {
   LlmAdapter,
   LlmChatOptions,
   LlmResponse,
+  LlmTokenCount,
   MessageContentBlock,
 } from "./types";
 import { LlmAbortError, normalizeLlmAbortError } from "./types";
+
+interface AnthropicMessageStream {
+  abort(): void;
+  on(event: "text", listener: (delta: string) => void): void;
+  finalMessage(): Promise<Message>;
+}
+
+interface AnthropicMessagesClient {
+  stream(
+    body: Anthropic.MessageStreamParams,
+    options?: { signal?: AbortSignal },
+  ): AnthropicMessageStream;
+  countTokens(
+    body: MessageCountTokensParams,
+    options?: { signal?: AbortSignal },
+  ): Promise<MessageTokensCount>;
+}
+
+interface AnthropicClient {
+  messages: AnthropicMessagesClient;
+}
 
 function toAnthropicTools(tools: LlmTool[]): Tool[] {
   return tools.map((tool) => ({
@@ -30,6 +55,15 @@ function toAnthropicBlock(block: MessageContentBlock): ContentBlockParam {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
+    case "image":
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+          data: block.data,
+        },
+      };
     case "tool_use":
       return {
         type: "tool_use",
@@ -83,12 +117,33 @@ function normalizeAssistantContent(content: ContentBlock[]): AssistantContentBlo
 }
 
 export class AnthropicAdapter implements LlmAdapter {
-  private client: Anthropic;
+  private client: AnthropicClient;
   private model: string;
 
-  constructor(options: { apiKey: string; model: string }) {
-    this.client = new Anthropic({ apiKey: options.apiKey });
+  constructor(options: { apiKey: string; model: string; client?: AnthropicClient }) {
+    this.client = options.client ?? (new Anthropic({ apiKey: options.apiKey }) as AnthropicClient);
     this.model = options.model;
+  }
+
+  async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
+    if (options?.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
+    try {
+      const count = await this.client.messages.countTokens(
+        {
+          model: this.model,
+          messages: [{ role: "user", content: text }],
+        },
+        {
+          signal: options?.signal,
+        },
+      );
+      return { tokens: count.input_tokens, source: "provider" };
+    } catch (error) {
+      throw normalizeLlmAbortError(error, options?.signal);
+    }
   }
 
   async chat(options: LlmChatOptions): Promise<LlmResponse> {

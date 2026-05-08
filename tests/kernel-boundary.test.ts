@@ -11,7 +11,6 @@ const TEST_CONFIG: SloppyConfig = {
   llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
   agent: {
     maxIterations: 12,
-    contextBudgetTokens: 24000,
     minSalience: 0.2,
     overviewDepth: 2,
     overviewMaxNodes: 200,

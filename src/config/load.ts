@@ -123,13 +123,6 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
     };
   }
 
-  if (Bun.env.SLOPPY_CONTEXT_BUDGET_TOKENS) {
-    overrides.agent = {
-      ...(overrides.agent as JsonObject | undefined),
-      contextBudgetTokens: Number.parseInt(Bun.env.SLOPPY_CONTEXT_BUDGET_TOKENS, 10),
-    };
-  }
-
   if (Bun.env.SLOPPY_MAX_ITERATIONS) {
     overrides.agent = {
       ...(overrides.agent as JsonObject | undefined),
@@ -152,6 +145,7 @@ function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): 
     adapterId: profile.adapterId ?? defaults.adapterId,
     apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: profile.baseUrl ?? defaults.baseUrl,
+    contextWindowTokens: profile.contextWindowTokens,
   };
 }
 
@@ -165,6 +159,7 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
     adapterId: config.adapterId ?? defaults.adapterId,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
+    contextWindowTokens: config.contextWindowTokens,
     defaultProfileId: config.defaultProfileId,
     profiles: config.profiles.map((profile) => normalizeProfile(profile)),
     maxTokens: config.maxTokens,

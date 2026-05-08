@@ -20,7 +20,6 @@ const HUB_CONFIG = {
   },
   agent: {
     maxIterations: 12,
-    contextBudgetTokens: 24000,
     minSalience: 0,
     overviewDepth: 4,
     overviewMaxNodes: 500,
