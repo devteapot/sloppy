@@ -242,6 +242,11 @@ Rules:
 
 Node type: `control`
 
+`/goal` is the stable public projection for persistent objectives. Its source
+of truth is the generic extension record at `/extensions/goal`, owned by the
+bundled `persistent-goal` skill. Consumers should keep using `/goal` unless they
+need generic extension inspection or cleanup.
+
 Required props:
 
 - `exists`: boolean
@@ -276,6 +281,8 @@ Affordances:
 
 Rules:
 
+- `create_goal` loads the `persistent-goal` skill before creating extension
+  metadata; if the skill cannot be resolved, no goal state is created
 - creating a goal starts the first goal turn immediately when idle, otherwise
   queues it behind the active turn
 - queued user input takes priority over automatic goal continuation
@@ -288,6 +295,46 @@ Rules:
   public session tree; it lets the model report `progress`, `blocked`, or
   `complete` with evidence. `blocked` pauses the goal, and `complete` records
   `completion_source=model`.
+- stale model-owned updates are rejected when the backing extension instance or
+  revision no longer matches the active goal turn
+
+### `/extensions`
+
+Node type: `collection`
+
+Required props:
+
+- `count`: number of extension records
+- `namespaces`: active extension namespaces
+
+Each item exposes generic extension metadata:
+
+- `namespace`
+- `instance_id`
+- `schema_version`
+- `revision`
+- `owner`
+- `state`
+- `lifecycle`: `active | completed | orphaned`
+- `cleanup_policy`
+- `retain_until`
+- `created_at`
+- `updated_at`
+- `last_used_at`
+
+Affordances:
+
+- `sweep_extensions`
+- item-level `clear_extension`
+
+Rules:
+
+- extension records are durable metadata for skill-backed session features
+- dedicated public projections such as `/goal` remain the preferred consumer API
+- cleanup is manual plus TTL: explicit clears delete live state immediately,
+  while completed or orphaned records may remain until their retention window
+  expires
+- missing or unloaded skills do not delete metadata automatically
 
 ### `/composer`
 
@@ -728,15 +775,16 @@ On disk, new snapshots are written as a versioned envelope:
 ```json
 {
   "kind": "sloppy.session.snapshot",
-  "schema_version": 1,
+  "schema_version": 2,
   "saved_at": "2026-05-06T00:00:00.000Z",
   "snapshot": {}
 }
 ```
 
-Legacy raw snapshot files are still accepted and rewritten as versioned envelopes
-on the next successful persist. Unsupported envelope kinds or schema versions
-fail closed instead of being treated as session state.
+Legacy raw snapshot files and v1 envelopes are still accepted and rewritten as
+v2 envelopes on the next successful persist. v1 `goal` payloads are migrated
+into `/extensions/goal`; unsupported envelope kinds or schema versions fail
+closed instead of being treated as session state.
 
 ---
 

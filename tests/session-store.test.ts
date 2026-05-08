@@ -121,7 +121,9 @@ describe("SessionStore — persistence", () => {
         snapshot: AgentSessionSnapshot;
       };
       expect(persisted.kind).toBe("sloppy.session.snapshot");
-      expect(persisted.schema_version).toBe(1);
+      expect(persisted.schema_version).toBe(2);
+      expect(persisted.snapshot.extensions).toEqual({});
+      expect(persisted.snapshot.goal).toBeNull();
       expect(persisted.snapshot.transcript.map((message) => message.role)).toEqual([
         "user",
         "assistant",
@@ -163,7 +165,7 @@ describe("SessionStore — persistence", () => {
         schema_version: number;
       };
       expect(rewritten.kind).toBe("sloppy.session.snapshot");
-      expect(rewritten.schema_version).toBe(1);
+      expect(rewritten.schema_version).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -259,6 +261,83 @@ describe("SessionStore — persistence", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("migrates v1 goal snapshots into extension-backed state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-session-v1-goal-"));
+    try {
+      const persistencePath = join(root, "sess-v1-goal.json");
+      const legacy = createStore().getSnapshot();
+      legacy.extensions = {};
+      legacy.goal = {
+        goalId: "goal-legacy",
+        objective: "migrate the legacy goal",
+        status: "active",
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:01.000Z",
+        inputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 3,
+        elapsedMs: 4,
+        continuationCount: 5,
+        message: "Goal active.",
+      };
+      await writeFile(
+        persistencePath,
+        `${JSON.stringify(
+          {
+            kind: "sloppy.session.snapshot",
+            schema_version: 1,
+            saved_at: "2026-05-01T00:00:02.000Z",
+            snapshot: legacy,
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const restored = createStore({ persistencePath }).getSnapshot();
+      expect(restored.goal?.goalId).toBe("goal-legacy");
+      expect(restored.goal?.objective).toBe("migrate the legacy goal");
+      expect(restored.extensions.goal?.instanceId).toBe("goal-legacy");
+      expect(restored.extensions.goal?.state.objective).toBe("migrate the legacy goal");
+
+      const rewritten = JSON.parse(await readFile(persistencePath, "utf8")) as {
+        schema_version: number;
+        snapshot: AgentSessionSnapshot;
+      };
+      expect(rewritten.schema_version).toBe(2);
+      expect(rewritten.snapshot.goal).toBeNull();
+      expect(rewritten.snapshot.extensions.goal?.instanceId).toBe("goal-legacy");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retains completed goal metadata until cleanup sweep expires it", () => {
+    const store = createStore();
+    store.createGoal({ objective: "clean up extension state" });
+    store.updateGoalStatus("complete", {
+      message: "done",
+      source: "user",
+    });
+
+    const completed = store.getSnapshot();
+    const retainUntil = completed.extensions.goal?.retainUntil;
+    expect(completed.goal?.status).toBe("complete");
+    expect(completed.extensions.goal?.lifecycle).toBe("completed");
+    expect(retainUntil).toEqual(expect.any(String));
+
+    expect(store.sweepExtensions({ now: completed.extensions.goal?.updatedAt }).removed).toEqual(
+      [],
+    );
+    expect(store.getSnapshot().goal?.status).toBe("complete");
+
+    const afterRetention = new Date(Date.parse(retainUntil ?? "") + 1).toISOString();
+    expect(store.sweepExtensions({ now: afterRetention }).removed).toEqual(["goal"]);
+    expect(store.getSnapshot().goal).toBeNull();
+    expect(store.getSnapshot().extensions.goal).toBeUndefined();
   });
 });
 

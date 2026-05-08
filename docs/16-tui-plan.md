@@ -461,6 +461,9 @@ Unsubmitted drafts remain local UI state only.
 ### Goals
 
 The session provider exposes persistent long-running work through `/goal`.
+Internally this is backed by `/extensions/goal`, but the TUI should continue to
+use `/goal` as the stable UX contract and reserve `/extensions` for inspectors
+and cleanup diagnostics.
 
 TUI commands:
 
@@ -473,10 +476,10 @@ TUI commands:
 
 The status bar should show active goal status, token usage, elapsed time, and a
 truncated objective. Goal state remains runtime-owned shared state, not local
-TUI state. Native model-driven goal turns can also report progress, blockers,
-or completion through the runtime-local `slop_goal_update` tool; those reports
-surface back through `/goal` as message, evidence, and update/completion source
-fields.
+TUI state. Native model-driven goal turns load the `persistent-goal` skill and
+can also report progress, blockers, or completion through the runtime-local
+`slop_goal_update` tool; those reports surface back through `/goal` as message,
+evidence, and update/completion source fields.
 
 ### Sessions
 

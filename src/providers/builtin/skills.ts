@@ -936,6 +936,7 @@ export class SkillsProvider {
         skill_path: skill.skill_path,
         file_path: skill.file_path,
         supporting_files: skill.supporting_files,
+        metadata: skill.metadata,
         ...(skill.related_skills.length > 0 ? { related_skills: skill.related_skills } : {}),
       },
       summary: skill.description || skill.name,

@@ -316,6 +316,7 @@ Built-in runtime skills live under `skills/runtime/`:
 - `topology-experiment-evaluator`
 - `topology-pattern-author`
 - `skill-curator`
+- `persistent-goal`
 
 Meta-runtime `activateSkillVersion` operations may reference a skills-provider
 proposal id. Session skill proposals can be activated as part of applying the
@@ -335,7 +336,8 @@ The important boundary:
 - meta-runtime owns topology state, validation, dispatch, persistence, approval,
   and experiment records
 - skills own reusable strategy, diagnosis, repair recipes, evaluation rubrics,
-  architect prompts, pattern authoring, and procedural-memory curation
+  architect prompts, pattern authoring, extension-specific behavior such as
+  persistent goals, and procedural-memory curation
 
 This follows the Hermes-style lesson: if behavior can be expressed as
 instructions plus existing affordances, make it a skill. Reserve provider code

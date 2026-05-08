@@ -116,8 +116,9 @@ Managed TUI mode starts a supervisor first, then attaches to the active
 session's public provider socket. Switching sessions changes the TUI's socket;
 it does not collapse multiple sessions into one provider tree. Each child
 session still loads config through the normal scoped launcher and still exposes
-the standard `/session`, `/llm`, `/turn`, `/goal`, `/composer`, `/queue`,
-`/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps` surface.
+the standard `/session`, `/llm`, `/turn`, `/goal`, `/extensions`, `/composer`,
+`/queue`, `/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps`
+surface.
 
 The supervisor owns lifecycle bookkeeping only. It does not schedule work,
 route tasks, mutate provider wiring, or become a privileged orchestrator.
@@ -248,12 +249,20 @@ The `skills` provider remains compatible with Hermes/agentskills.io-style
 compact index; `skill_view(name)` loads `SKILL.md`; `skill_view(name,
 file_path)` loads a supporting file under the skill directory. It reads nested
 `metadata.sloppy`, category, platform, tag, and supporting-file metadata. The
-index also exposes lightweight usage telemetry (`view_count`,
+index also exposes extension metadata and lightweight usage telemetry (`view_count`,
 `last_viewed_at`, and aggregate `skill_views_count`) so curator skills can
 review which procedural memories are actually being used. The built-in
 `skill-curator` skill uses this state plus transcript/activity evidence to
 propose minimal `skill_manage` changes without adding a scheduler or repair
 policy to the runtime.
+
+The public session provider has a generic `/extensions` metadata substrate for
+skill-backed session features. `/goal` is now a stable projection over the
+`goal` extension record owned by the bundled `persistent-goal` skill; the
+runtime guarantees persistence, revision checks, restart recovery, and cleanup
+retention, while the skill defines the working procedure and completion
+evidence expectations. Extension cleanup is manual plus TTL, so missing or
+unloaded skills do not delete state automatically.
 
 Agents can create and maintain procedural memory through `skill_manage`:
 `create`, `patch`, `edit`, `delete`, `write_file`, and `remove_file`.
@@ -291,7 +300,8 @@ First-party UIs and external clients should use the same provider/session
 boundary:
 
 - session provider for transcript, turn state, approvals, activity, tasks, and
-  app/provider attachment state
+  app/provider attachment state, plus generic extension metadata when a
+  dedicated projection is not enough
 - session supervisor for multi-session listing, scoped creation, switching, and
   stopping
 - direct provider query/invoke for deeper capability-specific surfaces

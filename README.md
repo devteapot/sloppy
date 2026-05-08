@@ -66,9 +66,11 @@ Current checked-in implementation includes:
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
-- session-provider `/goal` state for persistent long-running objectives, including
-  create/pause/resume/complete/clear controls, usage accounting, and automatic
-  continuation while the goal is active. Native goal turns expose a model-owned
+- session-provider `/goal` state for persistent long-running objectives, backed
+  by generic session extension metadata under `/extensions/goal`, including
+  create/pause/resume/complete/clear controls, usage accounting, cleanup
+  retention, and automatic continuation while the goal is active. Native goal
+  turns load the `persistent-goal` skill and expose a model-owned
   `slop_goal_update` local tool for progress, blocker, and completion reports
   with evidence.
 - session-provider restart-required state when provider or agent config changes after startup
@@ -637,6 +639,7 @@ Useful TUI slash commands:
 - `/default <profile-id>`, `/delete-profile <profile-id>`, and `/delete-key <profile-id>` manage exposed profiles.
 - `/goal <objective> [--token-budget N]` starts a persistent runtime goal.
 - `/goal`, `/goal pause`, `/goal resume`, `/goal complete`, and `/goal clear` inspect and control the active goal.
+- `/query /extensions 2` inspects generic session extension metadata, including the backing `/extensions/goal` record.
 - `/session-new [--workspace-id id] [--project-id id] [--title text]` creates and switches to a supervised session.
 - `/session-switch <session-id>` switches the TUI to another supervised session.
 - `/session-stop <session-id>` stops a supervised session.

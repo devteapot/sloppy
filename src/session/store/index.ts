@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import * as activity from "./activity";
 import * as apps from "./apps";
+import * as extensions from "./extensions";
 import * as goal from "./goal";
 import { now } from "./helpers";
 import { ListenerRegistry } from "./listeners";
@@ -140,6 +141,10 @@ export class SessionStore {
     return this.registry.subscribeGranular("apps", fn);
   }
 
+  onExtensionsChange(fn: SessionStoreGranularListener): () => void {
+    return this.registry.subscribeGranular("extensions", fn);
+  }
+
   onLlmChange(fn: SessionStoreGranularListener): () => void {
     return this.registry.subscribeGranular("llm", fn);
   }
@@ -192,14 +197,39 @@ export class SessionStore {
           evidence?: string[];
           source?: SessionGoalUpdateSource;
         },
+    options?: { expectedGoalId?: string; expectedRevision?: number },
   ): void {
-    goal.updateGoalStatus(this.state, status, update);
+    goal.updateGoalStatus(this.state, status, update, options);
     this.emit();
   }
 
   clearGoal(): void {
     goal.clearGoal(this.state);
     this.emit();
+  }
+
+  clearExtension(namespace: string): boolean {
+    const removed = extensions.clearExtension(this.state, namespace);
+    if (removed) {
+      if (namespace === goal.GOAL_EXTENSION_NAMESPACE) {
+        this.state.snapshot.goal = null;
+        this.state.goalChanged = true;
+      }
+      this.emit();
+    }
+    return removed;
+  }
+
+  sweepExtensions(options?: { now?: string }): { removed: string[] } {
+    const result = extensions.sweepExtensions(this.state, options);
+    if (result.removed.includes(goal.GOAL_EXTENSION_NAMESPACE)) {
+      this.state.snapshot.goal = null;
+      this.state.goalChanged = true;
+    }
+    if (result.removed.length > 0) {
+      this.emit();
+    }
+    return result;
   }
 
   accountGoalTurn(options: {

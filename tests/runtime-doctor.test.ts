@@ -804,17 +804,48 @@ describe("runtime doctor", () => {
     const metaRoot = join(workspaceRoot, ".sloppy/meta-runtime");
     await mkdir(sessionDir, { recursive: true });
     await mkdir(metaRoot, { recursive: true });
+    const now = "2026-01-01T00:00:00.000Z";
     await writeFile(
       join(sessionDir, "default.json"),
       `${JSON.stringify(
         {
           kind: "sloppy.session.snapshot",
-          schema_version: 1,
+          schema_version: 2,
           saved_at: "2026-01-01T00:00:00.000Z",
           snapshot: {
-            session: {},
-            llm: {},
-            turn: {},
+            session: {
+              sessionId: "default",
+              status: "active",
+              modelProvider: "openai",
+              model: "gpt-5.4",
+              startedAt: now,
+              updatedAt: now,
+              lastActivityAt: now,
+              clientCount: 0,
+              connectedClients: [],
+            },
+            llm: {
+              status: "needs_credentials",
+              message: "Add an API key to start the agent.",
+              activeProfileId: "default",
+              selectedProvider: "openai",
+              selectedModel: "gpt-5.4",
+              secureStoreKind: "none",
+              secureStoreStatus: "unsupported",
+              profiles: [],
+            },
+            turn: {
+              turnId: null,
+              state: "idle",
+              phase: "none",
+              iteration: 0,
+              startedAt: null,
+              updatedAt: now,
+              message: "Idle",
+            },
+            goal: null,
+            extensions: {},
+            queue: [],
             transcript: [],
             activity: [],
             approvals: [],

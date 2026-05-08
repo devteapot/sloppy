@@ -106,7 +106,8 @@ as explicit public state:
 - pending approvals become `expired` and lose approve/reject affordances
 - running tasks become `superseded`, lose cancel affordances, and keep an error
   explaining the restart
-- an active goal becomes `paused` with `update_source="runtime"`
+- an active extension-backed goal becomes `paused` with
+  `update_source="runtime"` in both `/goal` and `/extensions/goal`
 - queued messages remain visible under `/queue` and can be cancelled or drained
   normally after a fresh turn
 
@@ -121,6 +122,7 @@ For a running session, inspect public state instead of runtime internals:
 - `/llm`: active profile, credential source, secure-store status
 - `/turn`: current turn phase and cancel affordance, when active
 - `/goal`: persistent objective status and usage accounting
+- `/extensions`: generic session extension metadata and cleanup state
 - `/queue`: FIFO user and goal messages waiting for the active turn
 - `/approvals`: pending and resolved approval state
 - `/tasks`: downstream async task state

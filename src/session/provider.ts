@@ -12,6 +12,7 @@ import type {
   ExternalAppSnapshot,
   LlmProfileSnapshot,
   QueuedSessionMessage,
+  SessionExtensionRecord,
   TranscriptContentBlock,
   TranscriptMessage,
   TurnStateSnapshot,
@@ -154,6 +155,38 @@ function buildAppItem(app: ExternalAppSnapshot): ItemDescriptor {
   };
 }
 
+function buildExtensionItem(
+  extension: SessionExtensionRecord,
+  clear: (namespace: string) => { status: string; namespace: string; removed: boolean },
+): ItemDescriptor {
+  return {
+    id: extension.namespace,
+    props: {
+      namespace: extension.namespace,
+      instance_id: extension.instanceId,
+      schema_version: extension.schemaVersion,
+      revision: extension.revision,
+      owner: extension.owner,
+      state: extension.state,
+      lifecycle: extension.lifecycle,
+      cleanup_policy: extension.cleanupPolicy,
+      retain_until: extension.retainUntil,
+      created_at: extension.createdAt,
+      updated_at: extension.updatedAt,
+      last_used_at: extension.lastUsedAt,
+    },
+    summary: `${extension.namespace} (${extension.lifecycle})`,
+    actions: {
+      clear_extension: action(async () => clear(extension.namespace), {
+        label: "Clear Extension",
+        description: "Remove this session extension metadata record.",
+        dangerous: true,
+        estimate: "instant",
+      }),
+    },
+  };
+}
+
 function optionalPositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return undefined;
@@ -200,6 +233,7 @@ export class AgentSessionProvider {
     this.server.register("llm", () => this.buildLlmDescriptor());
     this.server.register("turn", () => this.buildTurnDescriptor());
     this.server.register("goal", () => this.buildGoalDescriptor());
+    this.server.register("extensions", () => this.buildExtensionsDescriptor());
     this.server.register("composer", () => this.buildComposerDescriptor());
     this.server.register("queue", () => this.buildQueueDescriptor());
     this.server.register("transcript", () => this.buildTranscriptDescriptor());
@@ -394,6 +428,33 @@ export class AgentSessionProvider {
           estimate: "instant",
         }),
       },
+    };
+  }
+
+  private buildExtensionsDescriptor(): NodeDescriptor {
+    const snapshot = this.runtime.store.getSnapshot();
+    const extensions = Object.values(snapshot.extensions).sort((left, right) =>
+      left.namespace.localeCompare(right.namespace),
+    );
+
+    return {
+      type: "collection",
+      props: {
+        count: extensions.length,
+        namespaces: extensions.map((extension) => extension.namespace),
+      },
+      summary:
+        "Generic session extension metadata. Prefer dedicated projections such as /goal when available.",
+      actions: {
+        sweep_extensions: action(async () => this.runtime.sweepExtensions(), {
+          label: "Sweep Extensions",
+          description: "Remove extension records whose retention window has expired.",
+          estimate: "instant",
+        }),
+      },
+      items: extensions.map((extension) =>
+        buildExtensionItem(extension, (namespace) => this.runtime.clearExtension(namespace)),
+      ),
     };
   }
 

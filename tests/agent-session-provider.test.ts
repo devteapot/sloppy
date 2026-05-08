@@ -926,6 +926,15 @@ describe("AgentSessionProvider", () => {
       expect(goal.properties?.continuation_count).toBe(1);
       expect(harness.messages).toHaveLength(2);
       expect(harness.messages[1]).toContain("Continue the active persistent session goal");
+
+      const extensions = await consumer.query("/extensions", 2);
+      expect(extensions.properties?.namespaces).toContain("goal");
+      expect(extensions.children?.[0]?.properties?.instance_id).toBe(goal.properties?.goal_id);
+
+      const clearExtension = await consumer.invoke("/extensions/goal", "clear_extension", {});
+      expect(clearExtension.status).toBe("ok");
+      goal = await consumer.query("/goal", 1);
+      expect(goal.properties?.exists).toBe(false);
     } finally {
       provider.stop();
       runtime.shutdown();

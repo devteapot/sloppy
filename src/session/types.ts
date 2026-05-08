@@ -71,6 +71,39 @@ export type SessionGoalSnapshot = {
   completionSource?: SessionGoalUpdateSource;
 };
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+export type SessionExtensionLifecycle = "active" | "completed" | "orphaned";
+
+export type SessionExtensionCleanupPolicy = {
+  mode: "manual" | "ttl";
+  ttlMs?: number;
+  description?: string;
+};
+
+export type SessionExtensionOwner = {
+  kind: "skill" | "runtime";
+  id: string;
+  version?: string;
+};
+
+export type SessionExtensionRecord = {
+  namespace: string;
+  instanceId: string;
+  schemaVersion: number;
+  revision: number;
+  owner: SessionExtensionOwner;
+  state: JsonObject;
+  lifecycle: SessionExtensionLifecycle;
+  cleanupPolicy?: SessionExtensionCleanupPolicy;
+  retainUntil?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string;
+};
+
 export type ActivityKind =
   | "model_call"
   | "tool_call"
@@ -231,6 +264,7 @@ export type AgentSessionSnapshot = {
   llm: LlmStateSnapshot;
   turn: TurnStateSnapshot;
   goal: SessionGoalSnapshot | null;
+  extensions: Record<string, SessionExtensionRecord>;
   queue: QueuedSessionMessage[];
   transcript: TranscriptMessage[];
   activity: ActivityItem[];
@@ -249,6 +283,7 @@ export type SessionStoreEventType =
   | "llm"
   | "session"
   | "goal"
+  | "extensions"
   | "queue";
 
 export type SessionStoreGranularListener = (event: {

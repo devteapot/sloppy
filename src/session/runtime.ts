@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
@@ -36,6 +37,7 @@ import {
 } from "./mirror-sync";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
+import { GOAL_EXTENSION_NAMESPACE } from "./store/goal";
 import type { ApprovalItem } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
@@ -92,6 +94,7 @@ function buildToolResultBlock(toolUseId: string, result: ResultMessage): ToolRes
 
 const PARAMS_PREVIEW_BYTE_LIMIT = 1500;
 const PARAMS_PREVIEW_LINE_LIMIT = 24;
+const PERSISTENT_GOAL_SKILL_NAME = "persistent-goal";
 
 // Compact a tool's params into a multi-line preview for the activity feed.
 // Edit-shaped actions (write/edit/patch) put the new content/hunks first so
@@ -188,7 +191,11 @@ function clampPreview(value: string): string {
   return `${out.slice(0, PARAMS_PREVIEW_BYTE_LIMIT)}…`;
 }
 
-function buildGoalStartPrompt(objective: string): string {
+function renderGoalSkillSection(skillContent: string): string {
+  return ["", "Loaded persistent-goal skill:", "", skillContent].join("\n");
+}
+
+function buildGoalStartPrompt(objective: string, skillContent: string): string {
   return [
     "Start working toward this persistent session goal.",
     "",
@@ -196,14 +203,18 @@ function buildGoalStartPrompt(objective: string): string {
     "",
     "Continue until the objective is genuinely complete or you are blocked. Keep the core runtime lean: use existing SLOP provider state and affordances, and prefer reusable skill updates over hardcoded runtime policy when the work discovers a repeatable procedure.",
     "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence.",
+    renderGoalSkillSection(skillContent),
   ].join("\n");
 }
 
-function buildGoalContinuationPrompt(goal: {
-  objective: string;
-  totalTokens: number;
-  tokenBudget?: number;
-}): string {
+function buildGoalContinuationPrompt(
+  goal: {
+    objective: string;
+    totalTokens: number;
+    tokenBudget?: number;
+  },
+  skillContent: string,
+): string {
   const budget =
     goal.tokenBudget === undefined
       ? "No token budget is configured."
@@ -215,6 +226,7 @@ function buildGoalContinuationPrompt(goal: {
     "",
     budget,
     "Use the slop_goal_update tool to report meaningful progress, blockers, or completion with concrete evidence. If the goal is now complete, mark it complete before your concise completion summary. If work remains, take the next concrete action. If you are blocked, report the blocker.",
+    renderGoalSkillSection(skillContent),
   ].join("\n");
 }
 
@@ -317,6 +329,7 @@ export class SessionRuntime {
   private currentTurnUsedTools = false;
   private currentTurnContinuation = false;
   private currentTurnGoalId: string | null = null;
+  private goalSkillContent: string | null = null;
   private readonly startedRuntimeConfigFingerprint: string;
 
   constructor(options?: {
@@ -470,13 +483,79 @@ export class SessionRuntime {
     this.started = true;
   }
 
+  private async loadPersistentGoalSkillContent(): Promise<string> {
+    if (this.goalSkillContent) {
+      return this.goalSkillContent;
+    }
+
+    const providerContent = await this.loadPersistentGoalSkillFromProvider();
+    if (providerContent) {
+      this.goalSkillContent = providerContent;
+      return providerContent;
+    }
+
+    const builtinContent = this.loadPersistentGoalSkillFromDisk();
+    if (builtinContent) {
+      this.goalSkillContent = builtinContent;
+      return builtinContent;
+    }
+
+    throw new Error(
+      "Cannot create a persistent goal because the persistent-goal skill could not be resolved.",
+    );
+  }
+
+  private goalSkillContentForContinuation(): string | null {
+    if (this.goalSkillContent) {
+      return this.goalSkillContent;
+    }
+    const builtinContent = this.loadPersistentGoalSkillFromDisk();
+    if (builtinContent) {
+      this.goalSkillContent = builtinContent;
+      return builtinContent;
+    }
+    return null;
+  }
+
+  private async loadPersistentGoalSkillFromProvider(): Promise<string | null> {
+    try {
+      const result = await this.agent.invokeProvider("skills", "/session", "skill_view", {
+        name: PERSISTENT_GOAL_SKILL_NAME,
+      });
+      if (result.status !== "ok") {
+        return null;
+      }
+      const data = (result as { data?: unknown }).data;
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return null;
+      }
+      const content = (data as Record<string, unknown>).content;
+      return typeof content === "string" && content.trim().length > 0 ? content : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private loadPersistentGoalSkillFromDisk(): string | null {
+    const builtinSkillsDir = this.config.providers.skills.builtinSkillsDir ?? "skills";
+    const path = join(builtinSkillsDir, "runtime", PERSISTENT_GOAL_SKILL_NAME, "SKILL.md");
+    try {
+      const content = readFileSync(path, "utf8");
+      return content.trim().length > 0 ? content : null;
+    } catch {
+      return null;
+    }
+  }
+
   private buildLocalTools(): LocalRuntimeTool[] {
     const tools: LocalRuntimeTool[] = [];
     if (this.config.providers.builtin.delegation) {
       tools.push(createDelegationWaitTool());
     }
 
-    const goal = this.store.getSnapshot().goal;
+    const snapshot = this.store.getSnapshot();
+    const goal = snapshot.goal;
+    const goalExtension = snapshot.extensions[GOAL_EXTENSION_NAMESPACE];
     if (!goal || goal.status === "complete" || goal.goalId !== this.currentTurnGoalId) {
       return tools;
     }
@@ -514,7 +593,7 @@ export class SessionRuntime {
           },
         },
       },
-      execute: (params) => this.reportGoalUpdate(params, goal.goalId),
+      execute: (params) => this.reportGoalUpdate(params, goal.goalId, goalExtension?.revision),
     });
 
     return tools;
@@ -523,6 +602,7 @@ export class SessionRuntime {
   private reportGoalUpdate(
     params: Record<string, unknown>,
     expectedGoalId: string,
+    expectedRevision: number | undefined,
   ): {
     status: "ok" | "error";
     summary: string;
@@ -579,24 +659,52 @@ export class SessionRuntime {
     }
 
     const evidence = compactEvidence(params.evidence);
-    if (reportStatus === "progress") {
-      this.store.updateGoalStatus("active", {
-        message,
-        evidence,
-        source: "model",
-      });
-    } else if (reportStatus === "blocked") {
-      this.store.updateGoalStatus("paused", {
-        message: `Blocked: ${message}`,
-        evidence,
-        source: "model",
-      });
-    } else {
-      this.store.updateGoalStatus("complete", {
-        message,
-        evidence,
-        source: "model",
-      });
+    try {
+      if (reportStatus === "progress") {
+        this.store.updateGoalStatus(
+          "active",
+          {
+            message,
+            evidence,
+            source: "model",
+          },
+          { expectedGoalId, expectedRevision },
+        );
+      } else if (reportStatus === "blocked") {
+        this.store.updateGoalStatus(
+          "paused",
+          {
+            message: `Blocked: ${message}`,
+            evidence,
+            source: "model",
+          },
+          { expectedGoalId, expectedRevision },
+        );
+      } else {
+        this.store.updateGoalStatus(
+          "complete",
+          {
+            message,
+            evidence,
+            source: "model",
+          },
+          { expectedGoalId, expectedRevision },
+        );
+      }
+    } catch {
+      return {
+        status: "error",
+        summary: "Goal update no longer matches the active goal turn.",
+        content: {
+          status: "error",
+          error: {
+            code: "goal_mismatch",
+            message:
+              "The goal update was produced by a stale goal turn and was not applied to the current goal.",
+          },
+        },
+        isError: true,
+      };
     }
 
     const updated = this.store.getSnapshot().goal;
@@ -719,6 +827,7 @@ export class SessionRuntime {
     if (this.requiresLlmProfile) {
       await this.refreshLlmState({ requireReady: true });
     }
+    const goalSkillContent = await this.loadPersistentGoalSkillContent();
 
     const goalId = this.store.createGoal({
       objective,
@@ -730,7 +839,7 @@ export class SessionRuntime {
       goalId,
       tokenBudget,
     });
-    const prompt = buildGoalStartPrompt(objective);
+    const prompt = buildGoalStartPrompt(objective, goalSkillContent);
 
     if (this.currentTurnId) {
       const queued = this.store.enqueueMessage(prompt, {
@@ -791,6 +900,23 @@ export class SessionRuntime {
     this.store.clearGoal();
     this.audit({ kind: "goal_cleared", goalId });
     return { status: "cleared" };
+  }
+
+  clearExtension(namespace: string): { status: string; namespace: string; removed: boolean } {
+    const goalId =
+      namespace === GOAL_EXTENSION_NAMESPACE ? this.store.getSnapshot().goal?.goalId : undefined;
+    const removed = this.store.clearExtension(namespace);
+    this.audit({ kind: "extension_cleared", namespace, removed });
+    if (removed && namespace === GOAL_EXTENSION_NAMESPACE) {
+      this.audit({ kind: "goal_cleared", goalId });
+    }
+    return { status: removed ? "cleared" : "missing", namespace, removed };
+  }
+
+  sweepExtensions(): { status: string; removed: string[] } {
+    const result = this.store.sweepExtensions();
+    this.audit({ kind: "extensions_swept", removed: result.removed });
+    return { status: "ok", removed: result.removed };
   }
 
   async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
@@ -1357,7 +1483,21 @@ export class SessionRuntime {
     if (!goal || goal.status !== "active") {
       return;
     }
-    this.startGoalTurn(buildGoalContinuationPrompt(goal), true, goal.goalId);
+    const goalSkillContent = this.goalSkillContentForContinuation();
+    if (!goalSkillContent) {
+      this.store.updateGoalStatus("paused", {
+        message: "Goal paused because the persistent-goal skill could not be resolved.",
+        source: "runtime",
+      });
+      this.audit({
+        kind: "goal_status",
+        goalId: goal.goalId,
+        status: "paused",
+        source: "runtime",
+      });
+      return;
+    }
+    this.startGoalTurn(buildGoalContinuationPrompt(goal, goalSkillContent), true, goal.goalId);
   }
 
   private pauseActiveGoal(message: string): void {

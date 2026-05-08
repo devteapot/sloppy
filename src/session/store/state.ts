@@ -1,4 +1,6 @@
 import type { AgentSessionSnapshot, SessionStoreEventType } from "../types";
+import { cloneExtensions } from "./extensions";
+import { selectGoalSnapshot } from "./goal";
 
 export interface SessionStoreState {
   snapshot: AgentSessionSnapshot;
@@ -14,6 +16,7 @@ export interface SessionStoreState {
   approvalsChanged: boolean;
   tasksChanged: boolean;
   appsChanged: boolean;
+  extensionsChanged: boolean;
   llmChanged: boolean;
   sessionChanged: boolean;
 }
@@ -68,6 +71,7 @@ export function createInitialState(options: {
         message: "Idle",
       },
       goal: null,
+      extensions: {},
       queue: [],
       transcript: [],
       activity: [],
@@ -87,6 +91,7 @@ export function createInitialState(options: {
     approvalsChanged: false,
     tasksChanged: false,
     appsChanged: false,
+    extensionsChanged: false,
     llmChanged: false,
     sessionChanged: false,
   };
@@ -103,9 +108,8 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },
-    goal: snapshot.goal
-      ? { ...snapshot.goal, evidence: snapshot.goal.evidence?.map((item) => item) }
-      : null,
+    goal: selectGoalSnapshot(snapshot),
+    extensions: cloneExtensions(snapshot.extensions),
     queue: (snapshot.queue ?? []).map((message) => ({ ...message })),
     transcript: snapshot.transcript.map((message) => ({
       ...message,
@@ -133,6 +137,7 @@ export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): Session
     approvalsChanged: false,
     tasksChanged: false,
     appsChanged: false,
+    extensionsChanged: false,
     llmChanged: false,
     sessionChanged: false,
   };
