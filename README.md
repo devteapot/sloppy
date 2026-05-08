@@ -68,7 +68,7 @@ Current checked-in implementation includes:
 - session-provider FIFO `/queue` for submitted messages while another turn is active
 - session-provider `/plugins` registry for first-party session runtime plugins,
   including declarative TUI manifests for contributed subscriptions and slash
-  command discovery
+  command/notification discovery
 - session-provider `/usage` state for session-owned token accounting, showing
   provider-reported model usage when available and `N/A` semantics otherwise,
   alongside provider-counted SLOP state-tail size when supported and the known
@@ -374,9 +374,6 @@ commands, audit-log writability, session/supervisor socket path usability, and
 persisted session/meta-runtime state schema health. A missing ready LLM profile
 is an error; environment-backed credentials are reported as a warning so
 operators can decide whether process-scoped secrets are acceptable for that run.
-If persistence checks warn about legacy raw state, rerun with
-`--migrate-persistence` to rewrite those files into current schema envelopes;
-the doctor creates `.bak` copies before rewriting.
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
 Claude and Codex ACP adapters. Copy those adapter blocks into
@@ -463,7 +460,7 @@ llm:
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
-First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Plugins can also contribute session nodes, extension event projections, policy rules, audit metadata, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:

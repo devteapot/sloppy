@@ -125,8 +125,8 @@ New state files are written as versioned envelopes:
 }
 ```
 
-Legacy raw topology-state files are still read for compatibility. Unknown
-envelope kinds or schema versions are rejected before state is loaded.
+Only the current envelope kind and schema version are accepted. Unknown envelope
+kinds or schema versions are rejected before state is loaded.
 
 `export_state` can return a merged view or the exact persisted global/workspace
 file. `import_state` can merge or replace a single target layer. Replacing the

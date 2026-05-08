@@ -5,8 +5,9 @@ import type {
   ExternalAppSnapshot,
   LlmStateSnapshot,
   QueuedSessionMessage,
-  SessionGoalUpdateSource,
+  SessionExtensionRecord,
   SessionStoreChangeListener,
+  SessionStoreEventType,
   SessionStoreGranularListener,
   SessionTask,
   TokenAccountingSource,
@@ -14,7 +15,6 @@ import type {
 import * as activity from "./activity";
 import * as apps from "./apps";
 import * as extensions from "./extensions";
-import * as goal from "./goal";
 import { now } from "./helpers";
 import { ListenerRegistry } from "./listeners";
 import * as llm from "./llm";
@@ -23,6 +23,8 @@ import {
   loadPersistedSessionSnapshot,
   persistSessionSnapshot,
   recoverPersistedSessionSnapshot,
+  type SessionSnapshotMigrator,
+  type SessionSnapshotRecoverer,
 } from "./persistence";
 import * as queue from "./queue";
 import {
@@ -41,6 +43,7 @@ export class SessionStore {
   private state: SessionStoreState;
   private registry = new ListenerRegistry();
   private persistencePath?: string;
+  private readonly extensionEventTypes: Record<string, SessionStoreEventType[]>;
 
   constructor(options: {
     sessionId: string;
@@ -51,14 +54,27 @@ export class SessionStore {
     workspaceId?: string;
     projectId?: string;
     persistencePath?: string;
+    snapshotMigrators?: readonly SessionSnapshotMigrator[];
+    snapshotRecoverers?: readonly SessionSnapshotRecoverer[];
+    extensionEventTypes?: Record<string, readonly SessionStoreEventType[]>;
   }) {
     this.persistencePath = options.persistencePath;
+    this.extensionEventTypes = Object.fromEntries(
+      Object.entries(options.extensionEventTypes ?? {}).map(([namespace, eventTypes]) => [
+        namespace,
+        [...eventTypes],
+      ]),
+    );
     const persisted = options.persistencePath
-      ? loadPersistedSessionSnapshot(options.persistencePath)
+      ? loadPersistedSessionSnapshot(options.persistencePath, {
+          migrators: options.snapshotMigrators,
+        })
       : null;
     this.state = persisted
       ? createStateFromSnapshot(
-          recoverPersistedSessionSnapshot(persisted, options.persistencePath ?? ""),
+          recoverPersistedSessionSnapshot(persisted, options.persistencePath ?? "", {
+            recoverers: options.snapshotRecoverers,
+          }),
         )
       : createInitialState({ ...options, startedAt: now() });
     if (this.persistencePath && !persisted) {
@@ -208,39 +224,27 @@ export class SessionStore {
     return turnId;
   }
 
-  createGoal(options: { objective: string; tokenBudget?: number; message?: string }): string {
-    const goalId = goal.createGoal(this.state, options);
-    this.emit();
-    return goalId;
-  }
-
-  updateGoalStatus(
-    status: "active" | "paused" | "budget_limited" | "complete",
-    update?:
-      | string
-      | {
-          message?: string;
-          evidence?: string[];
-          source?: SessionGoalUpdateSource;
-        },
-    options?: { expectedGoalId?: string; expectedRevision?: number },
-  ): void {
-    goal.updateGoalStatus(this.state, status, update, options);
+  upsertExtension(record: SessionExtensionRecord, options?: { touchSession?: boolean }): void {
+    extensions.upsertExtension(this.state, record, options);
+    this.markExtensionEvents([record.namespace]);
     this.emit();
   }
 
-  clearGoal(): void {
-    goal.clearGoal(this.state);
+  patchExtension(
+    namespace: string,
+    patch: (record: SessionExtensionRecord) => SessionExtensionRecord,
+    options?: extensions.ExtensionPatchOptions,
+  ): extensions.PatchExtensionResult {
+    const result = extensions.patchExtension(this.state, namespace, patch, options);
+    this.markExtensionEvents([namespace]);
     this.emit();
+    return result;
   }
 
   clearExtension(namespace: string): boolean {
     const removed = extensions.clearExtension(this.state, namespace);
     if (removed) {
-      if (namespace === goal.GOAL_EXTENSION_NAMESPACE) {
-        this.state.snapshot.goal = null;
-        this.state.goalChanged = true;
-      }
+      this.markExtensionEvents([namespace]);
       this.emit();
     }
     return removed;
@@ -248,26 +252,11 @@ export class SessionStore {
 
   sweepExtensions(options?: { now?: string }): { removed: string[] } {
     const result = extensions.sweepExtensions(this.state, options);
-    if (result.removed.includes(goal.GOAL_EXTENSION_NAMESPACE)) {
-      this.state.snapshot.goal = null;
-      this.state.goalChanged = true;
-    }
     if (result.removed.length > 0) {
+      this.markExtensionEvents(result.removed);
       this.emit();
     }
     return result;
-  }
-
-  accountGoalTurn(options: {
-    turnId: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    elapsedMs: number;
-    continuation: boolean;
-    usedTools: boolean;
-  }): void {
-    goal.accountGoalTurn(this.state, options);
-    this.emit();
   }
 
   enqueueMessage(
@@ -429,6 +418,56 @@ export class SessionStore {
   trimResolvedTasks(limit?: number): void {
     if (mirrors.trimResolvedTasks(this.state, limit)) {
       this.emit();
+    }
+  }
+
+  private markExtensionEvents(namespaces: Iterable<string>): void {
+    for (const namespace of namespaces) {
+      for (const eventType of this.extensionEventTypes[namespace] ?? []) {
+        this.markEventType(eventType);
+      }
+    }
+  }
+
+  private markEventType(eventType: SessionStoreEventType): void {
+    switch (eventType) {
+      case "turn":
+        this.state.turnChanged = true;
+        break;
+      case "transcript":
+        this.state.transcriptChanged = true;
+        break;
+      case "activity":
+        this.state.activityChanged = true;
+        break;
+      case "approvals":
+        this.state.approvalsChanged = true;
+        break;
+      case "tasks":
+        this.state.tasksChanged = true;
+        break;
+      case "apps":
+        this.state.appsChanged = true;
+        break;
+      case "llm":
+        this.state.llmChanged = true;
+        break;
+      case "usage":
+        this.state.usageChanged = true;
+        break;
+      case "session":
+        this.state.sessionChanged = true;
+        break;
+      case "goal":
+        this.state.snapshot.goal = null;
+        this.state.goalChanged = true;
+        break;
+      case "extensions":
+        this.state.extensionsChanged = true;
+        break;
+      case "queue":
+        this.state.queueChanged = true;
+        break;
     }
   }
 

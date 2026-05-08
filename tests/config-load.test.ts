@@ -257,29 +257,6 @@ describe("loadConfig", () => {
     ]);
   });
 
-  test("rejects legacy first-party provider config aliases", async () => {
-    const home = await createTempDir("sloppy-home-");
-    const workspace = await createTempDir("sloppy-workspace-");
-    await writeConfig(
-      workspace,
-      ["providers:", "  builtin:", "    mcp: true", "  mcp:", "    connectOnStart: false"].join(
-        "\n",
-      ),
-    );
-
-    process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
-    delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
-    process.chdir(workspace);
-
-    await expect(loadConfig()).rejects.toThrow(
-      "Legacy providers.* first-party config is no longer supported",
-    );
-  });
-
   test("loads MCP server config and normalizes stdio cwd", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

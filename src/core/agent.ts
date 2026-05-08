@@ -13,6 +13,7 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
+import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/catalog";
 import {
   discoverProviderDescriptors,
   type ProviderDiscoveryUpdate,
@@ -35,7 +36,7 @@ import {
   runLoop,
 } from "./loop";
 import type { InvokePolicy } from "./policy";
-import { dangerousActionRule, terminalSafetyRule } from "./policy/rules";
+import { dangerousActionRule } from "./policy/rules";
 import {
   defaultRole,
   type RoleProfile,
@@ -165,7 +166,10 @@ export class Agent {
     this.roleRegistry = options?.roleRegistry ?? new RoleRegistry();
     this.publishEventCallback = options?.publishEvent;
     this.mirrorProviderPaths = options?.mirrorProviderPaths ?? [];
-    this.policyRules = options?.policyRules ?? [];
+    this.policyRules = [
+      ...createFirstPartyPluginPolicyRules(this.config),
+      ...(options?.policyRules ?? []),
+    ];
     this.localTools = options?.localTools;
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
@@ -245,7 +249,6 @@ export class Agent {
     for (const policyRule of this.policyRules) {
       hub.addPolicyRule(policyRule);
     }
-    hub.addPolicyRule(terminalSafetyRule);
     hub.addPolicyRule(
       dangerousActionRule((providerId, path, action) =>
         hub.isDangerousAffordance(providerId, path, action),

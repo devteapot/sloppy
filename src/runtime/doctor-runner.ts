@@ -1,17 +1,14 @@
-import { constants, type Dirent, existsSync, readFileSync } from "node:fs";
-import { access, copyFile, lstat, mkdir, open, readdir, stat, unlink } from "node:fs/promises";
+import { constants, type Dirent, existsSync } from "node:fs";
+import { access, lstat, mkdir, open, readdir, stat, unlink } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { getHomeConfigPath, getWorkspaceConfigPath, loadConfigFromPaths } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { CredentialStore } from "../llm/credential-store";
 import { LlmProfileManager } from "../llm/profile-manager";
-import {
-  readPersistedMetaState,
-  writePersistedMetaState,
-} from "../plugins/first-party/meta-runtime/meta-runtime-storage";
+import { readPersistedMetaState } from "../plugins/first-party/meta-runtime/meta-runtime-storage";
 import { isWithinRoot, safeRealpath } from "../providers/path-containment";
-import { loadPersistedSessionSnapshot, persistSessionSnapshot } from "../session/store/persistence";
+import { loadPersistedSessionSnapshot } from "../session/store/persistence";
 import { AcpSessionAgent } from "./acp";
 
 export type RuntimeDoctorCheck = {
@@ -30,7 +27,6 @@ export type RuntimeDoctorOptions = {
   credentialStore?: CredentialStore;
   eventLogPath?: string;
   socketPath?: string;
-  migratePersistence?: boolean;
 };
 
 export type RuntimeDoctorResult = {
@@ -60,31 +56,6 @@ async function loadDoctorConfig(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function readJson(path: string): unknown {
-  return JSON.parse(readFileSync(path, "utf8")) as unknown;
-}
-
-function persistedSessionFormat(path: string): "current" | "legacy" {
-  const parsed = readJson(path);
-  if (isRecord(parsed) && parsed.kind === "sloppy.session.snapshot") {
-    return "current";
-  }
-  return "legacy";
-}
-
-function persistedMetaStateFormat(path: string): "current" | "legacy" {
-  const parsed = readJson(path);
-  if (isRecord(parsed) && parsed.kind === "sloppy.meta-runtime.state") {
-    return "current";
-  }
-  return "legacy";
-}
-
-function buildBackupPath(path: string): string {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${path}.legacy-${stamp}.bak`;
 }
 
 async function checkAuditLogPath(eventLogPath: string | undefined): Promise<RuntimeDoctorCheck> {
@@ -460,7 +431,6 @@ async function checkLlmProfile(
 async function checkSessionPersistence(
   config: SloppyConfig,
   workspaceRoot: string,
-  migratePersistence: boolean,
 ): Promise<RuntimeDoctorCheck> {
   if (config.session?.persistSnapshots !== true) {
     return {
@@ -508,13 +478,9 @@ async function checkSessionPersistence(
   }
 
   const errors: string[] = [];
-  const legacyPaths: string[] = [];
   for (const path of snapshotPaths) {
     try {
       loadPersistedSessionSnapshot(path);
-      if (persistedSessionFormat(path) === "legacy") {
-        legacyPaths.push(path);
-      }
     } catch (error) {
       errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -528,45 +494,6 @@ async function checkSessionPersistence(
       detail: errors.join("\n"),
     };
   }
-  if (legacyPaths.length > 0 && migratePersistence) {
-    const backups: string[] = [];
-    try {
-      for (const path of legacyPaths) {
-        const snapshot = loadPersistedSessionSnapshot(path);
-        if (!snapshot) {
-          throw new Error(`Snapshot disappeared before migration: ${path}`);
-        }
-        const backupPath = buildBackupPath(path);
-        await copyFile(path, backupPath);
-        persistSessionSnapshot(path, snapshot);
-        backups.push(`${path} backup=${backupPath}`);
-      }
-    } catch (error) {
-      return {
-        id: "session-persistence",
-        status: "error",
-        summary: "Could not migrate legacy session snapshot files.",
-        detail: error instanceof Error ? error.message : String(error),
-      };
-    }
-
-    return {
-      id: "session-persistence",
-      status: "ok",
-      summary: `${legacyPaths.length} legacy session snapshot file(s) were migrated to the current schema envelope.`,
-      detail: backups.join("\n"),
-    };
-  }
-
-  if (legacyPaths.length > 0) {
-    return {
-      id: "session-persistence",
-      status: "warning",
-      summary: `${legacyPaths.length} of ${snapshotPaths.length} session snapshot file(s) use the legacy raw format.`,
-      detail:
-        "They are still accepted. Run runtime:doctor with --migrate-persistence to rewrite them with backups.",
-    };
-  }
 
   return {
     id: "session-persistence",
@@ -575,10 +502,7 @@ async function checkSessionPersistence(
   };
 }
 
-async function checkMetaRuntimePersistence(
-  config: SloppyConfig,
-  migratePersistence: boolean,
-): Promise<RuntimeDoctorCheck> {
+async function checkMetaRuntimePersistence(config: SloppyConfig): Promise<RuntimeDoctorCheck> {
   const paths = [
     join(config.plugins["meta-runtime"].globalRoot, "state.json"),
     join(config.plugins["meta-runtime"].workspaceRoot, "state.json"),
@@ -595,13 +519,9 @@ async function checkMetaRuntimePersistence(
   }
 
   const errors: string[] = [];
-  const legacyPaths: string[] = [];
   for (const path of existingPaths) {
     try {
       readPersistedMetaState(dirname(path));
-      if (persistedMetaStateFormat(path) === "legacy") {
-        legacyPaths.push(path);
-      }
     } catch (error) {
       errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -613,43 +533,6 @@ async function checkMetaRuntimePersistence(
       status: "error",
       summary: `${errors.length} persisted meta-runtime state file(s) could not be loaded.`,
       detail: errors.join("\n"),
-    };
-  }
-  if (legacyPaths.length > 0 && migratePersistence) {
-    const backups: string[] = [];
-    try {
-      for (const path of legacyPaths) {
-        const root = dirname(path);
-        const state = readPersistedMetaState(root);
-        const backupPath = buildBackupPath(path);
-        await copyFile(path, backupPath);
-        writePersistedMetaState(root, state);
-        backups.push(`${path} backup=${backupPath}`);
-      }
-    } catch (error) {
-      return {
-        id: "meta-runtime-persistence",
-        status: "error",
-        summary: "Could not migrate legacy meta-runtime state files.",
-        detail: error instanceof Error ? error.message : String(error),
-      };
-    }
-
-    return {
-      id: "meta-runtime-persistence",
-      status: "ok",
-      summary: `${legacyPaths.length} legacy meta-runtime state file(s) were migrated to the current schema envelope.`,
-      detail: backups.join("\n"),
-    };
-  }
-
-  if (legacyPaths.length > 0) {
-    return {
-      id: "meta-runtime-persistence",
-      status: "warning",
-      summary: `${legacyPaths.length} of ${existingPaths.length} meta-runtime state file(s) use the legacy raw format.`,
-      detail:
-        "They are still accepted. Run runtime:doctor with --migrate-persistence to rewrite them with backups.",
     };
   }
 
@@ -833,7 +716,6 @@ export async function runRuntimeDoctor(
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const config = await loadDoctorConfig(workspaceRoot, options.config);
   const timeoutMs = options.timeoutMs ?? 5000;
-  const migratePersistence = options.migratePersistence ?? false;
   const litellmUrl =
     options.litellmUrl ??
     (isOpenAiCompatibleDoctorProvider(config.llm.provider) ? config.llm.baseUrl : undefined);
@@ -846,10 +728,10 @@ export async function runRuntimeDoctor(
     checkSocketPath(options.socketPath),
     checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
     checkAcpAdapter(config, workspaceRoot, options.acpAdapterId, timeoutMs),
-    checkSessionPersistence(config, workspaceRoot, migratePersistence),
+    checkSessionPersistence(config, workspaceRoot),
   ]);
   checks.push(checkAcpBoundary(config, options.acpAdapterId));
-  checks.push(await checkMetaRuntimePersistence(config, migratePersistence));
+  checks.push(await checkMetaRuntimePersistence(config));
 
   return {
     workspaceRoot,

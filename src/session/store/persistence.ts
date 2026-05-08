@@ -1,22 +1,35 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { AgentSessionSnapshot, SessionExtensionRecord, SessionGoalSnapshot } from "../types";
-import {
-  GOAL_EXTENSION_NAMESPACE,
-  GOAL_EXTENSION_OWNER,
-  GOAL_EXTENSION_RETENTION_MS,
-  GOAL_EXTENSION_SCHEMA_VERSION,
-} from "./goal";
+import type { AgentSessionSnapshot } from "../types";
 import { cloneSnapshot } from "./state";
 
 const RECOVERY_MESSAGE =
   "Session restored after process restart; the in-flight turn could not be resumed.";
-const GOAL_RECOVERY_MESSAGE =
-  "Goal paused after process restart because its in-flight turn could not be resumed.";
 const SESSION_SNAPSHOT_KIND = "sloppy.session.snapshot";
 const SESSION_SNAPSHOT_SCHEMA_VERSION = 2;
-const SUPPORTED_SESSION_SNAPSHOT_SCHEMA_VERSIONS = new Set([1, 2]);
+
+export type SessionSnapshotMigrator = (
+  snapshot: AgentSessionSnapshot,
+) => AgentSessionSnapshot | undefined;
+
+export type SessionSnapshotRecoveryContext = {
+  path: string;
+  restoredAt: string;
+  staleTurnId: string | null;
+  hadInFlightTurn: boolean;
+  recoveryMessage: string;
+};
+
+export type SessionSnapshotRecoverer = (
+  snapshot: AgentSessionSnapshot,
+  context: SessionSnapshotRecoveryContext,
+) => AgentSessionSnapshot | undefined;
+
+type SessionSnapshotHooks = {
+  migrators?: readonly SessionSnapshotMigrator[];
+  recoverers?: readonly SessionSnapshotRecoverer[];
+};
 
 type PersistedSessionSnapshotEnvelope = {
   kind: typeof SESSION_SNAPSHOT_KIND;
@@ -45,20 +58,47 @@ function isSnapshot(value: unknown): value is AgentSessionSnapshot {
   );
 }
 
-function unwrapPersistedSessionSnapshot(parsed: unknown, path: string): AgentSessionSnapshot {
-  if (isSnapshot(parsed)) {
-    return migrateSessionSnapshot(parsed);
+function applySnapshotMigrators(
+  snapshot: AgentSessionSnapshot,
+  migrators: readonly SessionSnapshotMigrator[] = [],
+): AgentSessionSnapshot {
+  let current = cloneSnapshot({
+    ...snapshot,
+    extensions: snapshot.extensions ?? {},
+    queue: snapshot.queue ?? [],
+  });
+  for (const migrator of migrators) {
+    const working = cloneSnapshot(current);
+    current = cloneSnapshot(migrator(working) ?? working);
   }
+  return current;
+}
+
+function applySnapshotRecoverers(
+  snapshot: AgentSessionSnapshot,
+  context: SessionSnapshotRecoveryContext,
+  recoverers: readonly SessionSnapshotRecoverer[] = [],
+): AgentSessionSnapshot {
+  let current = cloneSnapshot(snapshot);
+  for (const recoverer of recoverers) {
+    const working = cloneSnapshot(current);
+    current = cloneSnapshot(recoverer(working, context) ?? working);
+  }
+  return current;
+}
+
+function unwrapPersistedSessionSnapshot(
+  parsed: unknown,
+  path: string,
+  hooks: SessionSnapshotHooks = {},
+): AgentSessionSnapshot {
   if (!isRecord(parsed)) {
     throw new Error(`Persisted session snapshot at ${path} is malformed.`);
   }
   if (parsed.kind !== SESSION_SNAPSHOT_KIND) {
     throw new Error(`Persisted session snapshot at ${path} has unsupported kind.`);
   }
-  if (
-    typeof parsed.schema_version !== "number" ||
-    !SUPPORTED_SESSION_SNAPSHOT_SCHEMA_VERSIONS.has(parsed.schema_version)
-  ) {
+  if (parsed.schema_version !== SESSION_SNAPSHOT_SCHEMA_VERSION) {
     throw new Error(
       `Persisted session snapshot at ${path} has unsupported schema_version ${String(
         parsed.schema_version,
@@ -68,20 +108,24 @@ function unwrapPersistedSessionSnapshot(parsed: unknown, path: string): AgentSes
   if (!isSnapshot(parsed.snapshot)) {
     throw new Error(`Persisted session snapshot at ${path} has malformed snapshot payload.`);
   }
-  return migrateSessionSnapshot(parsed.snapshot);
+  return applySnapshotMigrators(parsed.snapshot, hooks.migrators);
 }
 
-export function loadPersistedSessionSnapshot(path: string): AgentSessionSnapshot | null {
+export function loadPersistedSessionSnapshot(
+  path: string,
+  hooks: SessionSnapshotHooks = {},
+): AgentSessionSnapshot | null {
   if (!existsSync(path)) {
     return null;
   }
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return unwrapPersistedSessionSnapshot(parsed, path);
+  return unwrapPersistedSessionSnapshot(parsed, path, hooks);
 }
 
 export function recoverPersistedSessionSnapshot(
   snapshot: AgentSessionSnapshot,
   path: string,
+  hooks: SessionSnapshotHooks = {},
 ): AgentSessionSnapshot {
   const restored = cloneSnapshot(snapshot);
   const restoredAt = new Date().toISOString();
@@ -95,26 +139,21 @@ export function recoverPersistedSessionSnapshot(
   restored.session.restoredAt = restoredAt;
   restored.session.persistencePath = path;
 
+  const recoveryContext: SessionSnapshotRecoveryContext = {
+    path,
+    restoredAt,
+    staleTurnId,
+    hadInFlightTurn,
+    recoveryMessage: RECOVERY_MESSAGE,
+  };
+
   if (!hadInFlightTurn) {
     restored.goal = null;
-    return restored;
+    return applySnapshotRecoverers(restored, recoveryContext, hooks.recoverers);
   }
 
   restored.session.lastError = RECOVERY_MESSAGE;
   restored.session.recoveredAfterRestart = true;
-  const goal = restored.goal;
-  if (goal?.status === "active") {
-    const extension = restored.extensions[GOAL_EXTENSION_NAMESPACE];
-    if (extension) {
-      extension.revision += 1;
-      extension.updatedAt = restoredAt;
-      extension.lastUsedAt = restoredAt;
-      extension.state.status = "paused";
-      extension.state.updatedAt = restoredAt;
-      extension.state.message = GOAL_RECOVERY_MESSAGE;
-      extension.state.updateSource = "runtime";
-    }
-  }
   restored.goal = null;
   restored.turn = {
     ...restored.turn,
@@ -160,7 +199,7 @@ export function recoverPersistedSessionSnapshot(
     }
   }
 
-  return restored;
+  return applySnapshotRecoverers(restored, recoveryContext, hooks.recoverers);
 }
 
 export function persistSessionSnapshot(path: string, snapshot: AgentSessionSnapshot): void {
@@ -180,61 +219,4 @@ export function persistSessionSnapshot(path: string, snapshot: AgentSessionSnaps
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
   renameSync(tempPath, path);
-}
-
-function migrateSessionSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
-  const migrated = cloneSnapshot({
-    ...snapshot,
-    extensions: snapshot.extensions ?? {},
-  });
-  if (migrated.goal && !migrated.extensions[GOAL_EXTENSION_NAMESPACE]) {
-    migrated.extensions[GOAL_EXTENSION_NAMESPACE] = goalSnapshotToExtension(migrated.goal);
-  }
-  migrated.goal = null;
-  return migrated;
-}
-
-function goalSnapshotToExtension(goal: SessionGoalSnapshot): SessionExtensionRecord {
-  const updatedAt = goal.updatedAt;
-  const state: SessionExtensionRecord["state"] = {
-    objective: goal.objective,
-    status: goal.status,
-    createdAt: goal.createdAt,
-    updatedAt,
-    inputTokens: goal.inputTokens,
-    outputTokens: goal.outputTokens,
-    totalTokens: goal.totalTokens,
-    elapsedMs: goal.elapsedMs,
-    continuationCount: goal.continuationCount,
-    message: goal.message ?? "",
-  };
-  if (goal.completedAt) state.completedAt = goal.completedAt;
-  if (goal.tokenBudget !== undefined) state.tokenBudget = goal.tokenBudget;
-  if (goal.lastTurnId) state.lastTurnId = goal.lastTurnId;
-  if (goal.evidence) state.evidence = goal.evidence;
-  if (goal.updateSource) state.updateSource = goal.updateSource;
-  if (goal.completionSource) state.completionSource = goal.completionSource;
-
-  return {
-    namespace: GOAL_EXTENSION_NAMESPACE,
-    instanceId: goal.goalId,
-    schemaVersion: GOAL_EXTENSION_SCHEMA_VERSION,
-    revision: 1,
-    owner: GOAL_EXTENSION_OWNER,
-    state,
-    lifecycle: goal.status === "complete" ? "completed" : "active",
-    cleanupPolicy: {
-      mode: "ttl",
-      ttlMs: GOAL_EXTENSION_RETENTION_MS,
-      description:
-        "clear_goal removes live state immediately; completed goals are retained briefly for audit.",
-    },
-    retainUntil:
-      goal.status === "complete"
-        ? new Date(Date.parse(updatedAt) + GOAL_EXTENSION_RETENTION_MS).toISOString()
-        : undefined,
-    createdAt: goal.createdAt,
-    updatedAt,
-    lastUsedAt: updatedAt,
-  };
 }

@@ -407,34 +407,6 @@ describe("MetaRuntimeProvider", () => {
     }
   });
 
-  test("loads legacy raw meta-runtime state files", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sloppy-meta-legacy-"));
-    tempPaths.push(root);
-    const globalRoot = join(root, "global");
-    const workspaceRoot = join(root, "workspace");
-    await mkdir(globalRoot, { recursive: true });
-    await writeFile(
-      join(globalRoot, "state.json"),
-      `${JSON.stringify(
-        {
-          profiles: [{ id: "legacy-reviewer", name: "Legacy Reviewer" }],
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
-    const { provider, consumer } = harness(globalRoot, workspaceRoot);
-
-    try {
-      await connect(consumer);
-      const profiles = await consumer.query("/profiles", 2);
-      expect(profiles.children?.map((child) => child.id)).toContain("legacy-reviewer");
-    } finally {
-      provider.stop();
-    }
-  });
-
   test("rejects unsupported meta-runtime state schema envelopes", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-schema-"));
     tempPaths.push(root);

@@ -17,6 +17,10 @@ import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palet
 import { parseLocalCommand } from "../apps/tui/src/state/commands";
 import { ComposerHistory } from "../apps/tui/src/state/composer-history";
 import { reconcileInitialRoute } from "../apps/tui/src/state/initial-route";
+import {
+  evaluatePluginNotifications,
+  readPluginNotificationValue,
+} from "../apps/tui/src/state/plugin-notifications";
 import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
 
 const listeners: Array<{ close: () => void }> = [];
@@ -149,6 +153,15 @@ describe("TUI node mappers", () => {
                   description: "Persistent session goal controls",
                 },
               ],
+              notifications: [
+                {
+                  id: "goal-complete",
+                  path: "/goal",
+                  prop: "status",
+                  to: "complete",
+                  message: "Goal complete.",
+                },
+              ],
             },
           },
         },
@@ -158,10 +171,65 @@ describe("TUI node mappers", () => {
     expect(next.plugins[0]?.id).toBe("persistent-goal");
     expect(next.plugins[0]?.sessionPaths).toEqual(["/goal"]);
     expect(next.plugins[0]?.tui.subscriptions?.[0]).toEqual({ path: "/goal", depth: 1 });
+    expect(next.plugins[0]?.tui.notifications?.[0]).toEqual({
+      id: "goal-complete",
+      path: "/goal",
+      prop: "status",
+      to: "complete",
+      message: "Goal complete.",
+    });
 
     expect(buildSlashEntries().some((entry) => entry.name === "goal")).toBe(false);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "goal")).toBe(true);
     expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("goal");
+  });
+
+  test("evaluates plugin manifest notifications against session snapshots", () => {
+    const pending = {
+      ...EMPTY_SESSION_VIEW,
+      goal: {
+        ...EMPTY_SESSION_VIEW.goal,
+        exists: true,
+        status: "active",
+      },
+      plugins: [
+        {
+          id: "persistent-goal",
+          version: "1.0.0",
+          status: "active",
+          sessionPaths: ["/goal"],
+          tui: {
+            notifications: [
+              {
+                id: "goal-complete",
+                path: "/goal",
+                prop: "status",
+                to: "complete",
+                message: "Goal complete.",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const previousValues = new Map<string, string | undefined>();
+
+    expect(readPluginNotificationValue(pending, "/goal", "status")).toBe("active");
+    expect(evaluatePluginNotifications(pending, previousValues)).toEqual([]);
+
+    const complete = {
+      ...pending,
+      goal: {
+        ...pending.goal,
+        status: "complete",
+      },
+    };
+    expect(evaluatePluginNotifications(complete, previousValues)).toMatchObject([
+      {
+        key: "persistent-goal:goal-complete",
+        message: "Goal complete.",
+      },
+    ]);
   });
 
   test("maps workspace and project scope from session state", () => {

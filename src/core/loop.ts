@@ -73,6 +73,7 @@ export type LocalRuntimeToolContext = {
 };
 
 export type LocalRuntimeTool = {
+  pluginId?: string;
   tool: LlmTool;
   providerId?: string;
   path?: string;
@@ -86,6 +87,7 @@ export type AgentToolInvocation = {
   toolUseId: string;
   toolName: string;
   kind: "observation" | "affordance" | "local";
+  pluginId?: string;
   providerId?: string;
   path?: string;
   action: string;
@@ -307,6 +309,7 @@ async function executeLocalToolCall(
     toolUseId: toolUse.id,
     toolName: toolUse.name,
     kind: "local",
+    pluginId: localTool.pluginId,
     providerId: localTool.providerId ?? "session",
     path: localTool.path ?? "/runtime",
     action,

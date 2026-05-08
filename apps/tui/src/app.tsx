@@ -52,6 +52,7 @@ import { type LocalCommand, parseLocalCommand } from "./state/commands";
 import { ComposerHistory } from "./state/composer-history";
 import { detectAtMention, loadWorkspaceFiles, matchFileEntries } from "./state/file-catalog";
 import { reconcileInitialRoute } from "./state/initial-route";
+import { evaluatePluginNotifications } from "./state/plugin-notifications";
 import { matchSlashEntries } from "./state/slash-catalog";
 import { nextVerbosity, type Verbosity, verbosityLabel } from "./state/verbosity";
 
@@ -555,14 +556,14 @@ export function App(props: AppProps) {
     }
   });
 
-  let previousGoalStatus: string | undefined;
+  const previousPluginNotificationValues = new Map<string, string | undefined>();
   createEffect(() => {
-    const goal = snapshot().goal;
-    const nextStatus = goal.exists ? goal.status : "none";
-    if (previousGoalStatus && previousGoalStatus !== "complete" && nextStatus === "complete") {
-      pushNotice({ kind: "ok", message: "Goal complete." });
+    for (const notification of evaluatePluginNotifications(
+      snapshot(),
+      previousPluginNotificationValues,
+    )) {
+      pushNotice({ kind: "ok", message: notification.message });
     }
-    previousGoalStatus = nextStatus;
   });
 
   async function submitDraft(): Promise<void> {

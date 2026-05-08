@@ -133,45 +133,6 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   return deepMerge(config, overrides);
 }
 
-const LEGACY_PROVIDER_CONFIG_KEYS = new Set([
-  "builtin",
-  "terminal",
-  "filesystem",
-  "memory",
-  "skills",
-  "metaRuntime",
-  "web",
-  "browser",
-  "cron",
-  "messaging",
-  "delegation",
-  "spec",
-  "vision",
-  "mcp",
-  "workspaces",
-  "a2a",
-]);
-
-function assertNoLegacyProviderConfig(config: JsonObject): void {
-  const providers = config.providers;
-  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
-    return;
-  }
-
-  const legacyKeys = Object.keys(providers).filter((key) => LEGACY_PROVIDER_CONFIG_KEYS.has(key));
-  if (legacyKeys.length === 0) {
-    return;
-  }
-
-  throw new Error(
-    `Legacy providers.* first-party config is no longer supported: ${legacyKeys
-      .map((key) => `providers.${key}`)
-      .join(
-        ", ",
-      )}. Move first-party settings to plugins.<plugin-id>; only providers.discovery remains under providers.`,
-  );
-}
-
 function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): LlmProfileConfig {
   const defaults = getProviderDefaults(profile.provider);
 
@@ -347,7 +308,6 @@ export async function loadConfigFromLayerPaths(
   }
 
   const withEnv = applyEnvironmentOverrides(merged);
-  assertNoLegacyProviderConfig(withEnv);
   const parsed = sloppyConfigSchema.parse(withEnv);
 
   return normalizeConfig(parsed, options.cwd ?? process.cwd());
@@ -416,7 +376,6 @@ export async function loadScopedConfig(options: ScopedConfigOptions = {}): Promi
     },
   });
   const withEnv = applyEnvironmentOverrides(scoped);
-  assertNoLegacyProviderConfig(withEnv);
   const parsed = sloppyConfigSchema.parse(withEnv);
 
   return normalizeConfig(parsed, scopeRoot);

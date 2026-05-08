@@ -16,11 +16,13 @@ import {
   type LlmChatOptions,
   type LlmResponse,
 } from "../src/llm/types";
+import { createPersistentGoalPlugin } from "../src/plugins/first-party/persistent-goal/session";
 import { InProcessTransport } from "../src/providers/in-process";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
 import { SessionRuntime } from "../src/session/runtime";
 import { SessionStore } from "../src/session/store";
+import { goalSnapshotToExtension } from "../src/session/store/goal";
 import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig({
@@ -38,6 +40,36 @@ const TEST_CONFIG = createTestConfig({
     ],
   },
 });
+
+function persistentGoalStoreOptions() {
+  const plugin = createPersistentGoalPlugin();
+  return {
+    snapshotMigrators: plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
+    snapshotRecoverers: plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+    extensionEventTypes: plugin.extensionEvents ?? {},
+  };
+}
+
+function seedGoal(store: SessionStore, objective: string, message: string): string {
+  const timestamp = new Date().toISOString();
+  const goalId = "goal-runtime-recover";
+  store.upsertExtension(
+    goalSnapshotToExtension({
+      goalId,
+      objective,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      elapsedMs: 0,
+      continuationCount: 0,
+      message,
+    }),
+  );
+  return goalId;
+}
 
 class MemoryCredentialStore implements CredentialStore {
   readonly kind = "keychain" as const;
@@ -1260,11 +1292,9 @@ describe("AgentSessionProvider", () => {
       model: "gpt-5.4",
       workspaceRoot: root,
       persistencePath,
+      ...persistentGoalStoreOptions(),
     });
-    seeded.createGoal({
-      objective: "recover runtime state",
-      message: "Goal active before restart.",
-    });
+    seedGoal(seeded, "recover runtime state", "Goal active before restart.");
     const queued = seeded.enqueueMessage("queued before restart");
     const turnId = seeded.beginTurn("blocked before restart");
     seeded.appendAssistantText(turnId, "partial answer");

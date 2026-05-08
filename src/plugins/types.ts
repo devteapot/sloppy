@@ -2,9 +2,11 @@ import type { ClientTransport } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { ProviderRuntimeHub } from "../core/hub";
+import type { InvokePolicy } from "../core/policy";
 import type { RuntimeContext } from "../core/role";
 import type { ProviderApprovalManager } from "../providers/approvals";
 import type { RegisteredProvider } from "../providers/registry";
+import type { ToolEventEnricher } from "../session/event-bus";
 import type { SessionRuntimePlugin, TuiContributionManifest } from "../session/plugins";
 
 export type PluginProviderContribution = {
@@ -32,4 +34,6 @@ export type FirstPartyPluginDescriptor = {
   tui?: TuiContributionManifest;
   createProviders?: (config: SloppyConfig) => RegisteredProvider[];
   createSessionPlugin?: (config: SloppyConfig) => SessionRuntimePlugin;
+  policyRules?: (config: SloppyConfig) => InvokePolicy[];
+  toolEventEnrichers?: (config: SloppyConfig) => ToolEventEnricher[];
 };

@@ -4,7 +4,8 @@ import type { NodeDescriptor } from "@slop-ai/server";
 import type { SloppyConfig } from "../../config/schema";
 import type { AgentRunResult, LocalRuntimeTool } from "../../core/agent";
 import type { SessionStore } from "../store";
-import type { AgentSessionSnapshot, QueuedSessionMessage } from "../types";
+import type { SessionSnapshotMigrator, SessionSnapshotRecoverer } from "../store/persistence";
+import type { AgentSessionSnapshot, QueuedSessionMessage, SessionStoreEventType } from "../types";
 
 export type PluginTurnRequest = {
   pluginId: string;
@@ -113,6 +114,11 @@ export type TuiContributionManifest = {
   notifications?: TuiNotificationContribution[];
 };
 
+export type SessionSummaryContribution = {
+  props?: Record<string, unknown>;
+  summary?: string;
+};
+
 export type SessionRuntimePlugin = {
   id: string;
   version: string;
@@ -120,7 +126,12 @@ export type SessionRuntimePlugin = {
   defaultEnabled?: boolean;
   providerIds?: string[];
   extensionNamespaces?: string[];
+  extensionEvents?: Record<string, readonly SessionStoreEventType[]>;
   sessionNodes?: (ctx: PluginRuntimeContext) => SessionNodeContribution[];
+  migrateSnapshot?: SessionSnapshotMigrator;
+  recoverSnapshot?: SessionSnapshotRecoverer;
+  onStartup?: (ctx: PluginRuntimeContext) => void | Promise<void>;
+  onShutdown?: (ctx: PluginRuntimeContext) => void;
   localTools?: (
     ctx: PluginRuntimeContext,
     activeTurn: ActivePluginTurn | null,
@@ -132,5 +143,6 @@ export type SessionRuntimePlugin = {
   nextTurn?: (ctx: PluginRuntimeContext) => PluginTurnRequest | null;
   onTurnComplete?: (event: PluginTurnCompleteEvent, ctx: PluginRuntimeContext) => void;
   onTurnFailure?: (event: PluginTurnFailureEvent, ctx: PluginRuntimeContext) => void;
+  sessionSummary?: (ctx: PluginRuntimeContext) => SessionSummaryContribution | null;
   tui?: TuiContributionManifest;
 };

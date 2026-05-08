@@ -12,9 +12,68 @@ import type {
   PluginTurnRequest,
   SessionRuntimePlugin,
 } from "../../../session/plugins/types";
+import { createExtensionRecord } from "../../../session/store/extensions";
+import {
+  GOAL_EXTENSION_NAMESPACE,
+  GOAL_EXTENSION_OWNER,
+  GOAL_EXTENSION_RETENTION_MS,
+  GOAL_EXTENSION_SCHEMA_VERSION,
+  goalFromExtension,
+  selectGoalSnapshot,
+} from "../../../session/store/goal";
+import { buildId, now } from "../../../session/store/helpers";
+import type { SessionSnapshotRecoveryContext } from "../../../session/store/persistence";
+import type {
+  AgentSessionSnapshot,
+  JsonObject,
+  SessionGoalStatus,
+  SessionGoalUpdateSource,
+} from "../../../session/types";
 
 const PERSISTENT_GOAL_PLUGIN_ID = "persistent-goal";
 const PERSISTENT_GOAL_SKILL_NAME = "persistent-goal";
+const GOAL_RECOVERY_MESSAGE =
+  "Goal paused after process restart because its in-flight turn could not be resumed.";
+
+type GoalStatusUpdate = {
+  message?: string;
+  evidence?: string[];
+  source?: SessionGoalUpdateSource;
+};
+
+function recoverGoalSnapshot(
+  snapshot: AgentSessionSnapshot,
+  context: SessionSnapshotRecoveryContext,
+): AgentSessionSnapshot {
+  const recovered = {
+    ...snapshot,
+    extensions: { ...(snapshot.extensions ?? {}) },
+  };
+  if (!context.hadInFlightTurn) {
+    return recovered;
+  }
+
+  const goal = selectGoalSnapshot(recovered);
+  if (goal?.status !== "active") {
+    return recovered;
+  }
+
+  const extension = recovered.extensions[GOAL_EXTENSION_NAMESPACE];
+  if (!extension || extension.instanceId !== goal.goalId) {
+    return recovered;
+  }
+
+  extension.revision += 1;
+  extension.updatedAt = context.restoredAt;
+  extension.lastUsedAt = context.restoredAt;
+  extension.state.status = "paused";
+  extension.state.updatedAt = context.restoredAt;
+  extension.state.message = GOAL_RECOVERY_MESSAGE;
+  extension.state.updateSource = "runtime";
+  recovered.goal = null;
+
+  return recovered;
+}
 
 function renderGoalSkillSection(skillContent: string): string {
   return ["", "Loaded persistent-goal skill:", "", skillContent].join("\n");
@@ -85,20 +144,186 @@ function goalTurnRequest(options: {
   };
 }
 
+function createGoalState(
+  ctx: PluginRuntimeContext,
+  options: {
+    objective: string;
+    tokenBudget?: number;
+    message?: string;
+  },
+): string {
+  const goalId = buildId("goal");
+  const state: JsonObject = {
+    objective: options.objective,
+    status: "active",
+    createdAt: now(),
+    updatedAt: now(),
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    elapsedMs: 0,
+    continuationCount: 0,
+    message: options.message ?? "Goal active.",
+  };
+  if (options.tokenBudget !== undefined) {
+    state.tokenBudget = options.tokenBudget;
+  }
+
+  const record = createExtensionRecord({
+    namespace: GOAL_EXTENSION_NAMESPACE,
+    instanceId: goalId,
+    schemaVersion: GOAL_EXTENSION_SCHEMA_VERSION,
+    owner: GOAL_EXTENSION_OWNER,
+    state,
+    cleanupPolicy: {
+      mode: "ttl",
+      ttlMs: GOAL_EXTENSION_RETENTION_MS,
+      description:
+        "clear_goal removes live state immediately; completed goals are retained briefly for audit.",
+    },
+  });
+  record.state.createdAt = record.createdAt;
+  record.state.updatedAt = record.updatedAt;
+  ctx.store.upsertExtension(record);
+  return goalId;
+}
+
+function normalizeGoalStatusUpdate(update?: string | GoalStatusUpdate): GoalStatusUpdate {
+  if (typeof update === "string") {
+    return { message: update };
+  }
+  return update ?? {};
+}
+
+function defaultGoalMessage(status: SessionGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "Goal active.";
+    case "paused":
+      return "Goal paused.";
+    case "budget_limited":
+      return "Goal paused after reaching its token budget.";
+    case "complete":
+      return "Goal complete.";
+  }
+}
+
+function updateGoalStatusState(
+  ctx: PluginRuntimeContext,
+  status: SessionGoalStatus,
+  update?: string | GoalStatusUpdate,
+  options?: { expectedGoalId?: string; expectedRevision?: number },
+): void {
+  const normalized = normalizeGoalStatusUpdate(update);
+  ctx.store.patchExtension(
+    GOAL_EXTENSION_NAMESPACE,
+    (record) => {
+      const updatedAt = now();
+      record.state.status = status;
+      record.state.updatedAt = updatedAt;
+      record.state.message = normalized.message ?? defaultGoalMessage(status);
+      if (normalized.evidence) {
+        record.state.evidence = normalized.evidence;
+      }
+      if (normalized.source) {
+        record.state.updateSource = normalized.source;
+      }
+      if (status === "complete") {
+        record.state.completedAt = updatedAt;
+        if (normalized.source) {
+          record.state.completionSource = normalized.source;
+        }
+        record.lifecycle = "completed";
+        record.retainUntil = new Date(
+          Date.parse(updatedAt) + GOAL_EXTENSION_RETENTION_MS,
+        ).toISOString();
+      } else {
+        delete record.state.completedAt;
+        delete record.state.completionSource;
+        record.lifecycle = "active";
+        delete record.retainUntil;
+      }
+      return record;
+    },
+    {
+      instanceId: options?.expectedGoalId,
+      expectedRevision: options?.expectedRevision,
+    },
+  );
+}
+
+function clearGoalState(ctx: PluginRuntimeContext): void {
+  ctx.store.clearExtension(GOAL_EXTENSION_NAMESPACE);
+}
+
+function accountGoalTurnState(
+  ctx: PluginRuntimeContext,
+  options: {
+    turnId: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    elapsedMs: number;
+    continuation: boolean;
+    usedTools: boolean;
+  },
+): void {
+  const current = ctx.snapshot().goal;
+  if (!current) {
+    return;
+  }
+
+  ctx.store.patchExtension(GOAL_EXTENSION_NAMESPACE, (record) => {
+    const goal = goalFromExtension(record);
+    if (!goal) {
+      return record;
+    }
+    const updatedAt = now();
+    const inputTokens = goal.inputTokens + (options.inputTokens ?? 0);
+    const outputTokens = goal.outputTokens + (options.outputTokens ?? 0);
+    record.state.inputTokens = inputTokens;
+    record.state.outputTokens = outputTokens;
+    record.state.totalTokens = inputTokens + outputTokens;
+    record.state.elapsedMs = goal.elapsedMs + Math.max(0, Math.round(options.elapsedMs));
+    record.state.lastTurnId = options.turnId;
+    record.state.updatedAt = updatedAt;
+    if (options.continuation) {
+      record.state.continuationCount = goal.continuationCount + 1;
+    }
+
+    if (
+      goal.status === "active" &&
+      goal.tokenBudget &&
+      inputTokens + outputTokens >= goal.tokenBudget
+    ) {
+      record.state.status = "budget_limited";
+      record.state.message = "Goal stopped after reaching its token budget.";
+    } else if (goal.status === "active" && options.continuation && !options.usedTools) {
+      record.state.status = "paused";
+      record.state.message =
+        "Goal paused after a continuation turn completed without tool activity.";
+    }
+
+    return record;
+  });
+}
+
 function buildGoalDescriptor(
   ctx: PluginRuntimeContext,
   controls: {
-    createGoal(params: Record<string, unknown>): Promise<{
+    createGoal(
+      ctx: PluginRuntimeContext,
+      params: Record<string, unknown>,
+    ): Promise<{
       status: "started" | "queued";
       goalId: string;
       turnId?: string;
       queuedMessageId?: string;
       position?: number;
     }>;
-    pauseGoal(message?: string): { status: string };
-    resumeGoal(message?: string): { status: string };
-    completeGoal(message?: string): { status: string };
-    clearGoal(): { status: string };
+    pauseGoal(ctx: PluginRuntimeContext, message?: string): { status: string };
+    resumeGoal(ctx: PluginRuntimeContext, message?: string): { status: string };
+    completeGoal(ctx: PluginRuntimeContext, message?: string): { status: string };
+    clearGoal(ctx: PluginRuntimeContext): { status: string };
   },
 ): NodeDescriptor {
   const goal = ctx.snapshot().goal;
@@ -112,7 +337,7 @@ function buildGoalDescriptor(
           description: "Optional total token budget for this goal.",
         },
       },
-      async (params) => controls.createGoal(params),
+      async (params) => controls.createGoal(ctx, params),
       {
         label: "Create Goal",
         description:
@@ -170,7 +395,7 @@ function buildGoalDescriptor(
                 },
               },
               async ({ message }) =>
-                controls.pauseGoal(typeof message === "string" ? message : undefined),
+                controls.pauseGoal(ctx, typeof message === "string" ? message : undefined),
               {
                 label: "Pause Goal",
                 description: "Pause automatic goal continuation.",
@@ -189,7 +414,7 @@ function buildGoalDescriptor(
                 },
               },
               async ({ message }) =>
-                controls.resumeGoal(typeof message === "string" ? message : undefined),
+                controls.resumeGoal(ctx, typeof message === "string" ? message : undefined),
               {
                 label: "Resume Goal",
                 description: "Resume automatic goal continuation.",
@@ -208,7 +433,7 @@ function buildGoalDescriptor(
                 },
               },
               async ({ message }) =>
-                controls.completeGoal(typeof message === "string" ? message : undefined),
+                controls.completeGoal(ctx, typeof message === "string" ? message : undefined),
               {
                 label: "Complete Goal",
                 description: "Mark the persistent session goal complete.",
@@ -217,7 +442,7 @@ function buildGoalDescriptor(
             ),
           }
         : {}),
-      clear_goal: action(async () => controls.clearGoal(), {
+      clear_goal: action(async () => controls.clearGoal(ctx), {
         label: "Clear Goal",
         description: "Remove the persistent session goal state.",
         dangerous: true,
@@ -339,7 +564,8 @@ function reportGoalUpdate(
   const evidence = compactEvidence(params.evidence);
   try {
     if (reportStatus === "progress") {
-      ctx.store.updateGoalStatus(
+      updateGoalStatusState(
+        ctx,
         "active",
         {
           message,
@@ -349,7 +575,8 @@ function reportGoalUpdate(
         { expectedGoalId, expectedRevision },
       );
     } else if (reportStatus === "blocked") {
-      ctx.store.updateGoalStatus(
+      updateGoalStatusState(
+        ctx,
         "paused",
         {
           message: `Blocked: ${message}`,
@@ -359,7 +586,8 @@ function reportGoalUpdate(
         { expectedGoalId, expectedRevision },
       );
     } else {
-      ctx.store.updateGoalStatus(
+      updateGoalStatusState(
+        ctx,
         "complete",
         {
           message,
@@ -486,7 +714,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
 
     await ctx.ensureReady();
     const skillContent = await loadSkillContent(ctx);
-    const goalId = ctx.store.createGoal({
+    const goalId = createGoalState(ctx, {
       objective,
       tokenBudget,
       message: "Goal active.",
@@ -531,14 +759,14 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
 
   function pauseGoal(ctx: PluginRuntimeContext, message?: string): { status: string } {
     const goalId = ctx.snapshot().goal?.goalId;
-    ctx.store.updateGoalStatus("paused", { message, source: "user" });
+    updateGoalStatusState(ctx, "paused", { message, source: "user" });
     ctx.audit({ kind: "goal_status", goalId, status: "paused", source: "user" });
     return { status: "paused" };
   }
 
   function resumeGoal(ctx: PluginRuntimeContext, message?: string): { status: string } {
     const goalId = ctx.snapshot().goal?.goalId;
-    ctx.store.updateGoalStatus("active", { message, source: "user" });
+    updateGoalStatusState(ctx, "active", { message, source: "user" });
     ctx.audit({ kind: "goal_status", goalId, status: "active", source: "user" });
     ctx.drainQueue();
     return { status: "active" };
@@ -546,14 +774,14 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
 
   function completeGoal(ctx: PluginRuntimeContext, message?: string): { status: string } {
     const goalId = ctx.snapshot().goal?.goalId;
-    ctx.store.updateGoalStatus("complete", { message, source: "user" });
+    updateGoalStatusState(ctx, "complete", { message, source: "user" });
     ctx.audit({ kind: "goal_status", goalId, status: "complete", source: "user" });
     return { status: "complete" };
   }
 
   function clearGoal(ctx: PluginRuntimeContext): { status: string } {
     const goalId = ctx.snapshot().goal?.goalId;
-    ctx.store.clearGoal();
+    clearGoalState(ctx);
     ctx.audit({ kind: "goal_cleared", goalId });
     return { status: "cleared" };
   }
@@ -565,7 +793,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
   ): void {
     const goal = ctx.snapshot().goal;
     if (goal?.status === "active" && goal.goalId === pluginTurn.runId) {
-      ctx.store.updateGoalStatus("paused", { message, source: "runtime" });
+      updateGoalStatusState(ctx, "paused", { message, source: "runtime" });
       ctx.audit({
         kind: "goal_status",
         goalId: goal.goalId,
@@ -575,21 +803,26 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
     }
   }
 
+  const goalControls = {
+    createGoal,
+    pauseGoal,
+    resumeGoal,
+    completeGoal,
+    clearGoal,
+  };
+
   return {
     id: PERSISTENT_GOAL_PLUGIN_ID,
     version: "1.0.0",
     description: "Persistent long-running session objective controls.",
+    recoverSnapshot: recoverGoalSnapshot,
+    extensionEvents: {
+      [GOAL_EXTENSION_NAMESPACE]: ["goal"],
+    },
     sessionNodes: () => [
       {
         path: "/goal",
-        build: (nodeCtx) =>
-          buildGoalDescriptor(nodeCtx, {
-            createGoal: (params) => createGoal(nodeCtx, params),
-            pauseGoal: (message) => pauseGoal(nodeCtx, message),
-            resumeGoal: (message) => resumeGoal(nodeCtx, message),
-            completeGoal: (message) => completeGoal(nodeCtx, message),
-            clearGoal: () => clearGoal(nodeCtx),
-          }),
+        build: (nodeCtx) => buildGoalDescriptor(nodeCtx, goalControls),
       },
     ],
     localTools: (ctx, activeTurn) =>
@@ -618,7 +851,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
       }
       const skillContent = skillContentForContinuation(ctx);
       if (!skillContent) {
-        ctx.store.updateGoalStatus("paused", {
+        updateGoalStatusState(ctx, "paused", {
           message: "Goal paused because the persistent-goal skill could not be resolved.",
           source: "runtime",
         });
@@ -641,7 +874,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
       if (!goal || goal.goalId !== event.pluginTurn.runId) {
         return;
       }
-      ctx.store.accountGoalTurn({
+      accountGoalTurnState(ctx, {
         turnId: event.turnId,
         inputTokens: event.result.usage?.inputTokens,
         outputTokens: event.result.usage?.outputTokens,
@@ -658,6 +891,17 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
           ? "Goal paused after turn cancellation."
           : `Goal paused after turn failure: ${event.message}`,
       );
+    },
+    sessionSummary: (ctx) => {
+      const goal = ctx.snapshot().goal;
+      return {
+        props: {
+          goal_status: goal?.status ?? "none",
+          goal_objective: goal?.objective ?? null,
+          goal_total_tokens: goal?.totalTokens ?? 0,
+        },
+        summary: `goal=${goal?.status ?? "none"}`,
+      };
     },
     tui: {
       subscriptions: [{ path: "/goal", depth: 1 }],

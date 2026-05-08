@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { filesystemToolEventEnricher } from "../src/plugins/first-party/filesystem/audit";
 import { createAgentEventBus } from "../src/session/event-bus";
 
 const tempPaths: string[] = [];
@@ -60,6 +61,38 @@ describe("createAgentEventBus", () => {
     expect(records[0].paramsPreview).not.toContain("secret-value");
     expect(records[0].paramsPreview).toContain("[redacted]");
     expect(records[1].paramsPreview).toBe(records[0].paramsPreview);
+  });
+
+  test("applies plugin-contributed tool event metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-events-"));
+    tempPaths.push(root);
+    const logPath = join(root, "events.jsonl");
+    const eventBus = createAgentEventBus({
+      logPath,
+      actor: { id: "agent-1", name: "agent", kind: "agent" },
+      toolEventEnrichers: [filesystemToolEventEnricher],
+    });
+
+    eventBus.callbacks.onToolEvent?.({
+      kind: "started",
+      invocation: {
+        toolUseId: "tool-1",
+        toolName: "filesystem__files__read",
+        kind: "affordance",
+        providerId: "filesystem",
+        path: "/files",
+        action: "read",
+        params: { path: "README.md" },
+      },
+      summary: "filesystem:read /files",
+    });
+    eventBus.stop();
+
+    const [record] = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(record.file).toEqual({ op: "read", path: "README.md" });
   });
 
   test("logs task state transitions from provider task snapshots once per version", async () => {

@@ -4,10 +4,6 @@ import type { AgentToolInvocation } from "../core/agent";
 import { buildMirroredItemId } from "./store";
 import type { ApprovalItem, SessionTask, SessionTaskStatus } from "./types";
 
-function cleanMirrorIdSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
-
 function hasAffordance(node: SlopNode, action: string): boolean {
   return (node.affordances ?? []).some((affordance) => affordance.action === action);
 }
@@ -35,34 +31,16 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function inferLegacyMirrorLineage(itemPrefix: "approval" | "task", sourceId: string): string[] {
-  const matches = sourceId.matchAll(
-    new RegExp(`(?:^|-)${itemPrefix}-([a-zA-Z0-9_-]+?)(?=-${itemPrefix}-)`, "g"),
-  );
-  return [...matches].map((match) => match[1]).filter((entry): entry is string => !!entry);
-}
-
-function sourceMirrorLineage(
-  itemPrefix: "approval" | "task",
-  properties: Record<string, unknown>,
-  sourceId: string,
-): string[] {
-  const explicit = stringArray(properties.mirror_lineage);
-  if (explicit.length > 0) {
-    return explicit;
-  }
-  return inferLegacyMirrorLineage(itemPrefix, sourceId);
+function sourceMirrorLineage(properties: Record<string, unknown>): string[] {
+  return stringArray(properties.mirror_lineage);
 }
 
 function hasLocalMirrorLineage(args: {
-  itemPrefix: "approval" | "task";
   localProviderIds: Set<string>;
-  localMirrorIds: Set<string>;
   properties: Record<string, unknown>;
-  sourceId: string;
   lineage: string[];
 }): boolean {
-  const { itemPrefix, localProviderIds, localMirrorIds, properties, sourceId, lineage } = args;
+  const { localProviderIds, properties, lineage } = args;
   if (localProviderIds.size === 0) {
     return false;
   }
@@ -73,13 +51,7 @@ function hasLocalMirrorLineage(args: {
   }
 
   for (const entry of lineage) {
-    if (localProviderIds.has(entry) || localMirrorIds.has(cleanMirrorIdSegment(entry))) {
-      return true;
-    }
-  }
-
-  for (const localMirrorId of localMirrorIds) {
-    if (sourceId.includes(`${itemPrefix}-${localMirrorId}-`)) {
+    if (localProviderIds.has(entry)) {
       return true;
     }
   }
@@ -107,18 +79,14 @@ export function parseApprovalsTree(
   if (localProviderIds.has(providerId)) {
     return [];
   }
-  const localMirrorIds = new Set([...localProviderIds].map((id) => cleanMirrorIdSegment(id)));
 
   return tree.children.flatMap((node) => {
     const properties = node.properties ?? {};
-    const lineage = sourceMirrorLineage("approval", properties, node.id);
+    const lineage = sourceMirrorLineage(properties);
     if (
       hasLocalMirrorLineage({
-        itemPrefix: "approval",
         localProviderIds,
-        localMirrorIds,
         properties,
-        sourceId: node.id,
         lineage,
       })
     ) {
@@ -181,18 +149,14 @@ export function parseTasksTree(
   if (localProviderIds.has(providerId)) {
     return [];
   }
-  const localMirrorIds = new Set([...localProviderIds].map((id) => cleanMirrorIdSegment(id)));
 
   const tasks = tree.children.flatMap((node) => {
     const properties = node.properties ?? {};
-    const lineage = sourceMirrorLineage("task", properties, node.id);
+    const lineage = sourceMirrorLineage(properties);
     if (
       hasLocalMirrorLineage({
-        itemPrefix: "task",
         localProviderIds,
-        localMirrorIds,
         properties,
-        sourceId: node.id,
         lineage,
       })
     ) {

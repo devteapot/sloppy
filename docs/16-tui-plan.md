@@ -467,10 +467,12 @@ this is backed by `/extensions/goal`, but the TUI should continue to use `/goal`
 as the stable UX contract and reserve `/extensions` for inspectors and cleanup
 diagnostics.
 
-The TUI discovers plugin-owned slash commands from `/plugins` declarative
-manifests. `/goal` remains a normal local command parser path, but its command
-catalog entry, subscription hint, and completion notification are advertised by
-the `persistent-goal` plugin manifest.
+The TUI discovers plugin-owned slash commands and notifications from `/plugins`
+declarative manifests. `/goal` remains a normal local command parser path, but
+its command catalog entry, subscription hint, and completion notification are
+advertised by the `persistent-goal` plugin manifest. Completion notices are
+evaluated through the generic notification manifest path/prop matcher rather
+than a goal-specific TUI effect.
 
 TUI commands:
 

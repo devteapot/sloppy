@@ -30,6 +30,34 @@ export class SessionPluginManager {
     return this.plugins.flatMap((plugin) => plugin.sessionNodes?.(this.ctx) ?? []);
   }
 
+  sessionSummary(): { props: Record<string, unknown>; summaries: string[] } {
+    const props: Record<string, unknown> = {};
+    const summaries: string[] = [];
+    for (const plugin of this.plugins) {
+      const contribution = plugin.sessionSummary?.(this.ctx);
+      if (!contribution) {
+        continue;
+      }
+      Object.assign(props, contribution.props ?? {});
+      if (contribution.summary) {
+        summaries.push(contribution.summary);
+      }
+    }
+    return { props, summaries };
+  }
+
+  async onStartup(): Promise<void> {
+    for (const plugin of this.plugins) {
+      await plugin.onStartup?.(this.ctx);
+    }
+  }
+
+  onShutdown(): void {
+    for (const plugin of [...this.plugins].reverse()) {
+      plugin.onShutdown?.(this.ctx);
+    }
+  }
+
   buildPluginsDescriptor(): NodeDescriptor {
     const items: ItemDescriptor[] = this.plugins.map((plugin) => {
       const sessionPaths = (plugin.sessionNodes?.(this.ctx) ?? []).map((node) =>
@@ -73,12 +101,31 @@ export class SessionPluginManager {
   }
 
   localTools(activeTurn: ActivePluginTurn | null): LocalRuntimeTool[] {
-    return this.plugins.flatMap((plugin) => plugin.localTools?.(this.ctx, activeTurn) ?? []);
+    const tools: LocalRuntimeTool[] = [];
+    const owners = new Map<string, string>();
+
+    for (const plugin of this.plugins) {
+      for (const tool of plugin.localTools?.(this.ctx, activeTurn) ?? []) {
+        const name = tool.tool.function.name;
+        const existingOwner = owners.get(name);
+        if (existingOwner) {
+          throw new Error(
+            `Duplicate local runtime tool ${name} registered by ${existingOwner} and ${plugin.id}.`,
+          );
+        }
+        owners.set(name, plugin.id);
+        tools.push({
+          ...tool,
+          pluginId: plugin.id,
+        });
+      }
+    }
+
+    return tools;
   }
 
   acceptQueuedTurn(message: QueuedSessionMessage): PluginTurnRequest | null {
-    const pluginId =
-      message.pluginId ?? (message.author === "goal" ? "persistent-goal" : undefined);
+    const pluginId = message.pluginId;
     if (!pluginId) {
       return null;
     }

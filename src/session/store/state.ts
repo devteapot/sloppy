@@ -103,9 +103,6 @@ export function createInitialState(options: {
 }
 
 export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
-  const { usage: _legacyUsage, ...llmSnapshot } = snapshot.llm as typeof snapshot.llm & {
-    usage?: unknown;
-  };
   return {
     session: {
       ...snapshot.session,
@@ -113,7 +110,7 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
     },
     usage: normalizeUsage(snapshot.usage),
     llm: {
-      ...llmSnapshot,
+      ...snapshot.llm,
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },

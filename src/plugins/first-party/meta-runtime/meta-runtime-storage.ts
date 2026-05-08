@@ -36,13 +36,6 @@ function unwrapPersistedMetaState(parsed: unknown, path: string): PersistedState
   if (!isRecord(parsed)) {
     throw new Error(`Meta-runtime state at ${path} must be an object.`);
   }
-  if (
-    parsed.kind === undefined &&
-    parsed.schema_version === undefined &&
-    parsed.state === undefined
-  ) {
-    return parsed as PersistedState;
-  }
   if (parsed.kind !== META_RUNTIME_STATE_KIND) {
     throw new Error(`Meta-runtime state at ${path} has unsupported kind.`);
   }

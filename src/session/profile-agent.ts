@@ -16,7 +16,10 @@ import {
   type LlmProfileManager,
   type LlmProfileState,
 } from "../llm/profile-manager";
-import { AcpSessionAgent } from "../runtime/acp";
+import {
+  acpProfileFingerprint,
+  createAcpProfileSessionAgent,
+} from "../plugins/first-party/delegation/acp-profile";
 import type { SessionAgent } from "./runtime";
 
 type ProfileSessionAgentOptions = {
@@ -43,18 +46,6 @@ function selectedProfile(
   return profileId
     ? profiles.find((profile) => profile.id === profileId)
     : profiles.find((profile) => profile.id === activeProfileId);
-}
-
-function adapterIdFor(profile: LlmProfileState): string {
-  return profile.adapterId?.trim() || profile.model;
-}
-
-function adapterFingerprint(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
 }
 
 export class ProfileSessionAgent implements SessionAgent {
@@ -212,45 +203,22 @@ export class ProfileSessionAgent implements SessionAgent {
 
   private profileFingerprint(profile: LlmProfileState): string {
     const model = this.llmModelOverride ?? profile.model;
-    if (profile.provider === "acp") {
-      const adapterId = adapterIdFor(profile);
-      const adapter = this.config.plugins.delegation.acp?.adapters[adapterId];
-      return [
-        profile.provider,
-        profile.id,
-        adapterId,
-        model,
-        this.config.plugins.delegation.acp?.defaultTimeoutMs ?? "",
-        adapterFingerprint(adapter),
-      ].join(":");
+    const pluginFingerprint = acpProfileFingerprint(this.config, profile, model);
+    if (pluginFingerprint) {
+      return pluginFingerprint;
     }
     return [profile.provider, profile.id, model].join(":");
   }
 
   private createInner(profile: LlmProfileState): SessionAgent {
-    const modelOverride = this.llmModelOverride ?? profile.model;
-    if (profile.provider === "acp") {
-      const adapterId = adapterIdFor(profile);
-      const acpConfig = this.config.plugins.delegation.acp;
-      if (!acpConfig?.enabled) {
-        throw new LlmConfigurationError(
-          `ACP adapter profile '${profile.id}' requires plugins.delegation.acp.enabled to be true.`,
-        );
-      }
-      const adapter = acpConfig.adapters[adapterId];
-      if (!adapter) {
-        throw new LlmConfigurationError(
-          `ACP adapter profile '${profile.id}' references unknown adapter '${adapterId}'.`,
-        );
-      }
-      return new AcpSessionAgent({
-        adapterId,
-        adapter,
-        modelOverride,
-        callbacks: this.callbacks,
-        workspaceRoot: this.config.plugins.filesystem.root,
-        defaultTimeoutMs: acpConfig.defaultTimeoutMs,
-      });
+    const pluginAgent = createAcpProfileSessionAgent({
+      config: this.config,
+      profile,
+      modelOverride: this.llmModelOverride ?? profile.model,
+      callbacks: this.callbacks,
+    });
+    if (pluginAgent) {
+      return pluginAgent;
     }
 
     return this.createNativeInner();

@@ -2,8 +2,10 @@ import { join } from "node:path";
 
 import { getHomeConfigPath } from "../../config/load";
 import type { SloppyConfig } from "../../config/schema";
+import type { InvokePolicy } from "../../core/policy";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
+import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
@@ -11,6 +13,7 @@ import { BrowserProvider } from "./browser/provider";
 import { CronProvider } from "./cron/provider";
 import { DelegationProvider } from "./delegation/provider";
 import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegation/runtime";
+import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { FilesystemProvider } from "./filesystem/provider";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
@@ -19,6 +22,7 @@ import { MetaRuntimeProvider } from "./meta-runtime/provider";
 import { createPersistentGoalPlugin } from "./persistent-goal/session";
 import { SkillsProvider } from "./skills/provider";
 import { SpecProvider } from "./spec/provider";
+import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
 import { WebProvider } from "./web/provider";
@@ -60,6 +64,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: true,
     description: "Terminal command execution provider.",
     providerIds: ["terminal"],
+    policyRules: () => [terminalSafetyRule],
     createProviders: (config) => {
       const plugin = config.plugins.terminal;
       const terminal = new TerminalProvider({
@@ -85,6 +90,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: true,
     description: "Workspace filesystem state and file editing provider.",
     providerIds: ["filesystem"],
+    toolEventEnrichers: () => [filesystemToolEventEnricher],
     createProviders: (config) => {
       const plugin = config.plugins.filesystem;
       const filesystem = new FilesystemProvider({
@@ -507,5 +513,15 @@ export function createFirstPartyPluginProviders(config: SloppyConfig): Registere
 export function createFirstPartySessionPlugins(config: SloppyConfig): SessionRuntimePlugin[] {
   return activeFirstPartyPlugins(config).map((plugin) =>
     plugin.createSessionPlugin ? plugin.createSessionPlugin(config) : metadataSessionPlugin(plugin),
+  );
+}
+
+export function createFirstPartyPluginPolicyRules(config: SloppyConfig): InvokePolicy[] {
+  return activeFirstPartyPlugins(config).flatMap((plugin) => plugin.policyRules?.(config) ?? []);
+}
+
+export function createFirstPartyToolEventEnrichers(config: SloppyConfig): ToolEventEnricher[] {
+  return activeFirstPartyPlugins(config).flatMap(
+    (plugin) => plugin.toolEventEnrichers?.(config) ?? [],
   );
 }

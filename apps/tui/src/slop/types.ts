@@ -224,12 +224,20 @@ export type PluginCommandContribution = {
   description: string;
 };
 
+export type PluginNotificationContribution = {
+  id: string;
+  path: string;
+  prop: string;
+  to: string;
+  message: string;
+};
+
 export type PluginTuiManifest = {
   subscriptions?: Array<{ path: string; depth: number }>;
   commands?: PluginCommandContribution[];
   palette?: Array<Record<string, unknown>>;
   status?: Array<Record<string, unknown>>;
-  notifications?: Array<Record<string, unknown>>;
+  notifications?: PluginNotificationContribution[];
 };
 
 export type PluginItem = {

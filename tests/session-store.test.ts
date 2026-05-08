@@ -7,16 +7,28 @@ import { join } from "node:path";
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import { createPersistentGoalPlugin } from "../src/plugins/first-party/persistent-goal/session";
 import { SessionService } from "../src/session/service";
 import { buildMirroredItemId, SessionStore } from "../src/session/store";
+import { goalSnapshotToExtension } from "../src/session/store/goal";
 import type {
   AgentSessionSnapshot,
   ApprovalItem,
   ExternalAppSnapshot,
   LlmStateSnapshot,
+  SessionGoalSnapshot,
   SessionTask,
 } from "../src/session/types";
 import { createTestConfig } from "./helpers/config";
+
+function persistentGoalSnapshotHooks() {
+  const plugin = createPersistentGoalPlugin();
+  return {
+    snapshotMigrators: plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
+    snapshotRecoverers: plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+    extensionEventTypes: plugin.extensionEvents ?? {},
+  };
+}
 
 function createStore(
   overrides?: Partial<{
@@ -33,6 +45,7 @@ function createStore(
     title: overrides?.title,
     workspaceRoot: overrides?.workspaceRoot,
     persistencePath: overrides?.persistencePath,
+    ...persistentGoalSnapshotHooks(),
   });
 }
 
@@ -49,6 +62,34 @@ function textBlock(snapshot: AgentSessionSnapshot, messageIndex: number): string
     return block.summary ?? "";
   }
   return block.text;
+}
+
+function seedGoal(
+  store: SessionStore,
+  goal: Partial<SessionGoalSnapshot> & { objective: string },
+): string {
+  const timestamp = new Date().toISOString();
+  const snapshot: SessionGoalSnapshot = {
+    goalId: goal.goalId ?? `goal-${crypto.randomUUID()}`,
+    objective: goal.objective,
+    status: goal.status ?? "active",
+    createdAt: goal.createdAt ?? timestamp,
+    updatedAt: goal.updatedAt ?? timestamp,
+    inputTokens: goal.inputTokens ?? 0,
+    outputTokens: goal.outputTokens ?? 0,
+    totalTokens: goal.totalTokens ?? 0,
+    elapsedMs: goal.elapsedMs ?? 0,
+    continuationCount: goal.continuationCount ?? 0,
+    message: goal.message ?? "Goal active.",
+  };
+  if (goal.tokenBudget !== undefined) snapshot.tokenBudget = goal.tokenBudget;
+  if (goal.lastTurnId) snapshot.lastTurnId = goal.lastTurnId;
+  if (goal.evidence) snapshot.evidence = goal.evidence;
+  if (goal.updateSource) snapshot.updateSource = goal.updateSource;
+  if (goal.completionSource) snapshot.completionSource = goal.completionSource;
+  if (goal.completedAt) snapshot.completedAt = goal.completedAt;
+  store.upsertExtension(goalSnapshotToExtension(snapshot));
+  return snapshot.goalId;
 }
 
 describe("SessionStore — initial state", () => {
@@ -144,34 +185,6 @@ describe("SessionStore — persistence", () => {
     }
   });
 
-  test("restores legacy raw session snapshots and rewrites them as versioned envelopes", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sloppy-session-legacy-"));
-    try {
-      const persistencePath = join(root, "sess-legacy.json");
-      const source = createStore();
-      const turnId = source.beginTurn("legacy input");
-      source.completeTurn(turnId, "legacy response");
-      await writeFile(
-        persistencePath,
-        `${JSON.stringify(source.getSnapshot(), null, 2)}\n`,
-        "utf8",
-      );
-
-      const restored = createStore({ persistencePath }).getSnapshot();
-      expect(restored.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
-      expect(textBlock(restored, 1)).toBe("legacy response");
-
-      const rewritten = JSON.parse(await readFile(persistencePath, "utf8")) as {
-        kind: string;
-        schema_version: number;
-      };
-      expect(rewritten.kind).toBe("sloppy.session.snapshot");
-      expect(rewritten.schema_version).toBe(2);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test("rejects unsupported session snapshot schema envelopes", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-session-schema-"));
     try {
@@ -202,7 +215,7 @@ describe("SessionStore — persistence", () => {
     try {
       const persistencePath = join(root, "sess-1.json");
       const store = createStore({ persistencePath });
-      store.createGoal({
+      seedGoal(store, {
         objective: "recover cleanly",
         message: "Goal active.",
       });
@@ -264,64 +277,15 @@ describe("SessionStore — persistence", () => {
     }
   });
 
-  test("migrates v1 goal snapshots into extension-backed state", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sloppy-session-v1-goal-"));
-    try {
-      const persistencePath = join(root, "sess-v1-goal.json");
-      const legacy = createStore().getSnapshot();
-      legacy.extensions = {};
-      legacy.goal = {
-        goalId: "goal-legacy",
-        objective: "migrate the legacy goal",
-        status: "active",
-        createdAt: "2026-05-01T00:00:00.000Z",
-        updatedAt: "2026-05-01T00:00:01.000Z",
-        inputTokens: 1,
-        outputTokens: 2,
-        totalTokens: 3,
-        elapsedMs: 4,
-        continuationCount: 5,
-        message: "Goal active.",
-      };
-      await writeFile(
-        persistencePath,
-        `${JSON.stringify(
-          {
-            kind: "sloppy.session.snapshot",
-            schema_version: 1,
-            saved_at: "2026-05-01T00:00:02.000Z",
-            snapshot: legacy,
-          },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
-
-      const restored = createStore({ persistencePath }).getSnapshot();
-      expect(restored.goal?.goalId).toBe("goal-legacy");
-      expect(restored.goal?.objective).toBe("migrate the legacy goal");
-      expect(restored.extensions.goal?.instanceId).toBe("goal-legacy");
-      expect(restored.extensions.goal?.state.objective).toBe("migrate the legacy goal");
-
-      const rewritten = JSON.parse(await readFile(persistencePath, "utf8")) as {
-        schema_version: number;
-        snapshot: AgentSessionSnapshot;
-      };
-      expect(rewritten.schema_version).toBe(2);
-      expect(rewritten.snapshot.goal).toBeNull();
-      expect(rewritten.snapshot.extensions.goal?.instanceId).toBe("goal-legacy");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test("retains completed goal metadata until cleanup sweep expires it", () => {
     const store = createStore();
-    store.createGoal({ objective: "clean up extension state" });
-    store.updateGoalStatus("complete", {
+    seedGoal(store, {
+      objective: "clean up extension state",
+      status: "complete",
       message: "done",
-      source: "user",
+      updateSource: "user",
+      completionSource: "user",
+      completedAt: new Date().toISOString(),
     });
 
     const completed = store.getSnapshot();

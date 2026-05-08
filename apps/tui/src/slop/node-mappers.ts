@@ -11,6 +11,7 @@ import type {
   LlmState,
   PluginCommandContribution,
   PluginItem,
+  PluginNotificationContribution,
   PluginTuiManifest,
   QueuedItem,
   SessionMeta,
@@ -479,7 +480,19 @@ function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest
     }),
     palette: recordArray(value.palette),
     status: recordArray(value.status),
-    notifications: recordArray(value.notifications),
+    notifications: recordArray(value.notifications).flatMap(
+      (entry): PluginNotificationContribution[] => {
+        const id = optionalStringProp(entry, "id");
+        const path = optionalStringProp(entry, "path");
+        const prop = optionalStringProp(entry, "prop");
+        const to = optionalStringProp(entry, "to");
+        const message = optionalStringProp(entry, "message");
+        if (!id || !path?.startsWith("/") || !prop || to === undefined || !message) {
+          return [];
+        }
+        return [{ id, path, prop, to, message }];
+      },
+    ),
   };
 }
 

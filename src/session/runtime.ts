@@ -22,7 +22,10 @@ import {
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
-import { createFirstPartySessionPlugins } from "../plugins/first-party/catalog";
+import {
+  createFirstPartySessionPlugins,
+  createFirstPartyToolEventEnrichers,
+} from "../plugins/first-party/catalog";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import {
   type ExternalSessionAgentState,
@@ -39,10 +42,11 @@ import {
   type PluginRuntimeContext,
   type PluginTurnRequest,
   SessionPluginManager,
+  type SessionRuntimePlugin,
 } from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
-import type { ApprovalItem } from "./types";
+import type { ApprovalItem, SessionStoreEventType } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 
@@ -55,6 +59,18 @@ function runtimeConfigFingerprint(config: SloppyConfig): string {
     plugins: config.plugins,
     providers: config.providers,
   });
+}
+
+function mergePluginExtensionEventTypes(
+  plugins: readonly SessionRuntimePlugin[],
+): Record<string, readonly SessionStoreEventType[]> {
+  const result: Record<string, SessionStoreEventType[]> = {};
+  for (const plugin of plugins) {
+    for (const [namespace, eventTypes] of Object.entries(plugin.extensionEvents ?? {})) {
+      result[namespace] = [...(result[namespace] ?? []), ...eventTypes];
+    }
+  }
+  return result;
 }
 
 function sanitizePathSegment(value: string): string {
@@ -323,6 +339,7 @@ export class SessionRuntime {
       this.localProviderIds.add(providerId);
     }
     this.localProviderIds.add(`sloppy-session-${sessionId}`);
+    const sessionPlugins = createFirstPartySessionPlugins(this.config);
     this.store =
       options?.store ??
       new SessionStore({
@@ -338,11 +355,15 @@ export class SessionRuntime {
           sessionId,
           options?.sessionPersistencePath,
         ),
+        snapshotMigrators: sessionPlugins.flatMap((plugin) =>
+          plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
+        ),
+        snapshotRecoverers: sessionPlugins.flatMap((plugin) =>
+          plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+        ),
+        extensionEventTypes: mergePluginExtensionEventTypes(sessionPlugins),
       });
-    this.plugins = new SessionPluginManager(
-      createFirstPartySessionPlugins(this.config),
-      this.createPluginContext(),
-    );
+    this.plugins = new SessionPluginManager(sessionPlugins, this.createPluginContext());
 
     if (!this.requiresLlmProfile) {
       this.store.syncLlmState(
@@ -399,6 +420,7 @@ export class SessionRuntime {
           parentId: options?.parentActorId,
           taskId: options?.taskId,
         },
+        toolEventEnrichers: createFirstPartyToolEventEnrichers(this.config),
       });
     }
 
@@ -475,12 +497,17 @@ export class SessionRuntime {
     return this.plugins.buildPluginsDescriptor();
   }
 
+  buildPluginSessionSummary(): { props: Record<string, unknown>; summaries: string[] } {
+    return this.plugins.sessionSummary();
+  }
+
   async start(): Promise<void> {
     if (this.started) {
       return;
     }
 
     await this.agent.start();
+    await this.plugins.onStartup();
     await this.refreshLlmState();
     this.store.recordUsage({
       inputTokenSource: "unavailable",
@@ -960,14 +987,20 @@ export class SessionRuntime {
   }
 
   shutdown(): void {
-    this.agent.shutdown();
-    this.started = false;
-    this.currentTurnId = null;
-    this.pendingApproval = null;
-    this.activeTurnPromise = null;
-    this.store.close();
-    this.eventBus?.stop();
-    this.eventBus = null;
+    try {
+      this.plugins.onShutdown();
+    } catch (error) {
+      console.warn("[sloppy] plugin shutdown hook failed:", error);
+    } finally {
+      this.agent.shutdown();
+      this.started = false;
+      this.currentTurnId = null;
+      this.pendingApproval = null;
+      this.activeTurnPromise = null;
+      this.store.close();
+      this.eventBus?.stop();
+      this.eventBus = null;
+    }
   }
 
   private audit(event: Record<string, unknown> & { kind: string }): void {
@@ -1197,7 +1230,7 @@ export class SessionRuntime {
       this.startPluginTurn(pluginTurn);
       return;
     }
-    if (next.source === "plugin" || next.author === "goal") {
+    if (next.source === "plugin") {
       this.startNextQueuedTurn();
       return;
     }

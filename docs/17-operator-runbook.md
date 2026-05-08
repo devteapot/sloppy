@@ -30,16 +30,6 @@ bun run runtime:doctor \
   --socket <session-or-supervisor-socket-path>
 ```
 
-To migrate accepted legacy state files after reviewing a warning, rerun with:
-
-```sh
-bun run runtime:doctor -- --workspace <workspace-root> --migrate-persistence
-```
-
-The migration path creates `.bak` copies next to each legacy file before
-rewriting session snapshots or meta-runtime state with the current schema
-envelope.
-
 Expected production posture:
 
 - `llm-profile`: `ok` means the active model profile is ready. `warning` means
@@ -63,10 +53,8 @@ Expected production posture:
   another live session is using it or stale cleanup is needed. `error` means a
   non-socket file blocks the path or the directory is unusable.
 - `session-persistence` and `meta-runtime-persistence`: `ok` means persisted
-  files use current schema envelopes. `warning` means legacy raw files will be
-  accepted but should be migrated with `--migrate-persistence` before handoff.
-  `error` means startup should stop before loading malformed or unsupported
-  state.
+  files use current schema envelopes. `error` means startup should stop before
+  loading malformed or unsupported state.
 
 ## Smoke
 

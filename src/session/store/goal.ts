@@ -1,14 +1,11 @@
 import type {
-  JsonObject,
   JsonValue,
   SessionExtensionRecord,
   SessionGoalSnapshot,
   SessionGoalStatus,
   SessionGoalUpdateSource,
 } from "../types";
-import { clearExtension, createExtensionRecord, getExtension, patchExtension } from "./extensions";
-import { buildId, now } from "./helpers";
-import type { SessionStoreState } from "./state";
+import { getExtension } from "./extensions";
 
 export const GOAL_EXTENSION_NAMESPACE = "goal";
 export const GOAL_EXTENSION_SCHEMA_VERSION = 1;
@@ -18,12 +15,6 @@ export const GOAL_EXTENSION_OWNER = {
   version: "1.0.0",
 };
 export const GOAL_EXTENSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-
-type GoalStatusUpdate = {
-  message?: string;
-  evidence?: string[];
-  source?: SessionGoalUpdateSource;
-};
 
 export function selectGoalSnapshot(snapshot: {
   goal?: SessionGoalSnapshot | null;
@@ -36,160 +27,6 @@ export function selectGoalSnapshot(snapshot: {
   return snapshot.goal
     ? { ...snapshot.goal, evidence: snapshot.goal.evidence?.map((item) => item) }
     : null;
-}
-
-export function createGoal(
-  state: SessionStoreState,
-  options: {
-    objective: string;
-    tokenBudget?: number;
-    message?: string;
-  },
-): string {
-  const goalId = buildId("goal");
-  const statePayload: JsonObject = {
-    objective: options.objective,
-    status: "active",
-    createdAt: now(),
-    updatedAt: now(),
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    elapsedMs: 0,
-    continuationCount: 0,
-    message: options.message ?? "Goal active.",
-  };
-  if (options.tokenBudget !== undefined) {
-    statePayload.tokenBudget = options.tokenBudget;
-  }
-
-  const record = createExtensionRecord({
-    namespace: GOAL_EXTENSION_NAMESPACE,
-    instanceId: goalId,
-    schemaVersion: GOAL_EXTENSION_SCHEMA_VERSION,
-    owner: GOAL_EXTENSION_OWNER,
-    state: statePayload,
-    cleanupPolicy: {
-      mode: "ttl",
-      ttlMs: GOAL_EXTENSION_RETENTION_MS,
-      description:
-        "clear_goal removes live state immediately; completed goals are retained briefly for audit.",
-    },
-  });
-  record.state.createdAt = record.createdAt;
-  record.state.updatedAt = record.updatedAt;
-  state.snapshot.extensions[GOAL_EXTENSION_NAMESPACE] = record;
-  state.snapshot.goal = null;
-  state.snapshot.session.lastActivityAt = record.updatedAt;
-  state.goalChanged = true;
-  state.extensionsChanged = true;
-  state.sessionChanged = true;
-  return goalId;
-}
-
-export function updateGoalStatus(
-  state: SessionStoreState,
-  status: SessionGoalStatus,
-  update?: string | GoalStatusUpdate,
-  options?: { expectedGoalId?: string; expectedRevision?: number },
-): void {
-  const normalized = normalizeGoalStatusUpdate(update);
-  patchExtension(
-    state,
-    GOAL_EXTENSION_NAMESPACE,
-    (record) => {
-      const updatedAt = now();
-      record.state.status = status;
-      record.state.updatedAt = updatedAt;
-      record.state.message = normalized.message ?? defaultGoalMessage(status);
-      if (normalized.evidence) {
-        record.state.evidence = normalized.evidence;
-      }
-      if (normalized.source) {
-        record.state.updateSource = normalized.source;
-      }
-      if (status === "complete") {
-        record.state.completedAt = updatedAt;
-        if (normalized.source) {
-          record.state.completionSource = normalized.source;
-        }
-        record.lifecycle = "completed";
-        record.retainUntil = new Date(
-          Date.parse(updatedAt) + GOAL_EXTENSION_RETENTION_MS,
-        ).toISOString();
-      } else {
-        delete record.state.completedAt;
-        delete record.state.completionSource;
-        record.lifecycle = "active";
-        delete record.retainUntil;
-      }
-      return record;
-    },
-    {
-      instanceId: options?.expectedGoalId,
-      expectedRevision: options?.expectedRevision,
-    },
-  );
-  state.goalChanged = true;
-}
-
-export function clearGoal(state: SessionStoreState): void {
-  if (clearExtension(state, GOAL_EXTENSION_NAMESPACE)) {
-    state.snapshot.goal = null;
-    state.goalChanged = true;
-  }
-}
-
-export function accountGoalTurn(
-  state: SessionStoreState,
-  options: {
-    turnId: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    elapsedMs: number;
-    continuation: boolean;
-    usedTools: boolean;
-  },
-): void {
-  const current = selectGoalSnapshot(state.snapshot);
-  if (!current) {
-    return;
-  }
-
-  patchExtension(state, GOAL_EXTENSION_NAMESPACE, (record) => {
-    const goal = goalFromExtension(record);
-    if (!goal) {
-      return record;
-    }
-    const updatedAt = now();
-    const inputTokens = goal.inputTokens + (options.inputTokens ?? 0);
-    const outputTokens = goal.outputTokens + (options.outputTokens ?? 0);
-    record.state.inputTokens = inputTokens;
-    record.state.outputTokens = outputTokens;
-    record.state.totalTokens = inputTokens + outputTokens;
-    record.state.elapsedMs = goal.elapsedMs + Math.max(0, Math.round(options.elapsedMs));
-    record.state.lastTurnId = options.turnId;
-    record.state.updatedAt = updatedAt;
-    if (options.continuation) {
-      record.state.continuationCount = goal.continuationCount + 1;
-    }
-
-    if (
-      goal.status === "active" &&
-      goal.tokenBudget &&
-      inputTokens + outputTokens >= goal.tokenBudget
-    ) {
-      record.state.status = "budget_limited";
-      record.state.message = "Goal stopped after reaching its token budget.";
-    } else if (goal.status === "active" && options.continuation && !options.usedTools) {
-      record.state.status = "paused";
-      record.state.message =
-        "Goal paused after a continuation turn completed without tool activity.";
-    }
-
-    return record;
-  });
-  state.goalChanged = true;
 }
 
 export function goalFromExtension(
@@ -237,32 +74,48 @@ export function goalFromExtension(
   return goal;
 }
 
-function defaultGoalMessage(status: SessionGoalStatus): string {
-  switch (status) {
-    case "active":
-      return "Goal active.";
-    case "paused":
-      return "Goal paused.";
-    case "budget_limited":
-      return "Goal stopped after reaching its token budget.";
-    case "complete":
-      return "Goal complete.";
-  }
-}
+export function goalSnapshotToExtension(goal: SessionGoalSnapshot): SessionExtensionRecord {
+  const updatedAt = goal.updatedAt;
+  const state: SessionExtensionRecord["state"] = {
+    objective: goal.objective,
+    status: goal.status,
+    createdAt: goal.createdAt,
+    updatedAt,
+    inputTokens: goal.inputTokens,
+    outputTokens: goal.outputTokens,
+    totalTokens: goal.totalTokens,
+    elapsedMs: goal.elapsedMs,
+    continuationCount: goal.continuationCount,
+    message: goal.message ?? "",
+  };
+  if (goal.completedAt) state.completedAt = goal.completedAt;
+  if (goal.tokenBudget !== undefined) state.tokenBudget = goal.tokenBudget;
+  if (goal.lastTurnId) state.lastTurnId = goal.lastTurnId;
+  if (goal.evidence) state.evidence = goal.evidence;
+  if (goal.updateSource) state.updateSource = goal.updateSource;
+  if (goal.completionSource) state.completionSource = goal.completionSource;
 
-function normalizeGoalStatusUpdate(
-  update: string | GoalStatusUpdate | undefined,
-): GoalStatusUpdate {
-  if (typeof update === "string") {
-    return { message: update };
-  }
-  if (!update) {
-    return {};
-  }
   return {
-    message: update.message,
-    evidence: update.evidence?.filter((item) => item.trim().length > 0),
-    source: update.source,
+    namespace: GOAL_EXTENSION_NAMESPACE,
+    instanceId: goal.goalId,
+    schemaVersion: GOAL_EXTENSION_SCHEMA_VERSION,
+    revision: 1,
+    owner: GOAL_EXTENSION_OWNER,
+    state,
+    lifecycle: goal.status === "complete" ? "completed" : "active",
+    cleanupPolicy: {
+      mode: "ttl",
+      ttlMs: GOAL_EXTENSION_RETENTION_MS,
+      description:
+        "clear_goal removes live state immediately; completed goals are retained briefly for audit.",
+    },
+    retainUntil:
+      goal.status === "complete"
+        ? new Date(Date.parse(updatedAt) + GOAL_EXTENSION_RETENTION_MS).toISOString()
+        : undefined,
+    createdAt: goal.createdAt,
+    updatedAt,
+    lastUsedAt: updatedAt,
   };
 }
 

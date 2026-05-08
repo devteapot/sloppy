@@ -39,6 +39,7 @@ export type AgentEvent = BaseEvent &
         invocationKind: AgentToolInvocation["kind"];
         paramsPreview?: string;
         file?: { op: string; path?: string };
+        [key: string]: unknown;
       }
     | {
         kind: "tool_completed";
@@ -53,6 +54,7 @@ export type AgentEvent = BaseEvent &
         summary: string;
         paramsPreview?: string;
         file?: { op: string; path?: string };
+        [key: string]: unknown;
       }
     | {
         kind: "tool_approval_requested";
@@ -104,23 +106,7 @@ export interface AgentEventBus {
   stop(): void;
 }
 
-function inferFile(inv: AgentToolInvocation): { op: string; path?: string } | undefined {
-  if (inv.providerId !== "filesystem") return undefined;
-  const params = (inv.params ?? {}) as Record<string, unknown>;
-  const p = typeof params.path === "string" ? params.path : undefined;
-  const opMap: Record<string, string> = {
-    read: "read",
-    write: "write",
-    edit: "write",
-    mkdir: "mkdir",
-    search: "search",
-    set_focus: "focus",
-    focus: "focus",
-  };
-  const op = opMap[inv.action];
-  if (!op) return undefined;
-  return { op, path: p };
-}
+export type ToolEventEnricher = (invocation: AgentToolInvocation) => Record<string, unknown> | null;
 
 function shouldRedactParam(key: string): boolean {
   return /(api[-_]?key|authorization|cookie|password|secret|token)/i.test(key);
@@ -163,9 +149,24 @@ function paramsPreview(inv: AgentToolInvocation): string | undefined {
   return preview.length > 1200 ? `${preview.slice(0, 1184)}...[truncated]` : preview;
 }
 
+function buildToolEventMetadata(
+  invocation: AgentToolInvocation,
+  enrichers: readonly ToolEventEnricher[],
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const enricher of enrichers) {
+    const contribution = enricher(invocation);
+    if (contribution) {
+      Object.assign(metadata, contribution);
+    }
+  }
+  return metadata;
+}
+
 export function createAgentEventBus(options: {
   logPath: string;
   actor: AgentEventActor;
+  toolEventEnrichers?: readonly ToolEventEnricher[];
 }): AgentEventBus {
   let stopped = false;
   const taskStateSignatures = new Map<string, string>();
@@ -188,6 +189,7 @@ export function createAgentEventBus(options: {
     onToolEvent: (event: AgentToolEvent) => {
       const ts = new Date().toISOString();
       const base = { ts, actor: options.actor };
+      const metadata = buildToolEventMetadata(event.invocation, options.toolEventEnrichers ?? []);
       if (event.kind === "started") {
         write({
           ...base,
@@ -198,7 +200,7 @@ export function createAgentEventBus(options: {
           path: event.invocation.path,
           invocationKind: event.invocation.kind,
           paramsPreview: paramsPreview(event.invocation),
-          file: inferFile(event.invocation),
+          ...metadata,
         });
       } else if (event.kind === "completed") {
         write({
@@ -214,7 +216,7 @@ export function createAgentEventBus(options: {
           errorMessage: event.errorMessage,
           summary: event.summary,
           paramsPreview: paramsPreview(event.invocation),
-          file: inferFile(event.invocation),
+          ...metadata,
         });
       } else if (event.kind === "approval_requested") {
         write({

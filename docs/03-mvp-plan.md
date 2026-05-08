@@ -22,8 +22,10 @@ Checked in now:
 - public session supervisor for scoped session creation, active-session
   switching, and stopping while keeping each session on its own provider socket
 - first-party session runtime plugin manager, surfaced through `/plugins`, for
-  contributed session nodes, runtime-local turn tools, queued or automatic
-  plugin turns, and declarative TUI manifests
+  contributed session nodes, extension event projections, runtime-local turn
+  tools, queued or automatic plugin turns, snapshot migration/recovery hooks,
+  lifecycle hooks, policy rules, audit metadata, supervisor summary fields, and
+  declarative TUI manifests
 - generic public session extension metadata, with `/goal` projected from the
   extension-backed `persistent-goal` skill state by the `persistent-goal`
   session plugin for persistent objective controls, usage accounting, cleanup

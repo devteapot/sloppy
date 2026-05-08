@@ -82,8 +82,8 @@ export function extractApprovalId(data: unknown): string | undefined {
 /**
  * Map errors thrown during tool invocation to a stable error code. Hub
  * policy `deny` decisions surface as PolicyDeniedError; map them to
- * `tool_policy_rejected` so user-visible behavior matches the legacy
- * in-loop policy hook.
+ * `tool_policy_rejected` so user-visible behavior stays stable across policy
+ * enforcement sites.
  */
 export function classifyToolInvocationError(error: unknown): string | undefined {
   if (error instanceof PolicyDeniedError) return "tool_policy_rejected";

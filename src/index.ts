@@ -28,8 +28,10 @@ export {
 export { BrowserProvider } from "./plugins/first-party/browser/provider";
 export {
   activeFirstPartyPlugins,
+  createFirstPartyPluginPolicyRules,
   createFirstPartyPluginProviders,
   createFirstPartySessionPlugins,
+  createFirstPartyToolEventEnrichers,
   FIRST_PARTY_PLUGINS,
   isFirstPartyPluginEnabled,
 } from "./plugins/first-party/catalog";

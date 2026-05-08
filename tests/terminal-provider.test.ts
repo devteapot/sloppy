@@ -7,7 +7,7 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
-import { terminalSafetyRule } from "../src/core/policy/rules";
+import { terminalSafetyRule } from "../src/plugins/first-party/terminal/policy";
 import { TerminalProvider } from "../src/plugins/first-party/terminal/provider";
 import { InProcessTransport } from "../src/providers/in-process";
 import { createTestConfig } from "./helpers/config";

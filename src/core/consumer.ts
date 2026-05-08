@@ -188,17 +188,6 @@ export class ConsumerHub implements ProviderRuntimeHub {
     this.policyRules.add(rule);
   }
 
-  /**
-   * @deprecated No-op shim. Role/actor metadata is now scoped per-invocation —
-   * pass `{ roleId, actor }` as the final argument to `hub.invoke(...)`. This
-   * method is retained only so legacy call sites compile while migrating; it
-   * intentionally does nothing because hub-wide metadata leaked across
-   * invocations (see policy-isolation.test.ts for the regression).
-   */
-  setInvocationMetadata(_metadata: { roleId?: string }): void {
-    // intentionally empty — see deprecation note above.
-  }
-
   async connect(): Promise<void> {
     for (const registeredProvider of this.registeredProviders) {
       await this.addProvider(registeredProvider);

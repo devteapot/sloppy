@@ -364,10 +364,10 @@ export class A2AProvider {
       };
     }
 
-    const legacyUrl = optionalString(card.url);
-    if (legacyUrl) {
+    const fallbackUrl = optionalString(card.url);
+    if (fallbackUrl) {
       return {
-        url: legacyUrl,
+        url: fallbackUrl,
         protocolBinding: "JSONRPC",
         protocolVersion: agent.config.protocolVersion,
       };

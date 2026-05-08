@@ -37,13 +37,11 @@ type PublicSessionRecord = Omit<SessionRecord, "service" | "unsubscribe"> & {
   created_at: string;
   turn_state: string;
   turn_message: string;
-  goal_status: string;
-  goal_objective?: string;
-  goal_total_tokens: number;
   queued_count: number;
   pending_approval_count: number;
   running_task_count: number;
   last_activity_at: string;
+  [key: string]: unknown;
 };
 
 type ScopeRecord = {
@@ -219,6 +217,7 @@ export class SessionSupervisorProvider {
 
   private publicSessionRecord(record: SessionRecord): PublicSessionRecord {
     const snapshot = record.service.runtime.store.getSnapshot();
+    const pluginSummary = record.service.runtime.buildPluginSessionSummary();
     const pendingApprovalCount = snapshot.approvals.filter(
       (approval) => approval.status === "pending",
     ).length;
@@ -241,13 +240,11 @@ export class SessionSupervisorProvider {
       created_at: record.createdAt,
       turn_state: snapshot.turn.state,
       turn_message: snapshot.turn.message,
-      goal_status: snapshot.goal?.status ?? "none",
-      goal_objective: snapshot.goal?.objective,
-      goal_total_tokens: snapshot.goal?.totalTokens ?? 0,
       queued_count: snapshot.queue.length,
       pending_approval_count: pendingApprovalCount,
       running_task_count: runningTaskCount,
       last_activity_at: snapshot.session.lastActivityAt,
+      ...pluginSummary.props,
     };
   }
 
@@ -364,6 +361,12 @@ export class SessionSupervisorProvider {
   private buildSessionItem(record: SessionRecord): ItemDescriptor {
     const selected = record.sessionId === this.activeSessionId;
     const publicRecord = this.publicSessionRecord(record);
+    const pluginSummary = record.service.runtime.buildPluginSessionSummary();
+    const summaryParts = [
+      `turn=${publicRecord.turn_state}`,
+      ...pluginSummary.summaries,
+      `queued=${publicRecord.queued_count}`,
+    ];
     return {
       id: encodeURIComponent(record.sessionId),
       props: {
@@ -377,16 +380,14 @@ export class SessionSupervisorProvider {
         created_at: record.createdAt,
         turn_state: publicRecord.turn_state,
         turn_message: publicRecord.turn_message,
-        goal_status: publicRecord.goal_status,
-        goal_objective: publicRecord.goal_objective ?? null,
-        goal_total_tokens: publicRecord.goal_total_tokens,
         queued_count: publicRecord.queued_count,
         pending_approval_count: publicRecord.pending_approval_count,
         running_task_count: publicRecord.running_task_count,
         last_activity_at: publicRecord.last_activity_at,
         selected,
+        ...pluginSummary.props,
       },
-      summary: `${publicRecord.title ?? record.sessionId}: turn=${publicRecord.turn_state} goal=${publicRecord.goal_status} queued=${publicRecord.queued_count}`,
+      summary: `${publicRecord.title ?? record.sessionId}: ${summaryParts.join(" ")}`,
       actions: {
         set_active: action(
           async () => this.publicSessionRecord(this.setActiveSession(record.sessionId)),

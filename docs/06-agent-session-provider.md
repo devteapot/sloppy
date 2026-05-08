@@ -864,10 +864,9 @@ On disk, new snapshots are written as a versioned envelope:
 }
 ```
 
-Legacy raw snapshot files and v1 envelopes are still accepted and rewritten as
-v2 envelopes on the next successful persist. v1 `goal` payloads are migrated
-into `/extensions/goal`; unsupported envelope kinds or schema versions fail
-closed instead of being treated as session state.
+Only the current envelope kind and schema version are accepted. Unsupported
+envelope kinds or schema versions fail closed instead of being treated as
+session state.
 
 ---
 

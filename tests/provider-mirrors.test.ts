@@ -32,34 +32,6 @@ describe("provider mirror parsing", () => {
     expect(approvals).toEqual([]);
   });
 
-  test("infers legacy mirror lineage from nested mirrored approval ids", () => {
-    const approvals = parseApprovalsTree(
-      "sloppy-session-parent",
-      {
-        id: "approvals",
-        type: "collection",
-        children: [
-          {
-            id: "approval-sloppy-session-child-approval-skills-approval-1",
-            type: "item",
-            properties: {
-              status: "pending",
-              provider: "sloppy-session-child",
-              path: "/approvals/approval-skills-approval-1",
-              action: "approve",
-              reason: "Legacy mirrored child approval.",
-            },
-            affordances: [{ action: "approve" }, { action: "reject" }],
-          },
-        ],
-      },
-      null,
-      { localProviderIds: ["sloppy-session-child"] },
-    );
-
-    expect(approvals).toEqual([]);
-  });
-
   test("preserves forwardable child-session approvals that have not looped back", () => {
     const approvals = parseApprovalsTree(
       "sloppy-session-child",
@@ -108,31 +80,6 @@ describe("provider mirror parsing", () => {
               provider_task_id: "task-1",
               message: "Already mirrored through child.",
               mirror_lineage: ["sloppy-session-child", "terminal"],
-            },
-            affordances: [{ action: "cancel" }],
-          },
-        ],
-      },
-      { localProviderIds: ["sloppy-session-child"] },
-    );
-
-    expect(tasks).toEqual([]);
-  });
-
-  test("infers legacy mirror lineage from nested mirrored task ids", () => {
-    const tasks = parseTasksTree(
-      "sloppy-session-parent",
-      {
-        id: "tasks",
-        type: "collection",
-        children: [
-          {
-            id: "task-sloppy-session-child-task-terminal-task-1",
-            type: "item",
-            properties: {
-              status: "running",
-              provider_task_id: "task-1",
-              message: "Legacy mirrored child task.",
             },
             affordances: [{ action: "cancel" }],
           },
