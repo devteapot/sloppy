@@ -68,7 +68,7 @@ const service = new SessionService({
 
 await service.start({ register: !noRegister });
 stdout.write(
-  `[sloppy] session provider listening on ${service.socketPath} (${config.providers.filesystem.root})\n`,
+  `[sloppy] session provider listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
 );
 await stdout.flush();
 

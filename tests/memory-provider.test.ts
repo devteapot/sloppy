@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { MemoryProvider } from "../src/providers/builtin/memory";
+import { MemoryProvider } from "../src/plugins/first-party/memory/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 function createMemoryHarness(options: ConstructorParameters<typeof MemoryProvider>[0] = {}) {
   const provider = new MemoryProvider({

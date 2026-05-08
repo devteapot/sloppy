@@ -4,16 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { BrowserProvider } from "../src/providers/builtin/browser";
-import { CronProvider } from "../src/providers/builtin/cron";
-import { DelegationProvider } from "../src/providers/builtin/delegation";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { MemoryProvider } from "../src/providers/builtin/memory";
-import { MessagingProvider } from "../src/providers/builtin/messaging";
-import { SkillsProvider } from "../src/providers/builtin/skills";
-import { SpecProvider } from "../src/providers/builtin/spec";
-import { VisionProvider } from "../src/providers/builtin/vision";
-import { WebProvider } from "../src/providers/builtin/web";
+import { BrowserProvider } from "../src/plugins/first-party/browser/provider";
+import { CronProvider } from "../src/plugins/first-party/cron/provider";
+import { DelegationProvider } from "../src/plugins/first-party/delegation/provider";
+import { MemoryProvider } from "../src/plugins/first-party/memory/provider";
+import { MessagingProvider } from "../src/plugins/first-party/messaging/provider";
+import { SkillsProvider } from "../src/plugins/first-party/skills/provider";
+import { SpecProvider } from "../src/plugins/first-party/spec/provider";
+import { VisionProvider } from "../src/plugins/first-party/vision/provider";
+import { WebProvider } from "../src/plugins/first-party/web/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 const tempPaths: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -48,7 +48,7 @@ async function waitFor<T>(
   throw new Error(`Timed out after ${timeoutMs}ms waiting for condition.`);
 }
 
-describe("Phase 2 builtin providers", () => {
+describe("Phase 2 first-party plugin providers", () => {
   test("MemoryProvider stores, searches, and approval-gates clearing all memories", async () => {
     const provider = new MemoryProvider({
       maxMemories: 20,

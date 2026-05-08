@@ -29,8 +29,9 @@ a task scheduler. It models a mutable graph:
 - topology proposals
 - events
 
-The provider is optional. If it is not mounted, Sloppy behaves as a bare
-SLOP-native agent with the configured built-in and discovered providers.
+The provider is optional. If its first-party plugin is not enabled, Sloppy
+behaves as a bare SLOP-native agent with the configured default plugins and
+discovered providers.
 
 ## Current Surfaces
 
@@ -366,11 +367,11 @@ logic.
 
 The trace-derived repair, architect-brief, automatic evidence-scoring, and
 evolution-cycle helper affordances have been removed from the public
-meta-runtime surface. Their reusable strategy now belongs in built-in skills.
+meta-runtime surface. Their reusable strategy now belongs in first-party skills.
 
 Preferred migration order:
 
-1. Add built-in skills for runtime architecture, route repair, experiment
+1. Add first-party skills for runtime architecture, route repair, experiment
    evaluation, and topology pattern authoring. Done in `skills/runtime/`.
 2. Keep only substrate affordances in the long-term `/session` surface. Done for
    the removed trace/architect/evidence helpers.
@@ -378,7 +379,7 @@ Preferred migration order:
    time and freeze them into the child prompt. Done for meta-runtime routed
    children.
 4. Add usage telemetry and curator/review workflows before broad autonomous
-   skill growth. Done for the built-in `skill-curator` workflow; autonomous
+   skill growth. Done for the first-party `skill-curator` workflow; autonomous
    scheduling remains out of scope for the runtime.
 
 ## Remaining Work

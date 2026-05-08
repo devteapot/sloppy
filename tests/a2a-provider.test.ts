@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { type A2AAgentConfig, A2AProvider } from "../src/providers/builtin/a2a";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { type A2AAgentConfig, A2AProvider } from "../src/plugins/first-party/a2a/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 type A2AFetchCall = {
   url: string;

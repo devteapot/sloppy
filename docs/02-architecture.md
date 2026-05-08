@@ -18,7 +18,9 @@ The default runtime includes:
 - durable public session snapshots with explicit stale-turn recovery
 - provider discovery
 - approval queue and generic dangerous-action policy
-- default built-ins: `terminal`, `filesystem`, `memory`, and `skills`
+- first-party plugin catalog and runtime plugin manager
+- default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
+  `memory`, and `skills`
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
@@ -322,5 +324,5 @@ The runtime intentionally does not include:
 - special task lifecycle hooks in the kernel
 - hardcoded self-repair or topology-optimization playbooks
 
-Those features can be rebuilt as optional SLOP providers or skills if they
+Those features can be rebuilt as optional plugins, SLOP providers, or skills if they
 prove useful, but they are not part of the lean runtime.

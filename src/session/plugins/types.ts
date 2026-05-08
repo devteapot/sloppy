@@ -117,6 +117,9 @@ export type SessionRuntimePlugin = {
   id: string;
   version: string;
   description?: string;
+  defaultEnabled?: boolean;
+  providerIds?: string[];
+  extensionNamespaces?: string[];
   sessionNodes?: (ctx: PluginRuntimeContext) => SessionNodeContribution[];
   localTools?: (
     ctx: PluginRuntimeContext,

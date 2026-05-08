@@ -133,6 +133,45 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   return deepMerge(config, overrides);
 }
 
+const LEGACY_PROVIDER_CONFIG_KEYS = new Set([
+  "builtin",
+  "terminal",
+  "filesystem",
+  "memory",
+  "skills",
+  "metaRuntime",
+  "web",
+  "browser",
+  "cron",
+  "messaging",
+  "delegation",
+  "spec",
+  "vision",
+  "mcp",
+  "workspaces",
+  "a2a",
+]);
+
+function assertNoLegacyProviderConfig(config: JsonObject): void {
+  const providers = config.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
+    return;
+  }
+
+  const legacyKeys = Object.keys(providers).filter((key) => LEGACY_PROVIDER_CONFIG_KEYS.has(key));
+  if (legacyKeys.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    `Legacy providers.* first-party config is no longer supported: ${legacyKeys
+      .map((key) => `providers.${key}`)
+      .join(
+        ", ",
+      )}. Move first-party settings to plugins.<plugin-id>; only providers.discovery remains under providers.`,
+  );
+}
+
 function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): LlmProfileConfig {
   const defaults = getProviderDefaults(profile.provider);
 
@@ -167,9 +206,9 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
 }
 
 function normalizeMcpServers(
-  servers: RawSloppyConfig["providers"]["mcp"]["servers"],
+  servers: RawSloppyConfig["plugins"]["mcp"]["servers"],
   filesystemRoot: string,
-): RawSloppyConfig["providers"]["mcp"]["servers"] {
+): RawSloppyConfig["plugins"]["mcp"]["servers"] {
   return Object.fromEntries(
     Object.entries(servers).map(([id, server]) => {
       if (server.transport !== "stdio" || !server.cwd) {
@@ -184,7 +223,7 @@ function normalizeMcpServers(
         },
       ];
     }),
-  ) as RawSloppyConfig["providers"]["mcp"]["servers"];
+  ) as RawSloppyConfig["plugins"]["mcp"]["servers"];
 }
 
 function resolveConfigPath(root: string, configPath: string): string {
@@ -227,58 +266,60 @@ function normalizeWorkspaces(
 }
 
 export function normalizeConfig(config: RawSloppyConfig, cwd = process.cwd()): SloppyConfig {
-  const terminalCwd = resolve(cwd, expandHomePath(config.providers.terminal.cwd));
-  const filesystemRoot = resolve(cwd, expandHomePath(config.providers.filesystem.root));
-  const filesystemFocus = config.providers.filesystem.focus
-    ? resolve(filesystemRoot, expandHomePath(config.providers.filesystem.focus))
+  const terminalCwd = resolve(cwd, expandHomePath(config.plugins.terminal.cwd));
+  const filesystemRoot = resolve(cwd, expandHomePath(config.plugins.filesystem.root));
+  const filesystemFocus = config.plugins.filesystem.focus
+    ? resolve(filesystemRoot, expandHomePath(config.plugins.filesystem.focus))
     : filesystemRoot;
   const metaRuntimeGlobalRoot = resolve(
     cwd,
-    expandHomePath(config.providers.metaRuntime.globalRoot),
+    expandHomePath(config.plugins["meta-runtime"].globalRoot),
   );
   const metaRuntimeWorkspaceRoot = resolve(
     filesystemRoot,
-    expandHomePath(config.providers.metaRuntime.workspaceRoot),
+    expandHomePath(config.plugins["meta-runtime"].workspaceRoot),
   );
 
   return {
     ...config,
     llm: normalizeLlmConfig(config.llm),
     workspaces: normalizeWorkspaces(config.workspaces, cwd),
-    providers: {
-      ...config.providers,
-      discovery: {
-        ...config.providers.discovery,
-        paths: config.providers.discovery.paths.map((path) => resolve(expandHomePath(path))),
-      },
+    plugins: {
+      ...config.plugins,
       terminal: {
-        ...config.providers.terminal,
+        ...config.plugins.terminal,
         cwd: terminalCwd,
       },
       filesystem: {
-        ...config.providers.filesystem,
+        ...config.plugins.filesystem,
         root: filesystemRoot,
         focus: filesystemFocus,
       },
       skills: {
-        ...config.providers.skills,
+        ...config.plugins.skills,
         builtinSkillsDir: resolve(
           filesystemRoot,
-          expandHomePath(config.providers.skills.builtinSkillsDir ?? "skills"),
+          expandHomePath(config.plugins.skills.builtinSkillsDir ?? "skills"),
         ),
-        skillsDir: resolve(expandHomePath(config.providers.skills.skillsDir)),
-        externalDirs: (config.providers.skills.externalDirs ?? []).map((path) =>
+        skillsDir: resolve(expandHomePath(config.plugins.skills.skillsDir)),
+        externalDirs: (config.plugins.skills.externalDirs ?? []).map((path) =>
           resolve(expandHomePath(path)),
         ),
       },
-      metaRuntime: {
-        ...config.providers.metaRuntime,
+      "meta-runtime": {
+        ...config.plugins["meta-runtime"],
         globalRoot: metaRuntimeGlobalRoot,
         workspaceRoot: metaRuntimeWorkspaceRoot,
       },
       mcp: {
-        ...config.providers.mcp,
-        servers: normalizeMcpServers(config.providers.mcp.servers, filesystemRoot),
+        ...config.plugins.mcp,
+        servers: normalizeMcpServers(config.plugins.mcp.servers, filesystemRoot),
+      },
+    },
+    providers: {
+      discovery: {
+        ...config.providers.discovery,
+        paths: config.providers.discovery.paths.map((path) => resolve(expandHomePath(path))),
       },
     },
   };
@@ -306,6 +347,7 @@ export async function loadConfigFromLayerPaths(
   }
 
   const withEnv = applyEnvironmentOverrides(merged);
+  assertNoLegacyProviderConfig(withEnv);
   const parsed = sloppyConfigSchema.parse(withEnv);
 
   return normalizeConfig(parsed, options.cwd ?? process.cwd());
@@ -363,7 +405,7 @@ export async function loadScopedConfig(options: ScopedConfigOptions = {}): Promi
       activeProjectId: project ? projectId : undefined,
       items: registry?.items ?? {},
     },
-    providers: {
+    plugins: {
       terminal: {
         cwd: scopeRoot,
       },
@@ -374,6 +416,7 @@ export async function loadScopedConfig(options: ScopedConfigOptions = {}): Promi
     },
   });
   const withEnv = applyEnvironmentOverrides(scoped);
+  assertNoLegacyProviderConfig(withEnv);
   const parsed = sloppyConfigSchema.parse(withEnv);
 
   return normalizeConfig(parsed, scopeRoot);
@@ -383,4 +426,9 @@ export async function loadConfig(): Promise<SloppyConfig> {
   return loadConfigFromPaths(getHomeConfigPath(), getWorkspaceConfigPath());
 }
 
+export function createDefaultConfig(cwd = process.cwd()): SloppyConfig {
+  return normalizeConfig(sloppyConfigSchema.parse({}), cwd);
+}
+
 export const defaultConfigPromise = loadConfig();
+defaultConfigPromise.catch(() => undefined);

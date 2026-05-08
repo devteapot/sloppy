@@ -1,0 +1,107 @@
+import type { SloppyConfig } from "../../../../config/schema";
+import type { ProviderRuntimeHub } from "../../../../core/hub";
+import type { LlmProfileManager } from "../../../../llm/profile-manager";
+import { AcpSessionAgent } from "../../../../runtime/acp";
+import type { SessionAgentFactory } from "../../../../session/runtime";
+import type { DelegationProvider } from "../provider";
+import { assertAcpSpawnAllowed } from "./acp-capabilities";
+import { ExecutorResolver } from "./executor-resolver";
+import { SubAgentRunner } from "./sub-agent";
+
+export function attachSubAgentRunnerFactory(
+  delegation: DelegationProvider,
+  hub: ProviderRuntimeHub,
+  config: SloppyConfig,
+  llmProfileManager?: LlmProfileManager,
+): void {
+  delegation.setParentHub(hub);
+
+  const resolver = new ExecutorResolver({ config });
+
+  delegation.setRunnerFactory((spawn, callbacks) => {
+    const executor = resolver.resolve(spawn.executor);
+
+    let agentFactory: SessionAgentFactory | undefined;
+    let requiresLlmProfile: boolean | undefined;
+    let externalAgentState: ConstructorParameters<typeof SubAgentRunner>[0]["externalAgentState"];
+    let llmProfileId: string | undefined;
+    let llmModelOverride: string | undefined;
+
+    if (executor.kind === "acp") {
+      const adapter = executor.adapter;
+      const adapterId = executor.adapterId;
+      const adapterTimeoutMs = executor.timeoutMs ?? executor.defaultTimeoutMs;
+      assertAcpSpawnAllowed({
+        adapterId,
+        adapter,
+        capabilityMasks: spawn.capabilityMasks,
+        routeEnvelope: spawn.routeEnvelope,
+      });
+      agentFactory = (agentCallbacks) =>
+        new AcpSessionAgent({
+          adapterId,
+          adapter,
+          modelOverride: executor.modelOverride,
+          callbacks: agentCallbacks,
+          workspaceRoot: config.plugins.filesystem.root,
+          defaultTimeoutMs: adapterTimeoutMs,
+        });
+      requiresLlmProfile = false;
+      externalAgentState = {
+        provider: "acp",
+        model: executor.modelOverride ?? adapterId,
+        adapterId,
+        profileId: `acp-${adapterId}`,
+        label: `ACP ${adapterId}`,
+        message: `Ready to chat with ACP adapter ${adapterId}.`,
+      };
+    } else {
+      llmProfileId = executor.profileId;
+      llmModelOverride = executor.modelOverride;
+    }
+
+    const runner = new SubAgentRunner({
+      id: spawn.id,
+      name: spawn.name,
+      goal: spawn.goal,
+      parentHub: hub,
+      parentConfig: config,
+      agentFactory,
+      llmProfileManager,
+      llmProfileId,
+      llmModelOverride,
+      requiresLlmProfile,
+      externalAgentState,
+      capabilityMasks: spawn.capabilityMasks,
+    });
+    const unsubscribe = runner.onChange((event) => {
+      callbacks.onUpdate({
+        status: event.status,
+        result: event.resultPreview,
+        error: event.error,
+        session_provider_id: runner.sessionProviderId,
+        completed_at: event.completedAt,
+        turn_state: event.turnState,
+        turn_phase: event.turnPhase,
+        session_provider_closed: event.sessionProviderClosed,
+      });
+      if (event.status === "failed" || event.status === "cancelled" || event.status === "closed") {
+        unsubscribe();
+      }
+    });
+    return {
+      async start() {
+        await runner.start();
+      },
+      async cancel() {
+        await runner.cancel();
+      },
+      async sendMessage(text: string) {
+        return runner.sendMessage(text);
+      },
+      async close() {
+        await runner.close();
+      },
+    };
+  });
+}

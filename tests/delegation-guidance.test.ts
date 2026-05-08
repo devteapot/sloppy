@@ -2,34 +2,31 @@ import { describe, expect, test } from "bun:test";
 
 import { normalizeConfig } from "../src/config/load";
 import { sloppyConfigSchema } from "../src/config/schema";
-import { createBuiltinProviders } from "../src/providers/registry";
-import { createDelegationWaitTool } from "../src/runtime/delegation";
+import { createDelegationWaitTool } from "../src/plugins/first-party/delegation/runtime";
+import { createFirstPartyProviders } from "../src/providers/registry";
 
 function delegationOnlyConfig() {
   return normalizeConfig(
     sloppyConfigSchema.parse({
+      plugins: {
+        terminal: { enabled: false },
+        filesystem: { enabled: false },
+        memory: { enabled: false },
+        skills: { enabled: false },
+        web: { enabled: false },
+        browser: { enabled: false },
+        cron: { enabled: false },
+        messaging: { enabled: false },
+        delegation: { enabled: true },
+        "meta-runtime": { enabled: false },
+        spec: { enabled: false },
+        vision: { enabled: false },
+        mcp: { enabled: false },
+        workspaces: { enabled: false },
+        a2a: { enabled: false },
+      },
       providers: {
-        builtin: {
-          terminal: false,
-          filesystem: false,
-          memory: false,
-          skills: false,
-          web: false,
-          browser: false,
-          cron: false,
-          messaging: false,
-          delegation: true,
-          metaRuntime: false,
-          spec: false,
-          vision: false,
-          mcp: false,
-          workspaces: false,
-          a2a: false,
-        },
-        discovery: {
-          enabled: false,
-          paths: [],
-        },
+        discovery: { enabled: false, paths: [] },
       },
     }),
     process.cwd(),
@@ -39,7 +36,7 @@ function delegationOnlyConfig() {
 describe("delegation model guidance", () => {
   test("delegation system prompt makes parent-side work and cleanup explicit", () => {
     const config = delegationOnlyConfig();
-    const providers = createBuiltinProviders(config);
+    const providers = createFirstPartyProviders(config);
 
     try {
       const delegation = providers.find((provider) => provider.id === "delegation");

@@ -126,7 +126,7 @@ For a running session, inspect public state instead of runtime internals:
 - `/queue`: FIFO user and goal messages waiting for the active turn
 - `/approvals`: pending and resolved approval state
 - `/tasks`: downstream async task state
-- `/apps`: external and built-in provider attachment visibility, including
+- `/apps`: external and first-party plugin provider attachment visibility, including
   explicit `reconnect_provider`, `query_provider`, and `invoke_provider`
 
 The TUI and third-party consumers should use the same public session provider

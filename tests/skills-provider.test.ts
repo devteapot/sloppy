@@ -3,9 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { SkillsProvider } from "../src/providers/builtin/skills";
+import { SkillsProvider } from "../src/plugins/first-party/skills/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 const tempPaths: string[] = [];
 

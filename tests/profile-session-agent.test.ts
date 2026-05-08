@@ -8,6 +8,7 @@ import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
 import { SessionRuntime } from "../src/session/runtime";
+import { createTestConfig } from "./helpers/config";
 
 class MemoryCredentialStore implements CredentialStore {
   readonly kind = "keychain" as const;
@@ -79,7 +80,7 @@ new acp.AgentSideConnection((clientConnection) => {
 }
 
 function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
-  return {
+  return createTestConfig({
     llm: {
       provider: "acp",
       model: "sonnet",
@@ -96,35 +97,10 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
       ],
       maxTokens: 4096,
     },
-    agent: {
-      maxIterations: 12,
-      minSalience: 0.2,
-      overviewDepth: 2,
-      overviewMaxNodes: 200,
-      detailDepth: 4,
-      detailMaxNodes: 200,
-      historyTurns: 8,
-      toolResultMaxChars: 16000,
-    },
-    maxToolResultSize: 4096,
-    providers: {
-      builtin: {
-        terminal: false,
-        filesystem: false,
-        memory: false,
-        skills: false,
-        web: false,
-        browser: false,
-        cron: false,
-        messaging: false,
-        delegation: false,
-        metaRuntime: false,
-        spec: false,
-        vision: false,
-      },
-      discovery: { enabled: false, paths: [] },
-      terminal: { cwd: workspaceRoot, historyLimit: 10, syncTimeoutMs: 30000 },
+    plugins: {
+      terminal: { enabled: false, cwd: workspaceRoot, historyLimit: 10, syncTimeoutMs: 30000 },
       filesystem: {
+        enabled: false,
         root: workspaceRoot,
         focus: workspaceRoot,
         recentLimit: 10,
@@ -133,13 +109,9 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
         contentRefThresholdBytes: 8192,
         previewBytes: 2048,
       },
-      memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-      skills: { skillsDir: join(workspaceRoot, "skills") },
-      web: { historyLimit: 20 },
-      browser: { viewportWidth: 1280, viewportHeight: 720 },
-      cron: { maxJobs: 50 },
-      messaging: { maxMessages: 500 },
+      skills: { enabled: false, skillsDir: join(workspaceRoot, "skills") },
       delegation: {
+        enabled: false,
         maxAgents: 10,
         acp: {
           enabled: true,
@@ -153,13 +125,13 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
           },
         },
       },
-      metaRuntime: {
+      "meta-runtime": {
+        enabled: false,
         globalRoot: join(workspaceRoot, "global-meta"),
         workspaceRoot: join(workspaceRoot, "workspace-meta"),
       },
-      vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
     },
-  };
+  });
 }
 
 describe("ProfileSessionAgent", () => {

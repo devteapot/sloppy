@@ -69,7 +69,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "filesystem",
         providerName: "Filesystem",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);
@@ -124,7 +124,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "filesystem",
         providerName: "Filesystem",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);
@@ -170,7 +170,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "filesystem",
         providerName: "Filesystem",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);
@@ -228,7 +228,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "filesystem",
         providerName: "Filesystem",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);
@@ -290,7 +290,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "memory",
         providerName: "Memory",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);
@@ -365,7 +365,7 @@ describe("buildRuntimeToolSet", () => {
       {
         providerId: "builtin-app",
         providerName: "Builtin App",
-        kind: "builtin",
+        kind: "first-party",
         overviewTree,
       },
     ]);

@@ -1,4 +1,4 @@
-import { defaultConfigPromise } from "../config/load";
+import { createDefaultConfig } from "../config/load";
 import { writeHomeLlmConfig } from "../config/persist";
 import type {
   LlmConfig,
@@ -24,7 +24,7 @@ import {
 } from "./provider-defaults";
 import type { LlmAdapter } from "./types";
 
-const DEFAULT_CONFIG = await defaultConfigPromise;
+const DEFAULT_CONFIG = createDefaultConfig();
 
 export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required" | "external_auth";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";

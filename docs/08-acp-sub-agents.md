@@ -9,8 +9,8 @@ LLM profile. The older subprocess-backed CLI adapter path has been removed.
 Current source areas:
 
 - `src/runtime/acp/`
-- `src/runtime/delegation/`
-- `src/providers/builtin/delegation.ts`
+- `src/plugins/first-party/delegation/runtime/`
+- `src/plugins/first-party/delegation/provider.ts`
 - `src/session/`
 
 ## Core Idea
@@ -60,10 +60,9 @@ and UIs can subscribe to child state.
 ACP adapters live under delegation config:
 
 ```yaml
-providers:
-  builtin:
-    delegation: true
+plugins:
   delegation:
+    enabled: true
     acp:
       enabled: true
       adapters:

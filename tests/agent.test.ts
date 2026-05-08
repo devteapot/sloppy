@@ -3,95 +3,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SloppyConfig } from "../src/config/schema";
 import { Agent } from "../src/core/agent";
 import type { ExternalProviderState } from "../src/core/consumer";
+import { createTestConfig } from "./helpers/config";
 
 const tempPaths: string[] = [];
 
-const TEST_CONFIG: SloppyConfig = {
-  llm: {
-    provider: "openai",
-    model: "gpt-5.4",
-    profiles: [],
-    maxTokens: 4096,
-  },
-  agent: {
-    maxIterations: 12,
-    minSalience: 0.2,
-    overviewDepth: 2,
-    overviewMaxNodes: 200,
-    detailDepth: 4,
-    detailMaxNodes: 200,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
-  },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {
-      terminal: false,
-      filesystem: false,
-      memory: false,
-      skills: false,
-      web: false,
-      browser: false,
-      cron: false,
-      messaging: false,
-      delegation: false,
-      metaRuntime: false,
-      spec: false,
-      vision: false,
-    },
-    discovery: {
-      enabled: true,
-      paths: [],
-    },
-    terminal: {
-      cwd: ".",
-      historyLimit: 10,
-      syncTimeoutMs: 30000,
-    },
-    filesystem: {
-      root: ".",
-      focus: ".",
-      recentLimit: 10,
-      searchLimit: 20,
-      readMaxBytes: 65536,
-      contentRefThresholdBytes: 8192,
-      previewBytes: 2048,
-    },
-    memory: {
-      maxMemories: 500,
-      defaultWeight: 0.5,
-      compactThreshold: 0.2,
-    },
-    skills: {
-      skillsDir: "~/.sloppy/skills",
-    },
-    web: {
-      historyLimit: 20,
-    },
-    browser: {
-      viewportWidth: 1280,
-      viewportHeight: 720,
-    },
-    cron: {
-      maxJobs: 50,
-    },
-    messaging: {
-      maxMessages: 500,
-    },
-    delegation: {
-      maxAgents: 10,
-    },
-    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
-    vision: {
-      maxImages: 50,
-      defaultWidth: 512,
-      defaultHeight: 512,
-    },
-  },
-};
+const TEST_CONFIG = createTestConfig({ discovery: { enabled: true } });
 
 afterEach(async () => {
   while (tempPaths.length > 0) {

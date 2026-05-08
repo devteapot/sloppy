@@ -2,41 +2,23 @@ import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 import { action, createSlopServer } from "@slop-ai/server";
 
-import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { dangerousActionRule } from "../src/core/policy/rules";
 import {
   DelegationProvider,
   type DelegationRunnerFactory,
-} from "../src/providers/builtin/delegation";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+} from "../src/plugins/first-party/delegation/provider";
+import { InProcessTransport } from "../src/providers/in-process";
+import { createTestConfig } from "./helpers/config";
 
-const HUB_CONFIG = {
-  llm: {
-    provider: "openai",
-    model: "gpt-5.4",
-    profiles: [],
-    maxTokens: 4096,
-  },
+const HUB_CONFIG = createTestConfig({
   agent: {
-    maxIterations: 12,
     minSalience: 0,
     overviewDepth: 4,
     overviewMaxNodes: 500,
-    detailDepth: 4,
     detailMaxNodes: 500,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
   },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {},
-    discovery: {
-      enabled: false,
-      paths: [],
-    },
-  },
-} as unknown as SloppyConfig;
+});
 
 const fastTestRunnerFactory: DelegationRunnerFactory = (spawn, callbacks) => {
   let cancelled = false;
@@ -663,7 +645,7 @@ describe("DelegationProvider", () => {
         {
           id: "delegation",
           name: "Delegation",
-          kind: "builtin",
+          kind: "first-party",
           transport: new InProcessTransport(provider.server),
           transportLabel: "in-process",
           stop: () => provider.stop(),
@@ -672,7 +654,7 @@ describe("DelegationProvider", () => {
         {
           id: "child-session",
           name: "Child Session",
-          kind: "builtin",
+          kind: "first-party",
           transport: new InProcessTransport(childServer),
           transportLabel: "in-process",
           stop: () => childServer.stop(),

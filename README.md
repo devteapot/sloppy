@@ -33,8 +33,8 @@ Current checked-in implementation includes:
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
-- consumer hub for built-in and live-discovered SLOP providers
-- built-in in-process providers:
+- consumer hub for first-party plugin and live-discovered SLOP providers
+- first-party in-process plugin providers:
   - `terminal`
   - `filesystem`
   - `memory`
@@ -87,8 +87,8 @@ Current checked-in implementation includes:
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with managed session-supervisor startup, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - canvas + HTML dashboard prototype under `apps/dashboard/`
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
-- Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a built-in `skill-curator` workflow for skill-managed procedural memory
-- end-to-end tests for transport, consumer/runtime wiring, session state, and all built-in providers
+- Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
+- end-to-end tests for transport, consumer/runtime wiring, session state, and all first-party plugin providers
 
 ## Interface direction
 
@@ -126,7 +126,7 @@ Agent Loop
         |
         v
 ConsumerHub
-  - built-in providers
+  - first-party plugin providers
   - live-discovered SLOP providers
   - overview/detail subscriptions
         |
@@ -145,7 +145,7 @@ The actual runtime model is still SLOP:
 
 ## What is implemented now
 
-### Additional built-in providers
+### Additional First-Party Plugin Providers
 
 The runtime now ships with a broader first-party provider surface beyond terminal and filesystem.
 
@@ -201,9 +201,9 @@ It supports affordances such as:
 - `cancel`
 - `show_output`
 
-### Built-in provider registry
+### First-Party Plugin Catalog
 
-All built-ins are created through `src/providers/registry.ts` and can be enabled or disabled from config under `providers.builtin`.
+First-party plugins are described in `src/plugins/first-party/catalog.ts`. Provider-backed plugins are still registered through `src/providers/registry.ts`, but they are enabled and configured from `plugins.<plugin-id>`.
 
 Provider-specific config now exists for:
 
@@ -395,7 +395,7 @@ IP address in `--litellm-url` and `SLOPPY_LLM_BASE_URL`.
 If the ACP check fails for Claude, confirm that the installed command actually
 speaks Agent Client Protocol over stdio. `claude mcp ...` is MCP server support,
 not ACP agent mode; Zed uses a dedicated adapter, so configure
-`providers.delegation.acp.adapters.<id>.command` with an ACP adapter command
+`plugins.delegation.acp.adapters.<id>.command` with an ACP adapter command
 such as `["bunx", "@agentclientprotocol/claude-agent-acp"]` or an installed
 `claude-agent-acp` binary.
 
@@ -463,30 +463,35 @@ llm:
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
-Built-in providers default to a lean set: `terminal`, `filesystem`, `memory`, and `skills`. Heavier providers (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `metaRuntime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable them in `.sloppy/config.yaml`:
+First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
-providers:
-  builtin:
-    web: true
-    browser: true
-    vision: true
-    delegation: true
-    metaRuntime: true
-    spec: true
-    mcp: true
-    workspaces: true
-    a2a: true
+plugins:
+  web:
+    enabled: true
+  browser:
+    enabled: true
+  vision:
+    enabled: true
+  delegation:
+    enabled: true
+  meta-runtime:
+    enabled: true
+  spec:
+    enabled: true
+  workspaces:
+    enabled: true
   skills:
     builtinSkillsDir: skills
     skillsDir: ~/.sloppy/skills
     externalDirs: []
     templateVars: true
     viewMaxBytes: 65536
-  metaRuntime:
+  meta-runtime:
     globalRoot: ~/.sloppy/meta-runtime
     workspaceRoot: .sloppy/meta-runtime
   mcp:
+    enabled: true
     connectOnStart: true
     servers:
       local-demo:
@@ -500,6 +505,7 @@ providers:
         headers:
           x-api-key: <token>
   a2a:
+    enabled: true
     fetchOnStart: true
     agents:
       planner:
@@ -558,10 +564,9 @@ Delegation launches child agents as background child sessions while preserving t
 Delegation can also launch configured Agent Client Protocol agents as child sessions:
 
 ```yaml
-providers:
-  builtin:
-    delegation: true
+plugins:
   delegation:
+    enabled: true
     acp:
       enabled: true
       adapters:

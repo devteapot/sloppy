@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { LlmConfigurationError } from "../src/llm/profile-manager";
-import { ExecutorResolver } from "../src/runtime/delegation/executor-resolver";
+import { ExecutorResolver } from "../src/plugins/first-party/delegation/runtime/executor-resolver";
+import { createTestConfig } from "./helpers/config";
 
 function buildConfig(overrides?: {
   profiles?: SloppyConfig["llm"]["profiles"];
-  acp?: SloppyConfig["providers"]["delegation"]["acp"];
+  acp?: SloppyConfig["plugins"]["delegation"]["acp"];
 }): SloppyConfig {
-  return {
+  return createTestConfig({
     llm: {
       provider: "anthropic",
       model: "claude",
@@ -18,27 +19,14 @@ function buildConfig(overrides?: {
         { id: "openai-cheap", provider: "openai", model: "gpt-mini" },
       ],
     },
-    agent: {} as SloppyConfig["agent"],
-    maxToolResultSize: 4096,
-    providers: {
-      builtin: {} as SloppyConfig["providers"]["builtin"],
-      discovery: { enabled: false, paths: [] },
-      terminal: {} as SloppyConfig["providers"]["terminal"],
-      filesystem: {} as SloppyConfig["providers"]["filesystem"],
-      memory: {} as SloppyConfig["providers"]["memory"],
-      skills: {} as SloppyConfig["providers"]["skills"],
-      metaRuntime: {} as SloppyConfig["providers"]["metaRuntime"],
-      web: {} as SloppyConfig["providers"]["web"],
-      browser: {} as SloppyConfig["providers"]["browser"],
-      cron: {} as SloppyConfig["providers"]["cron"],
-      messaging: {} as SloppyConfig["providers"]["messaging"],
+    plugins: {
       delegation: {
+        enabled: Boolean(overrides?.acp?.enabled),
         maxAgents: 10,
         acp: overrides?.acp,
       },
-      vision: {} as SloppyConfig["providers"]["vision"],
     },
-  } as SloppyConfig;
+  });
 }
 
 describe("ExecutorResolver", () => {

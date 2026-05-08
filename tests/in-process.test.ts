@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 import { createSlopServer } from "@slop-ai/server";
 
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { InProcessTransport } from "../src/providers/in-process";
 
 describe("InProcessTransport", () => {
   test("buffers the hello message until the consumer attaches handlers", async () => {

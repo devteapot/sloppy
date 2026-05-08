@@ -705,7 +705,7 @@ export class AgentSessionProvider {
           {
             label: "Query Provider",
             description:
-              "Query state from a provider attached to this session, including in-process built-ins.",
+              "Query state from a provider attached to this session, including in-process first-party plugin providers.",
             idempotent: true,
             estimate: "fast",
           },

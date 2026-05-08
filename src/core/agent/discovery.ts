@@ -23,7 +23,7 @@ export interface ProviderDiscoveryCoordinatorOptions {
 export class ProviderDiscoveryCoordinator {
   private readonly ignoredProviderIds: Set<string>;
   private readonly notifyStateChange: () => void;
-  private builtinProviderIds = new Set<string>();
+  private firstPartyProviderIds = new Set<string>();
   private readonly errors = new Map<string, ExternalProviderState>();
 
   constructor(options: ProviderDiscoveryCoordinatorOptions) {
@@ -31,8 +31,8 @@ export class ProviderDiscoveryCoordinator {
     this.notifyStateChange = options.notifyStateChange;
   }
 
-  setBuiltinProviderIds(ids: Iterable<string>): void {
-    this.builtinProviderIds = new Set(ids);
+  setFirstPartyProviderIds(ids: Iterable<string>): void {
+    this.firstPartyProviderIds = new Set(ids);
   }
 
   resetErrors(): void {
@@ -53,13 +53,13 @@ export class ProviderDiscoveryCoordinator {
       return null;
     }
 
-    if (this.builtinProviderIds.has(descriptor.id)) {
+    if (this.firstPartyProviderIds.has(descriptor.id)) {
       this.errors.set(descriptor.id, {
         id: descriptor.id,
         name: descriptor.name,
         transport: describeProviderTransport(descriptor.transport),
         status: "error",
-        lastError: `Descriptor id conflicts with built-in provider '${descriptor.id}'.`,
+        lastError: `Descriptor id conflicts with first-party plugin provider '${descriptor.id}'.`,
       });
       this.notifyStateChange();
       return null;
@@ -93,7 +93,7 @@ export class ProviderDiscoveryCoordinator {
     const { hub, update, registerMirrors, unregisterMirrors } = args;
 
     const dropExternal = (descriptor: ProviderDescriptor) => {
-      if (this.builtinProviderIds.has(descriptor.id)) {
+      if (this.firstPartyProviderIds.has(descriptor.id)) {
         if (this.errors.delete(descriptor.id)) {
           this.notifyStateChange();
         }

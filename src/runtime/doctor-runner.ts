@@ -9,8 +9,8 @@ import { LlmProfileManager } from "../llm/profile-manager";
 import {
   readPersistedMetaState,
   writePersistedMetaState,
-} from "../providers/builtin/meta-runtime-storage";
-import { isWithinRoot, safeRealpath } from "../providers/builtin/path-containment";
+} from "../plugins/first-party/meta-runtime/meta-runtime-storage";
+import { isWithinRoot, safeRealpath } from "../providers/path-containment";
 import { loadPersistedSessionSnapshot, persistSessionSnapshot } from "../session/store/persistence";
 import { AcpSessionAgent } from "./acp";
 
@@ -230,8 +230,8 @@ async function checkWorkspacePaths(
   config: SloppyConfig,
   workspaceRoot: string,
 ): Promise<RuntimeDoctorCheck> {
-  const filesystemRoot = resolve(workspaceRoot, config.providers.filesystem.root);
-  const terminalCwd = resolve(workspaceRoot, config.providers.terminal.cwd);
+  const filesystemRoot = resolve(workspaceRoot, config.plugins.filesystem.root);
+  const terminalCwd = resolve(workspaceRoot, config.plugins.terminal.cwd);
   const errors: string[] = [];
 
   const filesystemError = await assertDirectory(filesystemRoot, "Filesystem root");
@@ -239,7 +239,7 @@ async function checkWorkspacePaths(
     errors.push(filesystemError);
   }
 
-  if (config.providers.builtin.terminal) {
+  if (config.plugins.terminal.enabled) {
     const terminalError = await assertDirectory(terminalCwd, "Terminal cwd");
     if (terminalError) {
       errors.push(terminalError);
@@ -267,10 +267,10 @@ async function checkWorkspacePaths(
   return {
     id: "workspace-paths",
     status: "ok",
-    summary: config.providers.builtin.terminal
+    summary: config.plugins.terminal.enabled
       ? `Filesystem root and terminal cwd are usable at ${filesystemRoot}.`
       : `Filesystem root is usable at ${filesystemRoot}.`,
-    detail: config.providers.builtin.terminal ? `terminal_cwd=${terminalCwd}` : undefined,
+    detail: config.plugins.terminal.enabled ? `terminal_cwd=${terminalCwd}` : undefined,
   };
 }
 
@@ -294,7 +294,7 @@ function collectSubprocessCommandProbes(
 ): SubprocessCommandProbe[] {
   const probes: SubprocessCommandProbe[] = [];
   if (adapterId) {
-    const acpConfig = config.providers.delegation.acp;
+    const acpConfig = config.plugins.delegation.acp;
     const adapter = acpConfig?.enabled ? acpConfig.adapters[adapterId] : undefined;
     const rawCommand = adapter?.command[0];
     if (rawCommand) {
@@ -306,10 +306,10 @@ function collectSubprocessCommandProbes(
     }
   }
 
-  const mcpConfig = config.providers.mcp;
-  if (config.providers.builtin.mcp && mcpConfig) {
+  const mcpConfig = config.plugins.mcp;
+  if (config.plugins.mcp.enabled && mcpConfig) {
     const providerConnectOnStart = mcpConfig.connectOnStart ?? true;
-    const filesystemRoot = resolve(workspaceRoot, config.providers.filesystem.root);
+    const filesystemRoot = resolve(workspaceRoot, config.plugins.filesystem.root);
     for (const [serverId, server] of Object.entries(mcpConfig.servers)) {
       if (server.transport !== "stdio") {
         continue;
@@ -472,7 +472,7 @@ async function checkSessionPersistence(
 
   const dir = resolve(
     workspaceRoot,
-    config.providers.filesystem.root,
+    config.plugins.filesystem.root,
     config.session.persistenceDir ?? ".sloppy/sessions",
   );
   if (!existsSync(dir)) {
@@ -580,15 +580,15 @@ async function checkMetaRuntimePersistence(
   migratePersistence: boolean,
 ): Promise<RuntimeDoctorCheck> {
   const paths = [
-    join(config.providers.metaRuntime.globalRoot, "state.json"),
-    join(config.providers.metaRuntime.workspaceRoot, "state.json"),
+    join(config.plugins["meta-runtime"].globalRoot, "state.json"),
+    join(config.plugins["meta-runtime"].workspaceRoot, "state.json"),
   ];
   const existingPaths = paths.filter((path) => existsSync(path));
   if (existingPaths.length === 0) {
     return {
       id: "meta-runtime-persistence",
-      status: config.providers.builtin.metaRuntime ? "ok" : "skipped",
-      summary: config.providers.builtin.metaRuntime
+      status: config.plugins["meta-runtime"].enabled ? "ok" : "skipped",
+      summary: config.plugins["meta-runtime"].enabled
         ? "No persisted meta-runtime state files found; they will be created on first write."
         : "Meta-runtime is disabled and no persisted state files were found.",
     };
@@ -730,7 +730,7 @@ async function checkAcpAdapter(
     };
   }
 
-  const acpConfig = config.providers.delegation.acp;
+  const acpConfig = config.plugins.delegation.acp;
   const adapter = acpConfig?.adapters[adapterId];
   if (!acpConfig?.enabled || !adapter) {
     return {
@@ -788,7 +788,7 @@ function checkAcpBoundary(config: SloppyConfig, adapterId: string | undefined): 
     };
   }
 
-  const adapter = config.providers.delegation.acp?.adapters[adapterId];
+  const adapter = config.plugins.delegation.acp?.adapters[adapterId];
   if (!adapter) {
     return {
       id: "acp-boundary",

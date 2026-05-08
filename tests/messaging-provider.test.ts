@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { MessagingProvider } from "../src/providers/builtin/messaging";
+import { MessagingProvider } from "../src/plugins/first-party/messaging/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 function createMessagingHarness(options: ConstructorParameters<typeof MessagingProvider>[0] = {}) {
   const provider = new MessagingProvider({

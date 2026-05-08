@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { WebProvider } from "../src/providers/builtin/web";
+import { WebProvider } from "../src/plugins/first-party/web/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 const originalFetch = globalThis.fetch;
 

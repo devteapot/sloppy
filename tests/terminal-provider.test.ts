@@ -8,60 +8,12 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { terminalSafetyRule } from "../src/core/policy/rules";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { TerminalProvider } from "../src/providers/builtin/terminal";
+import { TerminalProvider } from "../src/plugins/first-party/terminal/provider";
+import { InProcessTransport } from "../src/providers/in-process";
+import { createTestConfig } from "./helpers/config";
 
 // Minimal hub config sufficient for connecting an in-process provider.
-const HUB_CONFIG: SloppyConfig = {
-  llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
-  agent: {
-    maxIterations: 12,
-    minSalience: 0.2,
-    overviewDepth: 2,
-    overviewMaxNodes: 200,
-    detailDepth: 4,
-    detailMaxNodes: 200,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
-  },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {
-      terminal: false,
-      filesystem: false,
-      memory: false,
-      skills: false,
-      web: false,
-      browser: false,
-      cron: false,
-      messaging: false,
-      delegation: false,
-      metaRuntime: false,
-      spec: false,
-      vision: false,
-    },
-    discovery: { enabled: false, paths: [] },
-    terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
-    filesystem: {
-      root: ".",
-      focus: ".",
-      recentLimit: 10,
-      searchLimit: 20,
-      readMaxBytes: 65536,
-      contentRefThresholdBytes: 8192,
-      previewBytes: 2048,
-    },
-    memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-    skills: { skillsDir: "~/.sloppy/skills" },
-    web: { historyLimit: 10 },
-    browser: { viewportWidth: 1280, viewportHeight: 800 },
-    cron: { maxJobs: 16 },
-    messaging: { maxMessages: 100 },
-    delegation: { maxAgents: 4 },
-    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
-    vision: { maxImages: 16, defaultWidth: 1024, defaultHeight: 768 },
-  },
-} as unknown as SloppyConfig;
+const HUB_CONFIG: SloppyConfig = createTestConfig();
 
 async function attachTerminalToHub(provider: TerminalProvider): Promise<{
   hub: ConsumerHub;
@@ -73,7 +25,7 @@ async function attachTerminalToHub(provider: TerminalProvider): Promise<{
   await hub.addProvider({
     id: "terminal",
     name: "Terminal",
-    kind: "builtin",
+    kind: "first-party",
     transport: new InProcessTransport(provider.server),
     transportLabel: "in-process",
     stop: () => provider.stop(),

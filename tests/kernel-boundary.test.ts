@@ -5,58 +5,10 @@ import { join } from "node:path";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
-import { SubAgentRunner } from "../src/runtime/delegation";
+import { SubAgentRunner } from "../src/plugins/first-party/delegation/runtime";
+import { createTestConfig } from "./helpers/config";
 
-const TEST_CONFIG: SloppyConfig = {
-  llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
-  agent: {
-    maxIterations: 12,
-    minSalience: 0.2,
-    overviewDepth: 2,
-    overviewMaxNodes: 200,
-    detailDepth: 4,
-    detailMaxNodes: 200,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
-  },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {
-      terminal: false,
-      filesystem: false,
-      memory: false,
-      skills: false,
-      web: false,
-      browser: false,
-      cron: false,
-      messaging: false,
-      delegation: false,
-      metaRuntime: false,
-      spec: false,
-      vision: false,
-    },
-    discovery: { enabled: false, paths: [] },
-    terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
-    filesystem: {
-      root: ".",
-      focus: ".",
-      recentLimit: 10,
-      searchLimit: 20,
-      readMaxBytes: 65536,
-      contentRefThresholdBytes: 8192,
-      previewBytes: 2048,
-    },
-    memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-    skills: { skillsDir: "~/.sloppy/skills" },
-    web: { historyLimit: 20 },
-    browser: { viewportWidth: 1280, viewportHeight: 720 },
-    cron: { maxJobs: 50 },
-    messaging: { maxMessages: 500 },
-    delegation: { maxAgents: 10 },
-    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
-    vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
-  },
-};
+const TEST_CONFIG = createTestConfig();
 
 const readyState = {
   status: "ready" as const,
@@ -104,16 +56,28 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
     try {
       const config: SloppyConfig = {
         ...TEST_CONFIG,
-        providers: {
-          ...TEST_CONFIG.providers,
-          builtin: {
-            ...TEST_CONFIG.providers.builtin,
-            delegation: true,
-            metaRuntime: true,
-            cron: true,
-            messaging: true,
+        plugins: {
+          ...TEST_CONFIG.plugins,
+          delegation: {
+            ...TEST_CONFIG.plugins.delegation,
+            enabled: true,
           },
-          filesystem: { ...TEST_CONFIG.providers.filesystem, root: workspaceRoot },
+          "meta-runtime": {
+            ...TEST_CONFIG.plugins["meta-runtime"],
+            enabled: true,
+          },
+          cron: {
+            ...TEST_CONFIG.plugins.cron,
+            enabled: true,
+          },
+          messaging: {
+            ...TEST_CONFIG.plugins.messaging,
+            enabled: true,
+          },
+          filesystem: {
+            ...TEST_CONFIG.plugins.filesystem,
+            root: workspaceRoot,
+          },
         },
       };
 
@@ -122,7 +86,7 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
 
       const observed: string[] = [];
       let capturedPrompt = "";
-      let capturedBuiltins: SloppyConfig["providers"]["builtin"] | undefined;
+      let capturedPlugins: SloppyConfig["plugins"] | undefined;
 
       const runner = new SubAgentRunner({
         id: "boundary-1",
@@ -132,7 +96,7 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
         parentConfig: config,
         llmProfileManager: stubLlmProfileManager,
         agentFactory: (callbacks, childConfig) => {
-          capturedBuiltins = childConfig.providers.builtin;
+          capturedPlugins = childConfig.plugins;
           return {
             async start() {},
             async chat(userMessage: string) {
@@ -173,10 +137,10 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
       }
 
       expect(capturedPrompt).toBe("boundary goal");
-      expect(capturedBuiltins?.delegation).toBe(false);
-      expect(capturedBuiltins?.metaRuntime).toBe(false);
-      expect(capturedBuiltins?.cron).toBe(false);
-      expect(capturedBuiltins?.messaging).toBe(false);
+      expect(capturedPlugins?.delegation.enabled).toBe(false);
+      expect(capturedPlugins?.["meta-runtime"].enabled).toBe(false);
+      expect(capturedPlugins?.cron.enabled).toBe(false);
+      expect(capturedPlugins?.messaging.enabled).toBe(false);
       expect(observed).toContain("completed");
       expect(observed).not.toContain("failed");
       runner.shutdown();

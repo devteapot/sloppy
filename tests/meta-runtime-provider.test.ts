@@ -5,13 +5,12 @@ import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 import { action, createSlopServer } from "@slop-ai/server";
 
-import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { MetaRuntimeProvider } from "../src/providers/builtin/meta-runtime";
-import { SkillsProvider } from "../src/providers/builtin/skills";
-import type { RegisteredProvider } from "../src/providers/registry";
-import { createBuiltinProviders } from "../src/providers/registry";
+import { MetaRuntimeProvider } from "../src/plugins/first-party/meta-runtime/provider";
+import { SkillsProvider } from "../src/plugins/first-party/skills/provider";
+import { InProcessTransport } from "../src/providers/in-process";
+import { createFirstPartyProviders, type RegisteredProvider } from "../src/providers/registry";
+import { createTestConfig } from "./helpers/config";
 
 const tempPaths: string[] = [];
 
@@ -34,7 +33,7 @@ function registeredMetaProvider(provider: MetaRuntimeProvider): RegisteredProvid
   return {
     id: "meta-runtime",
     name: "Meta Runtime",
-    kind: "builtin",
+    kind: "first-party",
     transport: new InProcessTransport(provider.server),
     transportLabel: "in-process:test",
     stop: () => provider.stop(),
@@ -88,7 +87,7 @@ function delegationStub(): {
     provider: {
       id: "delegation",
       name: "Delegation",
-      kind: "builtin",
+      kind: "first-party",
       transport: new InProcessTransport(server),
       transportLabel: "in-process:test",
       stop: () => server.stop(),
@@ -132,7 +131,7 @@ function messagingStub(): {
     provider: {
       id: "messaging",
       name: "Messaging",
-      kind: "builtin",
+      kind: "first-party",
       transport: new InProcessTransport(server),
       transportLabel: "in-process:test",
       stop: () => server.stop(),
@@ -146,7 +145,7 @@ function registeredSkillsProvider(provider: SkillsProvider): RegisteredProvider 
   return {
     id: "skills",
     name: "Skills",
-    kind: "builtin",
+    kind: "first-party",
     transport: new InProcessTransport(provider.server),
     transportLabel: "in-process:test",
     stop: () => provider.stop(),
@@ -154,59 +153,9 @@ function registeredSkillsProvider(provider: SkillsProvider): RegisteredProvider 
   };
 }
 
-const TEST_CONFIG: SloppyConfig = {
-  llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
-  agent: {
-    maxIterations: 1,
-    minSalience: 0.2,
-    overviewDepth: 2,
-    overviewMaxNodes: 200,
-    detailDepth: 4,
-    detailMaxNodes: 200,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
-  },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {
-      terminal: false,
-      filesystem: false,
-      memory: false,
-      skills: false,
-      metaRuntime: false,
-      web: false,
-      browser: false,
-      cron: false,
-      messaging: false,
-      delegation: false,
-      spec: false,
-      vision: false,
-    },
-    discovery: { enabled: false, paths: [] },
-    terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
-    filesystem: {
-      root: ".",
-      focus: ".",
-      recentLimit: 10,
-      searchLimit: 20,
-      readMaxBytes: 65536,
-      contentRefThresholdBytes: 8192,
-      previewBytes: 2048,
-    },
-    memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-    skills: { skillsDir: "~/.sloppy/skills" },
-    metaRuntime: {
-      globalRoot: "~/.sloppy/meta-runtime",
-      workspaceRoot: ".sloppy/meta-runtime",
-    },
-    web: { historyLimit: 20 },
-    browser: { viewportWidth: 1280, viewportHeight: 720 },
-    cron: { maxJobs: 50 },
-    messaging: { maxMessages: 500 },
-    delegation: { maxAgents: 10 },
-    vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
-  },
-};
+const TEST_CONFIG = createTestConfig({
+  agent: { maxIterations: 1 },
+});
 
 async function connect(consumer: SlopConsumer): Promise<void> {
   await consumer.connect();
@@ -2646,61 +2595,18 @@ describe("MetaRuntimeProvider", () => {
   });
 
   test("registry exposes meta-runtime only when explicitly enabled", () => {
-    const config = {
-      llm: { provider: "openai", model: "gpt-5.4", profiles: [], maxTokens: 4096 },
-      agent: {
-        maxIterations: 1,
-        minSalience: 0.2,
-        overviewDepth: 2,
-        overviewMaxNodes: 200,
-        detailDepth: 4,
-        detailMaxNodes: 200,
-        historyTurns: 8,
-        toolResultMaxChars: 16000,
+    const config = createTestConfig({
+      agent: { maxIterations: 1 },
+      plugins: {
+        terminal: { enabled: false },
+        filesystem: { enabled: false },
+        memory: { enabled: false },
+        skills: { enabled: false },
+        "meta-runtime": { enabled: true },
       },
-      maxToolResultSize: 4096,
-      providers: {
-        builtin: {
-          terminal: false,
-          filesystem: false,
-          memory: false,
-          skills: false,
-          metaRuntime: true,
-          web: false,
-          browser: false,
-          cron: false,
-          messaging: false,
-          delegation: false,
-          spec: false,
-          vision: false,
-        },
-        discovery: { enabled: false, paths: [] },
-        terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
-        filesystem: {
-          root: ".",
-          focus: ".",
-          recentLimit: 10,
-          searchLimit: 20,
-          readMaxBytes: 65536,
-          contentRefThresholdBytes: 8192,
-          previewBytes: 2048,
-        },
-        memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-        skills: { skillsDir: "~/.sloppy/skills" },
-        metaRuntime: {
-          globalRoot: "~/.sloppy/meta-runtime",
-          workspaceRoot: ".sloppy/meta-runtime",
-        },
-        web: { historyLimit: 20 },
-        browser: { viewportWidth: 1280, viewportHeight: 720 },
-        cron: { maxJobs: 50 },
-        messaging: { maxMessages: 500 },
-        delegation: { maxAgents: 10 },
-        vision: { maxImages: 50, defaultWidth: 512, defaultHeight: 512 },
-      },
-    } satisfies SloppyConfig;
+    });
 
-    const providers = createBuiltinProviders(config);
+    const providers = createFirstPartyProviders(config);
     try {
       expect(providers.map((provider) => provider.id)).toEqual(["meta-runtime"]);
     } finally {

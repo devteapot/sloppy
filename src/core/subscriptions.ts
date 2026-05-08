@@ -3,7 +3,7 @@ import type { SlopNode } from "@slop-ai/consumer/browser";
 export interface ProviderTreeView {
   providerId: string;
   providerName: string;
-  kind: "builtin" | "external";
+  kind: "first-party" | "external";
   overviewTree: SlopNode;
   detailPath?: string;
   detailTree?: SlopNode;

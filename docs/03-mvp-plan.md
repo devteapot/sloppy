@@ -14,8 +14,9 @@ Checked in now:
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `slop_query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order
-- default built-ins: `terminal`, `filesystem`, `memory`, `skills`
-- optional built-ins: `web`, `browser`, `cron`, `messaging`, `delegation`,
+- default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
+  `memory`, `skills`
+- optional first-party plugin providers: `web`, `browser`, `cron`, `messaging`, `delegation`,
   `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
 - session provider and headless session server
 - public session supervisor for scoped session creation, active-session

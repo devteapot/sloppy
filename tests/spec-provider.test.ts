@@ -4,9 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { SpecProvider } from "../src/providers/builtin/spec";
+import { SpecProvider } from "../src/plugins/first-party/spec/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 const tempPaths: string[] = [];
 

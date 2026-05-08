@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
-import { defaultConfigPromise } from "../config/load";
+import { createDefaultConfig } from "../config/load";
 import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
 import type {
   AgentCallbacks,
@@ -22,7 +22,7 @@ import {
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ToolResultContentBlock } from "../llm/types";
 import { isLlmAbortError } from "../llm/types";
-import { createDelegationWaitTool } from "../runtime/delegation/wait-tool";
+import { createFirstPartySessionPlugins } from "../plugins/first-party/catalog";
 import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
 import {
   type ExternalSessionAgentState,
@@ -36,7 +36,6 @@ import {
 } from "./mirror-sync";
 import {
   type ActivePluginTurn,
-  createBuiltinSessionPlugins,
   type PluginRuntimeContext,
   type PluginTurnRequest,
   SessionPluginManager,
@@ -47,12 +46,13 @@ import type { ApprovalItem } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 
-const DEFAULT_CONFIG = await defaultConfigPromise;
+const DEFAULT_CONFIG = createDefaultConfig();
 
 function runtimeConfigFingerprint(config: SloppyConfig): string {
   return JSON.stringify({
     agent: config.agent,
     maxToolResultSize: config.maxToolResultSize,
+    plugins: config.plugins,
     providers: config.providers,
   });
 }
@@ -76,7 +76,7 @@ function resolveSessionPersistencePath(
     return undefined;
   }
   const dir = config.session.persistenceDir ?? ".sloppy/sessions";
-  const absoluteDir = resolve(config.providers.filesystem.root, dir);
+  const absoluteDir = resolve(config.plugins.filesystem.root, dir);
   return join(absoluteDir, `${sanitizePathSegment(sessionId)}.json`);
 }
 
@@ -330,7 +330,7 @@ export class SessionRuntime {
         modelProvider: this.config.llm.provider,
         model: this.config.llm.model,
         title: options?.title,
-        workspaceRoot: this.config.providers.filesystem.root,
+        workspaceRoot: this.config.plugins.filesystem.root,
         workspaceId: this.config.workspaces?.activeWorkspaceId,
         projectId: this.config.workspaces?.activeProjectId,
         persistencePath: resolveSessionPersistencePath(
@@ -340,7 +340,7 @@ export class SessionRuntime {
         ),
       });
     this.plugins = new SessionPluginManager(
-      createBuiltinSessionPlugins(),
+      createFirstPartySessionPlugins(this.config),
       this.createPluginContext(),
     );
 
@@ -491,12 +491,7 @@ export class SessionRuntime {
   }
 
   private buildLocalTools(): LocalRuntimeTool[] {
-    const tools: LocalRuntimeTool[] = [];
-    if (this.config.providers.builtin.delegation) {
-      tools.push(createDelegationWaitTool());
-    }
-    tools.push(...this.plugins.localTools(this.currentPluginTurn));
-    return tools;
+    return this.plugins.localTools(this.currentPluginTurn);
   }
 
   async sendMessage(text: string): Promise<SendMessageResult> {

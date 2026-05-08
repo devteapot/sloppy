@@ -567,7 +567,7 @@ The `/apps` route should list external providers:
 - status
 - last error
 
-The `runtime` route is the richer treatment for the built-in `meta-runtime` app;
+The `runtime` route is the richer treatment for the first-party `meta-runtime` plugin app;
 the generic `apps` and `inspect` routes remain available for direct provider
 debugging.
 

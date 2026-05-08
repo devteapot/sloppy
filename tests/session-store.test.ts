@@ -16,6 +16,7 @@ import type {
   LlmStateSnapshot,
   SessionTask,
 } from "../src/session/types";
+import { createTestConfig } from "./helpers/config";
 
 function createStore(
   overrides?: Partial<{
@@ -1787,7 +1788,7 @@ describe("SessionService — multi-session support", () => {
     // run until the first sendMessage(). Clients connecting on first
     // snapshot saw the pristine pre-refresh store (profiles: [],
     // secureStoreKind: "none").
-    const config: SloppyConfig = {
+    const config: SloppyConfig = createTestConfig({
       llm: {
         provider: "openai",
         model: "gpt-5.4",
@@ -1804,57 +1805,7 @@ describe("SessionService — multi-session support", () => {
         ],
         maxTokens: 4096,
       },
-      agent: {
-        maxIterations: 12,
-        minSalience: 0.2,
-        overviewDepth: 2,
-        overviewMaxNodes: 200,
-        detailDepth: 4,
-        detailMaxNodes: 200,
-        historyTurns: 8,
-        toolResultMaxChars: 16000,
-      },
-      maxToolResultSize: 4096,
-      providers: {
-        builtin: {
-          terminal: false,
-          filesystem: false,
-          memory: false,
-          skills: false,
-          web: false,
-          browser: false,
-          cron: false,
-          messaging: false,
-          delegation: false,
-          metaRuntime: false,
-          spec: false,
-          vision: false,
-        },
-        discovery: { enabled: false, paths: [] },
-        terminal: { cwd: ".", historyLimit: 10, syncTimeoutMs: 30000 },
-        filesystem: {
-          root: ".",
-          focus: ".",
-          recentLimit: 10,
-          searchLimit: 20,
-          readMaxBytes: 65536,
-          contentRefThresholdBytes: 8192,
-          previewBytes: 2048,
-        },
-        memory: { maxMemories: 500, defaultWeight: 0.5, compactThreshold: 0.2 },
-        skills: { skillsDir: "~/.sloppy/skills" },
-        web: { historyLimit: 10 },
-        browser: { viewportWidth: 1280, viewportHeight: 720 },
-        cron: { maxJobs: 16 },
-        messaging: { maxMessages: 100 },
-        delegation: { maxAgents: 4 },
-        metaRuntime: {
-          globalRoot: "~/.sloppy/meta-runtime",
-          workspaceRoot: ".sloppy/meta-runtime",
-        },
-        vision: { maxImages: 16, defaultWidth: 512, defaultHeight: 512 },
-      },
-    } as unknown as SloppyConfig;
+    });
 
     class StubCredentialStore implements CredentialStore {
       readonly kind = "keychain" as const;

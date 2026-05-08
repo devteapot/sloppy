@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { WorkspacesProvider } from "../src/providers/builtin/workspaces";
+import { WorkspacesProvider } from "../src/plugins/first-party/workspaces/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 describe("WorkspacesProvider", () => {
   test("exposes workspace/project selection and scoped config layer order", async () => {

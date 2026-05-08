@@ -8,7 +8,7 @@
 
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
-import { defaultConfigPromise } from "../config/load";
+import { createDefaultConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
@@ -18,7 +18,7 @@ import {
   type ProviderDiscoveryUpdate,
   watchProviderDescriptors,
 } from "../providers/discovery";
-import { createBuiltinProviders } from "../providers/registry";
+import { createFirstPartyProviders } from "../providers/registry";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
@@ -48,7 +48,7 @@ import { parseUserMessageBlocks } from "./user-message";
 export type { AgentToolEvent, AgentToolInvocation, LocalRuntimeTool } from "./loop";
 export type { RoleProfile } from "./role";
 
-const DEFAULT_CONFIG = await defaultConfigPromise;
+const DEFAULT_CONFIG = createDefaultConfig();
 
 export type AgentRunResult =
   | {
@@ -185,8 +185,8 @@ export class Agent {
       return;
     }
 
-    const builtins = createBuiltinProviders(this.config);
-    this.discovery.setBuiltinProviderIds(builtins.map((provider) => provider.id));
+    const firstPartyProviders = createFirstPartyProviders(this.config);
+    this.discovery.setFirstPartyProviderIds(firstPartyProviders.map((provider) => provider.id));
     this.discovery.resetErrors();
 
     const discoveredDescriptors = this.config.providers.discovery.enabled
@@ -196,7 +196,7 @@ export class Agent {
       const provider = this.discovery.resolveDescriptor(descriptor);
       return provider ? [provider] : [];
     });
-    const providers = [...builtins, ...discoveredProviders];
+    const providers = [...firstPartyProviders, ...discoveredProviders];
     const hub = new ConsumerHub(providers, this.config);
     this.unsubscribeExternalProviderStateChanges = hub.onExternalProviderStateChange((states) => {
       this.emitExternalProviderStates(states);
@@ -604,7 +604,7 @@ export class Agent {
     hub?.shutdown();
 
     this.pendingApproval = null;
-    this.discovery.setBuiltinProviderIds([]);
+    this.discovery.setFirstPartyProviderIds([]);
     this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
   }

@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { SloppyConfig } from "../src/config/schema";
 import { LlmConfigurationError } from "../src/llm/profile-manager";
-import { assertAcpSpawnAllowed } from "../src/runtime/delegation/acp-capabilities";
+import { assertAcpSpawnAllowed } from "../src/plugins/first-party/delegation/runtime/acp-capabilities";
 
 type AcpAdapterConfig = NonNullable<
-  NonNullable<SloppyConfig["providers"]["delegation"]["acp"]>["adapters"][string]
+  NonNullable<SloppyConfig["plugins"]["delegation"]["acp"]>["adapters"][string]
 >;
 
 const fullCapabilities = {

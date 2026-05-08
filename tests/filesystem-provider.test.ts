@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { FilesystemProvider } from "../src/providers/builtin/filesystem";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { FilesystemProvider } from "../src/plugins/first-party/filesystem/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 const tempPaths: string[] = [];
 

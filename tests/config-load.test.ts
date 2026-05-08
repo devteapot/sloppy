@@ -223,8 +223,8 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.skills.skillsDir).toBe(join(home, ".sloppy/skills"));
-    expect(config.providers.skills.builtinSkillsDir).toBe(join(process.cwd(), "skills"));
+    expect(config.plugins.skills.skillsDir).toBe(join(home, ".sloppy/skills"));
+    expect(config.plugins.skills.builtinSkillsDir).toBe(join(process.cwd(), "skills"));
   });
 
   test("normalizes external skill directories", async () => {
@@ -233,7 +233,7 @@ describe("loadConfig", () => {
     await writeConfig(
       workspace,
       [
-        "providers:",
+        "plugins:",
         "  skills:",
         "    externalDirs:",
         "      - ~/team-skills",
@@ -251,10 +251,33 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.skills.externalDirs).toEqual([
+    expect(config.plugins.skills.externalDirs).toEqual([
       join(home, "team-skills"),
       join(process.cwd(), "vendor-skills"),
     ]);
+  });
+
+  test("rejects legacy first-party provider config aliases", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      ["providers:", "  builtin:", "    mcp: true", "  mcp:", "    connectOnStart: false"].join(
+        "\n",
+      ),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    await expect(loadConfig()).rejects.toThrow(
+      "Legacy providers.* first-party config is no longer supported",
+    );
   });
 
   test("loads MCP server config and normalizes stdio cwd", async () => {
@@ -263,10 +286,9 @@ describe("loadConfig", () => {
     await writeConfig(
       workspace,
       [
-        "providers:",
-        "  builtin:",
-        "    mcp: true",
+        "plugins:",
         "  mcp:",
+        "    enabled: true",
         "    connectOnStart: false",
         "    servers:",
         "      local:",
@@ -293,9 +315,9 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.builtin.mcp).toBe(true);
-    expect(config.providers.mcp?.connectOnStart).toBe(false);
-    const local = config.providers.mcp?.servers.local;
+    expect(config.plugins.mcp.enabled).toBe(true);
+    expect(config.plugins.mcp.connectOnStart).toBe(false);
+    const local = config.plugins.mcp.servers.local;
     expect(local).toBeDefined();
     if (!local) {
       throw new Error("Expected local MCP server config.");
@@ -305,7 +327,7 @@ describe("loadConfig", () => {
       expect(local.cwd).toBe(resolve(process.cwd(), "tools"));
       expect(local.envAllowlist).toEqual(["DEMO_TOKEN"]);
     }
-    expect(config.providers.mcp?.servers.hosted.transport).toBe("streamableHttp");
+    expect(config.plugins.mcp.servers.hosted.transport).toBe("streamableHttp");
   });
 
   test("loads A2A agent config", async () => {
@@ -314,10 +336,9 @@ describe("loadConfig", () => {
     await writeConfig(
       workspace,
       [
-        "providers:",
-        "  builtin:",
-        "    a2a: true",
+        "plugins:",
         "  a2a:",
+        "    enabled: true",
         "    fetchOnStart: false",
         "    agents:",
         "      planner:",
@@ -343,15 +364,15 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.builtin.a2a).toBe(true);
-    expect(config.providers.a2a?.fetchOnStart).toBe(false);
-    expect(config.providers.a2a?.agents.planner.cardUrl).toBe(
+    expect(config.plugins.a2a.enabled).toBe(true);
+    expect(config.plugins.a2a.fetchOnStart).toBe(false);
+    expect(config.plugins.a2a.agents.planner.cardUrl).toBe(
       "https://agent.example/.well-known/agent-card.json",
     );
-    expect(config.providers.a2a?.agents.planner.bearerTokenEnv).toBe("A2A_TOKEN");
-    expect(config.providers.a2a?.agents.planner.timeoutMs).toBe(15000);
-    expect(config.providers.a2a?.agents.direct.url).toBe("https://direct.example/a2a/rpc");
-    expect(config.providers.a2a?.agents.direct.apiKeyHeader).toBe("x-api-key");
+    expect(config.plugins.a2a.agents.planner.bearerTokenEnv).toBe("A2A_TOKEN");
+    expect(config.plugins.a2a.agents.planner.timeoutMs).toBe(15000);
+    expect(config.plugins.a2a.agents.direct.url).toBe("https://direct.example/a2a/rpc");
+    expect(config.plugins.a2a.agents.direct.apiKeyHeader).toBe("x-api-key");
   });
 
   test("loads workspace/project registry and normalizes scoped config paths", async () => {
@@ -360,9 +381,9 @@ describe("loadConfig", () => {
     await writeConfig(
       workspace,
       [
-        "providers:",
-        "  builtin:",
-        "    workspaces: true",
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
         "workspaces:",
         "  activeWorkspaceId: main",
         "  activeProjectId: app",
@@ -390,7 +411,7 @@ describe("loadConfig", () => {
     const config = await loadConfig();
     const registry = config.workspaces;
 
-    expect(config.providers.builtin.workspaces).toBe(true);
+    expect(config.plugins.workspaces.enabled).toBe(true);
     expect(registry?.activeWorkspaceId).toBe("main");
     expect(registry?.activeProjectId).toBe("app");
     const main = registry?.items.main;
@@ -410,9 +431,9 @@ describe("loadConfig", () => {
     await writeConfig(
       home,
       [
-        "providers:",
-        "  builtin:",
-        "    workspaces: true",
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
         "workspaces:",
         "  activeWorkspaceId: main",
         "  activeProjectId: app",
@@ -434,7 +455,7 @@ describe("loadConfig", () => {
         "llm:",
         "  provider: openai",
         "  model: workspace-model",
-        "providers:",
+        "plugins:",
         "  mcp:",
         "    connectOnStart: false",
       ].join("\n"),
@@ -444,10 +465,9 @@ describe("loadConfig", () => {
       [
         "llm:",
         "  model: project-model",
-        "providers:",
-        "  builtin:",
-        "    mcp: true",
+        "plugins:",
         "  mcp:",
+        "    enabled: true",
         "    servers:",
         "      project-tools:",
         "        transport: stdio",
@@ -475,11 +495,11 @@ describe("loadConfig", () => {
     expect(config.llm.model).toBe("project-model");
     expect(config.workspaces?.activeWorkspaceId).toBe("main");
     expect(config.workspaces?.activeProjectId).toBe("app");
-    expect(config.providers.filesystem.root).toBe(projectRoot);
-    expect(config.providers.filesystem.focus).toBe(projectRoot);
-    expect(config.providers.terminal.cwd).toBe(projectRoot);
-    expect(config.providers.builtin.mcp).toBe(true);
-    const mcp = config.providers.mcp?.servers["project-tools"];
+    expect(config.plugins.filesystem.root).toBe(projectRoot);
+    expect(config.plugins.filesystem.focus).toBe(projectRoot);
+    expect(config.plugins.terminal.cwd).toBe(projectRoot);
+    expect(config.plugins.mcp.enabled).toBe(true);
+    const mcp = config.plugins.mcp.servers["project-tools"];
     expect(mcp?.transport).toBe("stdio");
     if (mcp?.transport === "stdio") {
       expect(mcp.cwd).toBe(join(projectRoot, "tools"));
@@ -510,8 +530,9 @@ describe("loadConfig", () => {
     await writeConfig(
       workspace,
       [
-        "providers:",
+        "plugins:",
         "  delegation:",
+        "    enabled: true",
         "    acp:",
         "      enabled: true",
         "      adapters:",
@@ -532,13 +553,13 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.providers.delegation.acp?.adapters.fake.capabilities).toEqual({
+    expect(config.plugins.delegation.acp?.adapters.fake.capabilities).toEqual({
       spawn_allowed: false,
       shell_allowed: true,
       network_allowed: false,
       filesystem_reads_allowed: true,
       filesystem_writes_allowed: false,
     });
-    expect(config.providers.delegation.acp?.adapters.fake.inheritEnv ?? false).toBe(false);
+    expect(config.plugins.delegation.acp?.adapters.fake.inheritEnv ?? false).toBe(false);
   });
 });

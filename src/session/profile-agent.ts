@@ -214,13 +214,13 @@ export class ProfileSessionAgent implements SessionAgent {
     const model = this.llmModelOverride ?? profile.model;
     if (profile.provider === "acp") {
       const adapterId = adapterIdFor(profile);
-      const adapter = this.config.providers.delegation.acp?.adapters[adapterId];
+      const adapter = this.config.plugins.delegation.acp?.adapters[adapterId];
       return [
         profile.provider,
         profile.id,
         adapterId,
         model,
-        this.config.providers.delegation.acp?.defaultTimeoutMs ?? "",
+        this.config.plugins.delegation.acp?.defaultTimeoutMs ?? "",
         adapterFingerprint(adapter),
       ].join(":");
     }
@@ -231,10 +231,10 @@ export class ProfileSessionAgent implements SessionAgent {
     const modelOverride = this.llmModelOverride ?? profile.model;
     if (profile.provider === "acp") {
       const adapterId = adapterIdFor(profile);
-      const acpConfig = this.config.providers.delegation.acp;
+      const acpConfig = this.config.plugins.delegation.acp;
       if (!acpConfig?.enabled) {
         throw new LlmConfigurationError(
-          `ACP adapter profile '${profile.id}' requires providers.delegation.acp.enabled to be true.`,
+          `ACP adapter profile '${profile.id}' requires plugins.delegation.acp.enabled to be true.`,
         );
       }
       const adapter = acpConfig.adapters[adapterId];
@@ -248,7 +248,7 @@ export class ProfileSessionAgent implements SessionAgent {
         adapter,
         modelOverride,
         callbacks: this.callbacks,
-        workspaceRoot: this.config.providers.filesystem.root,
+        workspaceRoot: this.config.plugins.filesystem.root,
         defaultTimeoutMs: acpConfig.defaultTimeoutMs,
       });
     }

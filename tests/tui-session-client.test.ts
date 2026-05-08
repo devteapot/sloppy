@@ -834,7 +834,7 @@ describe("SessionClient", () => {
     }
   });
 
-  test("queries and invokes built-in providers through the session apps proxy", async () => {
+  test("queries and invokes first-party providers through the session apps proxy", async () => {
     const sessionSocketPath = `/tmp/slop/tui-proxy-test-${crypto.randomUUID()}.sock`;
     const queries: Array<Record<string, unknown>> = [];
     const invocations: Array<Record<string, unknown>> = [];

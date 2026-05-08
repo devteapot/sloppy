@@ -73,9 +73,11 @@ function findArraySchemasWithoutItems(sourceFile: ts.SourceFile): string[] {
   return missing;
 }
 
-describe("built-in provider affordance schemas", () => {
+describe("first-party plugin provider affordance schemas", () => {
   test("first-party array parameter schemas declare items explicitly", async () => {
-    const files = await collectTypeScriptFiles(join(process.cwd(), "src", "providers", "builtin"));
+    const files = await collectTypeScriptFiles(
+      join(process.cwd(), "src", "plugins", "first-party"),
+    );
     const missing = (
       await Promise.all(
         files.map(async (file) => {

@@ -2,13 +2,13 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { action, createSlopServer } from "@slop-ai/server";
 import { listenUnix } from "@slop-ai/server/unix";
 
-import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import type { ProviderTreeView } from "../src/core/subscriptions";
 import { buildRuntimeToolSet } from "../src/core/tools";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { InProcessTransport } from "../src/providers/in-process";
 import { NodeSocketClientTransport } from "../src/providers/node-socket";
 import type { RegisteredProvider } from "../src/providers/registry";
+import { createTestConfig } from "./helpers/config";
 
 type QueryToolProviderSchema = {
   properties?: {
@@ -18,89 +18,7 @@ type QueryToolProviderSchema = {
   };
 };
 
-const TEST_CONFIG: SloppyConfig = {
-  llm: {
-    provider: "openai",
-    model: "gpt-5.4",
-    profiles: [],
-    maxTokens: 4096,
-  },
-  agent: {
-    maxIterations: 12,
-    minSalience: 0.2,
-    overviewDepth: 2,
-    overviewMaxNodes: 200,
-    detailDepth: 4,
-    detailMaxNodes: 200,
-    historyTurns: 8,
-    toolResultMaxChars: 16000,
-  },
-  maxToolResultSize: 4096,
-  providers: {
-    builtin: {
-      terminal: false,
-      filesystem: false,
-      memory: false,
-      skills: false,
-      web: false,
-      browser: false,
-      cron: false,
-      messaging: false,
-      delegation: false,
-      metaRuntime: false,
-      spec: false,
-      vision: false,
-    },
-    discovery: {
-      enabled: false,
-      paths: [],
-    },
-    terminal: {
-      cwd: ".",
-      historyLimit: 10,
-      syncTimeoutMs: 30000,
-    },
-    filesystem: {
-      root: ".",
-      focus: ".",
-      recentLimit: 10,
-      searchLimit: 20,
-      readMaxBytes: 65536,
-      contentRefThresholdBytes: 8192,
-      previewBytes: 2048,
-    },
-    memory: {
-      maxMemories: 500,
-      defaultWeight: 0.5,
-      compactThreshold: 0.2,
-    },
-    skills: {
-      skillsDir: "~/.sloppy/skills",
-    },
-    web: {
-      historyLimit: 20,
-    },
-    browser: {
-      viewportWidth: 1280,
-      viewportHeight: 720,
-    },
-    cron: {
-      maxJobs: 50,
-    },
-    messaging: {
-      maxMessages: 500,
-    },
-    delegation: {
-      maxAgents: 10,
-    },
-    metaRuntime: { globalRoot: "~/.sloppy/meta-runtime", workspaceRoot: ".sloppy/meta-runtime" },
-    vision: {
-      maxImages: 50,
-      defaultWidth: 512,
-      defaultHeight: 512,
-    },
-  },
-};
+const TEST_CONFIG = createTestConfig();
 
 function createProvider(id: string, name: string): RegisteredProvider {
   const server = createSlopServer({ id, name });
@@ -118,7 +36,7 @@ function createProvider(id: string, name: string): RegisteredProvider {
   };
 }
 
-function createBuiltinProvider(id: string, name: string): RegisteredProvider {
+function createFirstPartyProvider(id: string, name: string): RegisteredProvider {
   const server = createSlopServer({ id, name });
   server.register("workspace", {
     type: "collection",
@@ -128,7 +46,7 @@ function createBuiltinProvider(id: string, name: string): RegisteredProvider {
   return {
     id,
     name,
-    kind: "builtin",
+    kind: "first-party",
     transport: new InProcessTransport(server),
     transportLabel: "in-process",
   };
@@ -253,13 +171,13 @@ describe("ConsumerHub", () => {
     }
   });
 
-  test("does not surface built-in providers in external provider state", async () => {
+  test("does not surface first-party providers in external provider state", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
 
     try {
       await hub.connect();
 
-      const connected = await hub.addProvider(createBuiltinProvider("terminal", "Terminal"));
+      const connected = await hub.addProvider(createFirstPartyProvider("terminal", "Terminal"));
 
       expect(connected).toBe(true);
       expect(hub.getProviderViews().map((view) => view.providerId)).toEqual(["terminal"]);
@@ -407,7 +325,7 @@ describe("ConsumerHub", () => {
       const provider: RegisteredProvider = {
         id,
         name: "Danger",
-        kind: "builtin",
+        kind: "first-party",
         transport: new InProcessTransport(server),
         transportLabel: "in-process",
       };
@@ -462,7 +380,7 @@ describe("ConsumerHub", () => {
       const provider: RegisteredProvider = {
         id,
         name: "Deep",
-        kind: "builtin",
+        kind: "first-party",
         transport: new InProcessTransport(server),
         transportLabel: "in-process",
       };
@@ -500,7 +418,7 @@ describe("ConsumerHub", () => {
       const provider: RegisteredProvider = {
         id,
         name: "FocusDanger",
-        kind: "builtin",
+        kind: "first-party",
         transport: new InProcessTransport(server),
         transportLabel: "in-process",
       };
@@ -547,7 +465,7 @@ describe("ConsumerHub", () => {
       const provider: RegisteredProvider = {
         id,
         name: "QueryDanger",
-        kind: "builtin",
+        kind: "first-party",
         transport: new InProcessTransport(server),
         transportLabel: "in-process",
       };

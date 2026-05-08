@@ -4,13 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
 import {
   type McpClientSession,
   McpProvider,
   type McpServerConfig,
-} from "../src/providers/builtin/mcp";
+} from "../src/plugins/first-party/mcp/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 type FakeCall = {
   serverId: string;

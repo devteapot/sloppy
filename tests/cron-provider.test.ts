@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { type CronCommandRunner, CronProvider } from "../src/providers/builtin/cron";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { type CronCommandRunner, CronProvider } from "../src/plugins/first-party/cron/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 // Default test runner: spawns the command directly. Equivalent to what
 // TerminalProvider's `execute` action would return when invoked through the

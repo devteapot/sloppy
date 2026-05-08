@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
-import { BrowserProvider } from "../src/providers/builtin/browser";
-import { InProcessTransport } from "../src/providers/builtin/in-process";
+import { BrowserProvider } from "../src/plugins/first-party/browser/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 function createHarness(options: ConstructorParameters<typeof BrowserProvider>[0] = {}) {
   const provider = new BrowserProvider(options);

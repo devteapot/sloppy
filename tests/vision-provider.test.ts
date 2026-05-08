@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
-
-import { InProcessTransport } from "../src/providers/builtin/in-process";
-import { VisionProvider } from "../src/providers/builtin/vision";
+import { VisionProvider } from "../src/plugins/first-party/vision/provider";
+import { InProcessTransport } from "../src/providers/in-process";
 
 function createHarness(options: ConstructorParameters<typeof VisionProvider>[0] = {}) {
   const provider = new VisionProvider(options);

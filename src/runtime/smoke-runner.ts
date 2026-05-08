@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
-  defaultConfigPromise,
   getHomeConfigPath,
   getWorkspaceConfigPath,
+  loadConfig,
   loadConfigFromPaths,
 } from "../config/load";
 import type { LlmProfileConfig, SloppyConfig } from "../config/schema";
@@ -13,10 +13,8 @@ import { ConsumerHub } from "../core/consumer";
 import { RoleRegistry } from "../core/role";
 import { LlmConfigurationError, type LlmProfileManager } from "../llm/profile-manager";
 import { buildRuntimeSloppyConfig } from "../llm/runtime-config";
-import { createBuiltinProviders, type RegisteredProvider } from "../providers/registry";
+import { createFirstPartyProviders, type RegisteredProvider } from "../providers/registry";
 import { type AgentEventBus, createAgentEventBus } from "../session/event-bus";
-
-const DEFAULT_CONFIG = await defaultConfigPromise;
 
 export type RuntimeSmokeMode = "providers" | "native" | "acp";
 
@@ -91,56 +89,53 @@ function buildSmokeConfig(
       ...baseConfig.agent,
       maxIterations: Math.max(baseConfig.agent.maxIterations, 8),
     },
+    plugins: {
+      ...baseConfig.plugins,
+      terminal: { ...baseConfig.plugins.terminal, enabled: false, cwd: workspaceRoot },
+      filesystem: {
+        ...baseConfig.plugins.filesystem,
+        enabled: true,
+        root: workspaceRoot,
+        focus: workspaceRoot,
+      },
+      memory: { ...baseConfig.plugins.memory, enabled: false },
+      skills: {
+        ...baseConfig.plugins.skills,
+        enabled: true,
+        skillsDir: join(workspaceRoot, ".sloppy-smoke/skills"),
+      },
+      "meta-runtime": {
+        ...baseConfig.plugins["meta-runtime"],
+        enabled: true,
+        globalRoot: join(workspaceRoot, ".sloppy-smoke/global-meta"),
+        workspaceRoot: ".sloppy-smoke/workspace-meta",
+      },
+      web: { ...baseConfig.plugins.web, enabled: false },
+      browser: { ...baseConfig.plugins.browser, enabled: false },
+      cron: { ...baseConfig.plugins.cron, enabled: false },
+      messaging: { ...baseConfig.plugins.messaging, enabled: true },
+      delegation:
+        options.mode === "acp" && options.acpAdapterId
+          ? {
+              ...baseConfig.plugins.delegation,
+              enabled: true,
+              acp: {
+                enabled: true,
+                defaultTimeoutMs:
+                  options.timeoutMs ?? baseConfig.plugins.delegation.acp?.defaultTimeoutMs,
+                adapters: baseConfig.plugins.delegation.acp?.adapters ?? {},
+              },
+            }
+          : { ...baseConfig.plugins.delegation, enabled: true },
+      spec: { ...baseConfig.plugins.spec, enabled: false },
+      vision: { ...baseConfig.plugins.vision, enabled: false },
+    },
     providers: {
       ...baseConfig.providers,
-      builtin: {
-        ...baseConfig.providers.builtin,
-        terminal: false,
-        filesystem: true,
-        memory: false,
-        skills: true,
-        metaRuntime: true,
-        web: false,
-        browser: false,
-        cron: false,
-        messaging: true,
-        delegation: true,
-        spec: false,
-        vision: false,
-      },
       discovery: {
         enabled: false,
         paths: [],
       },
-      filesystem: {
-        ...baseConfig.providers.filesystem,
-        root: workspaceRoot,
-        focus: workspaceRoot,
-      },
-      terminal: {
-        ...baseConfig.providers.terminal,
-        cwd: workspaceRoot,
-      },
-      metaRuntime: {
-        globalRoot: join(workspaceRoot, ".sloppy-smoke/global-meta"),
-        workspaceRoot: ".sloppy-smoke/workspace-meta",
-      },
-      skills: {
-        ...baseConfig.providers.skills,
-        skillsDir: join(workspaceRoot, ".sloppy-smoke/skills"),
-      },
-      delegation:
-        options.mode === "acp" && options.acpAdapterId
-          ? {
-              ...baseConfig.providers.delegation,
-              acp: {
-                enabled: true,
-                defaultTimeoutMs:
-                  options.timeoutMs ?? baseConfig.providers.delegation.acp?.defaultTimeoutMs,
-                adapters: baseConfig.providers.delegation.acp?.adapters ?? {},
-              },
-            }
-          : baseConfig.providers.delegation,
     },
   };
 }
@@ -360,7 +355,7 @@ export async function runRuntimeSmoke(
     options.config ??
     (options.workspaceRoot
       ? await loadConfigFromPaths(getHomeConfigPath(), getWorkspaceConfigPath(workspaceRoot))
-      : DEFAULT_CONFIG);
+      : await loadConfig());
   const baseConfig = buildRuntimeSloppyConfig(loadedConfig);
   const profile = mode === "native" ? activeProfile(baseConfig, options.profileId) : undefined;
   if (mode === "native" && options.profileId && !profile) {
@@ -377,7 +372,7 @@ export async function runRuntimeSmoke(
     acpAdapterId: options.acpAdapterId,
     timeoutMs: options.timeoutMs,
   });
-  const providers = createBuiltinProviders(config);
+  const providers = createFirstPartyProviders(config);
   const hub = new ConsumerHub(providers, config);
   const eventLogPath = options.eventLogPath ?? process.env.SLOPPY_EVENT_LOG;
   const eventBus = eventLogPath

@@ -102,6 +102,222 @@ const a2aAgentConfigSchema = z
     message: "A2A agents require cardUrl or url.",
   });
 
+const persistentGoalPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+  })
+  .default({
+    enabled: true,
+  });
+
+const terminalPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    cwd: z.string().default("."),
+    historyLimit: z.number().int().min(1).default(10),
+    syncTimeoutMs: z.number().int().min(100).default(30000),
+  })
+  .default({
+    enabled: true,
+    cwd: ".",
+    historyLimit: 10,
+    syncTimeoutMs: 30000,
+  });
+
+const filesystemPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    root: z.string().default("."),
+    focus: z.string().optional(),
+    recentLimit: z.number().int().min(1).default(10),
+    searchLimit: z.number().int().min(1).default(20),
+    readMaxBytes: z.number().int().min(256).default(65536),
+    contentRefThresholdBytes: z.number().int().min(256).default(8192),
+    previewBytes: z.number().int().min(128).default(2048),
+  })
+  .default({
+    enabled: true,
+    root: ".",
+    recentLimit: 10,
+    searchLimit: 20,
+    readMaxBytes: 65536,
+    contentRefThresholdBytes: 8192,
+    previewBytes: 2048,
+  });
+
+const memoryPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxMemories: z.number().int().min(1).default(500),
+    defaultWeight: z.number().min(0).max(1).default(0.5),
+    compactThreshold: z.number().min(0).max(1).default(0.2),
+  })
+  .default({
+    enabled: true,
+    maxMemories: 500,
+    defaultWeight: 0.5,
+    compactThreshold: 0.2,
+  });
+
+const skillsPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    builtinSkillsDir: z.string().default("skills"),
+    skillsDir: z.string().default("~/.sloppy/skills"),
+    externalDirs: z.array(z.string()).default([]),
+    templateVars: z.boolean().default(true),
+    viewMaxBytes: z.number().int().min(1024).default(65536),
+  })
+  .default({
+    enabled: true,
+    builtinSkillsDir: "skills",
+    skillsDir: "~/.sloppy/skills",
+    externalDirs: [],
+    templateVars: true,
+    viewMaxBytes: 65536,
+  });
+
+const metaRuntimePluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    globalRoot: z.string().default("~/.sloppy/meta-runtime"),
+    workspaceRoot: z.string().default(".sloppy/meta-runtime"),
+  })
+  .default({
+    enabled: false,
+    globalRoot: "~/.sloppy/meta-runtime",
+    workspaceRoot: ".sloppy/meta-runtime",
+  });
+
+const webPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    historyLimit: z.number().int().min(1).default(20),
+  })
+  .default({
+    enabled: false,
+    historyLimit: 20,
+  });
+
+const browserPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    viewportWidth: z.number().int().min(320).default(1280),
+    viewportHeight: z.number().int().min(240).default(720),
+  })
+  .default({
+    enabled: false,
+    viewportWidth: 1280,
+    viewportHeight: 720,
+  });
+
+const cronPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxJobs: z.number().int().min(1).default(50),
+  })
+  .default({
+    enabled: false,
+    maxJobs: 50,
+  });
+
+const messagingPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxMessages: z.number().int().min(1).default(500),
+  })
+  .default({
+    enabled: false,
+    maxMessages: 500,
+  });
+
+const delegationPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxAgents: z.number().int().min(1).default(10),
+    acp: acpDelegationConfigSchema.optional(),
+  })
+  .default({
+    enabled: false,
+    maxAgents: 10,
+  });
+
+const specPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .default({
+    enabled: false,
+  });
+
+const visionPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxImages: z.number().int().min(1).default(50),
+    defaultWidth: z.number().int().min(64).default(512),
+    defaultHeight: z.number().int().min(64).default(512),
+  })
+  .default({
+    enabled: false,
+    maxImages: 50,
+    defaultWidth: 512,
+    defaultHeight: 512,
+  });
+
+const mcpPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    connectOnStart: z.boolean().default(true),
+    servers: z.record(z.string().min(1), mcpServerConfigSchema).default({}),
+  })
+  .default({
+    enabled: false,
+    connectOnStart: true,
+    servers: {},
+  });
+
+const workspacesPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .default({
+    enabled: false,
+  });
+
+const a2aPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    fetchOnStart: z.boolean().default(true),
+    agents: z.record(z.string().min(1), a2aAgentConfigSchema).default({}),
+  })
+  .default({
+    enabled: false,
+    fetchOnStart: true,
+    agents: {},
+  });
+
+const pluginsConfigSchema = z.preprocess(
+  (value) => value ?? {},
+  z.object({
+    "persistent-goal": persistentGoalPluginConfigSchema,
+    terminal: terminalPluginConfigSchema,
+    filesystem: filesystemPluginConfigSchema,
+    memory: memoryPluginConfigSchema,
+    skills: skillsPluginConfigSchema,
+    "meta-runtime": metaRuntimePluginConfigSchema,
+    web: webPluginConfigSchema,
+    browser: browserPluginConfigSchema,
+    cron: cronPluginConfigSchema,
+    messaging: messagingPluginConfigSchema,
+    delegation: delegationPluginConfigSchema,
+    spec: specPluginConfigSchema,
+    vision: visionPluginConfigSchema,
+    mcp: mcpPluginConfigSchema,
+    workspaces: workspacesPluginConfigSchema,
+    a2a: a2aPluginConfigSchema,
+  }),
+);
+
 const projectConfigSchema = z.object({
   name: z.string().trim().min(1).optional(),
   description: z.string().trim().min(1).optional(),
@@ -177,44 +393,10 @@ export const sloppyConfigSchema = z.object({
       persistSnapshots: true,
       persistenceDir: ".sloppy/sessions",
     }),
+  plugins: pluginsConfigSchema,
   maxToolResultSize: z.number().int().min(100).default(4096),
   providers: z
     .object({
-      builtin: z
-        .object({
-          terminal: z.boolean().default(true),
-          filesystem: z.boolean().default(true),
-          memory: z.boolean().default(true),
-          skills: z.boolean().default(true),
-          metaRuntime: z.boolean().default(false),
-          web: z.boolean().default(false),
-          browser: z.boolean().default(false),
-          cron: z.boolean().default(false),
-          messaging: z.boolean().default(false),
-          delegation: z.boolean().default(false),
-          spec: z.boolean().default(false),
-          vision: z.boolean().default(false),
-          mcp: z.boolean().default(false),
-          workspaces: z.boolean().default(false),
-          a2a: z.boolean().default(false),
-        })
-        .default({
-          terminal: true,
-          filesystem: true,
-          memory: true,
-          skills: true,
-          metaRuntime: false,
-          web: false,
-          browser: false,
-          cron: false,
-          messaging: false,
-          delegation: false,
-          spec: false,
-          vision: false,
-          mcp: false,
-          workspaces: false,
-          a2a: false,
-        }),
       discovery: z
         .object({
           enabled: z.boolean().default(true),
@@ -224,232 +406,18 @@ export const sloppyConfigSchema = z.object({
           enabled: true,
           paths: ["~/.slop/providers", "/tmp/slop/providers"],
         }),
-      terminal: z
-        .object({
-          cwd: z.string().default("."),
-          historyLimit: z.number().int().min(1).default(10),
-          syncTimeoutMs: z.number().int().min(100).default(30000),
-        })
-        .default({
-          cwd: ".",
-          historyLimit: 10,
-          syncTimeoutMs: 30000,
-        }),
-      filesystem: z
-        .object({
-          root: z.string().default("."),
-          focus: z.string().optional(),
-          recentLimit: z.number().int().min(1).default(10),
-          searchLimit: z.number().int().min(1).default(20),
-          readMaxBytes: z.number().int().min(256).default(65536),
-          contentRefThresholdBytes: z.number().int().min(256).default(8192),
-          previewBytes: z.number().int().min(128).default(2048),
-        })
-        .default({
-          root: ".",
-          recentLimit: 10,
-          searchLimit: 20,
-          readMaxBytes: 65536,
-          contentRefThresholdBytes: 8192,
-          previewBytes: 2048,
-        }),
-      memory: z
-        .object({
-          maxMemories: z.number().int().min(1).default(500),
-          defaultWeight: z.number().min(0).max(1).default(0.5),
-          compactThreshold: z.number().min(0).max(1).default(0.2),
-        })
-        .default({
-          maxMemories: 500,
-          defaultWeight: 0.5,
-          compactThreshold: 0.2,
-        }),
-      skills: z
-        .object({
-          builtinSkillsDir: z.string().default("skills"),
-          skillsDir: z.string().default("~/.sloppy/skills"),
-          externalDirs: z.array(z.string()).default([]),
-          templateVars: z.boolean().default(true),
-          viewMaxBytes: z.number().int().min(1024).default(65536),
-        })
-        .default({
-          builtinSkillsDir: "skills",
-          skillsDir: "~/.sloppy/skills",
-          externalDirs: [],
-          templateVars: true,
-          viewMaxBytes: 65536,
-        }),
-      metaRuntime: z
-        .object({
-          globalRoot: z.string().default("~/.sloppy/meta-runtime"),
-          workspaceRoot: z.string().default(".sloppy/meta-runtime"),
-        })
-        .default({
-          globalRoot: "~/.sloppy/meta-runtime",
-          workspaceRoot: ".sloppy/meta-runtime",
-        }),
-      web: z
-        .object({
-          historyLimit: z.number().int().min(1).default(20),
-        })
-        .default({
-          historyLimit: 20,
-        }),
-      browser: z
-        .object({
-          viewportWidth: z.number().int().min(320).default(1280),
-          viewportHeight: z.number().int().min(240).default(720),
-        })
-        .default({
-          viewportWidth: 1280,
-          viewportHeight: 720,
-        }),
-      cron: z
-        .object({
-          maxJobs: z.number().int().min(1).default(50),
-        })
-        .default({
-          maxJobs: 50,
-        }),
-      messaging: z
-        .object({
-          maxMessages: z.number().int().min(1).default(500),
-        })
-        .default({
-          maxMessages: 500,
-        }),
-      delegation: z
-        .object({
-          maxAgents: z.number().int().min(1).default(10),
-          acp: acpDelegationConfigSchema.optional(),
-        })
-        .default({
-          maxAgents: 10,
-        }),
-      vision: z
-        .object({
-          maxImages: z.number().int().min(1).default(50),
-          defaultWidth: z.number().int().min(64).default(512),
-          defaultHeight: z.number().int().min(64).default(512),
-        })
-        .default({
-          maxImages: 50,
-          defaultWidth: 512,
-          defaultHeight: 512,
-        }),
-      mcp: z
-        .object({
-          connectOnStart: z.boolean().default(true),
-          servers: z.record(z.string().min(1), mcpServerConfigSchema).default({}),
-        })
-        .default({
-          connectOnStart: true,
-          servers: {},
-        }),
-      a2a: z
-        .object({
-          fetchOnStart: z.boolean().default(true),
-          agents: z.record(z.string().min(1), a2aAgentConfigSchema).default({}),
-        })
-        .default({
-          fetchOnStart: true,
-          agents: {},
-        }),
     })
+    .strict()
     .default({
-      builtin: {
-        terminal: true,
-        filesystem: true,
-        memory: true,
-        skills: true,
-        metaRuntime: false,
-        web: false,
-        browser: false,
-        cron: false,
-        messaging: false,
-        delegation: false,
-        spec: false,
-        vision: false,
-        mcp: false,
-        workspaces: false,
-        a2a: false,
-      },
       discovery: {
         enabled: true,
         paths: ["~/.slop/providers", "/tmp/slop/providers"],
-      },
-      terminal: {
-        cwd: ".",
-        historyLimit: 10,
-        syncTimeoutMs: 30000,
-      },
-      filesystem: {
-        root: ".",
-        recentLimit: 10,
-        searchLimit: 20,
-        readMaxBytes: 65536,
-        contentRefThresholdBytes: 8192,
-        previewBytes: 2048,
-      },
-      memory: {
-        maxMemories: 500,
-        defaultWeight: 0.5,
-        compactThreshold: 0.2,
-      },
-      skills: {
-        builtinSkillsDir: "skills",
-        skillsDir: "~/.sloppy/skills",
-        externalDirs: [],
-        templateVars: true,
-        viewMaxBytes: 65536,
-      },
-      metaRuntime: {
-        globalRoot: "~/.sloppy/meta-runtime",
-        workspaceRoot: ".sloppy/meta-runtime",
-      },
-      web: {
-        historyLimit: 20,
-      },
-      browser: {
-        viewportWidth: 1280,
-        viewportHeight: 720,
-      },
-      cron: {
-        maxJobs: 50,
-      },
-      messaging: {
-        maxMessages: 500,
-      },
-      delegation: {
-        maxAgents: 10,
-      },
-      vision: {
-        maxImages: 50,
-        defaultWidth: 512,
-        defaultHeight: 512,
-      },
-      mcp: {
-        connectOnStart: true,
-        servers: {},
-      },
-      a2a: {
-        fetchOnStart: true,
-        agents: {},
       },
     }),
 });
 
 type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
-type BuiltinProviderConfig = Omit<
-  SloppyConfigBase["providers"]["builtin"],
-  "mcp" | "workspaces" | "a2a"
-> & {
-  mcp?: boolean;
-  workspaces?: boolean;
-  a2a?: boolean;
-};
-type McpProviderConfig = SloppyConfigBase["providers"]["mcp"];
-type A2AProviderConfig = SloppyConfigBase["providers"]["a2a"];
+type PluginsConfig = SloppyConfigBase["plugins"];
 type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
@@ -481,25 +449,14 @@ export interface LlmConfig {
 }
 
 export interface SloppyConfig
-  extends Omit<SloppyConfigBase, "llm" | "providers" | "session" | "workspaces"> {
+  extends Omit<SloppyConfigBase, "llm" | "plugins" | "session" | "workspaces"> {
   llm: LlmConfig;
+  plugins: PluginsConfig;
   session?: {
     persistSnapshots?: boolean;
     persistenceDir?: string;
   };
   workspaces?: WorkspaceRegistryConfig;
-  providers: Omit<SloppyConfigBase["providers"], "builtin" | "skills" | "mcp" | "a2a"> & {
-    builtin: BuiltinProviderConfig;
-    mcp?: McpProviderConfig;
-    a2a?: A2AProviderConfig;
-    skills: {
-      skillsDir: string;
-      builtinSkillsDir?: string;
-      externalDirs?: string[];
-      templateVars?: boolean;
-      viewMaxBytes?: number;
-    };
-  };
 }
 
 export type RawSloppyConfig = SloppyConfigBase;
