@@ -32,6 +32,10 @@ bun run runtime:doctor \
 
 Expected production posture:
 
+- doctor output combines core runtime checks with first-party plugin
+  contributions. Provider-specific readiness checks should live with their
+  plugin, while the doctor core handles generic profile, socket, audit, and
+  persistence checks plus aggregation of plugin-provided subprocess probes.
 - `llm-profile`: `ok` means the active model profile is ready. `warning` means
   the active profile relies on a process environment variable. `error` means no
   model turn should start until credentials or external auth are fixed.

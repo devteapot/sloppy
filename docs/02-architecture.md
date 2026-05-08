@@ -263,16 +263,18 @@ skill-backed session features and a `/plugins` registry for first-party session
 runtime plugins. Plugins can contribute session nodes, extension event
 projections, runtime-local turn tools, queued or automatic turns, snapshot
 migration/recovery hooks, startup/shutdown hooks, policy rules, audit metadata
-enrichers, supervisor summary fields, and declarative TUI manifests without
-adding feature-specific branches to the provider or TUI core. Runtime-local
-tools are stamped with their owning plugin id so future policy, dispatch, and
-telemetry can keep plugin boundaries visible. `/goal` is now a stable projection contributed by the bundled
+enrichers, doctor checks, startup subprocess probes, supervisor summary fields,
+and declarative TUI manifests without adding feature-specific branches to the
+provider, TUI, or doctor core. TUI palette entries invoke public session
+affordances declared by plugin manifests and are filtered by the live actions
+available at their SLOP path. Runtime-local tools are stamped with their owning
+plugin id so future policy, dispatch, and telemetry can keep plugin boundaries
+visible. `/goal` is now a stable projection contributed by the bundled
 `persistent-goal` plugin over the `goal` extension record owned by the bundled
 `persistent-goal` skill; the plugin owns stale-turn goal recovery, while the
 runtime provides the generic durable snapshot envelope. The skill defines the
-working procedure and completion
-evidence expectations. Extension cleanup is manual plus TTL, so missing or
-unloaded skills do not delete state automatically.
+working procedure and completion evidence expectations. Extension cleanup is
+manual plus TTL, so missing or unloaded skills do not delete state automatically.
 
 Agents can create and maintain procedural memory through `skill_manage`:
 `create`, `patch`, `edit`, `delete`, `write_file`, and `remove_file`.

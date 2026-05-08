@@ -260,6 +260,14 @@ export class SessionClient {
     return this.invoke("/llm", "delete_api_key", { profile_id: profileId });
   }
 
+  async invokeSessionAction(
+    path: string,
+    action: string,
+    params?: Record<string, unknown>,
+  ): Promise<ResultMessage> {
+    return this.invoke(path, action, params);
+  }
+
   async queryInspect(
     path: string,
     depth: number,

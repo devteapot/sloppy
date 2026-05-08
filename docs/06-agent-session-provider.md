@@ -316,8 +316,16 @@ Manifest fields are intentionally data-only:
 - `subscriptions`: `{path, depth}` entries the TUI may subscribe to
 - `commands`: slash-command discovery entries with `id`, `name`, optional
   `aliases`, optional `signature`, and `description`
-- `palette`, `status`, and `notifications`: reserved declarative contribution
-  slots for first-party TUI affordances
+- `palette`: command-palette action entries with `id`, `label`,
+  `description`, `path`, `action`, optional `params`, optional `shortcut`, and
+  optional `whenActionAvailable`. The TUI invokes these through the public
+  session provider and hides entries whose required live affordance is absent
+  from the declared path.
+- `notifications`: declarative state transitions with `id`, `path`, `prop`,
+  `to`, and `message`; the TUI watches subscribed snapshots and emits notices
+  when the transition occurs.
+- `status`: reserved declarative contribution slot for compact plugin status
+  rendering.
 
 ### `/goal`
 

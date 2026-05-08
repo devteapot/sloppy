@@ -1,5 +1,5 @@
 import type { SupervisorSnapshot } from "../slop/supervisor-client";
-import type { SessionViewSnapshot } from "../slop/types";
+import type { PluginItem, PluginPaletteContribution, SessionViewSnapshot } from "../slop/types";
 import type { LocalCommand } from "./commands";
 import { NAVIGATION_ITEMS } from "./navigation";
 
@@ -10,6 +10,41 @@ export type PaletteCommand = {
   shortcut?: string;
   command: LocalCommand;
 };
+
+function isPluginPaletteEntryAvailable(
+  snapshot: SessionViewSnapshot,
+  entry: PluginPaletteContribution,
+): boolean {
+  if (!entry.whenActionAvailable) {
+    return true;
+  }
+  return snapshot.actionsByPath[entry.path]?.includes(entry.whenActionAvailable) ?? false;
+}
+
+function buildPluginPaletteCommands(
+  snapshot: SessionViewSnapshot,
+  plugin: PluginItem,
+): PaletteCommand[] {
+  return (plugin.tui.palette ?? [])
+    .filter((entry) => isPluginPaletteEntryAvailable(snapshot, entry))
+    .map(
+      (entry): PaletteCommand => ({
+        id: `plugin:${plugin.id}:${entry.id}`,
+        label: entry.label,
+        description: entry.description,
+        shortcut: entry.shortcut,
+        command: {
+          type: "plugin_action",
+          pluginId: plugin.id,
+          actionId: entry.id,
+          label: entry.label,
+          path: entry.path,
+          action: entry.action,
+          params: entry.params,
+        },
+      }),
+    );
+}
 
 export function buildCommandPaletteCommands(
   snapshot: SessionViewSnapshot,
@@ -74,48 +109,8 @@ export function buildCommandPaletteCommands(
       shortcut: "/mouse",
       command: { type: "mouse", mode: mouseEnabled ? "off" : "on" },
     },
-    {
-      id: "goal:show",
-      label: "Show Goal",
-      description: snapshot.goal.exists
-        ? `Current goal is ${snapshot.goal.status}`
-        : "No active runtime goal",
-      command: { type: "goal", action: "show" },
-    },
+    ...snapshot.plugins.flatMap((plugin) => buildPluginPaletteCommands(snapshot, plugin)),
   ];
-
-  if (snapshot.goal.canPause) {
-    commands.push({
-      id: "goal:pause",
-      label: "Pause Goal",
-      description: "Pause automatic goal continuation",
-      command: { type: "goal", action: "pause" },
-    });
-  }
-  if (snapshot.goal.canResume) {
-    commands.push({
-      id: "goal:resume",
-      label: "Resume Goal",
-      description: "Resume automatic goal continuation",
-      command: { type: "goal", action: "resume" },
-    });
-  }
-  if (snapshot.goal.canComplete) {
-    commands.push({
-      id: "goal:complete",
-      label: "Complete Goal",
-      description: "Mark the active goal complete",
-      command: { type: "goal", action: "complete" },
-    });
-  }
-  if (snapshot.goal.canClear) {
-    commands.push({
-      id: "goal:clear",
-      label: "Clear Goal",
-      description: "Clear the active goal state",
-      command: { type: "goal", action: "clear" },
-    });
-  }
 
   for (const item of snapshot.queue) {
     if (!item.canCancel) {

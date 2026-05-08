@@ -352,10 +352,12 @@ The redesign adopts that pattern. Specifically:
   proposal review) are **overlays** opened from the palette or by slash
   command. They float on top of the chat; closing returns to chat.
 - A **command palette** (Ctrl+K) is the primary navigation. Its contents are
-  built from the navigation registry plus live SLOP affordances discovered
-  from `/apps`, supervised sessions, and the meta-runtime — not a hard-coded
-  registry. This is the SLOP-native point: the palette grows when providers
-  attach.
+  built from the navigation registry, plugin `palette` manifests exposed at
+  `/plugins`, and live SLOP affordances discovered from `/apps`, supervised
+  sessions, and the meta-runtime — not a feature-specific registry. Plugin
+  palette entries invoke public session affordances and are hidden when their
+  declared `whenActionAvailable` affordance is absent. This is the SLOP-native
+  point: the palette grows when providers and session plugins attach.
 - The **horizontal tab strip is removed.** A thin **session strip** is
   rendered only when the supervisor reports more than one running session,
   and lists session id / turn state / goal / pending counts as a top bar.
@@ -467,9 +469,10 @@ this is backed by `/extensions/goal`, but the TUI should continue to use `/goal`
 as the stable UX contract and reserve `/extensions` for inspectors and cleanup
 diagnostics.
 
-The TUI discovers plugin-owned slash commands and notifications from `/plugins`
-declarative manifests. `/goal` remains a normal local command parser path, but
-its command catalog entry, subscription hint, and completion notification are
+The TUI discovers plugin-owned slash commands, palette actions, and
+notifications from `/plugins` declarative manifests. `/goal` remains a normal
+local command parser path, but its command catalog entry, subscription hint,
+pause/resume/complete/clear palette actions, and completion notification are
 advertised by the `persistent-goal` plugin manifest. Completion notices are
 evaluated through the generic notification manifest path/prop matcher rather
 than a goal-specific TUI effect.

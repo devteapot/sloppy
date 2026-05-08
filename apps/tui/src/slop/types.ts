@@ -232,10 +232,21 @@ export type PluginNotificationContribution = {
   message: string;
 };
 
+export type PluginPaletteContribution = {
+  id: string;
+  label: string;
+  description: string;
+  path: string;
+  action: string;
+  params?: Record<string, unknown>;
+  shortcut?: string;
+  whenActionAvailable?: string;
+};
+
 export type PluginTuiManifest = {
   subscriptions?: Array<{ path: string; depth: number }>;
   commands?: PluginCommandContribution[];
-  palette?: Array<Record<string, unknown>>;
+  palette?: PluginPaletteContribution[];
   status?: Array<Record<string, unknown>>;
   notifications?: PluginNotificationContribution[];
 };
@@ -289,6 +300,7 @@ export type SessionViewSnapshot = {
   plugins: PluginItem[];
   queue: QueuedItem[];
   inspect: InspectState;
+  actionsByPath: Record<string, string[]>;
 };
 
 export type SaveProfileInput = {

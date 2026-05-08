@@ -89,6 +89,8 @@ export type TuiPaletteContribution = {
   description: string;
   path: string;
   action: string;
+  params?: Record<string, unknown>;
+  shortcut?: string;
   whenActionAvailable?: string;
 };
 

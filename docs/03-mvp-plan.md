@@ -42,9 +42,10 @@ Checked in now:
   by the Codex CLI auth store created by `codex login`
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native and ACP delegated-child modes
-- runtime doctor (`bun run runtime:doctor`) for checking live OpenAI-compatible
-  routers, configured ACP adapters, startup subprocess commands, persistence,
-  audit, socket, and workspace-path readiness before a smoke run
+- runtime doctor (`bun run runtime:doctor`) with core checks plus first-party
+  plugin contributions for live OpenAI-compatible routers, configured ACP
+  adapters, startup subprocess commands, persistence, audit, socket, and
+  workspace-path readiness before a smoke run
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from

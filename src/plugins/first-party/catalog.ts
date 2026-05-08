@@ -5,19 +5,27 @@ import type { SloppyConfig } from "../../config/schema";
 import type { InvokePolicy } from "../../core/policy";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
+import type {
+  RuntimeDoctorCheckFactory,
+  RuntimeDoctorSubprocessProbeFactory,
+} from "../../runtime/doctor-types";
 import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { BrowserProvider } from "./browser/provider";
 import { CronProvider } from "./cron/provider";
+import { checkAcpAdapter, checkAcpBoundary, collectAcpSubprocessProbes } from "./delegation/doctor";
 import { DelegationProvider } from "./delegation/provider";
 import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegation/runtime";
 import { filesystemToolEventEnricher } from "./filesystem/audit";
+import { checkWorkspacePaths } from "./filesystem/doctor";
 import { FilesystemProvider } from "./filesystem/provider";
+import { collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
+import { checkMetaRuntimePersistence } from "./meta-runtime/doctor";
 import { MetaRuntimeProvider } from "./meta-runtime/provider";
 import { createPersistentGoalPlugin } from "./persistent-goal/session";
 import { SkillsProvider } from "./skills/provider";
@@ -90,6 +98,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: true,
     description: "Workspace filesystem state and file editing provider.",
     providerIds: ["filesystem"],
+    doctorChecks: () => [checkWorkspacePaths],
     toolEventEnrichers: () => [filesystemToolEventEnricher],
     createProviders: (config) => {
       const plugin = config.plugins.filesystem;
@@ -181,6 +190,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "Optional topology and self-evolution provider.",
     providerIds: ["meta-runtime"],
+    doctorChecks: () => [checkMetaRuntimePersistence],
     createProviders: (config) => {
       const plugin = config.plugins["meta-runtime"];
       const metaRuntime = new MetaRuntimeProvider({
@@ -309,6 +319,8 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "Delegated child-agent provider and wait tool.",
     providerIds: ["delegation"],
+    doctorChecks: () => [checkAcpAdapter, checkAcpBoundary],
+    doctorSubprocessProbes: () => [collectAcpSubprocessProbes],
     createProviders: (config) => {
       const delegation = new DelegationProvider({
         maxAgents: config.plugins.delegation.maxAgents,
@@ -462,6 +474,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "MCP compatibility provider.",
     providerIds: ["mcp"],
+    doctorSubprocessProbes: () => [collectMcpSubprocessProbes],
     createProviders: (config) => {
       const plugin = config.plugins.mcp;
       const mcp = new McpProvider({
@@ -524,4 +537,14 @@ export function createFirstPartyToolEventEnrichers(config: SloppyConfig): ToolEv
   return activeFirstPartyPlugins(config).flatMap(
     (plugin) => plugin.toolEventEnrichers?.(config) ?? [],
   );
+}
+
+export function createFirstPartyDoctorChecks(config: SloppyConfig): RuntimeDoctorCheckFactory[] {
+  return FIRST_PARTY_PLUGINS.flatMap((plugin) => plugin.doctorChecks?.(config) ?? []);
+}
+
+export function createFirstPartyDoctorSubprocessProbes(
+  config: SloppyConfig,
+): RuntimeDoctorSubprocessProbeFactory[] {
+  return FIRST_PARTY_PLUGINS.flatMap((plugin) => plugin.doctorSubprocessProbes?.(config) ?? []);
 }

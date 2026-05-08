@@ -122,6 +122,7 @@ describe("TUI node mappers", () => {
 
     expect(next.turn.state).toBe("running");
     expect(next.turn.canCancel).toBe(true);
+    expect(next.actionsByPath["/turn"]).toEqual(["cancel_turn"]);
     expect(next.transcript).toEqual([]);
   });
 
@@ -153,6 +154,16 @@ describe("TUI node mappers", () => {
                   description: "Persistent session goal controls",
                 },
               ],
+              palette: [
+                {
+                  id: "goal:pause",
+                  label: "Pause Goal",
+                  description: "Pause automatic goal continuation",
+                  path: "/goal",
+                  action: "pause_goal",
+                  whenActionAvailable: "pause_goal",
+                },
+              ],
               notifications: [
                 {
                   id: "goal-complete",
@@ -171,6 +182,16 @@ describe("TUI node mappers", () => {
     expect(next.plugins[0]?.id).toBe("persistent-goal");
     expect(next.plugins[0]?.sessionPaths).toEqual(["/goal"]);
     expect(next.plugins[0]?.tui.subscriptions?.[0]).toEqual({ path: "/goal", depth: 1 });
+    expect(next.plugins[0]?.tui.palette?.[0]).toEqual({
+      id: "goal:pause",
+      label: "Pause Goal",
+      description: "Pause automatic goal continuation",
+      path: "/goal",
+      action: "pause_goal",
+      params: undefined,
+      shortcut: undefined,
+      whenActionAvailable: "pause_goal",
+    });
     expect(next.plugins[0]?.tui.notifications?.[0]).toEqual({
       id: "goal-complete",
       path: "/goal",
@@ -355,6 +376,37 @@ describe("TUI local state", () => {
         canComplete: true,
         canClear: true,
       },
+      actionsByPath: {
+        "/goal": ["pause_goal", "complete_goal", "clear_goal"],
+      },
+      plugins: [
+        {
+          id: "persistent-goal",
+          version: "1.0.0",
+          status: "active",
+          sessionPaths: ["/goal"],
+          tui: {
+            palette: [
+              {
+                id: "goal:pause",
+                label: "Pause Goal",
+                description: "Pause automatic goal continuation",
+                path: "/goal",
+                action: "pause_goal",
+                whenActionAvailable: "pause_goal",
+              },
+              {
+                id: "goal:resume",
+                label: "Resume Goal",
+                description: "Resume automatic goal continuation",
+                path: "/goal",
+                action: "resume_goal",
+                whenActionAvailable: "resume_goal",
+              },
+            ],
+          },
+        },
+      ],
       queue: [
         {
           id: "msg-1",
@@ -431,7 +483,16 @@ describe("TUI local state", () => {
       route: "apps",
     });
     expect(byId.get("mouse:toggle")?.command).toEqual({ type: "mouse", mode: "off" });
-    expect(byId.get("goal:pause")?.command).toEqual({ type: "goal", action: "pause" });
+    expect(byId.get("plugin:persistent-goal:goal:pause")?.command).toEqual({
+      type: "plugin_action",
+      pluginId: "persistent-goal",
+      actionId: "goal:pause",
+      label: "Pause Goal",
+      path: "/goal",
+      action: "pause_goal",
+      params: undefined,
+    });
+    expect(byId.has("plugin:persistent-goal:goal:resume")).toBe(false);
     expect(byId.get("queue:msg-1")?.command).toEqual({
       type: "queue_cancel",
       target: "msg-1",

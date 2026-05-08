@@ -12,6 +12,7 @@ import type {
   PluginCommandContribution,
   PluginItem,
   PluginNotificationContribution,
+  PluginPaletteContribution,
   PluginTuiManifest,
   QueuedItem,
   SessionMeta,
@@ -95,6 +96,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
   plugins: [],
   queue: [],
   inspect: EMPTY_INSPECT,
+  actionsByPath: {},
 };
 
 function props(node: SlopNode | null | undefined): Record<string, unknown> {
@@ -151,6 +153,16 @@ function recordProp(source: Record<string, unknown>, key: string): Record<string
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function optionalRecordProp(
+  source: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = source[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function recordArray(value: unknown): Array<Record<string, unknown>> {
@@ -478,7 +490,28 @@ function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest
         },
       ];
     }),
-    palette: recordArray(value.palette),
+    palette: recordArray(value.palette).flatMap((entry): PluginPaletteContribution[] => {
+      const id = optionalStringProp(entry, "id");
+      const label = optionalStringProp(entry, "label");
+      const description = optionalStringProp(entry, "description");
+      const path = optionalStringProp(entry, "path");
+      const action = optionalStringProp(entry, "action");
+      if (!id || !label || !description || !path?.startsWith("/") || !action) {
+        return [];
+      }
+      return [
+        {
+          id,
+          label,
+          description,
+          path,
+          action,
+          params: optionalRecordProp(entry, "params"),
+          shortcut: optionalStringProp(entry, "shortcut"),
+          whenActionAvailable: optionalStringProp(entry, "whenActionAvailable"),
+        },
+      ];
+    }),
     status: recordArray(value.status),
     notifications: recordArray(value.notifications).flatMap(
       (entry): PluginNotificationContribution[] => {
@@ -515,35 +548,43 @@ export function applyPathSnapshot(
   path: string,
   node: SlopNode,
 ): SessionViewSnapshot {
+  const withActions = <T extends SessionViewSnapshot>(next: T): T => ({
+    ...next,
+    actionsByPath: {
+      ...snapshot.actionsByPath,
+      [path]: node.affordances?.map((affordance) => affordance.action) ?? [],
+    },
+  });
+
   switch (path) {
     case "/session":
-      return { ...snapshot, session: mapSessionNode(node) };
+      return withActions({ ...snapshot, session: mapSessionNode(node) });
     case "/llm":
-      return { ...snapshot, llm: mapLlmNode(node) };
+      return withActions({ ...snapshot, llm: mapLlmNode(node) });
     case "/usage":
-      return { ...snapshot, usage: mapUsageNode(node) };
+      return withActions({ ...snapshot, usage: mapUsageNode(node) });
     case "/turn":
-      return { ...snapshot, turn: mapTurnNode(node) };
+      return withActions({ ...snapshot, turn: mapTurnNode(node) });
     case "/goal":
-      return { ...snapshot, goal: mapGoalNode(node) };
+      return withActions({ ...snapshot, goal: mapGoalNode(node) });
     case "/composer":
-      return { ...snapshot, composer: mapComposerNode(node) };
+      return withActions({ ...snapshot, composer: mapComposerNode(node) });
     case "/transcript":
-      return { ...snapshot, transcript: mapTranscriptNode(node) };
+      return withActions({ ...snapshot, transcript: mapTranscriptNode(node) });
     case "/activity":
-      return { ...snapshot, activity: mapActivityNode(node) };
+      return withActions({ ...snapshot, activity: mapActivityNode(node) });
     case "/approvals":
-      return { ...snapshot, approvals: mapApprovalsNode(node) };
+      return withActions({ ...snapshot, approvals: mapApprovalsNode(node) });
     case "/tasks":
-      return { ...snapshot, tasks: mapTasksNode(node) };
+      return withActions({ ...snapshot, tasks: mapTasksNode(node) });
     case "/apps":
-      return { ...snapshot, apps: mapAppsNode(node) };
+      return withActions({ ...snapshot, apps: mapAppsNode(node) });
     case "/plugins":
-      return { ...snapshot, plugins: mapPluginsNode(node) };
+      return withActions({ ...snapshot, plugins: mapPluginsNode(node) });
     case "/queue":
-      return { ...snapshot, queue: mapQueueNode(node) };
+      return withActions({ ...snapshot, queue: mapQueueNode(node) });
     default:
-      return snapshot;
+      return withActions(snapshot);
   }
 }
 

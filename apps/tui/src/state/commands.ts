@@ -37,6 +37,15 @@ export type LocalCommand =
       targetId: string;
     }
   | {
+      type: "plugin_action";
+      pluginId: string;
+      actionId: string;
+      label: string;
+      path: string;
+      action: string;
+      params?: Record<string, unknown>;
+    }
+  | {
       type: "profile";
       profileId?: string;
       label?: string;

@@ -728,6 +728,9 @@ export function App(props: AppProps) {
             message: `Invoked ${command.action} at ${command.targetId}:${command.path}.`,
           });
           return;
+        case "plugin_action":
+          await runPluginAction(command);
+          return;
         case "profile":
           await props.client.saveProfile(command);
           pushNotice({ kind: "ok", message: `Saved ${command.provider} profile.` });
@@ -755,6 +758,31 @@ export function App(props: AppProps) {
     } catch (error) {
       pushNotice({ kind: "error", message: errorMessage(error) });
     }
+  }
+
+  async function runPluginAction(
+    command: Extract<LocalCommand, { type: "plugin_action" }>,
+  ): Promise<void> {
+    const result = await props.client.invokeSessionAction(
+      command.path,
+      command.action,
+      command.params,
+    );
+    if (result.status === "error") {
+      pushNotice({
+        kind: "error",
+        message:
+          result.error?.message ??
+          `${command.pluginId} action '${command.actionId}' failed at ${command.path}.`,
+      });
+      return;
+    }
+
+    pushNotice({
+      kind: result.status === "accepted" ? "info" : "ok",
+      message:
+        result.status === "accepted" ? `${command.label} accepted.` : `${command.label} requested.`,
+    });
   }
 
   async function runRuntimeCommand(

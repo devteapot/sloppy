@@ -1,38 +1,26 @@
-import { constants, type Dirent, existsSync } from "node:fs";
-import { access, lstat, mkdir, open, readdir, stat, unlink } from "node:fs/promises";
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { type Dirent, existsSync } from "node:fs";
+import { lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { getHomeConfigPath, getWorkspaceConfigPath, loadConfigFromPaths } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { CredentialStore } from "../llm/credential-store";
 import { LlmProfileManager } from "../llm/profile-manager";
-import { readPersistedMetaState } from "../plugins/first-party/meta-runtime/meta-runtime-storage";
-import { isWithinRoot, safeRealpath } from "../providers/path-containment";
+import {
+  createFirstPartyDoctorChecks,
+  createFirstPartyDoctorSubprocessProbes,
+} from "../plugins/first-party/catalog";
 import { loadPersistedSessionSnapshot } from "../session/store/persistence";
-import { AcpSessionAgent } from "./acp";
+import { findExecutable } from "./doctor-helpers";
+import type {
+  RuntimeDoctorCheck,
+  RuntimeDoctorContext,
+  RuntimeDoctorOptions,
+  RuntimeDoctorResult,
+  RuntimeDoctorSubprocessProbe,
+} from "./doctor-types";
 
-export type RuntimeDoctorCheck = {
-  id: string;
-  status: "ok" | "warning" | "error" | "skipped";
-  summary: string;
-  detail?: string;
-};
-
-export type RuntimeDoctorOptions = {
-  workspaceRoot?: string;
-  config?: SloppyConfig;
-  litellmUrl?: string;
-  acpAdapterId?: string;
-  timeoutMs?: number;
-  credentialStore?: CredentialStore;
-  eventLogPath?: string;
-  socketPath?: string;
-};
-
-export type RuntimeDoctorResult = {
-  workspaceRoot: string;
-  checks: RuntimeDoctorCheck[];
-};
+export type { RuntimeDoctorCheck, RuntimeDoctorOptions, RuntimeDoctorResult } from "./doctor-types";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -143,172 +131,9 @@ async function checkSocketPath(socketPath: string | undefined): Promise<RuntimeD
   }
 }
 
-async function assertDirectory(path: string, label: string): Promise<string | null> {
-  try {
-    const info = await stat(path);
-    if (!info.isDirectory()) {
-      return `${label} is not a directory: ${path}`;
-    }
-    return null;
-  } catch (error) {
-    return `${label} is not readable as a directory at ${path}: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function expandDoctorCommandTemplate(value: string): string {
-  return value.replaceAll("{model}", "");
-}
-
-function commandHasPathSeparator(command: string): boolean {
-  return command.includes("/") || command.includes("\\");
-}
-
-function resolveCommandPath(command: string, cwd: string): string {
-  return isAbsolute(command) ? command : resolve(cwd, command);
-}
-
-async function isExecutable(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function findExecutable(command: string, cwd: string): Promise<string | null> {
-  if (commandHasPathSeparator(command)) {
-    const path = resolveCommandPath(command, cwd);
-    return (await isExecutable(path)) ? path : null;
-  }
-
-  const pathEntries = (process.env.PATH ?? "")
-    .split(delimiter)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  for (const pathEntry of pathEntries) {
-    const candidate = resolve(pathEntry, command);
-    if (await isExecutable(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-async function checkWorkspacePaths(
-  config: SloppyConfig,
-  workspaceRoot: string,
-): Promise<RuntimeDoctorCheck> {
-  const filesystemRoot = resolve(workspaceRoot, config.plugins.filesystem.root);
-  const terminalCwd = resolve(workspaceRoot, config.plugins.terminal.cwd);
-  const errors: string[] = [];
-
-  const filesystemError = await assertDirectory(filesystemRoot, "Filesystem root");
-  if (filesystemError) {
-    errors.push(filesystemError);
-  }
-
-  if (config.plugins.terminal.enabled) {
-    const terminalError = await assertDirectory(terminalCwd, "Terminal cwd");
-    if (terminalError) {
-      errors.push(terminalError);
-    }
-
-    const realFilesystemRoot = safeRealpath(filesystemRoot);
-    if (!filesystemError && !terminalError && realFilesystemRoot) {
-      if (!isWithinRoot(realFilesystemRoot, terminalCwd)) {
-        errors.push(
-          `Terminal cwd must stay inside the filesystem root. cwd=${terminalCwd} root=${filesystemRoot}`,
-        );
-      }
-    }
-  }
-
-  if (errors.length > 0) {
-    return {
-      id: "workspace-paths",
-      status: "error",
-      summary: `${errors.length} workspace path check(s) failed.`,
-      detail: errors.join("\n"),
-    };
-  }
-
-  return {
-    id: "workspace-paths",
-    status: "ok",
-    summary: config.plugins.terminal.enabled
-      ? `Filesystem root and terminal cwd are usable at ${filesystemRoot}.`
-      : `Filesystem root is usable at ${filesystemRoot}.`,
-    detail: config.plugins.terminal.enabled ? `terminal_cwd=${terminalCwd}` : undefined,
-  };
-}
-
-type SubprocessCommandProbe = {
-  label: string;
-  command: string;
-  cwd: string;
-};
-
-function shouldMcpServerConnectOnStart(
-  serverConnectOnStart: boolean | undefined,
-  providerConnectOnStart: boolean,
-): boolean {
-  return serverConnectOnStart ?? providerConnectOnStart;
-}
-
-function collectSubprocessCommandProbes(
-  config: SloppyConfig,
-  workspaceRoot: string,
-  adapterId: string | undefined,
-): SubprocessCommandProbe[] {
-  const probes: SubprocessCommandProbe[] = [];
-  if (adapterId) {
-    const acpConfig = config.plugins.delegation.acp;
-    const adapter = acpConfig?.enabled ? acpConfig.adapters[adapterId] : undefined;
-    const rawCommand = adapter?.command[0];
-    if (rawCommand) {
-      probes.push({
-        label: `acp:${adapterId}`,
-        command: expandDoctorCommandTemplate(rawCommand),
-        cwd: resolve(expandDoctorCommandTemplate(adapter.cwd ?? workspaceRoot)),
-      });
-    }
-  }
-
-  const mcpConfig = config.plugins.mcp;
-  if (config.plugins.mcp.enabled && mcpConfig) {
-    const providerConnectOnStart = mcpConfig.connectOnStart ?? true;
-    const filesystemRoot = resolve(workspaceRoot, config.plugins.filesystem.root);
-    for (const [serverId, server] of Object.entries(mcpConfig.servers)) {
-      if (server.transport !== "stdio") {
-        continue;
-      }
-      if (!shouldMcpServerConnectOnStart(server.connectOnStart, providerConnectOnStart)) {
-        continue;
-      }
-
-      const rawCommand = server.command[0];
-      if (rawCommand) {
-        probes.push({
-          label: `mcp:${serverId}`,
-          command: rawCommand,
-          cwd: resolve(filesystemRoot, server.cwd ?? "."),
-        });
-      }
-    }
-  }
-
-  return probes;
-}
-
 async function checkSubprocessCommands(
-  config: SloppyConfig,
-  workspaceRoot: string,
-  adapterId: string | undefined,
+  probes: RuntimeDoctorSubprocessProbe[],
 ): Promise<RuntimeDoctorCheck> {
-  const probes = collectSubprocessCommandProbes(config, workspaceRoot, adapterId);
   if (probes.length === 0) {
     return {
       id: "subprocess-commands",
@@ -502,47 +327,6 @@ async function checkSessionPersistence(
   };
 }
 
-async function checkMetaRuntimePersistence(config: SloppyConfig): Promise<RuntimeDoctorCheck> {
-  const paths = [
-    join(config.plugins["meta-runtime"].globalRoot, "state.json"),
-    join(config.plugins["meta-runtime"].workspaceRoot, "state.json"),
-  ];
-  const existingPaths = paths.filter((path) => existsSync(path));
-  if (existingPaths.length === 0) {
-    return {
-      id: "meta-runtime-persistence",
-      status: config.plugins["meta-runtime"].enabled ? "ok" : "skipped",
-      summary: config.plugins["meta-runtime"].enabled
-        ? "No persisted meta-runtime state files found; they will be created on first write."
-        : "Meta-runtime is disabled and no persisted state files were found.",
-    };
-  }
-
-  const errors: string[] = [];
-  for (const path of existingPaths) {
-    try {
-      readPersistedMetaState(dirname(path));
-    } catch (error) {
-      errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  if (errors.length > 0) {
-    return {
-      id: "meta-runtime-persistence",
-      status: "error",
-      summary: `${errors.length} persisted meta-runtime state file(s) could not be loaded.`,
-      detail: errors.join("\n"),
-    };
-  }
-
-  return {
-    id: "meta-runtime-persistence",
-    status: "ok",
-    summary: `${existingPaths.length} persisted meta-runtime state file(s) use the current schema envelope.`,
-  };
-}
-
 async function checkOpenAiCompatibleUrl(
   baseUrl: string | undefined,
   timeoutMs: number,
@@ -599,117 +383,6 @@ async function checkOpenAiCompatibleUrl(
   }
 }
 
-async function checkAcpAdapter(
-  config: SloppyConfig,
-  workspaceRoot: string,
-  adapterId: string | undefined,
-  timeoutMs: number,
-): Promise<RuntimeDoctorCheck> {
-  if (!adapterId) {
-    return {
-      id: "acp",
-      status: "skipped",
-      summary: "No ACP adapter id provided.",
-    };
-  }
-
-  const acpConfig = config.plugins.delegation.acp;
-  const adapter = acpConfig?.adapters[adapterId];
-  if (!acpConfig?.enabled || !adapter) {
-    return {
-      id: "acp",
-      status: "error",
-      summary: `ACP adapter '${adapterId}' is not enabled or configured.`,
-    };
-  }
-
-  const command = expandDoctorCommandTemplate(adapter.command[0] ?? "").trim();
-  const cwd = resolve(expandDoctorCommandTemplate(adapter.cwd ?? workspaceRoot));
-  if (!command || !(await findExecutable(command, cwd))) {
-    return {
-      id: "acp",
-      status: "error",
-      summary: `ACP adapter '${adapterId}' command is not executable.`,
-      detail: command
-        ? `command='${command}' cwd=${cwd}`
-        : "Adapter command is empty after template expansion.",
-    };
-  }
-
-  const agent = new AcpSessionAgent({
-    adapterId,
-    adapter: { ...adapter, timeoutMs: adapter.timeoutMs ?? timeoutMs },
-    callbacks: {},
-    workspaceRoot,
-    defaultTimeoutMs: timeoutMs,
-  });
-  try {
-    await agent.start();
-    return {
-      id: "acp",
-      status: "ok",
-      summary: `ACP adapter '${adapterId}' completed startup.`,
-    };
-  } catch (error) {
-    return {
-      id: "acp",
-      status: "error",
-      summary: `ACP adapter '${adapterId}' failed startup.`,
-      detail: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    agent.shutdown();
-  }
-}
-
-function checkAcpBoundary(config: SloppyConfig, adapterId: string | undefined): RuntimeDoctorCheck {
-  if (!adapterId) {
-    return {
-      id: "acp-boundary",
-      status: "skipped",
-      summary: "No ACP adapter id provided.",
-    };
-  }
-
-  const adapter = config.plugins.delegation.acp?.adapters[adapterId];
-  if (!adapter) {
-    return {
-      id: "acp-boundary",
-      status: "skipped",
-      summary: `ACP adapter '${adapterId}' is not configured.`,
-    };
-  }
-
-  const notes: string[] = [];
-  if (adapter.inheritEnv === true) {
-    notes.push("inherits the full Sloppy process environment");
-  }
-  if (adapter.allowCwdOutsideWorkspace === true) {
-    notes.push("can launch outside the workspace root");
-  }
-  if (!adapter.capabilities) {
-    notes.push("has no declared adapter capabilities");
-  }
-
-  if (notes.length > 0) {
-    return {
-      id: "acp-boundary",
-      status: "warning",
-      summary: `ACP adapter '${adapterId}' ${notes.join(" and ")}.`,
-      detail:
-        "ACP capability declarations and environment filtering are runtime guardrails, not an OS sandbox. Use a separate OS sandbox/container for untrusted adapters.",
-    };
-  }
-
-  return {
-    id: "acp-boundary",
-    status: "ok",
-    summary: `ACP adapter '${adapterId}' uses Sloppy's minimal environment boundary and declares capabilities.`,
-    detail:
-      "This does not sandbox local filesystem or network access by itself; it only constrains Sloppy-exposed provider routing and ambient environment inheritance.",
-  };
-}
-
 export async function runRuntimeDoctor(
   options: RuntimeDoctorOptions = {},
 ): Promise<RuntimeDoctorResult> {
@@ -719,19 +392,28 @@ export async function runRuntimeDoctor(
   const litellmUrl =
     options.litellmUrl ??
     (isOpenAiCompatibleDoctorProvider(config.llm.provider) ? config.llm.baseUrl : undefined);
+  const context: RuntimeDoctorContext = {
+    config,
+    workspaceRoot,
+    options,
+    timeoutMs,
+  };
+  const subprocessProbeLists = await Promise.all(
+    createFirstPartyDoctorSubprocessProbes(config).map((factory) => factory(context)),
+  );
+  const subprocessProbes = subprocessProbeLists.flat();
 
   const checks = await Promise.all([
     checkLlmProfile(config, options.credentialStore),
-    checkWorkspacePaths(config, workspaceRoot),
-    checkSubprocessCommands(config, workspaceRoot, options.acpAdapterId),
     checkAuditLogPath(options.eventLogPath),
     checkSocketPath(options.socketPath),
     checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
-    checkAcpAdapter(config, workspaceRoot, options.acpAdapterId, timeoutMs),
     checkSessionPersistence(config, workspaceRoot),
   ]);
-  checks.push(checkAcpBoundary(config, options.acpAdapterId));
-  checks.push(await checkMetaRuntimePersistence(config));
+  checks.push(await checkSubprocessCommands(subprocessProbes));
+  checks.push(
+    ...(await Promise.all(createFirstPartyDoctorChecks(config).map((factory) => factory(context)))),
+  );
 
   return {
     workspaceRoot,
