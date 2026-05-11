@@ -476,6 +476,8 @@ plugins:
     enabled: true
   meta-runtime:
     enabled: true
+    globalRoot: ~/.sloppy/meta-runtime
+    workspaceRoot: .sloppy/meta-runtime
   spec:
     enabled: true
   workspaces:
@@ -486,9 +488,6 @@ plugins:
     externalDirs: []
     templateVars: true
     viewMaxBytes: 65536
-  meta-runtime:
-    globalRoot: ~/.sloppy/meta-runtime
-    workspaceRoot: .sloppy/meta-runtime
   mcp:
     enabled: true
     connectOnStart: true

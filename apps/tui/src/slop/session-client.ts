@@ -22,12 +22,13 @@ import type {
   SessionViewSnapshot,
 } from "./types";
 
-const SUBSCRIPTIONS: Array<{ path: string; depth: number; optional?: boolean }> = [
+type SessionSubscription = { path: string; depth: number; optional?: boolean };
+
+const SUBSCRIPTIONS: SessionSubscription[] = [
   { path: "/session", depth: 1 },
   { path: "/llm", depth: 2 },
   { path: "/usage", depth: 1 },
   { path: "/turn", depth: 1 },
-  { path: "/goal", depth: 1 },
   { path: "/composer", depth: 1 },
   { path: "/transcript", depth: 3 },
   { path: "/activity", depth: 2 },
@@ -38,12 +39,16 @@ const SUBSCRIPTIONS: Array<{ path: string; depth: number; optional?: boolean }> 
   { path: "/queue", depth: 2 },
 ];
 
+const STATIC_SUBSCRIPTION_PATHS = new Set(SUBSCRIPTIONS.map((subscription) => subscription.path));
+
 export class SessionClient {
   private consumer: SlopConsumer | null = null;
   private connectPromise: Promise<SessionViewSnapshot> | null = null;
   private snapshot: SessionViewSnapshot;
   private listeners = new Set<SessionClientListener>();
   private pathBySubscriptionId = new Map<string, string>();
+  private subscriptionByPath = new Map<string, { id: string; depth: number; dynamic: boolean }>();
+  private pluginSubscriptionSync: Promise<void> = Promise.resolve();
   private inspectConsumers = new Map<string, SlopConsumer>();
 
   constructor(private socketPath: string) {
@@ -78,6 +83,8 @@ export class SessionClient {
     this.consumer?.disconnect();
     this.consumer = null;
     this.pathBySubscriptionId.clear();
+    this.subscriptionByPath.clear();
+    this.pluginSubscriptionSync = Promise.resolve();
     this.updateSnapshot(
       withConnectionState(this.snapshot, {
         status: "connecting",
@@ -103,6 +110,9 @@ export class SessionClient {
         const tree = consumer.getTree(subscriptionId);
         if (path && tree) {
           this.updateSnapshot(applyPathSnapshot(this.snapshot, path, tree));
+          if (path === "/plugins") {
+            this.queuePluginSubscriptionSync(consumer);
+          }
         }
       });
       consumer.on("disconnect", () => {
@@ -111,6 +121,8 @@ export class SessionClient {
         }
         this.consumer = null;
         this.pathBySubscriptionId.clear();
+        this.subscriptionByPath.clear();
+        this.pluginSubscriptionSync = Promise.resolve();
         this.updateSnapshot(
           withConnectionState(this.snapshot, {
             status: "disconnected",
@@ -125,20 +137,14 @@ export class SessionClient {
       });
 
       for (const subscription of SUBSCRIPTIONS) {
-        const result = await consumer
-          .subscribe(subscription.path, subscription.depth)
-          .catch((error: unknown) => {
-            if (subscription.optional) {
-              return null;
-            }
-            throw error;
-          });
+        const result = await this.subscribePath(consumer, subscription, false);
         if (!result) {
           continue;
         }
-        const { id, snapshot } = result;
-        this.pathBySubscriptionId.set(id, subscription.path);
-        this.updateSnapshot(applyPathSnapshot(this.snapshot, subscription.path, snapshot));
+        this.updateSnapshot(applyPathSnapshot(this.snapshot, subscription.path, result.snapshot));
+        if (subscription.path === "/plugins") {
+          await this.syncPluginSubscriptions(consumer);
+        }
       }
 
       return this.snapshot;
@@ -162,6 +168,8 @@ export class SessionClient {
     }
     this.inspectConsumers.clear();
     this.pathBySubscriptionId.clear();
+    this.subscriptionByPath.clear();
+    this.pluginSubscriptionSync = Promise.resolve();
     this.updateSnapshot(
       withConnectionState(this.snapshot, {
         status: "disconnected",
@@ -177,6 +185,8 @@ export class SessionClient {
     }
     this.inspectConsumers.clear();
     this.pathBySubscriptionId.clear();
+    this.subscriptionByPath.clear();
+    this.pluginSubscriptionSync = Promise.resolve();
     this.socketPath = socketPath;
     this.updateSnapshot(
       withConnectionState(EMPTY_SESSION_VIEW, {
@@ -341,6 +351,90 @@ export class SessionClient {
       throw new Error("Session client is not connected.");
     }
     return this.consumer;
+  }
+
+  private async subscribePath(
+    consumer: SlopConsumer,
+    subscription: SessionSubscription,
+    dynamic: boolean,
+  ): Promise<{ id: string; snapshot: SlopNode } | null> {
+    const existing = this.subscriptionByPath.get(subscription.path);
+    if (existing && existing.depth >= subscription.depth) {
+      return null;
+    }
+    if (existing) {
+      consumer.unsubscribe(existing.id);
+      this.pathBySubscriptionId.delete(existing.id);
+      this.subscriptionByPath.delete(subscription.path);
+    }
+
+    try {
+      const result = await consumer.subscribe(subscription.path, subscription.depth);
+      if (this.consumer !== consumer) {
+        consumer.unsubscribe(result.id);
+        return null;
+      }
+      this.pathBySubscriptionId.set(result.id, subscription.path);
+      this.subscriptionByPath.set(subscription.path, {
+        id: result.id,
+        depth: subscription.depth,
+        dynamic,
+      });
+      return result;
+    } catch (error) {
+      if (subscription.optional) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private queuePluginSubscriptionSync(consumer: SlopConsumer): void {
+    this.pluginSubscriptionSync = this.pluginSubscriptionSync
+      .catch(() => undefined)
+      .then(() => this.syncPluginSubscriptions(consumer));
+    this.pluginSubscriptionSync.catch((error: unknown) => {
+      this.emit({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async syncPluginSubscriptions(consumer: SlopConsumer): Promise<void> {
+    if (this.consumer !== consumer) {
+      return;
+    }
+
+    const desired = new Map<string, number>();
+    for (const plugin of this.snapshot.plugins) {
+      if (plugin.status !== "active") {
+        continue;
+      }
+      for (const subscription of plugin.tui.subscriptions ?? []) {
+        desired.set(
+          subscription.path,
+          Math.max(desired.get(subscription.path) ?? 0, subscription.depth),
+        );
+      }
+    }
+
+    for (const [path, subscription] of this.subscriptionByPath) {
+      if (!subscription.dynamic || desired.has(path) || STATIC_SUBSCRIPTION_PATHS.has(path)) {
+        continue;
+      }
+      consumer.unsubscribe(subscription.id);
+      this.pathBySubscriptionId.delete(subscription.id);
+      this.subscriptionByPath.delete(path);
+    }
+
+    for (const [path, depth] of desired) {
+      const result = await this.subscribePath(consumer, { path, depth, optional: true }, true);
+      if (!result) {
+        continue;
+      }
+      this.updateSnapshot(applyPathSnapshot(this.snapshot, path, result.snapshot));
+    }
   }
 
   private async resolveInspectTarget(targetId: string): Promise<{

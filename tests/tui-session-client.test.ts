@@ -31,6 +31,26 @@ afterEach(() => {
   }
 });
 
+function registerMinimalSessionNodes(
+  server: ReturnType<typeof createSlopServer>,
+  options: { includeGoal?: boolean } = {},
+): void {
+  server.register("session", { type: "context", props: { session_id: "sess-minimal" } });
+  server.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
+  server.register("usage", { type: "context", props: {} });
+  server.register("turn", { type: "status", props: { state: "idle" } });
+  if (options.includeGoal) {
+    server.register("goal", { type: "control", props: { exists: false, status: "none" } });
+  }
+  server.register("composer", { type: "control", props: { ready: true } });
+  server.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("activity", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("apps", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("queue", { type: "collection", props: { count: 0 }, items: [] });
+}
+
 describe("TUI node mappers", () => {
   test("maps transcript content and affordance availability from SLOP nodes", () => {
     const transcript = mapTranscriptNode({
@@ -687,6 +707,37 @@ describe("TUI local state", () => {
     expect(parseLocalCommand("/goal")).toEqual({ type: "goal", action: "show" });
   });
 
+  test("slash catalog exposes supported meta-runtime commands", () => {
+    expect(buildSlashEntries().some((entry) => entry.name === "runtime")).toBe(false);
+    const plugins = [
+      {
+        id: "meta-runtime",
+        version: "1.0.0",
+        status: "active",
+        sessionPaths: [],
+        tui: {
+          commands: [
+            {
+              id: "runtime",
+              name: "runtime",
+              signature:
+                "[refresh|export|inspect <proposal-id>|apply <proposal-id>|revert <proposal-id>]",
+              description: "Open or manage meta-runtime proposals",
+            },
+          ],
+        },
+      },
+    ];
+    const entry = buildSlashEntries(plugins).find((item) => item.name === "runtime");
+
+    expect(entry?.signature).toContain("refresh");
+    expect(entry?.signature).toContain("export");
+    expect(entry?.signature).toContain("inspect <proposal-id>");
+    expect(entry?.signature).toContain("apply <proposal-id>");
+    expect(entry?.signature).toContain("revert <proposal-id>");
+    expect(matchSlashEntries("/run", 8, plugins)[0]?.entry.name).toBe("runtime");
+  });
+
   test("reconcileInitialRoute lands on setup once when /llm reports needs_credentials", () => {
     let state: { firstStatusSeen: boolean; route: TuiRoute } = {
       firstStatusSeen: false,
@@ -748,6 +799,91 @@ describe("TUI local state", () => {
 });
 
 describe("SessionClient", () => {
+  test("connects when plugin-owned goal path is absent", async () => {
+    const socketPath = `/tmp/slop/tui-no-goal-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+
+    registerMinimalSessionNodes(server);
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      const snapshot = await client.connect();
+
+      expect(snapshot.connection.status).toBe("connected");
+      expect(snapshot.goal.exists).toBe(false);
+      expect(snapshot.plugins).toEqual([]);
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("subscribes to active plugin manifest paths for palette gating", async () => {
+    const socketPath = `/tmp/slop/tui-plugin-subscriptions-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+
+    registerMinimalSessionNodes(server);
+    server.register("plugins", {
+      type: "collection",
+      props: { count: 1, ui_manifest_version: 1 },
+      items: [
+        {
+          id: "custom-plugin",
+          props: {
+            id: "custom-plugin",
+            version: "1.0.0",
+            status: "active",
+            tui: {
+              subscriptions: [{ path: "/custom", depth: 1 }],
+              palette: [
+                {
+                  id: "custom:run",
+                  label: "Run Custom Action",
+                  description: "Invoke a plugin-owned custom affordance",
+                  path: "/custom",
+                  action: "do_it",
+                  whenActionAvailable: "do_it",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    server.register("custom", {
+      type: "control",
+      props: { ready: true },
+      actions: {
+        do_it: action({}, async () => ({ ok: true }), { label: "Do It" }),
+      },
+    });
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      const snapshot = await client.connect();
+      const commands = buildCommandPaletteCommands(snapshot, false);
+
+      expect(snapshot.actionsByPath["/custom"]).toEqual(["do_it"]);
+      expect(
+        commands.find((command) => command.id === "plugin:custom-plugin:custom:run"),
+      ).toMatchObject({
+        label: "Run Custom Action",
+        command: {
+          type: "plugin_action",
+          pluginId: "custom-plugin",
+          actionId: "custom:run",
+          path: "/custom",
+          action: "do_it",
+        },
+      });
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
   test("subscribes to the public session provider shape and invokes composer affordances", async () => {
     const socketPath = `/tmp/slop/tui-client-test-${crypto.randomUUID()}.sock`;
     const sentMessages: string[] = [];

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import YAML from "yaml";
 
-import { loadConfig, loadScopedConfig } from "../src/config/load";
+import { loadConfig, loadConfigFromLayerPaths, loadScopedConfig } from "../src/config/load";
 
 const tempPaths: string[] = [];
 const originalCwd = process.cwd();
@@ -89,6 +90,55 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
+  test("checked-in config example is loadable", async () => {
+    const home = await createTempDir("sloppy-home-");
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    delete process.env.SLOPPY_MAX_ITERATIONS;
+
+    const config = await loadConfigFromLayerPaths(
+      [resolve(originalCwd, ".sloppy/config.example.yaml")],
+      { cwd: originalCwd },
+    );
+
+    expect(config.plugins["meta-runtime"].enabled).toBe(true);
+    expect(config.plugins.messaging.enabled).toBe(true);
+    expect(config.plugins.delegation.enabled).toBe(true);
+    expect(config.plugins.delegation.acp?.enabled).toBe(true);
+    expect(config.plugins.mcp.enabled).toBe(true);
+    expect(config.plugins.a2a.enabled).toBe(true);
+    expect(config.plugins.workspaces.enabled).toBe(true);
+    expect(config.providers.discovery.enabled).toBe(true);
+  });
+
+  test("README plugin config example parses without duplicate keys", async () => {
+    const readme = await readFile(resolve(originalCwd, "README.md"), "utf8");
+    const sectionStart = readme.indexOf("First-party plugins default to a lean set");
+    const blockStart = readme.indexOf("```yaml", sectionStart);
+    const blockEnd = readme.indexOf("```", blockStart + "```yaml".length);
+    const block = readme.slice(blockStart + "```yaml".length, blockEnd).trim();
+    const parsed = YAML.parse(block) as {
+      plugins?: {
+        "meta-runtime"?: {
+          enabled?: boolean;
+          globalRoot?: string;
+          workspaceRoot?: string;
+        };
+      };
+    };
+
+    expect(parsed.plugins?.["meta-runtime"]).toEqual({
+      enabled: true,
+      globalRoot: "~/.sloppy/meta-runtime",
+      workspaceRoot: ".sloppy/meta-runtime",
+    });
+  });
+
   test("applies provider-specific defaults for OpenRouter", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

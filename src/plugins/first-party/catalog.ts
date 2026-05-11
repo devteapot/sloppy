@@ -190,6 +190,17 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "Optional topology and self-evolution provider.",
     providerIds: ["meta-runtime"],
+    tui: {
+      commands: [
+        {
+          id: "runtime",
+          name: "runtime",
+          signature:
+            "[refresh|export|inspect <proposal-id>|apply <proposal-id>|revert <proposal-id>]",
+          description: "Open or manage meta-runtime proposals",
+        },
+      ],
+    },
     doctorChecks: () => [checkMetaRuntimePersistence],
     createProviders: (config) => {
       const plugin = config.plugins["meta-runtime"];

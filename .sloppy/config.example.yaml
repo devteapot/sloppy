@@ -12,37 +12,13 @@ session:
   persistSnapshots: true
   persistenceDir: .sloppy/sessions
 
-providers:
-  builtin:
-    metaRuntime: true
-    messaging: true
-    delegation: true
-    mcp: true
-    workspaces: true
-    a2a: true
-  mcp:
-    connectOnStart: true
-    servers:
-      local-demo:
-        transport: stdio
-        command: ["bunx", "my-mcp-server"]
-        cwd: .
-        envAllowlist: ["MY_MCP_TOKEN"]
-      hosted-demo:
-        transport: streamableHttp
-        url: https://mcp.example.test/mcp
-        headers:
-          x-api-key: <token>
-  a2a:
-    fetchOnStart: true
-    agents:
-      planner:
-        cardUrl: https://agent.example/.well-known/agent-card.json
-        bearerTokenEnv: A2A_AGENT_TOKEN
-      local-bridge:
-        url: https://agent.example/a2a/rpc
-        protocolVersion: "1.0"
+plugins:
+  meta-runtime:
+    enabled: true
+  messaging:
+    enabled: true
   delegation:
+    enabled: true
     acp:
       enabled: true
       defaultTimeoutMs: 600000
@@ -64,6 +40,32 @@ providers:
             network_allowed: true
             filesystem_reads_allowed: true
             filesystem_writes_allowed: true
+  mcp:
+    enabled: true
+    connectOnStart: true
+    servers:
+      local-demo:
+        transport: stdio
+        command: ["bunx", "my-mcp-server"]
+        cwd: .
+        envAllowlist: ["MY_MCP_TOKEN"]
+      hosted-demo:
+        transport: streamableHttp
+        url: https://mcp.example.test/mcp
+        headers:
+          x-api-key: <token>
+  a2a:
+    enabled: true
+    fetchOnStart: true
+    agents:
+      planner:
+        cardUrl: https://agent.example/.well-known/agent-card.json
+        bearerTokenEnv: A2A_AGENT_TOKEN
+      local-bridge:
+        url: https://agent.example/a2a/rpc
+        protocolVersion: "1.0"
+  workspaces:
+    enabled: true
 
 workspaces:
   activeWorkspaceId: sloppy

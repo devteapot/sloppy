@@ -2034,6 +2034,15 @@ describe("AgentSessionProvider", () => {
       await runtime.start();
       await consumer.connect();
 
+      const plugins = await consumer.query("/plugins", 2);
+      const metaPlugin = plugins.children?.find((item) => item.id === "meta-runtime");
+      const metaTui = metaPlugin?.properties?.tui as
+        | { commands?: Array<{ name?: string; signature?: string }> }
+        | undefined;
+      const runtimeCommand = metaTui?.commands?.find((command) => command.name === "runtime");
+      expect(runtimeCommand?.signature).toContain("refresh");
+      expect(runtimeCommand?.signature).toContain("revert <proposal-id>");
+
       const apps = await consumer.query("/apps", 1);
       expect(apps.affordances?.some((affordance) => affordance.action === "query_provider")).toBe(
         true,
