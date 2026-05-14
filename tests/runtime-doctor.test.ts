@@ -111,6 +111,80 @@ describe("runtime doctor", () => {
     }
   });
 
+  test("reports missing voice OpenAI credentials", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-voice-"));
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const result = await runRuntimeDoctor({
+        config: createTestConfig({
+          plugins: {
+            terminal: { enabled: false },
+            voice: { enabled: true },
+          },
+        }),
+        workspaceRoot,
+      });
+
+      const voiceCheck = result.checks.find((check) => check.id === "voice-adapters");
+      expect(voiceCheck).toMatchObject({
+        id: "voice-adapters",
+        status: "warning",
+      });
+      expect(voiceCheck?.detail).toContain("OPENAI_API_KEY");
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("reports missing voice local adapter commands through subprocess probes", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-voice-local-"));
+    try {
+      const result = await runRuntimeDoctor({
+        config: createTestConfig({
+          plugins: {
+            terminal: { enabled: false },
+            voice: {
+              enabled: true,
+              input: {
+                adapterId: "local-stt",
+                model: "base.en",
+                language: "en",
+              },
+              output: {
+                adapterId: "local-tts",
+                model: "local",
+                voice: "default",
+                format: "wav",
+              },
+              adapters: {
+                "local-stt": {
+                  kind: "local-stt-command",
+                  command: ["missing-sloppy-voice-stt-command", "{input}"],
+                  output: "stdout-text",
+                },
+                "local-tts": {
+                  kind: "local-tts-command",
+                  command: ["missing-sloppy-voice-tts-command", "{output}"],
+                },
+              },
+            },
+          },
+        }),
+        workspaceRoot,
+      });
+
+      const subprocessCheck = result.checks.find((check) => check.id === "subprocess-commands");
+      expect(subprocessCheck).toMatchObject({
+        id: "subprocess-commands",
+        status: "error",
+      });
+      expect(subprocessCheck?.detail).toContain("voice:local-stt");
+      expect(subprocessCheck?.detail).toContain("voice:local-tts");
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("checks configured runtime audit log writability", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-audit-"));
     const eventLogPath = join(workspaceRoot, "logs/events.jsonl");

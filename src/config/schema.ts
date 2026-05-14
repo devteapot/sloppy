@@ -264,6 +264,147 @@ const visionPluginConfigSchema = z
     defaultHeight: 512,
   });
 
+const voiceOpenAiTranscribeAdapterConfigSchema = z.object({
+  kind: z.literal("openai-transcribe"),
+  apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
+});
+
+const voiceOpenAiTtsAdapterConfigSchema = z.object({
+  kind: z.literal("openai-tts"),
+  apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
+});
+
+const voiceLocalSttCommandAdapterConfigSchema = z.object({
+  kind: z.literal("local-stt-command"),
+  command: z.array(z.string().min(1)).min(1),
+  output: z.literal("stdout-text").default("stdout-text"),
+});
+
+const voiceLocalTtsCommandAdapterConfigSchema = z.object({
+  kind: z.literal("local-tts-command"),
+  command: z.array(z.string().min(1)).min(1),
+});
+
+const voiceAdapterConfigSchema = z.discriminatedUnion("kind", [
+  voiceOpenAiTranscribeAdapterConfigSchema,
+  voiceOpenAiTtsAdapterConfigSchema,
+  voiceLocalSttCommandAdapterConfigSchema,
+  voiceLocalTtsCommandAdapterConfigSchema,
+]);
+
+const voicePluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    media: z
+      .object({
+        host: z.string().min(1).default("127.0.0.1"),
+        port: z.number().int().min(0).max(65535).default(0),
+        maxUploadBytes: z.number().int().min(1024).default(25_000_000),
+      })
+      .default({
+        host: "127.0.0.1",
+        port: 0,
+        maxUploadBytes: 25_000_000,
+      }),
+    input: z
+      .object({
+        adapterId: z.string().min(1).default("openai-transcribe"),
+        model: z.string().min(1).default("gpt-4o-mini-transcribe"),
+        language: z.string().min(1).default("auto"),
+      })
+      .default({
+        adapterId: "openai-transcribe",
+        model: "gpt-4o-mini-transcribe",
+        language: "auto",
+      }),
+    output: z
+      .object({
+        adapterId: z.string().min(1).default("openai-tts"),
+        model: z.string().min(1).default("gpt-4o-mini-tts"),
+        voice: z.string().min(1).default("marin"),
+        format: z.enum(["mp3", "opus", "aac", "flac", "wav", "pcm"]).default("wav"),
+      })
+      .default({
+        adapterId: "openai-tts",
+        model: "gpt-4o-mini-tts",
+        voice: "marin",
+        format: "wav",
+      }),
+    adapters: z.record(z.string().min(1), voiceAdapterConfigSchema).default({
+      "openai-transcribe": {
+        kind: "openai-transcribe",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+      "openai-tts": {
+        kind: "openai-tts",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+    }),
+  })
+  .superRefine((config, ctx) => {
+    const inputAdapter = config.adapters[config.input.adapterId];
+    if (!inputAdapter) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["input", "adapterId"],
+        message: `Voice input adapter '${config.input.adapterId}' is not defined in plugins.voice.adapters.`,
+      });
+    } else if (
+      inputAdapter.kind !== "openai-transcribe" &&
+      inputAdapter.kind !== "local-stt-command"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["input", "adapterId"],
+        message: `Voice input adapter '${config.input.adapterId}' must be an STT adapter.`,
+      });
+    }
+
+    const outputAdapter = config.adapters[config.output.adapterId];
+    if (!outputAdapter) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["output", "adapterId"],
+        message: `Voice output adapter '${config.output.adapterId}' is not defined in plugins.voice.adapters.`,
+      });
+    } else if (outputAdapter.kind !== "openai-tts" && outputAdapter.kind !== "local-tts-command") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["output", "adapterId"],
+        message: `Voice output adapter '${config.output.adapterId}' must be a TTS adapter.`,
+      });
+    }
+  })
+  .default({
+    enabled: false,
+    media: {
+      host: "127.0.0.1",
+      port: 0,
+      maxUploadBytes: 25_000_000,
+    },
+    input: {
+      adapterId: "openai-transcribe",
+      model: "gpt-4o-mini-transcribe",
+      language: "auto",
+    },
+    output: {
+      adapterId: "openai-tts",
+      model: "gpt-4o-mini-tts",
+      voice: "marin",
+      format: "wav",
+    },
+    adapters: {
+      "openai-transcribe": {
+        kind: "openai-transcribe",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+      "openai-tts": {
+        kind: "openai-tts",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+    },
+  });
+
 const mcpPluginConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -312,6 +453,7 @@ const pluginsConfigSchema = z.preprocess(
     delegation: delegationPluginConfigSchema,
     spec: specPluginConfigSchema,
     vision: visionPluginConfigSchema,
+    voice: voicePluginConfigSchema,
     mcp: mcpPluginConfigSchema,
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,

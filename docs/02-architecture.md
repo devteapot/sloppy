@@ -42,8 +42,34 @@ Everything visible to the agent is a provider state tree with affordances:
   mutating affordances as sequential barriers
 
 Built-in capabilities are providers, not privileged runtime branches. Optional
-providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,
-`spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
+providers include `web`, `browser`, `cron`, `messaging`, `vision`, `voice`,
+`delegation`, `spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
+
+## Voice Pipeline
+
+The optional `voice` provider exposes speech-to-text and text-to-speech as a
+pipeline over the normal text session:
+
+- consumer UIs own microphone capture, speaker playback, push-to-talk, and
+  barge-in UX
+- the provider owns STT/TTS adapter selection, credentials, task state, and
+  audio content references
+- raw audio uses a loopback side channel returned by `open_stream`; SLOP carries
+  state, transcripts, affordances, task status, and content refs
+- final STT transcripts are submitted by the consumer UI through the existing
+  session `/composer.send_message` affordance
+- assistant text already streams through `/transcript`, and consumers may pass
+  those chunks to the provider's `/output.synthesize` affordance for TTS
+
+The checked-in `apps/sloppy-voice/` client is the first native consumer for this
+boundary. It is a macOS SwiftUI menu bar utility that attaches to an existing
+session/supervisor socket, records push-to-talk audio, uploads the final WAV to
+the voice provider's loopback media URL, submits finalized transcripts through
+the session composer, and speaks assistant replies for voice-initiated turns.
+
+This keeps v1 voice support out of the prompt-builder and LLM-adapter core. A
+future realtime speech-to-speech mode should be a separate realtime session
+surface rather than partial speech streamed into ordinary model prompts.
 
 ## MCP Compatibility
 

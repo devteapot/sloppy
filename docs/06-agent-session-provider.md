@@ -543,6 +543,13 @@ Rules:
 - item ids should match the external provider ids used by the runtime consumer hub
 - disconnected or failed attachments may remain visible with `last_error` while their descriptor is still present
 - `reconnect_provider` explicitly retries a disconnected or errored attachment and updates `/apps`; it does not add background orchestration or hidden restart policy
+- voice-capable consumer UIs should use `/apps.query_provider` and
+  `/apps.invoke_provider` to reach the optional `voice` provider, while still
+  submitting finalized speech through `/composer.send_message` and reading
+  assistant output from `/transcript`
+- `apps/sloppy-voice/` follows this rule as a native macOS menu bar consumer:
+  it attaches to an existing session/supervisor socket and does not receive a
+  private runtime API
 
 ### `/transcript`
 

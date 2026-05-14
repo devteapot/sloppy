@@ -33,6 +33,8 @@ import { SpecProvider } from "./spec/provider";
 import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
+import { checkVoiceAdapters, collectVoiceSubprocessProbes } from "./voice/doctor";
+import { VoiceProvider } from "./voice/provider";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
 
@@ -412,6 +414,60 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transportLabel: "in-process",
           stop: () => vision.stop(),
           approvals: vision.approvals,
+        }),
+      ];
+    },
+  },
+  {
+    id: "voice",
+    version: "1.0.0",
+    defaultEnabled: false,
+    description: "Speech-to-text and text-to-speech pipeline provider.",
+    providerIds: ["voice"],
+    tui: {
+      commands: [
+        {
+          id: "voice",
+          name: "voice",
+          signature: "[inspect|input|output|stop]",
+          description: "Inspect or control the voice pipeline provider",
+        },
+      ],
+      palette: [
+        {
+          id: "voice-stop-output",
+          label: "Stop Voice Output",
+          description: "Cancel active speech output.",
+          path: "/apps",
+          action: "invoke_provider",
+          params: {
+            provider_id: "voice",
+            path: "/output",
+            action: "cancel",
+          },
+        },
+      ],
+    },
+    doctorChecks: () => [checkVoiceAdapters],
+    doctorSubprocessProbes: () => [collectVoiceSubprocessProbes],
+    createProviders: (config) => {
+      const voice = new VoiceProvider({
+        config: config.plugins.voice,
+      });
+      return [
+        registeredProvider({
+          id: "voice",
+          name: "Voice",
+          transport: new InProcessTransport(voice.server),
+          transportLabel: "in-process",
+          stop: () => voice.stop(),
+          approvals: voice.approvals,
+          systemPromptFragment: () =>
+            [
+              "Voice is exposed through the voice provider as a pipeline over normal Sloppy text turns.",
+              "Consumer UIs own microphone capture and speaker playback; the provider owns STT/TTS adapter state.",
+              "Use voice transcripts as committed text input only after utterances are final; do not treat partial speech as user intent.",
+            ].join("\n"),
         }),
       ];
     },

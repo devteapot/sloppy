@@ -47,6 +47,7 @@ Current checked-in implementation includes:
   - `delegation`
   - `spec`
   - `vision`
+  - `voice`
   - `mcp`
   - `workspaces`
   - `a2a`
@@ -161,6 +162,7 @@ These providers are currently implemented as in-process SLOP providers:
 - `delegation` for background child-session lifecycle state, explicit wait joins, follow-up messages, approval forwarding, result retrieval, close controls, and optional ACP-backed child execution
 - `spec` for active specs, requirements, decisions, and proposed spec changes
 - `vision` for simulated image-generation and image-analysis workflows
+- `voice` for speech-to-text/text-to-speech pipeline state, adapter selection, loopback audio upload, and synthesized-audio content refs while consumer UIs own microphone and speaker access
 - `mcp` for opt-in Model Context Protocol compatibility, exposing configured MCP servers as SLOP state under `/servers`
 - `workspaces` for opt-in workspace/project registry state, active scope selection, and scoped config layer visibility
 - `a2a` for opt-in Agent2Agent interoperability, exposing remote Agent Cards, declared skills, and remote task lifecycle as SLOP state under `/agents` and `/tasks`
@@ -217,6 +219,7 @@ Provider-specific config now exists for:
 - `messaging`
 - `delegation`
 - `vision`
+- `voice`
 - `mcp`
 - `workspaces`
 - `a2a`
@@ -245,6 +248,8 @@ bun run lint
 bun run typecheck
 bun run tui:typecheck
 bun run test
+bun run voice:build
+bun run voice:test
 bun run build
 ```
 
@@ -313,6 +318,20 @@ sessions` without reading runtime internals:
 ```sh
 bun run tui -- --workspace-id sloppy --project-id runtime --title "Runtime"
 ```
+
+Build and test the native macOS voice companion:
+
+```sh
+bun run voice:build
+bun run voice:test
+```
+
+`apps/sloppy-voice/` is a SwiftUI menu bar app. It attaches to an existing
+Sloppy session or supervisor socket, uses the public `/apps` proxy to reach the
+optional `voice` provider, records push-to-talk microphone audio locally, sends
+final transcripts through `/composer.send_message`, and plays synthesized
+assistant replies from voice-initiated turns. It stores UI preferences in macOS
+app settings and does not edit Sloppy YAML config.
 
 Run the dashboard prototype:
 
@@ -462,7 +481,7 @@ llm:
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
-First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `voice`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:
@@ -472,6 +491,24 @@ plugins:
     enabled: true
   vision:
     enabled: true
+  voice:
+    enabled: true
+    input:
+      adapterId: openai-transcribe
+      model: gpt-4o-mini-transcribe
+      language: auto
+    output:
+      adapterId: openai-tts
+      model: gpt-4o-mini-tts
+      voice: marin
+      format: wav
+    adapters:
+      openai-transcribe:
+        kind: openai-transcribe
+        apiKeyEnv: OPENAI_API_KEY
+      openai-tts:
+        kind: openai-tts
+        apiKeyEnv: OPENAI_API_KEY
   delegation:
     enabled: true
   meta-runtime:

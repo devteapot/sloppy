@@ -16,8 +16,9 @@ Checked in now:
   idempotent, non-dangerous affordance calls, preserving original result order
 - default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
   `memory`, `skills`
-- optional first-party plugin providers: `web`, `browser`, `cron`, `messaging`, `delegation`,
-  `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
+- optional first-party plugin providers: `web`, `browser`, `cron`, `messaging`,
+  `delegation`, `spec`, `vision`, `voice`, `mcp`, `workspaces`, `a2a`,
+  `meta-runtime`
 - session provider and headless session server
 - public session supervisor for scoped session creation, active-session
   switching, and stopping while keeping each session on its own provider socket
@@ -46,6 +47,9 @@ Checked in now:
   plugin contributions for live OpenAI-compatible routers, configured ACP
   adapters, startup subprocess commands, persistence, audit, socket, and
   workspace-path readiness before a smoke run
+- optional voice pipeline provider with STT/TTS adapter state, loopback audio
+  upload for consumer-owned microphone capture, synthesized-audio content refs,
+  and doctor checks for voice credentials/local commands
 
 The previous orchestration provider, scheduler, task DAG, and orchestrator role
 were removed from v1. Planning and delegation are expected to emerge from

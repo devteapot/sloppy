@@ -17,6 +17,24 @@ plugins:
     enabled: true
   messaging:
     enabled: true
+  voice:
+    enabled: false
+    input:
+      adapterId: openai-transcribe
+      model: gpt-4o-mini-transcribe
+      language: auto
+    output:
+      adapterId: openai-tts
+      model: gpt-4o-mini-tts
+      voice: marin
+      format: wav
+    adapters:
+      openai-transcribe:
+        kind: openai-transcribe
+        apiKeyEnv: OPENAI_API_KEY
+      openai-tts:
+        kind: openai-tts
+        apiKeyEnv: OPENAI_API_KEY
   delegation:
     enabled: true
     acp:

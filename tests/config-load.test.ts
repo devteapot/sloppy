@@ -139,6 +139,85 @@ describe("loadConfig", () => {
     });
   });
 
+  test("loads voice plugin config with OpenAI and local adapters", async () => {
+    const root = await createTempDir("sloppy-voice-config-");
+    process.env.HOME = await createTempDir("sloppy-voice-home-");
+    await writeConfig(
+      root,
+      [
+        "plugins:",
+        "  voice:",
+        "    enabled: true",
+        "    media:",
+        "      host: 127.0.0.1",
+        "      port: 0",
+        "      maxUploadBytes: 1048576",
+        "    input:",
+        "      adapterId: local-whisper",
+        "      model: base.en",
+        "      language: en",
+        "    output:",
+        "      adapterId: openai-tts",
+        "      model: gpt-4o-mini-tts",
+        "      voice: cedar",
+        "      format: mp3",
+        "    adapters:",
+        "      local-whisper:",
+        "        kind: local-stt-command",
+        '        command: [whisper-cli, --file, "{input}"]',
+        "      openai-tts:",
+        "        kind: openai-tts",
+        "        apiKeyEnv: OPENAI_API_KEY",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadConfigFromLayerPaths([join(root, ".sloppy/config.yaml")], {
+      cwd: root,
+    });
+
+    expect(config.plugins.voice.enabled).toBe(true);
+    expect(config.plugins.voice.input).toMatchObject({
+      adapterId: "local-whisper",
+      model: "base.en",
+      language: "en",
+    });
+    expect(config.plugins.voice.output).toMatchObject({
+      adapterId: "openai-tts",
+      model: "gpt-4o-mini-tts",
+      voice: "cedar",
+      format: "mp3",
+    });
+    expect(config.plugins.voice.adapters["local-whisper"]).toMatchObject({
+      kind: "local-stt-command",
+      command: ["whisper-cli", "--file", "{input}"],
+    });
+  });
+
+  test("rejects voice config when selected adapters are undefined", async () => {
+    const root = await createTempDir("sloppy-voice-invalid-config-");
+    process.env.HOME = await createTempDir("sloppy-voice-invalid-home-");
+    await writeConfig(
+      root,
+      [
+        "plugins:",
+        "  voice:",
+        "    enabled: true",
+        "    input:",
+        "      adapterId: missing-stt",
+        "    adapters:",
+        "      openai-tts:",
+        "        kind: openai-tts",
+        "        apiKeyEnv: OPENAI_API_KEY",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(
+      loadConfigFromLayerPaths([join(root, ".sloppy/config.yaml")], { cwd: root }),
+    ).rejects.toThrow("Voice input adapter 'missing-stt' is not defined");
+  });
+
   test("applies provider-specific defaults for OpenRouter", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

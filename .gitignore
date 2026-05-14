@@ -1,11 +1,15 @@
 node_modules/
 dist/
 .sloppy/config.yaml
+.sloppy/models/
 .sloppy/sessions/
 .sloppy-demo/
 .sloppy-debug/
 .claude/
+.sc/
 test-artifacts/
 .env
 *.log
 .DS_Store
+*.xcuserstate
+xcuserdata/
