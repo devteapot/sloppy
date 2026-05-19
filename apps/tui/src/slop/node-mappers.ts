@@ -331,6 +331,10 @@ export function mapComposerNode(node: SlopNode | null | undefined): ComposerStat
     maxAttachments: numberProp(p, "max_attachments"),
     disabledReason: optionalStringProp(p, "disabled_reason"),
     canSend: hasAction(node, "send_message"),
+    insertionId: optionalStringProp(p, "insertion_id"),
+    insertionText: optionalStringProp(p, "insertion_text"),
+    insertionSource: optionalStringProp(p, "insertion_source"),
+    insertionCreatedAt: optionalStringProp(p, "insertion_created_at"),
   };
 }
 

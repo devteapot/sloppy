@@ -16,3 +16,27 @@ final class JSONValueTests: XCTestCase {
     XCTAssertEqual(decodedAgain, value)
   }
 }
+
+@MainActor
+final class AppSettingsTests: XCTestCase {
+  func testSttOnlyComposerModeDisablesAutoSpeakAndPersists() {
+    let suite = "SloppyVoiceTests-\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suite) else {
+      XCTFail("Could not create isolated user defaults suite.")
+      return
+    }
+    defer {
+      defaults.removePersistentDomain(forName: suite)
+    }
+
+    let settings = AppSettings(defaults: defaults)
+    XCTAssertTrue(settings.autoSpeak)
+
+    settings.sttOnlyComposerMode = true
+    XCTAssertFalse(settings.autoSpeak)
+
+    let reloaded = AppSettings(defaults: defaults)
+    XCTAssertTrue(reloaded.sttOnlyComposerMode)
+    XCTAssertFalse(reloaded.autoSpeak)
+  }
+}

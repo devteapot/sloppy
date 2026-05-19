@@ -214,6 +214,14 @@ export class AgentSessionProvider {
   readonly server: SlopServer;
 
   private unsubscribeStore: (() => void) | null = null;
+  private composerInsertion:
+    | {
+        id: string;
+        text: string;
+        source?: string;
+        createdAt: string;
+      }
+    | undefined;
 
   constructor(
     private runtime: SessionRuntime,
@@ -486,22 +494,66 @@ export class AgentSessionProvider {
         disabled_reason: llmReady ? undefined : snapshot.llm.message,
         queued_count: snapshot.queue.length,
         active_turn_id: snapshot.turn.turnId,
+        insertion_id: this.composerInsertion?.id,
+        insertion_text: this.composerInsertion?.text,
+        insertion_source: this.composerInsertion?.source,
+        insertion_created_at: this.composerInsertion?.createdAt,
       },
       summary: "Send a user message into the running session.",
-      actions: llmReady
-        ? {
-            send_message: action(
-              { text: "string" },
-              async ({ text }) => this.runtime.sendMessage(text),
-              {
-                label: "Send Message",
-                description:
-                  "Submit a user message. Starts immediately when idle, otherwise queues it for the next turn.",
-                estimate: "instant",
-              },
-            ),
-          }
-        : undefined,
+      actions: {
+        insert_text: action(
+          {
+            text: "string",
+            source: {
+              type: "string",
+              optional: true,
+              description: "Optional producer label, such as voice.",
+            },
+          },
+          async ({ text, source }) =>
+            this.insertComposerText(String(text), typeof source === "string" ? source : undefined),
+          {
+            label: "Insert Composer Text",
+            description:
+              "Ask attached UI consumers to insert text into their local composer draft without submitting it.",
+            estimate: "instant",
+          },
+        ),
+        ...(llmReady
+          ? {
+              send_message: action(
+                { text: "string" },
+                async ({ text }) => this.runtime.sendMessage(text),
+                {
+                  label: "Send Message",
+                  description:
+                    "Submit a user message. Starts immediately when idle, otherwise queues it for the next turn.",
+                  estimate: "instant",
+                },
+              ),
+            }
+          : {}),
+      },
+    };
+  }
+
+  private insertComposerText(text: string, source?: string): Record<string, unknown> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      throw new Error("text is required.");
+    }
+    const insertion = {
+      id: `composer-insertion-${crypto.randomUUID()}`,
+      text: trimmed,
+      source,
+      createdAt: new Date().toISOString(),
+    };
+    this.composerInsertion = insertion;
+    this.server.refresh();
+    return {
+      status: "inserted",
+      insertion_id: insertion.id,
+      text: insertion.text,
     };
   }
 

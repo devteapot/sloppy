@@ -838,7 +838,51 @@ describe("AgentSessionProvider", () => {
       expect(
         composer.affordances?.some((affordance) => affordance.action === "send_message") ?? false,
       ).toBe(false);
+      expect(
+        composer.affordances?.some((affordance) => affordance.action === "insert_text") ?? false,
+      ).toBe(true);
       expect(composer.properties?.disabled_reason).toBeTruthy();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("composer insert_text publishes a draft insertion event without starting a turn", async () => {
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-composer-insert",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-composer-insert",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/composer", "insert_text", {
+        text: "dictated text",
+        source: "voice",
+      });
+      expect(result.status).toBe("ok");
+      expect(result.data).toMatchObject({
+        status: "inserted",
+        text: "dictated text",
+      });
+
+      const composer = await consumer.query("/composer", 1);
+      expect(typeof composer.properties?.insertion_id).toBe("string");
+      expect(composer.properties?.insertion_text).toBe("dictated text");
+      expect(composer.properties?.insertion_source).toBe("voice");
+
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("idle");
+      const transcript = await consumer.query("/transcript", 1);
+      expect(transcript.children ?? []).toHaveLength(0);
     } finally {
       provider.stop();
       runtime.shutdown();

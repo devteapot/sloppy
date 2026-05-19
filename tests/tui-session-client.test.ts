@@ -5,6 +5,7 @@ import { listenUnix } from "@slop-ai/server/unix";
 import {
   applyPathSnapshot,
   EMPTY_SESSION_VIEW,
+  mapComposerNode,
   mapLlmNode,
   mapQueueNode,
   mapSessionNode,
@@ -123,6 +124,37 @@ describe("TUI node mappers", () => {
         ],
       },
     ]);
+  });
+
+  test("maps composer insertion events", () => {
+    const composer = mapComposerNode({
+      id: "composer",
+      type: "control",
+      properties: {
+        ready: true,
+        accepts_attachments: false,
+        max_attachments: 0,
+        insertion_id: "insert-1",
+        insertion_text: "dictated text",
+        insertion_source: "voice",
+        insertion_created_at: "2026-05-14T20:00:00.000Z",
+      },
+      affordances: [
+        {
+          action: "send_message",
+          label: "Send Message",
+        },
+      ],
+    });
+
+    expect(composer).toMatchObject({
+      ready: true,
+      canSend: true,
+      insertionId: "insert-1",
+      insertionText: "dictated text",
+      insertionSource: "voice",
+      insertionCreatedAt: "2026-05-14T20:00:00.000Z",
+    });
   });
 
   test("applies path snapshots without disturbing unrelated state", () => {

@@ -442,10 +442,15 @@ Optional props:
 - `disabled_reason`: short onboarding message when `send_message` is unavailable
 - `queued_count`: number of submitted messages waiting for the active turn to finish
 - `active_turn_id`: current turn id when a submitted message would queue
+- `insertion_id`: latest one-shot composer insertion event id, when present
+- `insertion_text`: text attached UIs may insert into their local composer draft
+- `insertion_source`: optional producer label for the insertion event
+- `insertion_created_at`: ISO timestamp for the insertion event
 
 Affordances:
 
 - `send_message(text, attachments?)`
+- `insert_text(text, source?)`
 
 Recommended `send_message` params:
 
@@ -475,7 +480,9 @@ Rules:
 - `send_message` may be absent while no ready LLM profile is configured
 - `send_message` starts a turn immediately when idle
 - `send_message` appends to `/queue` when a turn is already active; queued messages drain FIFO after the current turn reaches a terminal state
+- `insert_text` does not submit a turn; it publishes a transient insertion event for attached UI consumers
 - `attachments` are session input content, not persistent local UI drafts
+- `insertion_text` is a one-shot handoff to local UI drafts; the session provider does not own cursor position, private draft text, or draft persistence
 
 ### `/queue`
 

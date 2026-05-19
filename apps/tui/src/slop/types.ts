@@ -125,6 +125,10 @@ export type ComposerState = {
   maxAttachments: number;
   disabledReason?: string;
   canSend: boolean;
+  insertionId?: string;
+  insertionText?: string;
+  insertionSource?: string;
+  insertionCreatedAt?: string;
 };
 
 export type TranscriptBlock = {

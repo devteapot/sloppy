@@ -8,6 +8,14 @@ final class AppSettings: ObservableObject {
   @Published var autoSpeak: Bool {
     didSet { defaults.set(autoSpeak, forKey: Keys.autoSpeak) }
   }
+  @Published var sttOnlyComposerMode: Bool {
+    didSet {
+      defaults.set(sttOnlyComposerMode, forKey: Keys.sttOnlyComposerMode)
+      if sttOnlyComposerMode && autoSpeak {
+        autoSpeak = false
+      }
+    }
+  }
   @Published var hotKey: HotKey {
     didSet {
       if let data = try? JSONEncoder().encode(hotKey) {
@@ -43,6 +51,7 @@ final class AppSettings: ObservableObject {
     self.defaults = defaults
     socketPath = defaults.string(forKey: Keys.socketPath) ?? ""
     autoSpeak = defaults.object(forKey: Keys.autoSpeak) as? Bool ?? true
+    sttOnlyComposerMode = defaults.object(forKey: Keys.sttOnlyComposerMode) as? Bool ?? false
     if
       let data = defaults.data(forKey: Keys.hotKey),
       let decoded = try? JSONDecoder().decode(HotKey.self, from: data)
@@ -58,11 +67,17 @@ final class AppSettings: ObservableObject {
     preferredOutputModel = defaults.string(forKey: Keys.preferredOutputModel) ?? ""
     preferredOutputVoice = defaults.string(forKey: Keys.preferredOutputVoice) ?? ""
     preferredOutputFormat = defaults.string(forKey: Keys.preferredOutputFormat) ?? "wav"
+
+    if sttOnlyComposerMode && autoSpeak {
+      autoSpeak = false
+      defaults.set(false, forKey: Keys.autoSpeak)
+    }
   }
 
   private enum Keys {
     static let socketPath = "socketPath"
     static let autoSpeak = "autoSpeak"
+    static let sttOnlyComposerMode = "sttOnlyComposerMode"
     static let hotKey = "hotKey"
     static let preferredInputAdapter = "preferredInputAdapter"
     static let preferredInputModel = "preferredInputModel"

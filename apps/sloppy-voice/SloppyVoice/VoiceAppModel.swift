@@ -25,6 +25,7 @@ final class VoiceAppModel: ObservableObject {
   @Published var connectionStatus: VoiceConnectionStatus = .disconnected
   @Published var voiceProviderConnected = false
   @Published var composerReady = false
+  @Published var composerInsertAvailable = false
   @Published var composerDisabledReason: String?
   @Published var turnState = "idle"
   @Published var queuedCount = 0
@@ -48,7 +49,11 @@ final class VoiceAppModel: ObservableObject {
   private var didStart = false
 
   var canRecord: Bool {
-    voiceProviderConnected && composerReady && !recorder.isRecording && !isTranscribing && !isStartingRecording
+    voiceProviderConnected &&
+      (settings.sttOnlyComposerMode ? composerInsertAvailable : composerReady) &&
+      !recorder.isRecording &&
+      !isTranscribing &&
+      !isStartingRecording
   }
 
   func start() async {
@@ -85,6 +90,7 @@ final class VoiceAppModel: ObservableObject {
     session = nil
     connectionStatus = .disconnected
     voiceProviderConnected = false
+    composerInsertAvailable = false
   }
 
   func registerHotKey() {
@@ -147,6 +153,11 @@ final class VoiceAppModel: ObservableObject {
       guard let session else {
         throw SlopClientError.notConnected
       }
+      if settings.sttOnlyComposerMode {
+        try await session.insertComposerText(trimmed)
+        await refresh()
+        return
+      }
       let outcome = try await session.sendMessage(trimmed)
       tracker.recordSubmitted(text: trimmed, outcome: outcome)
       await refresh()
@@ -158,6 +169,14 @@ final class VoiceAppModel: ObservableObject {
   func stopPlayback() async {
     player.stop()
     _ = try? await session?.invokeVoice("/output", action: "cancel")
+  }
+
+  func sttOnlyComposerModeDidChange(_ enabled: Bool) async {
+    guard enabled else {
+      return
+    }
+    tracker = VoiceTurnTracker()
+    await stopPlayback()
   }
 
   func applyVoiceSettings() async {
@@ -179,7 +198,7 @@ final class VoiceAppModel: ObservableObject {
         _ = try await session.invokeVoice("/input", action: "set_adapter", params: params)
       }
 
-      if !settings.preferredOutputAdapter.isEmpty {
+      if !settings.sttOnlyComposerMode && !settings.preferredOutputAdapter.isEmpty {
         var params: [String: JSONValue] = [
           "adapter_id": .string(settings.preferredOutputAdapter),
         ]
@@ -192,7 +211,7 @@ final class VoiceAppModel: ObservableObject {
         _ = try await session.invokeVoice("/output", action: "set_adapter", params: params)
       }
 
-      if !settings.preferredOutputVoice.isEmpty {
+      if !settings.sttOnlyComposerMode && !settings.preferredOutputVoice.isEmpty {
         _ = try await session.invokeVoice(
           "/output",
           action: "set_voice",
@@ -207,16 +226,53 @@ final class VoiceAppModel: ObservableObject {
   }
 
   private func resolveSessionSocket() async throws -> String {
-    if !settings.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    let savedSocketPath = settings.socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !savedSocketPath.isEmpty {
+      if !settings.sttOnlyComposerMode {
+        return savedSocketPath
+      }
+      if await supportsComposerInsert(savedSocketPath) {
+        return savedSocketPath
+      }
+    }
+
+    for candidate in ProviderDiscovery.discover() {
+      guard let socketPath = try? await resolveSocket(candidate) else {
+        continue
+      }
+      if !settings.sttOnlyComposerMode {
+        return socketPath
+      }
+      if await supportsComposerInsert(socketPath) {
+        return socketPath
+      }
+    }
+
+    if !savedSocketPath.isEmpty && !settings.sttOnlyComposerMode {
       return settings.socketPath
     }
 
-    guard let candidate = ProviderDiscovery.preferredCandidate() else {
-      throw SlopClientError.connectionFailed(
-        "No Sloppy session found. Start a supervisor with bun run session:serve -- --supervisor --socket /tmp/slop/sloppy-supervisor.sock."
-      )
-    }
+    let message = settings.sttOnlyComposerMode
+      ? "No Sloppy session with composer dictation support was found. Restart the TUI/session and reconnect."
+      : "No Sloppy session found. Start a supervisor with bun run session:serve -- --supervisor --socket /tmp/slop/sloppy-supervisor.sock."
+    throw SlopClientError.connectionFailed(message)
+  }
 
+  private func supportsComposerInsert(_ socketPath: String) async -> Bool {
+    let client = SlopClient()
+    do {
+      _ = try await client.connect(socketPath: socketPath)
+      defer { client.disconnect() }
+      let composer = try await client.query(path: "/composer", depth: 1)
+      return composer.affordances?.contains { affordance in
+        affordance.action == "insert_text"
+      } ?? false
+    } catch {
+      return false
+    }
+  }
+
+  private func resolveSocket(_ candidate: ProviderCandidate) async throws -> String {
     switch candidate.kind {
     case .session:
       return candidate.socketPath
@@ -266,6 +322,8 @@ final class VoiceAppModel: ObservableObject {
 
       let composer = try await session.query("/composer", depth: 1)
       composerReady = composer.propertyBool("ready") ?? false
+      composerInsertAvailable =
+        composer.affordances?.contains { affordance in affordance.action == "insert_text" } ?? false
       composerDisabledReason = composer.propertyString("disabled_reason")
       queuedCount = composer.propertyInt("queued_count") ?? 0
 
@@ -278,7 +336,11 @@ final class VoiceAppModel: ObservableObject {
 
       if voiceProviderConnected {
         inputState = VoiceInputState.parse(try await session.queryVoice("/input", depth: 1))
-        outputState = VoiceOutputState.parse(try await session.queryVoice("/output", depth: 1))
+        if settings.sttOnlyComposerMode {
+          outputState = VoiceOutputState()
+        } else {
+          outputState = VoiceOutputState.parse(try await session.queryVoice("/output", depth: 1))
+        }
       }
 
       await speakNextAssistantIfNeeded()
@@ -339,7 +401,7 @@ final class VoiceAppModel: ObservableObject {
   }
 
   private func speakNextAssistantIfNeeded() async {
-    guard settings.autoSpeak, !player.isPlaying else {
+    guard !settings.sttOnlyComposerMode, settings.autoSpeak, !player.isPlaying else {
       return
     }
     guard let request = tracker.nextSpeechRequest(from: transcript) else {
@@ -384,8 +446,8 @@ final class VoiceAppModel: ObservableObject {
     }
     if
       !settings.preferredInputAdapter.isEmpty ||
-        !settings.preferredOutputAdapter.isEmpty ||
-        !settings.preferredOutputVoice.isEmpty
+        (!settings.sttOnlyComposerMode && !settings.preferredOutputAdapter.isEmpty) ||
+        (!settings.sttOnlyComposerMode && !settings.preferredOutputVoice.isEmpty)
     {
       await applyVoiceSettings()
     }

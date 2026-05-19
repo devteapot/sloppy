@@ -46,7 +46,7 @@ struct VoiceMenuView: View {
       } label: {
         HStack {
           Image(systemName: model.recorder.isRecording ? "mic.fill" : "mic")
-          Text(model.recorder.isRecording ? "Recording..." : "Hold to Talk")
+          Text(model.recorder.isRecording ? "Recording..." : (model.settings.sttOnlyComposerMode ? "Hold to Dictate" : "Hold to Talk"))
         }
         .frame(maxWidth: .infinity)
       }
@@ -77,11 +77,16 @@ struct VoiceMenuView: View {
     Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
       row("Session", model.connectionStatus.label)
       row("Voice", model.voiceProviderConnected ? "Connected" : "Missing")
-      row("Composer", model.composerReady ? "Ready" : (model.composerDisabledReason ?? "Not ready"))
+      row("Composer", composerStatus)
       row("Turn", model.turnState)
       row("Queue", "\(model.queuedCount)")
       row("STT", "\(model.inputState.activeAdapterId) \(model.inputState.activeModel)")
-      row("TTS", "\(model.outputState.activeAdapterId) \(model.outputState.activeModel) \(model.outputState.voice)")
+      row(
+        "TTS",
+        model.settings.sttOnlyComposerMode
+          ? "Disabled"
+          : "\(model.outputState.activeAdapterId) \(model.outputState.activeModel) \(model.outputState.voice)"
+      )
     }
     .font(.caption)
   }
@@ -93,6 +98,13 @@ struct VoiceMenuView: View {
       Text(value.isEmpty ? "-" : value)
         .lineLimit(2)
     }
+  }
+
+  private var composerStatus: String {
+    if model.settings.sttOnlyComposerMode {
+      return model.composerInsertAvailable ? "Dictation ready" : "Dictation unavailable"
+    }
+    return model.composerReady ? "Ready" : (model.composerDisabledReason ?? "Not ready")
   }
 
   private var transcriptPreview: some View {
@@ -111,7 +123,12 @@ struct VoiceMenuView: View {
     DisclosureGroup("Settings") {
       VStack(alignment: .leading, spacing: 8) {
         TextField("Session socket", text: $model.settings.socketPath)
+        Toggle("STT-only composer mode", isOn: $model.settings.sttOnlyComposerMode)
+          .onChange(of: model.settings.sttOnlyComposerMode) { enabled in
+            Task { await model.sttOnlyComposerModeDidChange(enabled) }
+          }
         Toggle("Auto-speak voice replies", isOn: $model.settings.autoSpeak)
+          .disabled(model.settings.sttOnlyComposerMode)
         HStack {
           Text("Hotkey")
           HotKeyRecorderView(hotKey: $model.settings.hotKey)
@@ -137,15 +154,17 @@ struct VoiceMenuView: View {
         TextField("STT model", text: $model.settings.preferredInputModel)
         TextField("Language", text: $model.settings.preferredInputLanguage)
 
-        Picker("TTS Adapter", selection: $model.settings.preferredOutputAdapter) {
-          Text("Runtime default").tag("")
-          ForEach(model.outputState.availableAdapters, id: \.self) { adapter in
-            Text(adapter).tag(adapter)
+        if !model.settings.sttOnlyComposerMode {
+          Picker("TTS Adapter", selection: $model.settings.preferredOutputAdapter) {
+            Text("Runtime default").tag("")
+            ForEach(model.outputState.availableAdapters, id: \.self) { adapter in
+              Text(adapter).tag(adapter)
+            }
           }
+          TextField("TTS model", text: $model.settings.preferredOutputModel)
+          TextField("Voice", text: $model.settings.preferredOutputVoice)
+          TextField("Format", text: $model.settings.preferredOutputFormat)
         }
-        TextField("TTS model", text: $model.settings.preferredOutputModel)
-        TextField("Voice", text: $model.settings.preferredOutputVoice)
-        TextField("Format", text: $model.settings.preferredOutputFormat)
         Button("Apply Voice Settings") {
           Task { await model.applyVoiceSettings() }
         }

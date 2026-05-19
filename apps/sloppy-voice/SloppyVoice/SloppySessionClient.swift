@@ -35,6 +35,17 @@ final class SloppySessionClient {
     return SendMessageOutcome.parse(result)
   }
 
+  func insertComposerText(_ text: String, source: String = "voice") async throws {
+    _ = try await client.invoke(
+      path: "/composer",
+      action: "insert_text",
+      params: [
+        "text": .string(text),
+        "source": .string(source),
+      ]
+    )
+  }
+
   func queryVoice(_ path: String, depth: Int) async throws -> SlopNode {
     let result = try await client.invoke(
       path: "/apps",

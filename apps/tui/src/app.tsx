@@ -46,7 +46,13 @@ import { SetupRoute } from "./routes/setup";
 import { TasksRoute } from "./routes/tasks";
 import type { SessionClient } from "./slop/session-client";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "./slop/supervisor-client";
-import type { AppItem, ApprovalItem, SessionViewSnapshot, TuiRoute } from "./slop/types";
+import type {
+  AppItem,
+  ApprovalItem,
+  ComposerState,
+  SessionViewSnapshot,
+  TuiRoute,
+} from "./slop/types";
 import { buildCommandPaletteCommands, type PaletteCommand } from "./state/command-palette";
 import { type LocalCommand, parseLocalCommand } from "./state/commands";
 import { ComposerHistory } from "./state/composer-history";
@@ -211,6 +217,8 @@ export function App(props: AppProps) {
   const [slashSelectedIndex, setSlashSelectedIndex] = createSignal(0);
   const history = new ComposerHistory();
   let composerRef: TextareaRenderable | undefined;
+  let lastComposerInsertionId = props.initialSnapshot.composer.insertionId;
+  let pendingComposerInsertion: { text: string; source?: string } | null = null;
 
   const slashSuggestions = createMemo(() => {
     const text = draft();
@@ -293,6 +301,41 @@ export function App(props: AppProps) {
     history.reset();
   }
 
+  function insertExternalComposerText(text: string, source?: string): void {
+    if (!composerRef) {
+      pendingComposerInsertion = { text, source };
+      return;
+    }
+    const currentText = composerRef.plainText ?? draft();
+    const separator = currentText.length > 0 && !/\s$/.test(currentText) ? "\n" : "";
+    insertComposerText(`${separator}${text}`);
+    renderer.focusRenderable(composerRef);
+    pushNotice({
+      kind: "ok",
+      message: source === "voice" ? "Voice transcript inserted." : "Text inserted into composer.",
+    });
+  }
+
+  function consumeComposerInsertion(composer: ComposerState): void {
+    if (!composer.insertionId || !composer.insertionText) {
+      return;
+    }
+    if (composer.insertionId === lastComposerInsertionId) {
+      return;
+    }
+    lastComposerInsertionId = composer.insertionId;
+    insertExternalComposerText(composer.insertionText, composer.insertionSource);
+  }
+
+  function flushPendingComposerInsertion(): void {
+    const pending = pendingComposerInsertion;
+    if (!pending) {
+      return;
+    }
+    pendingComposerInsertion = null;
+    insertExternalComposerText(pending.text, pending.source);
+  }
+
   usePaste((event) => {
     if (pendingApproval() || secretProfile() || !composerRef) return;
 
@@ -328,6 +371,7 @@ export function App(props: AppProps) {
   const unsubscribe = props.client.on((event) => {
     if (event.type === "snapshot") {
       setSnapshot(event.snapshot);
+      consumeComposerInsertion(event.snapshot.composer);
       if (
         event.snapshot.connection.status === "connected" &&
         notice().kind === "error" &&
@@ -376,6 +420,7 @@ export function App(props: AppProps) {
   onMount(() => {
     if (composerRef) {
       renderer.focusRenderable(composerRef);
+      flushPendingComposerInsertion();
     }
   });
 
