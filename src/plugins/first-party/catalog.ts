@@ -21,6 +21,7 @@ import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegat
 import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { checkWorkspacePaths } from "./filesystem/doctor";
 import { FilesystemProvider } from "./filesystem/provider";
+import { InferenceEnginesProvider } from "./inference-engines/provider";
 import { collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
@@ -58,6 +59,32 @@ function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRunti
 }
 
 export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
+  {
+    id: "inference-engines",
+    version: "1.0.0",
+    defaultEnabled: true,
+    description: "Configured local inference engine status mirror.",
+    providerIds: ["inference-engines"],
+    createProviders: (config) => {
+      const provider = new InferenceEnginesProvider({
+        profiles: config.llm.profiles.filter((profile) => profile.kind === "engine"),
+      });
+      return [
+        registeredProvider({
+          id: "inference-engines",
+          name: "Inference Engines",
+          transport: new InProcessTransport(provider.server),
+          transportLabel: "in-process",
+          stop: () => provider.stop(),
+          systemPromptFragment: () =>
+            [
+              "Inference engine status is exposed through the inference-engines provider.",
+              "Use it for operational visibility only. Model generation itself is selected by the active LLM profile, not by invoking provider actions.",
+            ].join("\n"),
+        }),
+      ];
+    },
+  },
   {
     id: "persistent-goal",
     version: "1.0.0",

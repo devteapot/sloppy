@@ -194,8 +194,16 @@ export type LlmSecureStoreStatus = "available" | "unavailable" | "unsupported";
 export type LlmProfileSnapshot = {
   id: string;
   label?: string;
+  kind?: "api" | "engine";
   provider: string;
+  engine?: string;
   model: string;
+  dialect?: string;
+  transport?: {
+    type: string;
+    path?: string;
+    url?: string;
+  };
   reasoningEffort?: string;
   adapterId?: string;
   apiKeyEnv?: string;

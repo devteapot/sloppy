@@ -12,7 +12,7 @@ graphs. Those are compositions over SLOP providers.
 
 The default runtime includes:
 
-- `Agent` loop and LLM adapters
+- `Agent` loop and model backends
 - `ConsumerHub` for state subscriptions, query, invoke, and policy checks
 - session provider and session supervisor providers for UI and API consumers
 - durable public session snapshots with explicit stale-turn recovery
@@ -21,6 +21,13 @@ The default runtime includes:
 - first-party plugin catalog and runtime plugin manager
 - default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
   `memory`, and `skills`
+
+The model backend path supports hosted/API adapters and engine-native profiles.
+Engine-native backends are selected through `llm.profiles[].kind: engine`,
+connect to an inference endpoint over a narrow engine protocol, and still feed
+the same loop, SLOP provider affordances, approvals, transcript, and session
+surfaces. Generation is not exposed as a model-visible provider action. The
+broader multi-engine direction is tracked in `docs/future/engine-native-backends.md`.
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
@@ -43,7 +50,9 @@ Everything visible to the agent is a provider state tree with affordances:
 
 Built-in capabilities are providers, not privileged runtime branches. Optional
 providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,
-`spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
+`spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`. The default
+`inference-engines` provider is an operator-visible status mirror for configured
+engine profiles, not the inference call path.
 
 ## MCP Compatibility
 

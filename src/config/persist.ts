@@ -15,17 +15,31 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
     contextWindowTokens: config.contextWindowTokens,
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
-    profiles: config.profiles.map((profile) => ({
-      id: profile.id,
-      label: profile.label,
-      provider: profile.provider,
-      model: profile.model,
-      reasoningEffort: profile.reasoningEffort,
-      adapterId: profile.adapterId,
-      apiKeyEnv: profile.apiKeyEnv,
-      baseUrl: profile.baseUrl,
-      contextWindowTokens: profile.contextWindowTokens,
-    })),
+    profiles: config.profiles.map((profile) =>
+      profile.kind === "engine"
+        ? {
+            id: profile.id,
+            kind: "engine",
+            label: profile.label,
+            engine: profile.engine,
+            model: profile.model,
+            dialect: profile.dialect,
+            transport: profile.transport,
+            contextWindowTokens: profile.contextWindowTokens,
+          }
+        : {
+            id: profile.id,
+            kind: "api",
+            label: profile.label,
+            provider: profile.provider,
+            model: profile.model,
+            reasoningEffort: profile.reasoningEffort,
+            adapterId: profile.adapterId,
+            apiKeyEnv: profile.apiKeyEnv,
+            baseUrl: profile.baseUrl,
+            contextWindowTokens: profile.contextWindowTokens,
+          },
+    ),
   };
 }
 

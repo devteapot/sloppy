@@ -17,9 +17,11 @@ This directory is split by whether a document is current operating guidance, fut
 
 ## Future Designs
 
-These documents describe intended directions that should not be treated as implemented runtime behavior.
+These documents describe intended directions and partial runtime slices. Check each document's status section before treating it as implemented behavior.
 
 - `future/agent-identity.md` — identity, persona, and memory-tier direction.
+- `future/engine-native-backends.md` — engine-agnostic local inference backend
+  direction for DS4, llama.cpp, vLLM, MLX/oMLX, SGLang, and similar engines.
 - `future/executor-binding.md` — typed executor-binding and routing direction.
 
 ## Research

@@ -209,7 +209,7 @@ async function checkLlmProfile(
     [
       profile.isDefault ? "*" : "-",
       profile.id,
-      `${profile.provider}/${profile.model}`,
+      `${profile.kind === "engine" ? `engine:${profile.engine}` : profile.provider}/${profile.model}`,
       `origin=${profile.origin}`,
       `source=${profile.keySource}`,
       `ready=${profile.ready}`,

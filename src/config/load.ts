@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import YAML from "yaml";
 import { getProviderDefaults } from "../llm/provider-defaults";
 import {
+  type ApiLlmProfileConfig,
+  type EngineLlmProfileConfig,
   type LlmConfig,
   type LlmProfileConfig,
   type RawSloppyConfig,
@@ -134,10 +136,24 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
 }
 
 function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): LlmProfileConfig {
+  if (profile.kind === "engine") {
+    return {
+      id: profile.id,
+      kind: "engine",
+      label: profile.label,
+      engine: profile.engine,
+      model: profile.model,
+      dialect: profile.dialect,
+      transport: profile.transport,
+      contextWindowTokens: profile.contextWindowTokens,
+    } satisfies EngineLlmProfileConfig;
+  }
+
   const defaults = getProviderDefaults(profile.provider);
 
   return {
     id: profile.id,
+    kind: "api",
     label: profile.label,
     provider: profile.provider,
     model: profile.model ?? defaults.model,
@@ -146,7 +162,7 @@ function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): 
     apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: profile.baseUrl ?? defaults.baseUrl,
     contextWindowTokens: profile.contextWindowTokens,
-  };
+  } satisfies ApiLlmProfileConfig;
 }
 
 function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {

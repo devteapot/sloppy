@@ -72,6 +72,27 @@ export interface LlmAdapter {
   countTextTokens?(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount>;
 }
 
+export interface ModelBackendDescriptor {
+  kind: "api" | "engine";
+  profileId?: string;
+  provider?: string;
+  engine?: string;
+  model: string;
+  contextWindowTokens?: number;
+  capabilities: {
+    hostedToolCalling?: boolean;
+    engineSession?: boolean;
+    prefillProgress?: boolean;
+    localSnapshots?: boolean;
+  };
+}
+
+export interface ModelBackend extends LlmAdapter {
+  kind: "api" | "engine";
+  describe(): ModelBackendDescriptor;
+  dispose?(): void | Promise<void>;
+}
+
 export class LlmAbortError extends Error {
   readonly code = "aborted";
 

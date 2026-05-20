@@ -3,7 +3,12 @@ import { join, resolve } from "node:path";
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
-import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
+import {
+  engineDialectSchema,
+  llmProviderSchema,
+  llmReasoningEffortSchema,
+  type SloppyConfig,
+} from "../config/schema";
 import type {
   AgentCallbacks,
   AgentRunResult,
@@ -640,9 +645,46 @@ export class SessionRuntime {
   }
 
   async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
-    const provider = llmProviderSchema.parse(String(params.provider ?? "").trim());
+    const kind = typeof params.kind === "string" ? params.kind.trim() : "api";
     const profileId = typeof params.profile_id === "string" ? params.profile_id : undefined;
     const label = typeof params.label === "string" ? params.label : undefined;
+    const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
+
+    if (kind === "engine") {
+      const engine = typeof params.engine === "string" ? params.engine.trim() : "";
+      const model = typeof params.model === "string" ? params.model.trim() : "";
+      const dialect = engineDialectSchema.parse(String(params.dialect ?? "dsml").trim());
+      const transportType =
+        typeof params.transport_type === "string" ? params.transport_type.trim() : "unix";
+      if (transportType !== "unix") {
+        throw new Error(`Unsupported engine transport type: ${transportType}`);
+      }
+      const transportPath =
+        typeof params.transport_path === "string" ? params.transport_path.trim() : "";
+      if (!engine || !model || !transportPath) {
+        throw new Error("Engine profiles require engine, model, and transport_path.");
+      }
+      const contextWindowTokens =
+        typeof params.context_window_tokens === "number" ? params.context_window_tokens : undefined;
+      const state = await this.llmProfileManager.saveProfile({
+        kind: "engine",
+        profileId,
+        label,
+        engine,
+        model,
+        dialect,
+        transport: {
+          type: "unix",
+          path: transportPath,
+        },
+        contextWindowTokens,
+        makeDefault,
+      });
+      this.applyLlmState(state);
+      return { status: "ok" };
+    }
+
+    const provider = llmProviderSchema.parse(String(params.provider ?? "").trim());
     const model = typeof params.model === "string" ? params.model : undefined;
     const reasoningEffort =
       typeof params.reasoning_effort === "string"
@@ -658,9 +700,11 @@ export class SessionRuntime {
           : undefined;
     const baseUrl = typeof params.base_url === "string" ? params.base_url : undefined;
     const apiKey = typeof params.api_key === "string" ? params.api_key : undefined;
-    const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
+    const contextWindowTokens =
+      typeof params.context_window_tokens === "number" ? params.context_window_tokens : undefined;
 
     const state = await this.llmProfileManager.saveProfile({
+      kind: "api",
       profileId,
       label,
       provider,
@@ -668,6 +712,7 @@ export class SessionRuntime {
       reasoningEffort,
       adapterId,
       baseUrl,
+      contextWindowTokens,
       apiKey,
       makeDefault,
     });

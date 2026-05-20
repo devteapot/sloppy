@@ -197,7 +197,7 @@ Required props:
 - `status`: `ready | needs_credentials`
 - `message`: short onboarding or readiness summary
 - `active_profile_id`: selected profile id
-- `selected_provider`: currently selected provider name
+- `selected_provider`: currently selected provider name, or `engine:<id>` for an engine-native profile
 - `selected_model`: currently selected model identifier
 - `secure_store_kind`: `keychain | secret-service | none`
 - `secure_store_status`: `available | unavailable | unsupported`
@@ -209,6 +209,7 @@ Children:
 Required profile item props:
 
 - `provider`: provider name
+- `kind`: `api | engine`
 - `model`: selected model identifier
 - `origin`: `managed | environment | fallback`
 - `is_default`: boolean
@@ -222,6 +223,10 @@ Required profile item props:
 Optional profile item props:
 
 - `label`: display label
+- `engine`: engine id for engine-native profiles, for example `ds4`
+- `dialect`: tool dialect for engine-native profiles, initially `dsml`
+- `transport_type`: engine transport type, initially `unix`
+- `transport_path`: Unix socket path for engine-native profiles
 - `reasoning_effort`: optional OpenAI-style reasoning effort for providers that expose it
 - `adapter_id`: ACP adapter id when the profile runs through an external session agent
 - `api_key_env`: environment variable name that can satisfy the profile for this process
@@ -229,7 +234,7 @@ Optional profile item props:
 
 Affordances:
 
-- `save_profile(profile_id?, label?, provider, model?, reasoning_effort?, adapter_id?, base_url?, api_key?, make_default?)`
+- `save_profile(profile_id?, label?, kind?, provider?, engine?, model?, dialect?, transport_type?, transport_path?, reasoning_effort?, adapter_id?, base_url?, context_window_tokens?, api_key?, make_default?)`
 - `set_default_profile(profile_id)`
 - `delete_profile(profile_id)`
 - `delete_api_key(profile_id)`
@@ -241,6 +246,7 @@ Rules:
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
 - `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
 - ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
+- engine-native profiles are ready without API keys; engine connectivity failures surface on the active turn and through the `inference-engines` provider mirror
 - the session should remain attachable even when `status=needs_credentials`
 
 ### `/usage`
