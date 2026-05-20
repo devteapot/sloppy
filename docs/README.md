@@ -21,6 +21,8 @@ These documents describe intended directions that should not be treated as imple
 
 - `future/agent-identity.md` — identity, persona, and memory-tier direction.
 - `future/executor-binding.md` — typed executor-binding and routing direction.
+- `future/filesystem-anchors.md` — future live filesystem anchor state for
+  long-lived tagged edit references.
 
 ## Research
 

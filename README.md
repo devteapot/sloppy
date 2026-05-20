@@ -183,8 +183,21 @@ It supports affordances such as:
 - `set_focus`
 - `read`
 - `write`
+- `edit`
+- `edit_range`
 - `mkdir`
 - `search`
+
+Range reads can include structured line tags for local conflict checks, and
+`edit_range` can replace tagged line ranges without echoing the full old text.
+This keeps targeted edits token-light while still detecting changed boundary
+lines. If intervening edits move the target, `edit_range` can relocate a unique
+boundary-tag pair with the same line span. Normal reads and search hits cache
+provider-owned line anchors; pass their returned `source_version` to
+`edit_range` to omit explicit `start_tag`/`end_tag` values. For compact explicit
+tag setup, tagged reads can request `tag_mode="boundary"` and
+`include_content=false` to return only the start/end tags needed by
+`edit_range`.
 
 ### Terminal provider
 
@@ -247,6 +260,36 @@ bun run tui:typecheck
 bun run test
 bun run build
 ```
+
+Run the filesystem edit benchmark:
+
+```sh
+bun run benchmark:filesystem-edits
+bun run benchmark:filesystem-edits -- --iterations 5 --json
+```
+
+Run the opt-in live headless edit-mode benchmark when an LLM is configured.
+This invokes the actual `bun run src/cli.ts -p "<prompt>"` path against temp
+workspaces using `plugins.filesystem.editMode=replace`, `hash`, and `both`, and
+reports correctness, tool usage, timing, and reported token usage:
+
+```sh
+bun run benchmark:headless-edit-modes -- --dry-run
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-edit-modes
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-edit-modes -- --runs 3 --json
+bun run benchmark:headless-edit-modes:analyze -- test-artifacts/headless-edit-modes/<timestamp>
+```
+
+Live runs write per-run artifacts under
+`test-artifacts/headless-edit-modes/<timestamp>/` by default. Use
+`--output-dir <path>` to choose a location. Each run keeps the prompt, generated
+benchmark config, stdout/stderr, CLI metrics, runtime event log, validation
+result, and final edited files.
+
+Use `--cases` to scale the benchmark shape. The default is `order-summary`;
+available cases are `tiny`, `order-summary`, `large-block`, `repeated-region`,
+and `multi-file`. Use `--cases all` only when you intend to run every case
+against every selected edit mode.
 
 Run the CLI in headless single-shot mode with the configured LLM:
 
@@ -480,6 +523,11 @@ First-party plugins default to a lean set: `persistent-goal`, `terminal`, `files
 
 ```yaml
 plugins:
+  filesystem:
+    # replace exposes exact string replacement editing only.
+    # hash exposes tagged line-range editing only.
+    # both exposes both and lets the model choose from affordance descriptions.
+    editMode: both
   web:
     enabled: true
   browser:
@@ -544,6 +592,14 @@ workspaces:
           root: apps/dashboard
           configPath: .sloppy/config.yaml
 ```
+
+`plugins.filesystem.editMode` controls which edit affordances and matching
+filesystem prompt guidance are exposed:
+
+- `replace`: exposes `edit` for exact string replacement edits.
+- `hash`: exposes tagged reads and `edit_range` for hash/tag guarded line-range
+  edits.
+- `both`: exposes both modes. This is the default.
 
 The MCP provider is compatibility glue, not a core architectural dependency.
 It projects configured MCP tools, resources, templates, and prompts into SLOP

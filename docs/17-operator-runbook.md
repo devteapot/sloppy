@@ -87,6 +87,33 @@ The test creates an ignored `test-artifacts/` marker file, runs
 through the filesystem provider, and verifies the marker in stdout. It is not
 part of default preflight because it can use network and model quota.
 
+Run the live headless edit-mode benchmark when you need to compare the model's
+behavior under the filesystem provider's three edit affordance modes:
+
+```sh
+bun run benchmark:headless-edit-modes -- --dry-run
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-edit-modes
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-edit-modes -- --runs 3 --json
+bun run benchmark:headless-edit-modes:analyze -- test-artifacts/headless-edit-modes/<timestamp>
+```
+
+The benchmark uses the same headless CLI path, creates isolated temp
+workspaces, runs one small implementation-plus-docs task under
+`editMode=replace`, `editMode=hash`, and `editMode=both`, then reports
+validation status, tool mix, timing, and reported model token usage. It is
+quota-using by design and remains outside default preflight.
+
+Live runs also preserve artifacts under
+`test-artifacts/headless-edit-modes/<timestamp>/` unless `--output-dir <path>`
+is provided. Inspect each case/mode directory for `stdout.txt`, `stderr.txt`,
+`metrics.json`, `events.jsonl`, `validation.json`, and the `final/` edited
+files when explaining why one mode used more calls or tokens than another.
+
+Use `--cases tiny,large-block` or `--cases all` to scale the workload shape. The
+available cases are `tiny`, `order-summary`, `large-block`, `repeated-region`,
+and `multi-file`; the default case is `order-summary` to keep accidental live
+runs small.
+
 ## Audit Log
 
 Set an event log path for any run that needs an operator trail:

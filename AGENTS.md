@@ -40,6 +40,9 @@
 
 ```sh
 bun install
+bun run benchmark:filesystem-edits
+bun run benchmark:headless-edit-modes
+bun run benchmark:headless-edit-modes:analyze
 bun run build
 bun run dashboard:serve
 bun run lint
@@ -109,6 +112,7 @@ src/
     delegation/
   session/
 tests/
+scripts/
 docs/
 ```
 
@@ -187,6 +191,7 @@ docs/
 - Filesystem behavior should remain stateful, not just a bag of file actions.
 - Keep the focused directory, search results, and recent operations visible in provider state.
 - Enforce workspace-root containment for all file operations.
+- `plugins.filesystem.editMode` controls whether the provider exposes exact replacement editing (`replace`), hash/tagged range editing (`hash`), or both.
 
 ## Testing Guidance
 - Add tests with new behavior.

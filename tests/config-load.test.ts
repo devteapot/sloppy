@@ -307,6 +307,24 @@ describe("loadConfig", () => {
     ]);
   });
 
+  test("loads filesystem edit mode config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(workspace, ["plugins:", "  filesystem:", "    editMode: hash"].join("\n"));
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_ADAPTER_ID;
+    delete process.env.SLOPPY_LLM_BASE_URL;
+    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.plugins.filesystem.editMode).toBe("hash");
+  });
+
   test("loads MCP server config and normalizes stdio cwd", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

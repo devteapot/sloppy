@@ -16,6 +16,9 @@ Checked in now:
   idempotent, non-dangerous affordance calls, preserving original result order
 - default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
   `memory`, `skills`
+- filesystem edit affordance mode (`plugins.filesystem.editMode`) for exposing
+  exact replacement editing, hash/tagged range editing, or both, with matching
+  provider prompt guidance
 - optional first-party plugin providers: `web`, `browser`, `cron`, `messaging`, `delegation`,
   `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
 - session provider and headless session server
@@ -45,6 +48,12 @@ Checked in now:
 - opt-in live headless CLI e2e (`SLOPPY_RUN_LIVE_E2E=1 bun test
   tests/cli-headless-e2e.test.ts`) covering `-p`, the configured LLM, and the
   filesystem provider in one run
+- opt-in live headless edit-mode benchmark (`SLOPPY_RUN_LIVE_BENCHMARK=1 bun
+  run benchmark:headless-edit-modes`) comparing `replace`, `hash`, and `both`
+  filesystem edit modes on real model-driven tasks, with selectable cases for
+  tiny edits, larger block rewrites, repeated regions, and multi-file changes,
+  plus per-run stdout/stderr, CLI metrics, runtime event logs, validation
+  results, and final-file artifacts
 - runtime doctor (`bun run runtime:doctor`) with core checks plus first-party
   plugin contributions for live OpenAI-compatible routers, configured ACP
   adapters, startup subprocess commands, persistence, audit, socket, and
@@ -66,6 +75,9 @@ providers, skills, routes, and agent-to-agent channels.
 2. Make state the contract.
    - Providers expose observable state first.
    - Affordances mutate provider-owned state.
+   - The filesystem provider exposes full-file writes, strict text edits, and
+     tagged line-range edits as provider affordances rather than core runtime
+     editing policy.
    - UIs consume the same provider/session boundary as agents.
    - Parallel model-emitted tool calls are a scheduling optimization only:
      read-only state queries and explicit idempotent affordances can overlap,
@@ -153,6 +165,11 @@ providers, skills, routes, and agent-to-agent channels.
 
 ## Remaining Non-MVP Work
 
+- When config hot reload lands, propagate provider config changes into any
+  derived runtime prompt fragments as well as provider state/affordance refresh.
+  For example, changing `plugins.filesystem.editMode` at runtime must rebuild
+  the filesystem dynamic prompt guidance so model instructions cannot drift
+  from the active edit affordance surface.
 - Add a first-class identity provider if persona/preferences/role memory need a
   durable home beyond the current meta-runtime bundle substrate.
 - Add autonomous scheduling or identity-level review around the existing

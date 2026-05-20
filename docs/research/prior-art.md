@@ -44,6 +44,12 @@ OpenCode, Hermes Agent, OpenClaw, Pi TUI, MCP, Claude Code, and A2A.
   provider-level approval policy. Sources:
   <https://docs.claude.com/en/docs/claude-code/slash-commands> and
   <https://docs.claude.com/en/docs/claude-code/subagents>.
+- **Antirez tagged edit checks**: checksum-style line tags reduce model token
+  use and avoid fragile exact old-text echoing while preserving conflict
+  detection. Sloppy adapts this as provider-owned structured line tags and a
+  tagged range edit affordance with compact boundary-tag reads and unique
+  boundary-pair relocation, not as core runtime editing policy. Source:
+  <https://antirez.com/news/166>.
 
 ### Where to Diverge
 

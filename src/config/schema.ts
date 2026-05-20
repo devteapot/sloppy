@@ -19,6 +19,8 @@ export const llmReasoningEffortSchema = z.enum([
   "xhigh",
 ]);
 
+export const filesystemEditModeSchema = z.enum(["replace", "hash", "both"]);
+
 export const llmProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().trim().min(1).optional(),
@@ -134,6 +136,7 @@ const filesystemPluginConfigSchema = z
     readMaxBytes: z.number().int().min(256).default(65536),
     contentRefThresholdBytes: z.number().int().min(256).default(8192),
     previewBytes: z.number().int().min(128).default(2048),
+    editMode: filesystemEditModeSchema.default("both"),
   })
   .default({
     enabled: true,
@@ -143,6 +146,7 @@ const filesystemPluginConfigSchema = z
     readMaxBytes: 65536,
     contentRefThresholdBytes: 8192,
     previewBytes: 2048,
+    editMode: "both",
   });
 
 const memoryPluginConfigSchema = z
@@ -422,6 +426,7 @@ type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 export type LlmReasoningEffort = z.infer<typeof llmReasoningEffortSchema>;
+export type FilesystemEditMode = z.infer<typeof filesystemEditModeSchema>;
 
 export type LlmProfileConfig = {
   id: string;

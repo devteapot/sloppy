@@ -13,6 +13,9 @@ session:
   persistenceDir: .sloppy/sessions
 
 plugins:
+  filesystem:
+    # Edit affordance surface: replace, hash, or both.
+    editMode: both
   meta-runtime:
     enabled: true
   messaging:

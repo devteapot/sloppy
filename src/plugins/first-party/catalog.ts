@@ -20,7 +20,7 @@ import { DelegationProvider } from "./delegation/provider";
 import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegation/runtime";
 import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { checkWorkspacePaths } from "./filesystem/doctor";
-import { FilesystemProvider } from "./filesystem/provider";
+import { buildFilesystemSystemPromptFragment, FilesystemProvider } from "./filesystem/provider";
 import { collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
@@ -110,6 +110,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
         readMaxBytes: plugin.readMaxBytes,
         contentRefThresholdBytes: plugin.contentRefThresholdBytes,
         previewBytes: plugin.previewBytes,
+        editMode: plugin.editMode,
       });
       return [
         registeredProvider({
@@ -118,6 +119,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transport: new InProcessTransport(filesystem.server),
           transportLabel: "in-process",
           stop: () => filesystem.stop(),
+          systemPromptFragment: () => buildFilesystemSystemPromptFragment(plugin.editMode),
         }),
       ];
     },
