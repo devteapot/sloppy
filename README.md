@@ -263,6 +263,17 @@ bun run benchmark:filesystem-view-edits
 bun run benchmark:filesystem-view-edits -- --iterations 5 --json
 ```
 
+Run the opt-in live headless source-view edit benchmark when an LLM is
+configured. This invokes the real `bun run src/cli.ts -p "<prompt>"` path
+against temp workspaces and compares model-driven legacy `edit` with
+source-view `edit_range`:
+
+```sh
+bun run benchmark:headless-view-edits -- --dry-run
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits -- --cases all
+```
+
 Run the CLI in headless single-shot mode with the configured LLM:
 
 ```sh
