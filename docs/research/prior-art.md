@@ -44,6 +44,12 @@ OpenCode, Hermes Agent, OpenClaw, Pi TUI, MCP, Claude Code, and A2A.
   provider-level approval policy. Sources:
   <https://docs.claude.com/en/docs/claude-code/slash-commands> and
   <https://docs.claude.com/en/docs/claude-code/subagents>.
+- **Antirez source-view edit checks**: instead of making the model carry line
+  tags or old text, the harness/provider can remember the file view it showed,
+  accept line/range edits against that source view, and reject stale ranges when
+  the current file no longer matches. Sloppy models this as provider-owned
+  `source_version` snapshots and line-range validation inside the filesystem
+  provider. Source: <https://antirez.com/news/166>.
 
 ### Where to Diverge
 

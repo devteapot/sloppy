@@ -45,6 +45,9 @@ Checked in now:
 - opt-in live headless CLI e2e (`SLOPPY_RUN_LIVE_E2E=1 bun test
   tests/cli-headless-e2e.test.ts`) covering `-p`, the configured LLM, and the
   filesystem provider in one run
+- filesystem snapshot-backed `edit_range`, where reads cache provider-owned
+  source views and line-range edits validate against the remembered old text
+  before writing
 - runtime doctor (`bun run runtime:doctor`) with core checks plus first-party
   plugin contributions for live OpenAI-compatible routers, configured ACP
   adapters, startup subprocess commands, persistence, audit, socket, and
@@ -66,6 +69,9 @@ providers, skills, routes, and agent-to-agent channels.
 2. Make state the contract.
    - Providers expose observable state first.
    - Affordances mutate provider-owned state.
+   - The filesystem provider keeps source-view validation local to the
+     provider; the model can reference lines and source versions without
+     carrying hashes or old text through the prompt.
    - UIs consume the same provider/session boundary as agents.
    - Parallel model-emitted tool calls are a scheduling optimization only:
      read-only state queries and explicit idempotent affordances can overlap,
