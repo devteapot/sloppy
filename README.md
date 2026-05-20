@@ -256,6 +256,13 @@ bun run test
 bun run build
 ```
 
+Run the source-view filesystem edit benchmark:
+
+```sh
+bun run benchmark:filesystem-view-edits
+bun run benchmark:filesystem-view-edits -- --iterations 5 --json
+```
+
 Run the CLI in headless single-shot mode with the configured LLM:
 
 ```sh

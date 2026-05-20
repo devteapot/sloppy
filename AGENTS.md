@@ -40,6 +40,7 @@
 
 ```sh
 bun install
+bun run benchmark:filesystem-view-edits
 bun run build
 bun run dashboard:serve
 bun run lint
