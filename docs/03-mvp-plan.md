@@ -150,6 +150,10 @@ providers, skills, routes, and agent-to-agent channels.
 
 ## Remaining Non-MVP Work
 
+- Add engine-native model backends as a second backend family alongside hosted/API
+  adapters. The future design lives in `docs/future/engine-native-backends.md`
+  and keeps Sloppy's SLOP provider/tool substrate separate from local engine
+  session, prefix/KV, and generation primitives.
 - Add a first-class identity provider if persona/preferences/role memory need a
   durable home beyond the current meta-runtime bundle substrate.
 - Add autonomous scheduling or identity-level review around the existing

@@ -136,6 +136,11 @@ SLOP providers
 
 The important detail is that provider-native tool calling is only the LLM adapter layer.
 
+Future local inference work is tracked separately in
+`docs/future/engine-native-backends.md`. That design keeps hosted/API adapters
+supported while adding an engine-native backend family for stateful local
+engines such as DS4, llama.cpp, vLLM, MLX/oMLX, and SGLang.
+
 The actual runtime model is still SLOP:
 
 - `query`

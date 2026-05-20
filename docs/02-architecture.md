@@ -22,6 +22,11 @@ The default runtime includes:
 - default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
   `memory`, and `skills`
 
+The current model backend path is API-adapter oriented. Future engine-native
+backends should be added as a second backend family behind the model-turn
+boundary, not by replacing SLOP providers with engine tools. See
+`docs/future/engine-native-backends.md`.
+
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
 
