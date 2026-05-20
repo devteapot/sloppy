@@ -33,6 +33,8 @@ Current checked-in implementation includes:
   - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
   - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
+  - engine-native Unix NDJSON profile support for DS4-compatible local engines,
+    with Sloppy-owned DSML tool rendering/parsing and normal SLOP tool execution
 - consumer hub for first-party plugin and live-discovered SLOP providers
 - first-party in-process plugin providers:
   - `terminal`
@@ -50,6 +52,7 @@ Current checked-in implementation includes:
   - `mcp`
   - `workspaces`
   - `a2a`
+  - `inference-engines`
 - fixed observation tools:
   - `slop_query_state`
   - `slop_focus_state`
@@ -136,10 +139,11 @@ SLOP providers
 
 The important detail is that provider-native tool calling is only the LLM adapter layer.
 
-Future local inference work is tracked separately in
-`docs/future/engine-native-backends.md`. That design keeps hosted/API adapters
-supported while adding an engine-native backend family for stateful local
-engines such as DS4, llama.cpp, vLLM, MLX/oMLX, and SGLang.
+Engine-native local inference is now present as a second model profile family
+alongside hosted/API adapters. The first runtime transport is Unix NDJSON with a
+DSML dialect for DS4-compatible endpoints; the broader engine-agnostic direction
+for DS4, llama.cpp, vLLM, MLX/oMLX, and SGLang is tracked in
+`docs/future/engine-native-backends.md`.
 
 The actual runtime model is still SLOP:
 
@@ -466,8 +470,27 @@ llm:
 
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
+Existing API profiles may omit `kind`; they are treated as `kind: api`.
+Engine-native profiles use `kind: engine` and currently connect to an already
+running Unix NDJSON endpoint:
 
-First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+```yaml
+llm:
+  defaultProfileId: ds4-local
+  profiles:
+    - id: ds4-local
+      kind: engine
+      label: DS4 Local
+      engine: ds4
+      model: deepseek-v4-flash
+      dialect: dsml
+      contextWindowTokens: 1000000
+      transport:
+        type: unix
+        path: /tmp/ds4-engine.sock
+```
+
+First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, `skills`, and `inference-engines`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:

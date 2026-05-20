@@ -290,8 +290,17 @@ function mapLlmProfileNode(node: SlopNode): LlmProfile {
   return {
     id: node.id,
     label: optionalStringProp(p, "label"),
+    kind: stringProp(p, "kind", "api"),
     provider: stringProp(p, "provider", "unknown"),
+    engine: optionalStringProp(p, "engine"),
     model: stringProp(p, "model", "unknown"),
+    dialect: optionalStringProp(p, "dialect"),
+    transport: optionalStringProp(p, "transport_type")
+      ? {
+          type: stringProp(p, "transport_type", "unknown"),
+          path: optionalStringProp(p, "transport_path"),
+        }
+      : undefined,
     adapterId: optionalStringProp(p, "adapter_id"),
     origin: stringProp(p, "origin", "unknown"),
     isDefault: booleanProp(p, "is_default"),

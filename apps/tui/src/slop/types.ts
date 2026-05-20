@@ -32,8 +32,16 @@ export type SessionMeta = {
 export type LlmProfile = {
   id: string;
   label?: string;
+  kind: "api" | "engine" | string;
   provider: string;
+  engine?: string;
   model: string;
+  dialect?: string;
+  transport?: {
+    type: string;
+    path?: string;
+    url?: string;
+  };
   adapterId?: string;
   origin: string;
   isDefault: boolean;
@@ -170,7 +178,7 @@ export type ActivityItem = {
 export type ApprovalItem = {
   id: string;
   status: string;
-  provider: string;
+  provider?: string;
   path: string;
   action: string;
   reason: string;
@@ -306,8 +314,15 @@ export type SessionViewSnapshot = {
 export type SaveProfileInput = {
   profileId?: string;
   label?: string;
+  kind?: "api" | "engine";
   provider: string;
+  engine?: string;
   model?: string;
+  dialect?: string;
+  transport?: {
+    type: "unix";
+    path: string;
+  };
   reasoningEffort?: string;
   adapterId?: string;
   baseUrl?: string;

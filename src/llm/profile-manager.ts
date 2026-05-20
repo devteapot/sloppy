@@ -1,6 +1,10 @@
 import { createDefaultConfig } from "../config/load";
 import { writeHomeLlmConfig } from "../config/persist";
 import type {
+  ApiLlmProfileConfig,
+  EngineDialect,
+  EngineLlmProfileConfig,
+  EngineProfileTransport,
   LlmConfig,
   LlmProfileConfig,
   LlmProvider,
@@ -13,6 +17,7 @@ import {
   type CredentialStoreStatus,
   createCredentialStore,
 } from "./credential-store";
+import { createEngineNativeBackend } from "./engine/backend";
 import { createLlmAdapter } from "./factory";
 import { getCodexAuthStatus } from "./openai-codex";
 import {
@@ -59,18 +64,31 @@ export type LlmStateSnapshot = {
   profiles: LlmProfileState[];
 };
 
-export type SaveProfileInput = {
-  profileId?: string;
-  label?: string;
-  provider: LlmProvider;
-  model?: string;
-  reasoningEffort?: LlmReasoningEffort;
-  adapterId?: string;
-  baseUrl?: string;
-  contextWindowTokens?: number;
-  apiKey?: string;
-  makeDefault?: boolean;
-};
+export type SaveProfileInput =
+  | {
+      profileId?: string;
+      label?: string;
+      kind?: "api";
+      provider: LlmProvider;
+      model?: string;
+      reasoningEffort?: LlmReasoningEffort;
+      adapterId?: string;
+      baseUrl?: string;
+      contextWindowTokens?: number;
+      apiKey?: string;
+      makeDefault?: boolean;
+    }
+  | {
+      profileId?: string;
+      label?: string;
+      kind: "engine";
+      engine: string;
+      model: string;
+      dialect: EngineDialect;
+      transport: EngineProfileTransport;
+      contextWindowTokens?: number;
+      makeDefault?: boolean;
+    };
 
 type ResolvedCredential = {
   keySource: LlmKeySource;
@@ -103,6 +121,26 @@ function sanitizeIdSegment(value: string): string {
   return sanitized || "default";
 }
 
+function isApiProfile<T extends Pick<LlmProfileConfig, "kind">>(
+  profile: T,
+): profile is T & ApiLlmProfileConfig {
+  return profile.kind !== "engine";
+}
+
+function isEngineProfile<T extends Pick<LlmProfileConfig, "kind">>(
+  profile: T,
+): profile is T & EngineLlmProfileConfig {
+  return profile.kind === "engine";
+}
+
+function profileProviderLabel(profile: LlmProfileConfig): string {
+  return isEngineProfile(profile) ? `engine:${profile.engine}` : profile.provider;
+}
+
+function profileDisplayLabel(profile: LlmProfileConfig): string {
+  return profile.label?.trim() || `${profileProviderLabel(profile)} ${profile.model}`;
+}
+
 export class LlmConfigurationError extends Error {
   readonly code = "llm_not_configured";
 
@@ -125,17 +163,18 @@ function slugifySegment(value: string): string {
     .slice(0, 24);
 }
 
-function buildProfileId(input: { label?: string; provider: LlmProvider; model: string }): string {
-  const base = slugifySegment(input.label ?? `${input.provider}-${input.model}`) || input.provider;
+function buildProfileId(input: { label?: string; source: string; model: string }): string {
+  const base = slugifySegment(input.label ?? `${input.source}-${input.model}`) || input.source;
   const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   return `${base}-${suffix}`;
 }
 
-function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
+function buildFallbackProfile(config: LlmConfig): ApiLlmProfileConfig {
   const defaults = getProviderDefaults(config.provider);
 
   return {
     id: "default",
+    kind: "api",
     label: "Default",
     provider: config.provider,
     model: config.model || defaults.model,
@@ -147,16 +186,18 @@ function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
   };
 }
 
-function resolveProfileContextWindowTokens(
-  profile: Pick<LlmProfileConfig, "provider" | "model" | "contextWindowTokens">,
-): number | undefined {
+function resolveProfileContextWindowTokens(profile: LlmProfileConfig): number | undefined {
+  if (isEngineProfile(profile)) {
+    return profile.contextWindowTokens;
+  }
+
   return (
     profile.contextWindowTokens ?? resolveModelContextWindowTokens(profile.provider, profile.model)
   );
 }
 
 function buildEnvironmentProfileId(
-  profile: Pick<LlmProfileConfig, "provider" | "model" | "apiKeyEnv">,
+  profile: Pick<ApiLlmProfileConfig, "provider" | "model" | "apiKeyEnv">,
 ): string {
   return [
     "env",
@@ -167,7 +208,7 @@ function buildEnvironmentProfileId(
 }
 
 function buildEnvironmentLabel(
-  profile: Pick<LlmProfileConfig, "provider" | "apiKeyEnv" | "label">,
+  profile: Pick<ApiLlmProfileConfig, "provider" | "apiKeyEnv" | "label">,
 ): string {
   const baseLabel = profile.label?.trim() || profile.provider;
   if (profile.apiKeyEnv) {
@@ -195,7 +236,10 @@ function selectActiveProfile(
 
   const preferredEnvironmentProfile = profiles.find(
     (profile) =>
-      profile.origin === "environment" && profile.provider === config.provider && profile.ready,
+      profile.origin === "environment" &&
+      isApiProfile(profile) &&
+      profile.provider === config.provider &&
+      profile.ready,
   );
   if (preferredEnvironmentProfile) {
     return preferredEnvironmentProfile;
@@ -225,16 +269,20 @@ function buildNextLlmConfig(
     candidates.find((profile) => profile.origin === "managed") ??
     candidates[0] ??
     buildFallbackProfile(previous);
+  const apiRoutingProfile = isApiProfile(activeProfile)
+    ? activeProfile
+    : candidates.find(isApiProfile);
+  const fallbackApiProfile = apiRoutingProfile ?? buildFallbackProfile(previous);
 
   return {
     ...previous,
-    provider: activeProfile.provider,
-    model: activeProfile.model,
-    reasoningEffort: activeProfile.reasoningEffort,
-    adapterId: activeProfile.adapterId,
-    apiKeyEnv: activeProfile.apiKeyEnv,
-    baseUrl: activeProfile.baseUrl,
-    contextWindowTokens: activeProfile.contextWindowTokens,
+    provider: fallbackApiProfile.provider,
+    model: fallbackApiProfile.model,
+    reasoningEffort: fallbackApiProfile.reasoningEffort,
+    adapterId: fallbackApiProfile.adapterId,
+    apiKeyEnv: fallbackApiProfile.apiKeyEnv,
+    baseUrl: fallbackApiProfile.baseUrl,
+    contextWindowTokens: fallbackApiProfile.contextWindowTokens,
     defaultProfileId: activeProfile.origin === "fallback" ? undefined : activeProfile.id,
     profiles,
   };
@@ -286,7 +334,10 @@ export class LlmProfileManager {
           managed: profile.managed,
           origin: profile.origin,
           canDeleteProfile: profile.origin === "managed",
-          canDeleteApiKey: profile.origin === "managed" && providerRequiresApiKey(profile.provider),
+          canDeleteApiKey:
+            profile.origin === "managed" &&
+            isApiProfile(profile) &&
+            providerRequiresApiKey(profile.provider),
           contextWindowTokens: resolveProfileContextWindowTokens(profile),
         } satisfies LlmProfileState;
       }),
@@ -318,7 +369,7 @@ export class LlmProfileManager {
       status,
       message: this.buildStatusMessage(activeProfile, secureStoreStatus),
       activeProfileId: activeProfile.id,
-      selectedProvider: activeProfile.provider,
+      selectedProvider: profileProviderLabel(activeProfile),
       selectedModel: activeProfile.model,
       selectedContextWindowTokens: activeProfile.contextWindowTokens,
       secureStoreKind: this.credentialStore.kind,
@@ -350,30 +401,37 @@ export class LlmProfileManager {
     }
 
     const model = modelOverride ?? targetProfile.model;
-    const fingerprint = [
-      targetProfile.id,
-      targetProfile.provider,
-      model,
-      targetProfile.reasoningEffort ?? "",
-      targetProfile.adapterId ?? "",
-      targetProfile.baseUrl ?? "",
-      credential.keySource,
-      credential.apiKey ?? "",
-    ].join(":");
+    const fingerprint = JSON.stringify({
+      profile: {
+        ...targetProfile,
+        model,
+      },
+      credentialSource: credential.keySource,
+      apiKey: credential.apiKey ?? "",
+    });
     const cacheKey = `${targetProfile.id}::${modelOverride ?? ""}`;
     const cached = this.adapterCache.get(cacheKey);
     if (cached?.fingerprint === fingerprint) {
       return cached.adapter;
     }
 
-    const adapter = createLlmAdapter({
-      provider: targetProfile.provider,
-      model,
-      reasoningEffort: targetProfile.reasoningEffort,
-      apiKey: credential.apiKey,
-      apiKeyEnv: targetProfile.apiKeyEnv,
-      baseUrl: targetProfile.baseUrl,
-    });
+    const adapter = isEngineProfile(targetProfile)
+      ? createEngineNativeBackend({
+          profile: {
+            ...targetProfile,
+            model,
+          },
+        })
+      : createLlmAdapter({
+          profileId: targetProfile.id,
+          provider: targetProfile.provider,
+          model,
+          reasoningEffort: targetProfile.reasoningEffort,
+          apiKey: credential.apiKey,
+          apiKeyEnv: targetProfile.apiKeyEnv,
+          baseUrl: targetProfile.baseUrl,
+          contextWindowTokens: targetProfile.contextWindowTokens,
+        });
     this.adapterCache.set(cacheKey, { fingerprint, adapter });
     return adapter;
   }
@@ -387,6 +445,45 @@ export class LlmProfileManager {
   }
 
   async saveProfile(input: SaveProfileInput): Promise<LlmStateSnapshot> {
+    if (input.kind === "engine") {
+      const existingProfile = input.profileId
+        ? this.config.llm.profiles.find((profile) => profile.id === input.profileId)
+        : undefined;
+      const profileId =
+        existingProfile?.id ??
+        buildProfileId({
+          label: input.label,
+          source: `engine-${input.engine}`,
+          model: input.model,
+        });
+      const profile: LlmProfileConfig = {
+        id: profileId,
+        kind: "engine",
+        label: trimOptional(input.label) ?? existingProfile?.label,
+        engine: input.engine.trim(),
+        model: input.model.trim(),
+        dialect: input.dialect,
+        transport: input.transport,
+        contextWindowTokens: input.contextWindowTokens ?? existingProfile?.contextWindowTokens,
+      };
+
+      const nextProfiles = [...this.config.llm.profiles];
+      const existingIndex = nextProfiles.findIndex((candidate) => candidate.id === profile.id);
+      if (existingIndex === -1) {
+        nextProfiles.push(profile);
+      } else {
+        nextProfiles[existingIndex] = profile;
+      }
+
+      const nextDefaultProfileId =
+        input.makeDefault || nextProfiles.length === 1
+          ? profile.id
+          : (this.config.llm.defaultProfileId ?? nextProfiles[0]?.id);
+      await this.credentialStore.delete(profile.id);
+      await this.persistProfiles(nextProfiles, nextDefaultProfileId);
+      return this.getState();
+    }
+
     const defaults = getProviderDefaults(input.provider);
     const existingProfile = input.profileId
       ? this.config.llm.profiles.find((profile) => profile.id === input.profileId)
@@ -395,26 +492,47 @@ export class LlmProfileManager {
       existingProfile?.id ??
       buildProfileId({
         label: input.label,
-        provider: input.provider,
+        source: input.provider,
         model: input.model ?? defaults.model,
       });
     const profile: LlmProfileConfig = {
       id: profileId,
+      kind: "api",
       label: trimOptional(input.label) ?? existingProfile?.label,
       provider: input.provider,
-      model: trimOptional(input.model) ?? existingProfile?.model ?? defaults.model,
-      reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
-      adapterId: trimOptional(input.adapterId) ?? existingProfile?.adapterId ?? defaults.adapterId,
+      model:
+        trimOptional(input.model) ??
+        (existingProfile && isApiProfile(existingProfile) ? existingProfile.model : undefined) ??
+        defaults.model,
+      reasoningEffort:
+        input.reasoningEffort ??
+        (existingProfile && isApiProfile(existingProfile)
+          ? existingProfile.reasoningEffort
+          : undefined),
+      adapterId:
+        trimOptional(input.adapterId) ??
+        (existingProfile && isApiProfile(existingProfile)
+          ? existingProfile.adapterId
+          : undefined) ??
+        defaults.adapterId,
       apiKeyEnv:
-        existingProfile && existingProfile.provider === input.provider
+        existingProfile &&
+        isApiProfile(existingProfile) &&
+        existingProfile.provider === input.provider
           ? (existingProfile.apiKeyEnv ?? defaults.apiKeyEnv)
           : defaults.apiKeyEnv,
       baseUrl:
         trimOptional(input.baseUrl) ??
-        (existingProfile && existingProfile.provider === input.provider
+        (existingProfile &&
+        isApiProfile(existingProfile) &&
+        existingProfile.provider === input.provider
           ? existingProfile.baseUrl
           : defaults.baseUrl),
-      contextWindowTokens: input.contextWindowTokens ?? existingProfile?.contextWindowTokens,
+      contextWindowTokens:
+        input.contextWindowTokens ??
+        (existingProfile && isApiProfile(existingProfile)
+          ? existingProfile.contextWindowTokens
+          : undefined),
     };
 
     const nextProfiles = [...this.config.llm.profiles];
@@ -482,6 +600,9 @@ export class LlmProfileManager {
     if (profile.origin !== "managed") {
       throw new Error(`Only managed profiles can delete stored API keys: ${profileId}`);
     }
+    if (!isApiProfile(profile)) {
+      throw new Error(`Engine profiles do not have stored API keys: ${profileId}`);
+    }
 
     await this.credentialStore.delete(profileId);
     this.adapterCache.clear();
@@ -532,6 +653,15 @@ export class LlmProfileManager {
   }
 
   private async resolveCredential(profile: ResolvedProfile): Promise<ResolvedCredential> {
+    if (isEngineProfile(profile)) {
+      return {
+        keySource: "not_required",
+        ready: true,
+        hasKey: false,
+        apiKey: undefined,
+      };
+    }
+
     if (providerUsesCodexAuth(profile.provider)) {
       const status = await getCodexAuthStatus();
       return {
@@ -612,7 +742,9 @@ export class LlmProfileManager {
   private buildStatusMessage(
     profile: Pick<
       LlmProfileState,
+      | "kind"
       | "provider"
+      | "engine"
       | "model"
       | "apiKeyEnv"
       | "ready"
@@ -623,24 +755,30 @@ export class LlmProfileManager {
     >,
     secureStoreStatus: CredentialStoreStatus,
   ): string {
+    const label = profile.kind === "engine" ? `engine:${profile.engine}` : profile.provider;
+
     if (profile.invalidReason) {
       return profile.invalidReason;
     }
 
     if (profile.ready) {
+      if (profile.kind === "engine") {
+        return `Ready to chat with ${label} ${profile.model}.`;
+      }
+
       if (profile.keySource === "not_required") {
-        return `Ready to chat with ${profile.provider} ${profile.model}.`;
+        return `Ready to chat with ${label} ${profile.model}.`;
       }
 
       if (profile.keySource === "external_auth") {
-        return `Ready to chat with ${profile.provider} ${profile.model} using Codex auth.`;
+        return `Ready to chat with ${label} ${profile.model} using Codex auth.`;
       }
 
       if (profile.keySource === "env") {
-        return `Ready to chat with ${profile.provider} ${profile.model} using ${profile.apiKeyEnv}.`;
+        return `Ready to chat with ${label} ${profile.model} using ${profile.apiKeyEnv}.`;
       }
 
-      return `Ready to chat with ${profile.provider} ${profile.model} using stored credentials.`;
+      return `Ready to chat with ${label} ${profile.model} using stored credentials.`;
     }
 
     if (profile.origin === "environment") {
@@ -653,7 +791,7 @@ export class LlmProfileManager {
 
     if (!profile.managed) {
       const envHint = profile.apiKeyEnv
-        ? ` You can also set ${profile.apiKeyEnv} to use the current default ${profile.provider} profile immediately.`
+        ? ` You can also set ${profile.apiKeyEnv} to use the current default ${label} profile immediately.`
         : "";
 
       if (secureStoreStatus !== "available") {
@@ -665,17 +803,17 @@ export class LlmProfileManager {
 
     if (secureStoreStatus !== "available") {
       if (profile.apiKeyEnv) {
-        return `Add an API key for ${profile.provider} ${profile.model}. ${profile.apiKeyEnv} works immediately, but secure storage is ${secureStoreStatus} on this machine.`;
+        return `Add an API key for ${label} ${profile.model}. ${profile.apiKeyEnv} works immediately, but secure storage is ${secureStoreStatus} on this machine.`;
       }
 
-      return `Add an API key for ${profile.provider} ${profile.model}. Secure storage is ${secureStoreStatus} on this machine.`;
+      return `Add an API key for ${label} ${profile.model}. Secure storage is ${secureStoreStatus} on this machine.`;
     }
 
     if (profile.apiKeyEnv) {
-      return `Add an API key for ${profile.provider} ${profile.model} or set ${profile.apiKeyEnv}.`;
+      return `Add an API key for ${label} ${profile.model} or set ${profile.apiKeyEnv}.`;
     }
 
-    return `Add an API key for ${profile.provider} ${profile.model}.`;
+    return `Add an API key for ${label} ${profile.model}.`;
   }
 
   private buildAvailableProfilesFromConfig(config: LlmConfig): ResolvedProfile[] {
@@ -706,7 +844,7 @@ export class LlmProfileManager {
   ): ResolvedProfile[] {
     const environmentProfiles = new Map<string, ResolvedProfile>();
 
-    const addEnvironmentProfile = (profile: LlmProfileConfig) => {
+    const addEnvironmentProfile = (profile: ApiLlmProfileConfig) => {
       if (!profile.apiKeyEnv || !Bun.env[profile.apiKeyEnv]) {
         return;
       }
@@ -726,10 +864,15 @@ export class LlmProfileManager {
     };
 
     for (const profile of managedProfiles) {
-      addEnvironmentProfile(profile);
+      if (isApiProfile(profile)) {
+        addEnvironmentProfile(profile);
+      }
     }
 
-    addEnvironmentProfile(buildFallbackProfile(config));
+    const fallbackProfile = buildFallbackProfile(config);
+    if (isApiProfile(fallbackProfile)) {
+      addEnvironmentProfile(fallbackProfile);
+    }
 
     for (const [provider, defaults] of Object.entries(DEFAULT_LLM_PROVIDER_CONFIG) as Array<
       [LlmProvider, (typeof DEFAULT_LLM_PROVIDER_CONFIG)[LlmProvider]]
@@ -740,6 +883,7 @@ export class LlmProfileManager {
 
       addEnvironmentProfile({
         id: `environment-${provider}`,
+        kind: "api",
         label: provider,
         provider,
         model: defaults.model,
@@ -750,7 +894,7 @@ export class LlmProfileManager {
     }
 
     return [...environmentProfiles.values()].sort((left, right) =>
-      (left.label ?? left.provider).localeCompare(right.label ?? right.provider),
+      profileDisplayLabel(left).localeCompare(profileDisplayLabel(right)),
     );
   }
 }

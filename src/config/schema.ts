@@ -19,7 +19,15 @@ export const llmReasoningEffortSchema = z.enum([
   "xhigh",
 ]);
 
-export const llmProfileSchema = z.object({
+export const engineProfileTransportSchema = z.object({
+  type: z.literal("unix"),
+  path: z.string().trim().min(1),
+});
+
+export const engineDialectSchema = z.enum(["dsml"]);
+
+const apiLlmProfileSchema = z.object({
+  kind: z.literal("api").default("api"),
   id: z.string().min(1),
   label: z.string().trim().min(1).optional(),
   provider: llmProviderSchema,
@@ -30,6 +38,30 @@ export const llmProfileSchema = z.object({
   baseUrl: z.string().optional(),
   contextWindowTokens: z.number().int().min(1).optional(),
 });
+
+const engineLlmProfileSchema = z.object({
+  kind: z.literal("engine"),
+  id: z.string().min(1),
+  label: z.string().trim().min(1).optional(),
+  engine: z.string().trim().min(1),
+  model: z.string().trim().min(1),
+  dialect: engineDialectSchema,
+  transport: engineProfileTransportSchema,
+  contextWindowTokens: z.number().int().min(1).optional(),
+});
+
+export const llmProfileSchema = z.preprocess(
+  (value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if (record.kind === undefined) {
+        return { ...record, kind: "api" };
+      }
+    }
+    return value;
+  },
+  z.discriminatedUnion("kind", [apiLlmProfileSchema, engineLlmProfileSchema]),
+);
 
 const acpDelegationConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -296,6 +328,14 @@ const a2aPluginConfigSchema = z
     agents: {},
   });
 
+const inferenceEnginesPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+  })
+  .default({
+    enabled: true,
+  });
+
 const pluginsConfigSchema = z.preprocess(
   (value) => value ?? {},
   z.object({
@@ -315,6 +355,7 @@ const pluginsConfigSchema = z.preprocess(
     mcp: mcpPluginConfigSchema,
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,
+    "inference-engines": inferenceEnginesPluginConfigSchema,
   }),
 );
 
@@ -422,18 +463,42 @@ type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 export type LlmReasoningEffort = z.infer<typeof llmReasoningEffortSchema>;
+export type EngineProfileTransport = z.infer<typeof engineProfileTransportSchema>;
+export type EngineDialect = z.infer<typeof engineDialectSchema>;
 
-export type LlmProfileConfig = {
+export type ApiLlmProfileConfig = {
+  kind?: "api";
   id: string;
   label?: string;
   provider: LlmProvider;
+  engine?: undefined;
   model: string;
+  dialect?: undefined;
+  transport?: undefined;
   reasoningEffort?: LlmReasoningEffort;
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
   contextWindowTokens?: number;
 };
+
+export type EngineLlmProfileConfig = {
+  kind: "engine";
+  id: string;
+  label?: string;
+  provider?: undefined;
+  engine: string;
+  model: string;
+  dialect: EngineDialect;
+  transport: EngineProfileTransport;
+  reasoningEffort?: undefined;
+  adapterId?: undefined;
+  apiKeyEnv?: undefined;
+  baseUrl?: undefined;
+  contextWindowTokens?: number;
+};
+
+export type LlmProfileConfig = ApiLlmProfileConfig | EngineLlmProfileConfig;
 
 export interface LlmConfig {
   provider: LlmProvider;

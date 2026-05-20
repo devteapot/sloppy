@@ -122,8 +122,13 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
     id: profile.id,
     props: {
       label: profile.label,
+      kind: profile.kind,
       provider: profile.provider,
+      engine: profile.engine,
       model: profile.model,
+      dialect: profile.dialect,
+      transport_type: profile.transport?.type,
+      transport_path: profile.transport?.path,
       reasoning_effort: profile.reasoningEffort,
       adapter_id: profile.adapterId,
       api_key_env: profile.apiKeyEnv,
@@ -366,10 +371,34 @@ export class AgentSessionProvider {
               type: "string",
               description: "Optional display label for the profile.",
             },
-            provider: "string",
+            kind: {
+              type: "string",
+              description: "Profile kind: api or engine. Missing means api.",
+            },
+            provider: {
+              type: "string",
+              description: "API provider id. Required for api profiles.",
+              optional: true,
+            },
+            engine: {
+              type: "string",
+              description: "Engine id for engine profiles, for example ds4.",
+            },
             model: {
               type: "string",
               description: "Optional model override for the provider.",
+            },
+            dialect: {
+              type: "string",
+              description: "Engine tool dialect, initially dsml.",
+            },
+            transport_type: {
+              type: "string",
+              description: "Engine transport type, initially unix.",
+            },
+            transport_path: {
+              type: "string",
+              description: "Unix socket path for engine profiles.",
             },
             reasoning_effort: {
               type: "string",
@@ -382,6 +411,10 @@ export class AgentSessionProvider {
             base_url: {
               type: "string",
               description: "Optional base URL override.",
+            },
+            context_window_tokens: {
+              type: "number",
+              description: "Optional model context window token count.",
             },
             api_key: {
               type: "string",

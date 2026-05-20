@@ -2580,7 +2580,10 @@ describe("MetaRuntimeProvider", () => {
 
     const providers = createFirstPartyProviders(config);
     try {
-      expect(providers.map((provider) => provider.id)).toEqual(["meta-runtime"]);
+      expect(providers.map((provider) => provider.id)).toEqual([
+        "inference-engines",
+        "meta-runtime",
+      ]);
     } finally {
       for (const provider of providers) {
         provider.stop?.();

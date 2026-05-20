@@ -385,6 +385,13 @@ async function executeToolCall(
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
+    if (toolUse.inputError) {
+      return invalidToolArgumentsResult(
+        toolUse,
+        { kind: "local", action: toolUse.name },
+        onToolEvent,
+      );
+    }
     const localTool = localTools.find((item) => item.tool.function.name === toolUse.name);
     if (localTool) {
       return executeLocalToolCall(toolUse, localTool, hub, config, onToolEvent, signal);

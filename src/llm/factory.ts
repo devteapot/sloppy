@@ -5,15 +5,17 @@ import { GeminiAdapter } from "./gemini";
 import { OpenAICodexAdapter } from "./openai-codex";
 import { OpenAICompatibleAdapter } from "./openai-compatible";
 import { providerRequiresApiKey } from "./provider-defaults";
-import type { LlmAdapter } from "./types";
+import type { LlmAdapter, ModelBackend, ModelBackendDescriptor } from "./types";
 
 export type LlmAdapterConfig = {
+  profileId?: string;
   provider: LlmProvider;
   model: string;
   reasoningEffort?: LlmReasoningEffort;
   apiKey?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
+  contextWindowTokens?: number;
 };
 
 function requireApiKey(config: LlmAdapterConfig): string {
@@ -37,7 +39,14 @@ function requireApiKey(config: LlmAdapterConfig): string {
   return apiKey;
 }
 
-export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
+function asApiModelBackend(adapter: LlmAdapter, descriptor: ModelBackendDescriptor): ModelBackend {
+  return Object.assign(adapter, {
+    kind: "api" as const,
+    describe: () => descriptor,
+  });
+}
+
+function createApiAdapter(config: LlmAdapterConfig): LlmAdapter {
   switch (config.provider) {
     case "anthropic":
       return new AnthropicAdapter({
@@ -76,4 +85,17 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         `${config.provider} profiles are external session-agent profiles and cannot be used by the native LLM adapter factory.`,
       );
   }
+}
+
+export function createLlmAdapter(config: LlmAdapterConfig): ModelBackend {
+  return asApiModelBackend(createApiAdapter(config), {
+    kind: "api",
+    profileId: config.profileId,
+    provider: config.provider,
+    model: config.model,
+    contextWindowTokens: config.contextWindowTokens,
+    capabilities: {
+      hostedToolCalling: true,
+    },
+  });
 }

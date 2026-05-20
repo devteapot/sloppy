@@ -2,7 +2,13 @@
 
 ## Status
 
-Future design. This is not implemented runtime behavior yet.
+Partially implemented on the Sloppy runtime side.
+
+The checked-in runtime now supports `llm.profiles[].kind: engine` for
+DS4-compatible Unix NDJSON endpoints, a Sloppy-owned `dsml` tool dialect, a mock
+engine integration test path, and an `inference-engines` SLOP status mirror.
+Patching DS4 or any other inference engine to expose the protocol remains out
+of scope for this repository change.
 
 ## Goal
 
@@ -557,19 +563,18 @@ SGLang:
 
 ## Implementation Phases
 
-1. Add `ModelTurnBackend` and wrap the current `LlmAdapter` path as an API
-   backend.
-2. Add a mock engine driver and a simple `json-block` dialect for deterministic
-   tests.
-3. Add the engine provider mirror with `/engines`, `/sessions`, `/metrics`, and
-   `/events` state.
-4. Add one local engine driver spike, preferably DS4 because its session API is
-   already explicit.
-5. Add a conformance test harness that any patched engine can run against.
-6. Add llama.cpp or MLX/oMLX as the second engine to prove the protocol is not
-   DS4-shaped.
-7. Evaluate vLLM/SGLang and adjust capability negotiation for scheduler-style
-   engines.
+1. Done: add a backend descriptor shape and keep current API adapters on the
+   existing `LlmAdapter.chat(...)` loop surface.
+2. Done: add a Unix NDJSON engine client, DSML dialect, and deterministic mock
+   engine integration tests.
+3. Done: add the `inference-engines` provider mirror with `/engines` and recent
+   `/sessions` state.
+4. Next: add a conformance test harness that any patched engine can run against.
+5. Next: integrate an already-running DS4-compatible endpoint from Sloppy.
+6. Next: add llama.cpp or MLX/oMLX as the second engine to prove the protocol is
+   not DS4-shaped.
+7. Later: evaluate vLLM/SGLang and adjust capability negotiation for
+   scheduler-style engines.
 
 ## Test Plan
 
