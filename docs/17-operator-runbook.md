@@ -73,6 +73,20 @@ bun run runtime:smoke -- --mode acp --acp-adapter <adapter-id>
 Provider smoke verifies meta-runtime routing through SLOP providers without a
 live model. Native and ACP modes verify the selected model path.
 
+## Live Headless E2E
+
+Run the opt-in live headless CLI e2e when you want the real `-p` path, the
+configured LLM, and provider tools in one check:
+
+```sh
+SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
+```
+
+The test creates an ignored `test-artifacts/` marker file, runs
+`bun run src/cli.ts -p "<prompt>"`, asks the configured model to read that file
+through the filesystem provider, and verifies the marker in stdout. It is not
+part of default preflight because it can use network and model quota.
+
 ## Audit Log
 
 Set an event log path for any run that needs an operator trail:

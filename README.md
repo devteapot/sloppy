@@ -248,10 +248,16 @@ bun run test
 bun run build
 ```
 
-Run the CLI with the default Anthropic config:
+Run the CLI in headless single-shot mode with the configured LLM:
 
 ```sh
 export ANTHROPIC_API_KEY=...
+bun run src/cli.ts -p "list the files in the current workspace"
+```
+
+Bare prompt arguments are still accepted for compatibility:
+
+```sh
 bun run src/cli.ts "list the files in the current workspace"
 ```
 
@@ -355,6 +361,14 @@ SLOPPY_MODEL=<model> \
 SLOPPY_LLM_BASE_URL=http://sloppy-mba.local:8001/v1 \
 OPENAI_API_KEY=<router-key-or-dummy> \
 bun run runtime:smoke -- --mode native
+```
+
+Run the opt-in live headless CLI e2e when an LLM is configured. This invokes the
+actual `bun run src/cli.ts -p "<prompt>"` path, asks the model to use the
+filesystem provider, and may use network/model quota:
+
+```sh
+SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 ```
 
 Check live runtime dependencies before a smoke run:
