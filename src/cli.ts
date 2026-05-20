@@ -1,7 +1,13 @@
 #!/usr/bin/env bun
 
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+
+import { CLI_USAGE, parseCliArgs } from "./cli-args";
 import { defaultConfigPromise } from "./config/load";
 import { Agent, type AgentRunResult } from "./core/agent";
+import { createFirstPartyToolEventEnrichers } from "./plugins/first-party/catalog";
+import { createAgentEventBus } from "./session/event-bus";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 const stdout = Bun.stdout.writer();
@@ -25,6 +31,24 @@ function writeProviderNotice(agent: Agent): void {
   writeStderr(`[sloppy] providers: ${ids} (${providers.length})\n`);
 }
 
+type ModelCallUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  inputTokenSource: "reported" | "unavailable";
+  outputTokenSource: "reported" | "unavailable";
+  stateContextTokens?: number;
+  stateContextTokenSource: "provider" | "local" | "unavailable";
+};
+
+async function writeMetrics(path: string | undefined, metrics: Record<string, unknown>) {
+  if (!path) {
+    return;
+  }
+
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, `${JSON.stringify(metrics, null, 2)}\n`);
+}
+
 function summarizeApprovalResult(result: AgentRunResult | null): void {
   if (!result) {
     writeStdout("[approval] resolved (no matching pending turn)\n");
@@ -36,31 +60,76 @@ function summarizeApprovalResult(result: AgentRunResult | null): void {
 }
 
 async function runSingleShot(prompt: string): Promise<number> {
+  const started = performance.now();
   let streamed = false;
+  let toolCalls = 0;
+  let toolResults = 0;
+  let exitCode = 1;
+  let status = "error";
+  let responseChars = 0;
+  let usage: AgentRunResult["usage"];
+  let errorText: string | undefined;
+  const modelCalls: ModelCallUsage[] = [];
+  const eventBus = Bun.env.SLOPPY_EVENT_LOG
+    ? createAgentEventBus({
+        logPath: Bun.env.SLOPPY_EVENT_LOG,
+        actor: {
+          id: "cli-single-shot",
+          name: "Sloppy CLI",
+          kind: "agent",
+        },
+        toolEventEnrichers: createFirstPartyToolEventEnrichers(DEFAULT_CONFIG),
+      })
+    : null;
   const agent = new Agent({
     config: DEFAULT_CONFIG,
     onText: (chunk) => {
       streamed = true;
+      responseChars += chunk.length;
       writeStdout(chunk);
     },
     onToolCall: (summary) => {
+      toolCalls += 1;
       writeStdout(`\n[tool] ${summary}\n`);
     },
     onToolResult: (summary) => {
+      toolResults += 1;
       writeStdout(`[result] ${summary}\n`);
     },
+    onTurnUsage: (turnUsage) => {
+      modelCalls.push(turnUsage);
+    },
+    onToolEvent: eventBus?.callbacks.onToolEvent,
+    onExternalProviderStates: eventBus?.callbacks.onExternalProviderStates,
+    onProviderSnapshot: eventBus?.callbacks.onProviderSnapshot,
   });
 
   try {
     await agent.start();
     writeProviderNotice(agent);
+    eventBus?.publish({
+      kind: "turn_started",
+      source: "cli",
+      mode: "single",
+    });
     const response = await agent.chat(prompt);
+    status = response.status;
+    usage = response.usage;
     if (response.status === "completed") {
       if (!streamed && response.response) {
+        responseChars += response.response.length;
         writeStdout(response.response);
       }
       writeStdout("\n");
-      return 0;
+      eventBus?.publish({
+        kind: "turn_completed",
+        source: "cli",
+        mode: "single",
+        inputTokens: response.usage?.inputTokens,
+        outputTokens: response.usage?.outputTokens,
+      });
+      exitCode = 0;
+      return exitCode;
     }
     // Single-shot cannot resolve the approval (the agent and its hub are
     // about to be torn down in `finally`). Reject the queued approval so
@@ -77,12 +146,36 @@ async function runSingleShot(prompt: string): Promise<number> {
     writeStdout(
       `\n[approval] turn was dropped — single-shot CLI cannot resolve approvals${approvalId ? ` (${approvalId})` : ""}. Run \`bun src/cli.ts\` interactively to handle approvals.\n`,
     );
-    return 2;
+    exitCode = 2;
+    return exitCode;
   } catch (error) {
-    writeStderr(`[error] ${errorMessage(error)}\n`);
-    return 1;
+    errorText = errorMessage(error);
+    writeStderr(`[error] ${errorText}\n`);
+    eventBus?.publish({
+      kind: "turn_failed",
+      source: "cli",
+      mode: "single",
+      errorMessage: errorText,
+    });
+    exitCode = 1;
+    return exitCode;
   } finally {
+    await writeMetrics(Bun.env.SLOPPY_CLI_METRICS_PATH, {
+      mode: "single",
+      status,
+      exitCode,
+      elapsedMs: Math.round((performance.now() - started) * 100) / 100,
+      promptChars: prompt.length,
+      responseChars,
+      streamed,
+      toolCalls,
+      toolResults,
+      usage,
+      modelCalls,
+      errorMessage: errorText,
+    });
     agent.shutdown();
+    eventBus?.stop();
   }
 }
 
@@ -224,8 +317,19 @@ async function runRepl(): Promise<number> {
   }
 }
 
-const inputPrompt = Bun.argv.slice(2).join(" ").trim();
-const exitCode = inputPrompt ? await runSingleShot(inputPrompt) : await runRepl();
+const cliArgs = parseCliArgs(Bun.argv.slice(2));
+let exitCode: number;
+if (cliArgs.mode === "single") {
+  exitCode = await runSingleShot(cliArgs.prompt);
+} else if (cliArgs.mode === "help") {
+  writeStdout(CLI_USAGE);
+  exitCode = 0;
+} else if (cliArgs.mode === "error") {
+  writeStderr(`[error] ${cliArgs.message}\n${CLI_USAGE}`);
+  exitCode = 1;
+} else {
+  exitCode = await runRepl();
+}
 
 await stdout.flush();
 await stderr.flush();
