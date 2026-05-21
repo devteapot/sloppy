@@ -20,7 +20,9 @@ export class SessionPluginManager {
   constructor(
     private readonly plugins: SessionRuntimePlugin[],
     private readonly ctx: PluginRuntimeContext,
-  ) {}
+  ) {
+    validateSessionPluginIds(plugins);
+  }
 
   list(): SessionRuntimePlugin[] {
     return [...this.plugins];
@@ -151,5 +153,20 @@ export class SessionPluginManager {
   onTurnFailure(event: PluginTurnFailureEvent): void {
     const plugin = this.plugins.find((candidate) => candidate.id === event.pluginTurn.pluginId);
     plugin?.onTurnFailure?.(event, this.ctx);
+  }
+}
+
+function validateSessionPluginIds(plugins: SessionRuntimePlugin[]): void {
+  const seen = new Set<string>();
+  for (const plugin of plugins) {
+    if (!plugin.id || /[\s:]/.test(plugin.id)) {
+      throw new Error(
+        `Invalid session plugin id '${plugin.id}'. Plugin ids must be non-empty and cannot contain whitespace or ':'.`,
+      );
+    }
+    if (seen.has(plugin.id)) {
+      throw new Error(`Duplicate session plugin id '${plugin.id}'. Plugin ids must be unique.`);
+    }
+    seen.add(plugin.id);
   }
 }

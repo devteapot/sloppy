@@ -80,7 +80,7 @@ function renderInspect(snapshot: SessionViewSnapshot): string {
 }
 
 function renderHelp(snapshot: SessionViewSnapshot): string {
-  const commands = buildSlashEntries(snapshot.plugins)
+  const commands = buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath })
     .map((entry) => {
       const aliases = entry.aliases?.length ? ` (${entry.aliases.join(", ")})` : "";
       const signature = entry.signature ? ` ${entry.signature}` : "";
@@ -91,7 +91,7 @@ function renderHelp(snapshot: SessionViewSnapshot): string {
     "Keys",
     "  Ctrl+K  command palette",
     "  Ctrl+O  expand/collapse Thinking output",
-    "  Esc     close overlay or cancel active turn",
+    "  Esc     close overlay, clear slash draft, or cancel active turn",
     "  Ctrl+C  exit",
     "",
     "Slash commands",

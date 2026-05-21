@@ -42,6 +42,10 @@ Implemented:
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`; this is local TUI presentation state until backed by a public session policy affordance
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
+- command-name-only slash completion in the composer from built-in commands and
+  namespaced v2 plugin action presentations whose target affordance is live,
+  with partial matching and highlighted matches; built-ins stay unqualified,
+  while plugin commands project as `/<plugin-id>:<command>` using the raw plugin id
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
 - route overlays for setup, approvals, tasks, apps, inspect, runtime, and help
@@ -96,16 +100,16 @@ execution, overlays, mode, notices, and session/supervisor updates.
 `status-line.ts` renders ambient session status and plugin indicators.
 `command-palette.ts` wraps pi-tui `SelectList` for Ctrl+K.
 `route-overlay.ts` renders temporary route panels.
-`custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms.
+`custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms and slash-command completion.
 
-The composer owns the input frame, prompt gutter, placeholder, and local mode label rendering. The mode label is passed from `AppUi`; the composer does not own runtime policy.
+The composer owns the input frame, prompt gutter, placeholder, slash-completion presentation, and local mode label rendering. The mode label and live slash entries are passed from `AppUi`; the composer does not own runtime policy.
 
 ## Interaction Map
 
 - Enter: submit composer text or slash command
 - Ctrl+K: command palette
 - Shift+Tab: cycle mode chip
-- Esc: close overlay, otherwise cancel active turn when cancellable
+- Esc: close overlay, otherwise clear slash-command draft, otherwise cancel active turn when cancellable
 - Ctrl+K: command palette, including approval/task actions
 - Ctrl+C: disconnect session/supervisor and exit
 

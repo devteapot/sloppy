@@ -12,8 +12,14 @@ import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
 import { submitMessage } from "../handlers/submit";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
-import { type LocalCommand, parseLocalCommand, type Verbosity } from "../state/commands";
+import {
+  type LocalCommand,
+  parseLocalCommand,
+  parsePluginSlashCommand,
+  type Verbosity,
+} from "../state/commands";
 import { evaluatePluginNotifications } from "../state/plugin-notifications";
+import { buildSlashEntries } from "../state/slash-catalog";
 import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
@@ -96,6 +102,9 @@ export class AppUi {
           this.hideRoute();
           return { consume: true };
         }
+        if (this.editor.clearSlashDraft()) {
+          return { consume: true };
+        }
         if (!this.snapshot?.turn.canCancel) {
           return { consume: true };
         }
@@ -118,6 +127,9 @@ export class AppUi {
     this.statusLine.update(snapshot, this.mode);
     this.turnStatus.setText(dim(turnStatusLabel(snapshot)));
     this.editor.setModeLabel(this.mode);
+    this.editor.setSlashEntries(
+      buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath }),
+    );
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
     }
@@ -155,7 +167,11 @@ export class AppUi {
   }
 
   private async submit(text: string): Promise<void> {
-    const command = parseLocalCommand(text);
+    const localCommand = parseLocalCommand(text);
+    const command =
+      localCommand?.type === "unknown" && this.snapshot
+        ? (parsePluginSlashCommand(text, this.snapshot) ?? localCommand)
+        : localCommand;
     if (command) {
       await this.executeCommand(command);
       return;

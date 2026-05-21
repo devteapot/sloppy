@@ -320,29 +320,30 @@ TUI features. It is not an external plugin loader.
 
 Per-plugin item props:
 
-- `id`: stable plugin id
+- `id`: stable unique plugin id; must be non-empty and cannot contain whitespace or `:` so it can be used as the raw TUI slash namespace
 - `version`: plugin implementation version
 - `status`: currently `active`
 - `description`: optional human-readable summary
 - `session_paths`: public session paths contributed by the plugin
-- `tui`: declarative TUI manifest
+- `ui`: declarative UI contribution manifest
 
-The current TUI manifest version is declared by `/plugins.ui_manifest_version`.
+The current UI manifest version is declared by `/plugins.ui_manifest_version`.
 Manifest fields are intentionally data-only:
 
-- `subscriptions`: `{path, depth}` entries the TUI may subscribe to
-- `commands`: slash-command discovery entries with `id`, `name`, optional
-  `aliases`, optional `signature`, and `description`
-- `palette`: command-palette action entries with `id`, `label`,
-  `description`, `path`, `action`, optional `params`, optional `shortcut`, and
-  optional `whenActionAvailable`. The TUI invokes these through the public
-  session provider and hides entries whose required live affordance is absent
-  from the declared path.
-- `notifications`: declarative state transitions with `id`, `path`, `prop`,
+- `subscriptions`: `{path, depth}` entries the UI may subscribe to
+- `actions`: discoverable invocations with `id`, `label`, `description`,
+  mandatory `invoke.path` plus `invoke.action`, optional `invoke.params`,
+  optional `whenAvailable`, optional single free-text `argument`, and optional
+  presentation metadata such as `presentation.tui.slash` with `name`, `aliases`,
+  and `signature`. TUI slash completion projects plugin action names under the
+  raw plugin id namespace as `/<plugin-id>:<name>` when their required live
+  affordance is present; built-in TUI slash names remain unqualified, and
+  invocations still go through the public session provider affordance.
+- `notifications`: declarative state transitions with `id`, source `path`/`prop`,
   `to`, and `message`; the TUI watches subscribed snapshots and emits notices
   when the transition occurs.
-- `status`: reserved declarative contribution slot for compact plugin status
-  rendering.
+- `indicators`: compact status segments declared as templates over public state
+  paths, with optional formatting and visibility metadata.
 
 ### `/goal`
 

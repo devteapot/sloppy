@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { type Terminal, TUI } from "@earendil-works/pi-tui";
 import { action, createSlopServer } from "@slop-ai/server";
 import { listenUnix } from "@slop-ai/server/unix";
 
@@ -13,7 +14,7 @@ import {
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
-import { parseLocalCommand } from "../apps/tui/src/state/commands";
+import { parseLocalCommand, parsePluginSlashCommand } from "../apps/tui/src/state/commands";
 import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
 import {
   evaluatePluginNotifications,
@@ -21,8 +22,37 @@ import {
 } from "../apps/tui/src/state/plugin-notifications";
 import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
 import { assembleTranscript } from "../apps/tui/src/state/stream-assembler";
+import { CustomEditor } from "../apps/tui/src/ui/custom-editor";
 import { routeOverlayText } from "../apps/tui/src/ui/route-overlay";
+import { SlashAutocompleteProvider } from "../apps/tui/src/ui/slash-autocomplete";
 import { StatusLine } from "../apps/tui/src/ui/status-line";
+
+class FakeTerminal implements Terminal {
+  get columns(): number {
+    return 80;
+  }
+
+  get rows(): number {
+    return 24;
+  }
+
+  get kittyProtocolActive(): boolean {
+    return false;
+  }
+
+  start(): void {}
+  stop(): void {}
+  async drainInput(): Promise<void> {}
+  write(): void {}
+  moveBy(): void {}
+  hideCursor(): void {}
+  showCursor(): void {}
+  clearLine(): void {}
+  clearFromCursor(): void {}
+  clearScreen(): void {}
+  setTitle(): void {}
+  setProgress(): void {}
+}
 
 const listeners: Array<{ close: () => void }> = [];
 
@@ -128,10 +158,240 @@ describe("TUI v2 manifest mapping", () => {
     });
     expect(next.plugins[0]?.ui.indicators?.[0]?.template).toBe("goal {status}");
 
-    expect(buildSlashEntries().some((entry) => entry.name === "goal")).toBe(false);
-    expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "goal")).toBe(true);
+    expect(buildSlashEntries().some((entry) => entry.name === "persistent-goal:goal")).toBe(false);
+    expect(
+      buildSlashEntries(next.plugins).some((entry) => entry.name === "persistent-goal:goal"),
+    ).toBe(true);
+    expect(
+      buildSlashEntries(next.plugins, { actionsByPath: next.actionsByPath }).some(
+        (entry) => entry.name === "persistent-goal:goal",
+      ),
+    ).toBe(false);
+    const withGoalAction = applyPathSnapshot(next, "/goal", {
+      id: "goal",
+      type: "control",
+      properties: { exists: false },
+      affordances: [{ action: "create_goal" }],
+    });
+    expect(
+      buildSlashEntries(withGoalAction.plugins, {
+        actionsByPath: withGoalAction.actionsByPath,
+      }).some((entry) => entry.name === "persistent-goal:goal"),
+    ).toBe(true);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
-    expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("goal");
+    expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("persistent-goal:goal");
+    expect(matchSlashEntries("/qc")[0]?.entry.name).toBe("queue-cancel");
+  });
+
+  test("builds highlighted slash autocomplete suggestions from built-ins and plugins", async () => {
+    const plugins = [
+      {
+        id: "custom-plugin",
+        version: "1.0.0",
+        status: "active",
+        sessionPaths: [],
+        ui: {
+          actions: [
+            {
+              id: "custom:run",
+              label: "Run Custom",
+              description: "Run a custom plugin action",
+              invoke: { path: "/custom", action: "do_it" },
+              presentation: { tui: { slash: { name: "custom", signature: "<text>" } } },
+            },
+          ],
+        },
+      },
+    ];
+    const provider = new SlashAutocompleteProvider(
+      buildSlashEntries(plugins, { actionsByPath: { "/custom": ["do_it"] } }),
+    );
+    const builtIn = await provider.getSuggestions(["/ver"], 0, 4, {
+      signal: new AbortController().signal,
+    });
+
+    expect(builtIn?.prefix).toBe("/ver");
+    expect(builtIn?.items[0]?.value).toBe("verbosity");
+    expect(stripAnsiForTest(builtIn?.items[0]?.label ?? "")).toBe("verbosity");
+    expect(builtIn?.items[0]?.label).toContain("\x1b[");
+    expect(builtIn?.items[0]?.description).toContain("[compact|verbose]");
+
+    const applied = provider.applyCompletion(
+      ["/ver"],
+      0,
+      4,
+      builtIn?.items[0] ?? { value: "", label: "" },
+      builtIn?.prefix ?? "",
+    );
+    expect(applied.lines[0]).toBe("/verbosity ");
+
+    const plugin = await provider.getSuggestions(["/cu"], 0, 3, {
+      signal: new AbortController().signal,
+    });
+    expect(plugin?.items[0]?.value).toBe("custom-plugin:custom");
+    expect(plugin?.items[0]?.description).toContain("Run a custom plugin action");
+
+    const unavailableProvider = new SlashAutocompleteProvider(
+      buildSlashEntries(plugins, { actionsByPath: {} }),
+    );
+    expect(
+      await unavailableProvider.getSuggestions(["/cu"], 0, 3, {
+        signal: new AbortController().signal,
+      }),
+    ).toBeNull();
+  });
+
+  test("namespaces plugin slash names and keeps built-ins unqualified", async () => {
+    const plugins = [
+      {
+        id: "shadow-plugin",
+        version: "1.0.0",
+        status: "active",
+        sessionPaths: [],
+        ui: {
+          actions: [
+            {
+              id: "shadow:help",
+              label: "Shadow Help",
+              description: "Attempt to shadow help",
+              invoke: { path: "/shadow", action: "help" },
+              presentation: { tui: { slash: { name: "help" } } },
+            },
+            {
+              id: "shadow:alias",
+              label: "Shadow Alias",
+              description: "Namespaced built-in alias",
+              invoke: { path: "/shadow", action: "alias" },
+              presentation: { tui: { slash: { name: "custom", aliases: ["q"] } } },
+            },
+            {
+              id: "shadow:duplicate",
+              label: "Shadow Duplicate",
+              description: "Duplicate plugin command",
+              invoke: { path: "/shadow", action: "duplicate" },
+              presentation: { tui: { slash: { name: "help" } } },
+            },
+          ],
+        },
+      },
+    ];
+    const entries = buildSlashEntries(plugins);
+
+    expect(entries.find((entry) => entry.name === "help")?.description).toBe(
+      "Show hotkeys and slash commands",
+    );
+    expect(entries.some((entry) => entry.name === "shadow-plugin:help")).toBe(true);
+    expect(entries.find((entry) => entry.name === "shadow-plugin:custom")?.aliases).toContain(
+      "shadow-plugin:q",
+    );
+    expect(entries.filter((entry) => entry.name === "shadow-plugin:help")).toHaveLength(1);
+    const provider = new SlashAutocompleteProvider(entries);
+    expect(
+      (
+        await provider.getSuggestions(["/help"], 0, 5, {
+          signal: new AbortController().signal,
+        })
+      )?.items[0]?.value,
+    ).toBe("help");
+    expect(
+      (
+        await provider.getSuggestions(["/shadow"], 0, 7, {
+          signal: new AbortController().signal,
+        })
+      )?.items.map((item) => item.value),
+    ).toContain("shadow-plugin:help");
+  });
+
+  test("parses plugin slash commands into public session affordance invocations", () => {
+    const snapshot = {
+      ...EMPTY_SESSION_VIEW,
+      actionsByPath: { "/custom": ["do_it"] },
+      plugins: [
+        {
+          id: "custom-plugin",
+          version: "1.0.0",
+          status: "active",
+          sessionPaths: [],
+          ui: {
+            actions: [
+              {
+                id: "custom:run",
+                label: "Run Custom",
+                description: "Run a custom plugin action",
+                invoke: { path: "/custom", action: "do_it", params: { mode: "fast" } },
+                argument: { name: "text", required: true, param: "text" },
+                presentation: { tui: { slash: { name: "custom", signature: "<text>" } } },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(parsePluginSlashCommand("/custom-plugin:custom hello world", snapshot)).toEqual({
+      type: "plugin_action",
+      pluginId: "custom-plugin",
+      actionId: "custom:run",
+      label: "Run Custom",
+      path: "/custom",
+      action: "do_it",
+      params: { mode: "fast", text: "hello world" },
+    });
+    expect(parsePluginSlashCommand("/custom-plugin:custom", snapshot)).toEqual({
+      type: "rejected",
+      reason: "Usage: /custom-plugin:custom <text>",
+    });
+
+    const shadowingSnapshot = {
+      ...snapshot,
+      actionsByPath: { "/custom": ["do_it"], "/shadow": ["help"] },
+      plugins: [
+        {
+          id: "shadow-plugin",
+          version: "1.0.0",
+          status: "active",
+          sessionPaths: [],
+          ui: {
+            actions: [
+              {
+                id: "shadow:help",
+                label: "Shadow Help",
+                description: "Attempt to shadow help",
+                invoke: { path: "/shadow", action: "help" },
+                presentation: { tui: { slash: { name: "help" } } },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expect(parsePluginSlashCommand("/help", shadowingSnapshot)).toBeNull();
+    expect(parsePluginSlashCommand("/shadow-plugin:help", shadowingSnapshot)).toEqual({
+      type: "plugin_action",
+      pluginId: "shadow-plugin",
+      actionId: "shadow:help",
+      label: "Shadow Help",
+      path: "/shadow",
+      action: "help",
+      params: undefined,
+    });
+  });
+
+  test("renders slash command drafts with slash as the composer prompt marker", () => {
+    const tui = new TUI(new FakeTerminal());
+    const editor = new CustomEditor(tui);
+
+    editor.setText("/help");
+    const slashRender = stripAnsiForTest(editor.render(44).join("\n"));
+    expect(slashRender).toContain("/  help");
+    expect(slashRender).not.toContain("/ /help");
+
+    expect(editor.clearSlashDraft()).toBe(true);
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain(">");
+
+    editor.setText("hello");
+    expect(editor.clearSlashDraft()).toBe(false);
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain(">  hello");
   });
 
   test("parses explicit verbosity commands without compact aliases", () => {
@@ -572,3 +832,16 @@ describe("SessionClient", () => {
     }
   });
 });
+
+const TEST_ESC = String.fromCharCode(0x1b);
+const TEST_BEL = String.fromCharCode(0x07);
+const TEST_APC_PATTERN = new RegExp(`${TEST_ESC}_[\\s\\S]*?${TEST_BEL}`, "g");
+const TEST_OSC_PATTERN = new RegExp(`${TEST_ESC}\\][\\s\\S]*?(?:${TEST_BEL}|${TEST_ESC}\\\\)`, "g");
+const TEST_CSI_PATTERN = new RegExp(`${TEST_ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
+
+function stripAnsiForTest(value: string): string {
+  return value
+    .replace(TEST_APC_PATTERN, "")
+    .replace(TEST_OSC_PATTERN, "")
+    .replace(TEST_CSI_PATTERN, "");
+}
