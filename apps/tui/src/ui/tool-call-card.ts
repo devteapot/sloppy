@@ -1,5 +1,6 @@
 import type { ActivityItem } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
+import { bold, dim, green, red } from "./theme";
 import { renderToolContent } from "./tool-renderers";
 
 export type ToolActivityPair = {
@@ -21,7 +22,7 @@ export function renderToolCallCard(
   const status = statusToken(item.status);
   const label = `${item.provider ?? "provider"}:${item.action ?? "action"}`;
   const suffix = [item.path, duration(pair.call, pair.result)].filter(Boolean).join(" ");
-  const header = `**Tool** ${status} ${label}${suffix ? ` ${suffix}` : ""}`;
+  const header = `${bold("Tool")} ${status} ${label}${suffix ? ` ${suffix}` : ""}`;
   const summary = isDuplicateSummary(item.summary, label, item.path) ? undefined : item.summary;
 
   if (options.verbosity === "compact" && item.status !== "error") {
@@ -57,20 +58,19 @@ function renderErrorBody(
     width: number;
   },
 ): string[] {
-  const lines = [item.errorMessage ?? "Provider action failed."];
+  const lines = [red(item.errorMessage ?? "Provider action failed.")];
   if (item.result?.data !== undefined) {
-    const json = JSON.stringify(item.result.data, null, 2);
-    lines.push(["```json", json, "```"].join("\n"));
+    lines.push(JSON.stringify(item.result.data, null, 2));
   }
   return options.verbosity === "compact" ? lines.slice(0, 1) : lines;
 }
 
 function statusToken(status: string): string {
-  if (status === "ok") return "[ok]";
-  if (status === "error") return "[error]";
-  if (status === "accepted") return "[accepted]";
-  if (status === "cancelled") return "[cancelled]";
-  return "[running]";
+  if (status === "ok") return green("[ok]");
+  if (status === "error") return red("[error]");
+  if (status === "accepted") return dim("[accepted]");
+  if (status === "cancelled") return dim("[cancelled]");
+  return dim("[running]");
 }
 
 function duration(call: ActivityItem | undefined, result: ActivityItem | undefined): string | null {

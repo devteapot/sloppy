@@ -1,5 +1,6 @@
 import type { ToolCallResult } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
+import { bgAdd, bgRemove, bold, dim, red } from "./theme";
 
 export type ToolRenderOptions = {
   verbosity: Verbosity;
@@ -25,7 +26,7 @@ export function renderToolContent(
   }
   const kind = rendererKind(result);
   const lines = registry[kind](result, options);
-  return result.truncated ? [...lines, "_result truncated_"] : lines;
+  return result.truncated ? [...lines, dim("(result truncated)")] : lines;
 }
 
 function rendererKind(result: ToolCallResult): keyof typeof registry {
@@ -53,10 +54,9 @@ function renderCode(result: ToolCallResult, options: ToolRenderOptions): string[
     return renderJson(result, options);
   }
   const path = stringValue(data.path);
-  const language = path ? codeFenceInfo(path) : "";
   const lines = [
-    path ? `path: ${path}` : undefined,
-    fenced(limitLines(content, outputLineLimit(options.verbosity)), language),
+    path ? dim(`path: ${path}`) : undefined,
+    limitLines(content, outputLineLimit(options.verbosity)),
   ];
   return lines.filter((line): line is string => Boolean(line));
 }
@@ -73,12 +73,14 @@ function renderTerminal(result: ToolCallResult, options: ToolRenderOptions): str
   const exitCode = numberValue(data.exitCode);
   const status = stringValue(data.status) ?? (exitCode === 0 ? "ok" : "error");
   const durationMs = numberValue(data.durationMs);
+  const statusText = `status: ${status}${exitCode === undefined ? "" : `, exit ${exitCode}`}${
+    durationMs === undefined ? "" : `, ${durationMs}ms`
+  }`;
+  const failed = status === "error" || (exitCode !== undefined && exitCode !== 0);
   const lines = [
-    command ? `$ ${command}` : undefined,
-    cwd && options.verbosity === "verbose" ? `cwd: ${cwd}` : undefined,
-    `status: ${status}${exitCode === undefined ? "" : `, exit ${exitCode}`}${
-      durationMs === undefined ? "" : `, ${durationMs}ms`
-    }`,
+    command ? bold(`$ ${command}`) : undefined,
+    cwd && options.verbosity === "verbose" ? dim(`cwd: ${cwd}`) : undefined,
+    failed ? red(statusText) : dim(statusText),
   ].filter((line): line is string => Boolean(line));
 
   if (options.verbosity === "compact") {
@@ -86,10 +88,10 @@ function renderTerminal(result: ToolCallResult, options: ToolRenderOptions): str
   }
 
   if (stdout) {
-    lines.push("", "stdout:", fenced(limitLines(stdout, outputLineLimit(options.verbosity))));
+    lines.push("", dim("stdout:"), limitLines(stdout, outputLineLimit(options.verbosity)));
   }
   if (stderr) {
-    lines.push("", "stderr:", fenced(limitLines(stderr, outputLineLimit(options.verbosity))));
+    lines.push("", dim("stderr:"), limitLines(stderr, outputLineLimit(options.verbosity)));
   }
   return lines;
 }
@@ -108,21 +110,26 @@ function renderDiff(result: ToolCallResult, options: ToolRenderOptions): string[
   if (!hunks) {
     return renderJson(result, options);
   }
-  const diffLines = hunks.flatMap((hunk) => [
-    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
-    ...hunk.lines.map((line) =>
-      line.kind === "add"
-        ? `+${line.text}`
-        : line.kind === "remove"
-          ? `-${line.text}`
-          : ` ${line.text}`,
-    ),
-  ]);
+  let added = 0;
+  let removed = 0;
+  const diffLines = hunks.flatMap((hunk) =>
+    hunk.lines.map((line) => {
+      if (line.kind === "add") {
+        added += 1;
+        return tintLine(`+${line.text}`, bgAdd);
+      }
+      if (line.kind === "remove") {
+        removed += 1;
+        return tintLine(`-${line.text}`, bgRemove);
+      }
+      return ` ${line.text}`;
+    }),
+  );
   const limit = options.verbosity === "compact" ? 24 : options.verbosity === "normal" ? 80 : 220;
-  return [
-    path ? `path: ${path}` : undefined,
-    fenced(limitLineArray(diffLines, limit).join("\n")),
-  ].filter((line): line is string => Boolean(line));
+  const header = dim(
+    [path ? `path: ${path}` : undefined, `(+${added} -${removed})`].filter(Boolean).join(" "),
+  );
+  return [header, ...limitLineArray(diffLines, limit)];
 }
 
 function renderText(result: ToolCallResult, options: ToolRenderOptions): string[] {
@@ -133,7 +140,7 @@ function renderText(result: ToolCallResult, options: ToolRenderOptions): string[
 
 function renderJson(result: ToolCallResult, options: ToolRenderOptions): string[] {
   const text = JSON.stringify(result.data ?? null, null, 2);
-  return [fenced(limitLines(text, outputLineLimit(options.verbosity)), "json")];
+  return [limitLines(text, outputLineLimit(options.verbosity))];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -195,6 +202,10 @@ function outputLineLimit(verbosity: Verbosity): number {
   return verbosity === "compact" ? 8 : verbosity === "normal" ? 40 : 160;
 }
 
+function tintLine(text: string, paint: (value: string) => string): string {
+  return paint(text);
+}
+
 function limitLines(text: string, limit: number): string {
   return limitLineArray(text.split(/\r?\n/), limit).join("\n");
 }
@@ -204,38 +215,4 @@ function limitLineArray(lines: string[], limit: number): string[] {
     return lines;
   }
   return [...lines.slice(0, limit), `... +${lines.length - limit} lines`];
-}
-
-function fenced(text: string, info = ""): string {
-  return [`\`\`\`${info}`, text, "```"].join("\n");
-}
-
-function codeFenceInfo(path: string): string {
-  const extension = path
-    .split(/[\\/]/)
-    .pop()
-    ?.match(/\.([^.]+)$/)?.[1]
-    ?.toLowerCase();
-  if (!extension) {
-    return "";
-  }
-  const aliases: Record<string, string> = {
-    cjs: "js",
-    cljs: "clojure",
-    cmd: "bat",
-    cts: "ts",
-    h: "c",
-    hpp: "cpp",
-    htm: "html",
-    jsx: "jsx",
-    mjs: "js",
-    mts: "ts",
-    pyw: "py",
-    rbw: "rb",
-    rs: "rust",
-    sh: "bash",
-    tsx: "tsx",
-    yml: "yaml",
-  };
-  return aliases[extension] ?? extension;
 }

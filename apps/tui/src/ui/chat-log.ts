@@ -1,4 +1,4 @@
-import { Container, Markdown } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tui";
 
 import type { ActivityItem, SessionViewSnapshot } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
@@ -7,42 +7,113 @@ import { markdownTheme } from "./theme";
 import { renderToolCallCard, type ToolActivityPair } from "./tool-call-card";
 
 export class ChatLog extends Container {
+  private readonly renderedEntries = new Map<string, RenderedEntry>();
+
   update(snapshot: SessionViewSnapshot, options?: { verbosity?: Verbosity }): void {
-    this.clear();
     const verbosity = options?.verbosity ?? "normal";
-    const timeline = buildTimeline(snapshot, verbosity);
+    const timeline = buildChatLogEntries(snapshot, {
+      verbosity,
+      width: process.stdout.columns || 100,
+    });
+
+    const activeKeys = new Set(timeline.map((item) => item.key));
+    for (const key of this.renderedEntries.keys()) {
+      if (!activeKeys.has(key)) {
+        this.renderedEntries.delete(key);
+      }
+    }
+
+    this.clear();
     if (timeline.length === 0) {
       this.addChild(new Markdown("No transcript yet.", 0, 0, markdownTheme));
     }
     for (const item of timeline) {
-      this.addChild(new Markdown(item, 0, 1, markdownTheme));
+      this.addChild(this.renderEntry(item));
     }
     const cards = inlineCards(snapshot);
     if (cards.length > 0) {
       this.addChild(new Markdown(cards.join("\n\n"), 0, 1, markdownTheme));
     }
   }
+
+  private renderEntry(entry: ChatLogEntry): Component {
+    const rendered = this.renderedEntries.get(entry.key);
+    if (rendered && rendered.mode === entry.mode) {
+      if (rendered.content !== entry.content) {
+        rendered.component.setText(entry.content);
+        rendered.content = entry.content;
+      }
+      return rendered.component;
+    }
+
+    const component =
+      entry.mode === "markdown"
+        ? new Markdown(entry.content, 0, 1, markdownTheme)
+        : new Text(entry.content, 0, 1);
+    this.renderedEntries.set(entry.key, {
+      component,
+      content: entry.content,
+      mode: entry.mode,
+    });
+    return component;
+  }
 }
 
-function buildTimeline(snapshot: SessionViewSnapshot, verbosity: Verbosity): string[] {
+export type ChatLogRenderMode = "plain" | "markdown";
+
+export type ChatLogEntry = {
+  key: string;
+  mode: ChatLogRenderMode;
+  content: string;
+};
+
+type RenderedEntry = {
+  component: Component & { setText(text: string): void };
+  content: string;
+  mode: ChatLogRenderMode;
+};
+
+export function buildChatLogEntries(
+  snapshot: SessionViewSnapshot,
+  options: { verbosity: Verbosity; width: number },
+): ChatLogEntry[] {
   const messages = assembleTranscript(snapshot.transcript).map((message) => {
     const label = message.role === "assistant" ? "assistant" : message.role;
+    const mode = messageRenderMode(message.role, message.state);
+    const body = message.text || message.state;
     return {
+      key: `msg:${message.id}`,
+      mode,
       seq: message.seq,
-      text: `**${label}>**\n\n${message.text || message.state}`,
+      content: mode === "markdown" ? `**${label}>**\n\n${body}` : `${label}>\n\n${body}`,
     };
   });
   const tools = buildToolPairs(snapshot.activity).map((pair) => ({
+    key: `tool:${(pair.result ?? pair.call)?.toolUseId ?? (pair.result ?? pair.call)?.id ?? "unknown"}`,
+    mode: "plain" as const,
     seq: (pair.result ?? pair.call)?.seq ?? 0,
-    text: renderToolCallCard(pair, {
-      verbosity,
-      width: process.stdout.columns || 100,
+    content: renderToolCallCard(pair, {
+      verbosity: options.verbosity,
+      width: options.width,
     }),
   }));
   return [...messages, ...tools]
-    .filter((item) => item.text.length > 0)
+    .filter((item) => item.content.length > 0)
     .sort((left, right) => left.seq - right.seq)
-    .map((item) => item.text);
+    .map(({ key, mode, content }) => ({ key, mode, content }));
+}
+
+function messageRenderMode(
+  role: "user" | "assistant" | "system" | "unknown",
+  state: string,
+): ChatLogRenderMode {
+  if (role === "user") {
+    return "plain";
+  }
+  if ((role === "assistant" || role === "system") && state === "complete") {
+    return "markdown";
+  }
+  return "plain";
 }
 
 function buildToolPairs(activity: ActivityItem[]): ToolActivityPair[] {

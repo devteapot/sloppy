@@ -1,3 +1,5 @@
+import { diffLines } from "diff";
+
 export type EditPair = {
   oldText: string;
   newText: string;
@@ -18,10 +20,18 @@ export type DiffHunk = {
   lines: DiffLine[];
 };
 
-export function splitDiffLines(text: string): string[] {
-  return text.length === 0 ? [] : text.split(/\r?\n/);
+// Split a diff-library change value into lines, dropping the trailing empty
+// element produced by a trailing newline.
+function splitChangeValue(value: string): string[] {
+  if (value.length === 0) return [];
+  const parts = value.split("\n");
+  if (parts[parts.length - 1] === "") parts.pop();
+  return parts;
 }
 
+// Build a hunk from a real line-level LCS diff (via the `diff` library), so
+// unchanged lines stay as context and only true changes are add/remove —
+// instead of a naive "all old, then all new" block.
 export function buildTextDiffHunk(
   oldText: string,
   newText: string,
@@ -30,27 +40,32 @@ export function buildTextDiffHunk(
     newStart?: number;
   },
 ): DiffHunk {
-  const oldLines = splitDiffLines(oldText);
-  const newLines = splitDiffLines(newText);
   const oldStart = options?.oldStart ?? 1;
   const newStart = options?.newStart ?? oldStart;
+  const lines: DiffLine[] = [];
+  let oldLine = oldStart;
+  let newLine = newStart;
+  for (const part of diffLines(oldText, newText)) {
+    for (const text of splitChangeValue(part.value)) {
+      if (part.added) {
+        lines.push({ kind: "add", text, newLine });
+        newLine += 1;
+      } else if (part.removed) {
+        lines.push({ kind: "remove", text, oldLine });
+        oldLine += 1;
+      } else {
+        lines.push({ kind: "context", text, oldLine, newLine });
+        oldLine += 1;
+        newLine += 1;
+      }
+    }
+  }
   return {
     oldStart,
-    oldLines: oldLines.length,
+    oldLines: oldLine - oldStart,
     newStart,
-    newLines: newLines.length,
-    lines: [
-      ...oldLines.map((text, index) => ({
-        kind: "remove" as const,
-        text,
-        oldLine: oldStart + index,
-      })),
-      ...newLines.map((text, index) => ({
-        kind: "add" as const,
-        text,
-        newLine: newStart + index,
-      })),
-    ],
+    newLines: newLine - newStart,
+    lines,
   };
 }
 

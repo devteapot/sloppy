@@ -43,6 +43,7 @@ describe("tool result capture and rendering", () => {
     expect(diff).toContain("path: src/app.ts");
     expect(diff).toContain("-old");
     expect(diff).toContain("+new");
+    expect(stripAnsi(diff)).not.toContain("+new".padEnd(80));
 
     const terminal = renderToolContent(
       {
@@ -75,9 +76,9 @@ describe("tool result capture and rendering", () => {
     ).join("\n");
 
     expect(rendered).toContain("path: src/app.ts");
-    expect(rendered).toContain("```ts");
     expect(rendered).toContain('const title = "Hello";');
     expect(rendered).not.toContain("\\n");
+    expect(rendered).not.toContain("```");
   });
 
   test("omits duplicate tool summary line", () => {
@@ -114,8 +115,8 @@ describe("tool result capture and rendering", () => {
       { verbosity: "normal", width: 80 },
     ).join("\n");
 
-    expect(rendered).toContain("```json");
     expect(rendered).toContain('"ok": true');
+    expect(rendered).not.toContain("```");
   });
 
   test("renders invocation errors from error body instead of result kind", () => {
@@ -148,3 +149,8 @@ describe("tool result capture and rendering", () => {
     expect(card).toContain('"error": "no_match"');
   });
 });
+
+function stripAnsi(value: string): string {
+  const sgrPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  return value.replace(sgrPattern, "");
+}

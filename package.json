@@ -37,6 +37,7 @@
     "@slop-ai/core": "0.2.0",
     "@slop-ai/server": "0.2.0",
     "@zed-industries/codex-acp": "^0.13.0",
+    "diff": "9.0.0",
     "openai": "6.33.0",
     "yaml": "2.8.3",
     "zod": "4.3.6"
