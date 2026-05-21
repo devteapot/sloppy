@@ -31,3 +31,28 @@ This is smaller than a shared `/anchors` provider:
 A future shared-anchor system may still make sense for durable cross-tool or
 cross-provider references, but source-view edits should be tried first because
 they fit the current SLOP provider boundary with less machinery.
+
+## State-Loaded Reads
+
+A possible next step is to make `read` load a bounded source view into
+filesystem provider state instead of returning the full file content as a tool
+result. The immediate tool result could be only a compact reference: path,
+version, `source_version`, line range, byte count, and truncation status. The
+next model turn would observe the loaded view through the ephemeral
+`<slop-state>` tail.
+
+This may be more efficient than carrying file contents in tool-result history:
+tool results are cumulative conversation history, while provider state can be
+focused, windowed, replaced, or evicted. The state tail must stay aggressively
+scoped, otherwise loading large or stale views into every model call would erase
+the benefit.
+
+Useful constraints for this direction:
+
+- keep source views bounded by byte, line, and count limits;
+- include only focused, recent, or explicitly referenced views in state;
+- return compact refs from `read`, not duplicate content in history and state;
+- keep large files on preview plus explicit range reads;
+- let `edit_range` consume `source_version` from these provider-owned views;
+- keep audit logs recording read/edit events without preserving full file bodies
+  in conversation history.
