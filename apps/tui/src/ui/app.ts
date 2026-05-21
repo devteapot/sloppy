@@ -19,6 +19,7 @@ import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
 import { RouteOverlay, routeOverlayText } from "./route-overlay";
 import { type InteractionMode, StatusLine, turnStatusLabel } from "./status-line";
+import { dim } from "./theme";
 
 export type AppUiOptions = {
   supervisor?: SessionSupervisorClient;
@@ -114,7 +115,7 @@ export class AppUi {
       thinking: this.thinkingRenderMode(),
     });
     this.statusLine.update(snapshot, this.mode);
-    this.turnStatus.setText(turnStatusLabel(snapshot));
+    this.turnStatus.setText(dim(turnStatusLabel(snapshot)));
     this.editor.setModeLabel(this.mode);
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
