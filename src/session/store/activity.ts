@@ -20,6 +20,7 @@ export function recordToolStart(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     paramsPreview?: string;
   },
 ): void {
@@ -37,6 +38,7 @@ export function recordToolStart(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     toolUseId: options.toolUseId,
     paramsPreview: options.paramsPreview,
   });
@@ -56,6 +58,7 @@ export function recordToolCompletion(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     taskId?: string;
     errorMessage?: string;
     result?: ToolCallResult;
@@ -85,6 +88,7 @@ export function recordToolCompletion(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     taskId: options.taskId,
     toolUseId: options.toolUseId,
     errorMessage: options.errorMessage,
@@ -127,6 +131,7 @@ export function recordApprovalRequested(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     reason: string;
   },
 ): void {
@@ -144,6 +149,7 @@ export function recordApprovalRequested(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     toolUseId: options.toolUseId,
   });
   state.activeApprovalActivityId = activityId;

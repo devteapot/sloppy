@@ -1117,6 +1117,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           paramsPreview: previewToolParams(event.invocation.action, event.invocation.params),
         });
         break;
@@ -1129,6 +1130,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           taskId: event.taskId,
           errorMessage: event.errorMessage,
           result: boundToolResult(event.result),
@@ -1155,6 +1157,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           reason: event.errorMessage,
         });
         break;

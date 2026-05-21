@@ -38,9 +38,9 @@ describe("tool result capture and rendering", () => {
           ],
         },
       },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     ).join("\n");
-    expect(diff).toContain("path: src/app.ts");
+    expect(diff).toContain("src/app.ts (+1 -1)");
     expect(diff).toContain("-old");
     expect(diff).toContain("+new");
     expect(stripAnsi(diff)).not.toContain("+new".padEnd(80));
@@ -56,7 +56,7 @@ describe("tool result capture and rendering", () => {
           durationMs: 12,
         },
       },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     ).join("\n");
     expect(terminal).toContain("$ printf hi");
     expect(terminal).toContain("stdout:");
@@ -72,13 +72,29 @@ describe("tool result capture and rendering", () => {
           content: 'const title = "Hello";\nconsole.log(title);',
         },
       },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     ).join("\n");
 
-    expect(rendered).toContain("path: src/app.ts");
+    expect(rendered).toContain("src/app.ts");
     expect(rendered).toContain('const title = "Hello";');
     expect(rendered).not.toContain("\\n");
     expect(rendered).not.toContain("```");
+  });
+
+  test("renders code compactly without file content", () => {
+    const rendered = renderToolContent(
+      {
+        kind: "code",
+        data: {
+          path: "src/app.ts",
+          content: "secret content",
+        },
+      },
+      { verbosity: "compact", width: 80 },
+    ).join("\n");
+
+    expect(rendered).toContain("src/app.ts");
+    expect(rendered).not.toContain("secret content");
   });
 
   test("omits duplicate tool summary line", () => {
@@ -93,6 +109,7 @@ describe("tool result capture and rendering", () => {
           provider: "filesystem",
           path: "/workspace",
           action: "read",
+          label: "Read File",
           toolUseId: "tool-1",
           startedAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:01.000Z",
@@ -103,16 +120,17 @@ describe("tool result capture and rendering", () => {
           },
         },
       },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     );
 
-    expect(card.match(/filesystem:read \/workspace/g)).toHaveLength(1);
+    expect(card).toContain("Read File");
+    expect(card).not.toContain("filesystem:read /workspace");
   });
 
   test("falls back unknown result kinds to JSON", () => {
     const rendered = renderToolContent(
       { kind: "custom", data: { ok: true } },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     ).join("\n");
 
     expect(rendered).toContain('"ok": true');
@@ -142,7 +160,7 @@ describe("tool result capture and rendering", () => {
           },
         },
       },
-      { verbosity: "normal", width: 80 },
+      { verbosity: "verbose", width: 80 },
     );
 
     expect(card).toContain("Edit failed");

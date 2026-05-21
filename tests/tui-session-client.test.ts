@@ -13,6 +13,7 @@ import {
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
+import { parseLocalCommand } from "../apps/tui/src/state/commands";
 import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
 import {
   evaluatePluginNotifications,
@@ -131,6 +132,22 @@ describe("TUI v2 manifest mapping", () => {
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "goal")).toBe(true);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
     expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("goal");
+  });
+
+  test("parses explicit verbosity commands without compact aliases", () => {
+    expect(parseLocalCommand("/verbosity")).toEqual({ type: "verbosity", mode: "show" });
+    expect(parseLocalCommand("/verbosity compact")).toEqual({
+      type: "verbosity",
+      mode: "compact",
+    });
+    expect(parseLocalCommand("/verbosity verbose")).toEqual({
+      type: "verbosity",
+      mode: "verbose",
+    });
+    expect(parseLocalCommand("/compact")).toEqual({ type: "unknown", name: "/compact" });
+    expect(
+      buildSlashEntries().find((entry) => entry.name === "verbosity")?.aliases,
+    ).toBeUndefined();
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {

@@ -153,6 +153,7 @@ describe("buildRuntimeToolSet", () => {
           affordances: [
             {
               action: "read",
+              label: "Read File",
               description: "Read a file.",
               idempotent: true,
             },
@@ -179,6 +180,7 @@ describe("buildRuntimeToolSet", () => {
       kind: "affordance",
       dangerous: false,
       idempotent: true,
+      label: "Read File",
     });
     expect(toolSet.resolve("filesystem__workspace__delete")).toMatchObject({
       kind: "affordance",

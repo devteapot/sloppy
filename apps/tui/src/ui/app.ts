@@ -37,7 +37,7 @@ export class AppUi {
   private supervisorSnapshot: SupervisorSnapshot | null = null;
   private route: TuiRoute = "chat";
   private mode: InteractionMode = "default";
-  private verbosity: Verbosity = "normal";
+  private verbosity: Verbosity = "compact";
   private thinkingExpandedOverride: boolean | null = null;
   private notificationValues = new Map<string, string | undefined>();
   private routeOverlay: OverlayHandle | null = null;
@@ -355,16 +355,14 @@ export class AppUi {
     if (this.snapshot) {
       this.statusLine.update(this.snapshot, this.mode);
     }
-    this.setNotice(`Mode: ${this.mode}`);
   }
 
-  private setVerbosity(mode: Verbosity | "cycle"): void {
-    const modes: Verbosity[] = ["compact", "normal", "verbose"];
-    const next =
-      mode === "cycle"
-        ? (modes[(modes.indexOf(this.verbosity) + 1) % modes.length] ?? "normal")
-        : mode;
-    this.verbosity = next;
+  private setVerbosity(mode: Verbosity | "show"): void {
+    if (mode === "show") {
+      this.setNotice(`Verbosity: ${this.verbosity}`);
+      return;
+    }
+    this.verbosity = mode;
     if (this.snapshot) {
       this.chatLog.update(this.snapshot, {
         verbosity: this.verbosity,

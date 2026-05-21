@@ -97,6 +97,7 @@ export type AgentToolInvocation = {
   providerId?: string;
   path?: string;
   action: string;
+  label?: string;
   resultKind?: string;
   params: Record<string, unknown>;
 };
@@ -261,6 +262,7 @@ function invalidToolArgumentsResult(
     providerId: resolution.kind === "affordance" ? resolution.providerId : undefined,
     path: resolution.kind === "affordance" ? (resolution.path ?? undefined) : undefined,
     action: resolution.action,
+    label: resolution.kind === "affordance" ? resolution.label : undefined,
     params: {
       invalid_tool_arguments: {
         code: error?.code ?? "invalid_json",
@@ -524,6 +526,7 @@ async function executeToolCall(
       providerId: resolution.providerId,
       path,
       action: resolution.action,
+      label: resolution.label,
       resultKind: resolution.resultKind,
       params: rawInput,
     };

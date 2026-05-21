@@ -186,6 +186,7 @@ export type ActivityItem = {
   provider?: string;
   path?: string;
   action?: string;
+  label?: string;
   turnId?: string;
   taskId?: string;
   approvalId?: string;

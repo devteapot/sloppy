@@ -103,7 +103,7 @@ describe("ChatLog", () => {
           }),
         ],
       }),
-      { verbosity: "normal", width: 80 },
+      { verbosity: "compact", width: 80 },
     );
 
     expect(entries).toMatchObject([
@@ -122,7 +122,7 @@ describe("ChatLog", () => {
     ]);
   });
 
-  test("renders user messages with a muted line overlay", () => {
+  test("renders user messages with a muted box", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -140,8 +140,9 @@ describe("ChatLog", () => {
 
     const lines = log.children[0]?.render(40) ?? [];
     const rendered = lines.join("\n");
-    expect(rendered).toContain("\x1b[48;5;237m");
+    expect(rendered).toContain("┌");
     expect(rendered).toContain("hello");
+    expect(rendered).toContain("└");
     expect(lines).toHaveLength(3);
   });
 
@@ -193,6 +194,7 @@ describe("ChatLog", () => {
             summary: "filesystem:read",
             provider: "filesystem",
             action: "read",
+            label: "Read File",
             toolUseId: "tool-1",
           }),
           activity({
@@ -202,6 +204,7 @@ describe("ChatLog", () => {
             summary: "filesystem:read README.md",
             provider: "filesystem",
             action: "read",
+            label: "Read File",
             path: "README.md",
             toolUseId: "tool-1",
             result: {
@@ -211,7 +214,7 @@ describe("ChatLog", () => {
           }),
         ],
       }),
-      { verbosity: "normal", width: 80 },
+      { verbosity: "compact", width: 80 },
     );
 
     expect(entries.map(({ key, mode }) => ({ key, mode }))).toEqual([
@@ -221,7 +224,53 @@ describe("ChatLog", () => {
     ]);
     expect(entries[0]?.content).toBe("## Status");
     expect(entries[1]?.content).toBe("**Done**");
-    expect(entries[2]?.content).toContain("Tool");
+    expect(entries[2]?.content).toContain("Read File");
+  });
+
+  test("orders tool pairs by activity sequence before compact grouping", () => {
+    const entries = buildChatLogEntries(
+      snapshotWith({
+        activity: [
+          activity({
+            id: "call-1",
+            seq: 1,
+            kind: "tool_call",
+            status: "running",
+            summary: "filesystem:read README.md",
+            provider: "filesystem",
+            action: "read",
+            label: "Read File",
+            toolUseId: "tool-1",
+          }),
+          activity({
+            id: "result-1",
+            seq: 4,
+            kind: "tool_result",
+            summary: "filesystem:read README.md",
+            provider: "filesystem",
+            action: "read",
+            label: "Read File",
+            path: "README.md",
+            toolUseId: "tool-1",
+            result: { kind: "code", data: { path: "README.md" } },
+          }),
+          activity({
+            id: "call-2",
+            seq: 3,
+            kind: "tool_call",
+            status: "running",
+            summary: "filesystem:search TODO",
+            provider: "filesystem",
+            action: "search",
+            label: "Search Workspace",
+            toolUseId: "tool-2",
+          }),
+        ],
+      }),
+      { verbosity: "compact", width: 80 },
+    );
+
+    expect(entries.map((entry) => entry.key)).toEqual(["tool:tool-2", "tool:tool-1"]);
   });
 
   test("keeps message keys stable while streaming entries switch mode on completion", () => {
@@ -237,7 +286,7 @@ describe("ChatLog", () => {
           }),
         ],
       }),
-      { verbosity: "normal", width: 80 },
+      { verbosity: "compact", width: 80 },
     )[0];
     const complete = buildChatLogEntries(
       snapshotWith({
@@ -251,7 +300,7 @@ describe("ChatLog", () => {
           }),
         ],
       }),
-      { verbosity: "normal", width: 80 },
+      { verbosity: "compact", width: 80 },
     )[0];
 
     expect(streaming?.key).toBe("msg:assistant-1");
@@ -266,7 +315,7 @@ describe("ChatLog", () => {
     });
 
     const defaultEntry = buildChatLogEntries(snapshot, {
-      verbosity: "normal",
+      verbosity: "compact",
       width: 80,
     })[0];
     expect(defaultEntry?.content).toContain("[thinking · raw · 1.5s · 12 tokens]");
@@ -274,7 +323,7 @@ describe("ChatLog", () => {
     expect(defaultEntry?.content).toContain("final answer");
 
     const expandedEntry = buildChatLogEntries(snapshot, {
-      verbosity: "normal",
+      verbosity: "compact",
       width: 80,
       thinking: "expanded",
     })[0];
@@ -287,7 +336,7 @@ describe("ChatLog", () => {
         ],
       }),
       {
-        verbosity: "normal",
+        verbosity: "compact",
         width: 80,
         thinking: "collapsed",
       },

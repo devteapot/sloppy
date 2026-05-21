@@ -94,9 +94,17 @@ _Avoid_: "consumer controls".
 A turn-scoped Tool contributed by a Plugin and run inside the agent loop, not backed by any provider — e.g. `slop_wait_for_delegation_event`. Code `kind: "local"`.
 _Avoid_: "local controls"; "runtime-local tool" is an acceptable longer alias.
 
+**Affordance label**:
+The human-readable name on an Affordance (`label`). Sloppy-owned Affordances must provide one; external Providers may omit it, and consumers then fall back to summaries or action names.
+_Avoid_: "tool label" when the source is provider-side Affordance metadata.
+
 **Result kind**:
 A semantic label on an Affordance's metadata (`resultKind`) declaring how a UI should render that Affordance's result — e.g. `diff`, `terminal`, `code`. An open string: a UI keeps a closed set of renderers it implements and falls back gracefully for any kind it does not know. Carried back on the `tool_result` activity record so the UI can render a tool call's result without knowing the tool.
 _Avoid_: "content kind" — the concept is the kind of an Affordance *result*.
+
+**Bounded result data**:
+The size-limited structured result captured for an Affordance invocation and exposed on the matching `tool_result` activity item. The Runtime preserves this data for UIs; it does not pre-render chat receipts or UI-specific views.
+_Avoid_: generic "payload" when discussing Affordance results.
 
 ### Runtime
 

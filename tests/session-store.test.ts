@@ -601,6 +601,7 @@ describe("SessionStore — tool lifecycle", () => {
       provider: "filesystem",
       path: "/workspace",
       action: "read",
+      label: "Read File",
     });
 
     const snapshot = store.getSnapshot();
@@ -609,6 +610,7 @@ describe("SessionStore — tool lifecycle", () => {
     expect(toolCall?.provider).toBe("filesystem");
     expect(toolCall?.path).toBe("/workspace");
     expect(toolCall?.action).toBe("read");
+    expect(toolCall?.label).toBe("Read File");
     expect(toolCall?.toolUseId).toBe("tu-1");
 
     expect(snapshot.turn.phase).toBe("tool_use");
@@ -628,6 +630,7 @@ describe("SessionStore — tool lifecycle", () => {
       summary: "Read OK",
       status: "ok",
       provider: "filesystem",
+      label: "Read File",
       result: {
         kind: "json",
         data: { ok: true },
@@ -643,6 +646,7 @@ describe("SessionStore — tool lifecycle", () => {
     expect(toolResult?.status).toBe("ok");
     expect(toolResult?.summary).toBe("Read OK");
     expect(toolResult?.toolUseId).toBe("tu-1");
+    expect(toolResult?.label).toBe("Read File");
     expect(toolResult?.result).toEqual({ kind: "json", data: { ok: true } });
 
     expect(snapshot.turn.phase).toBe("model");

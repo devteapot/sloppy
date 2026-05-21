@@ -26,9 +26,8 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
 
   {
     name: "verbosity",
-    aliases: ["verbose", "compact", "normal"],
-    signature: "[compact|normal|verbose]",
-    description: "Cycle or set chat verbosity",
+    signature: "[compact|verbose]",
+    description: "Show or set chat verbosity",
   },
   {
     name: "query",

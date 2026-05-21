@@ -157,6 +157,7 @@ export type ActivityItem = {
   provider?: string;
   path?: string;
   action?: string;
+  label?: string;
   approvalId?: string;
   taskId?: string;
   toolUseId?: string;

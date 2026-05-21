@@ -433,6 +433,7 @@ export function mapActivityNode(node: SlopNode | null | undefined): ActivityItem
       provider: optionalStringProp(p, "provider"),
       path: optionalStringProp(p, "path"),
       action: optionalStringProp(p, "action"),
+      label: optionalStringProp(p, "label"),
       turnId: optionalStringProp(p, "turn_id"),
       taskId: optionalStringProp(p, "task_id"),
       approvalId: optionalStringProp(p, "approval_id"),

@@ -49,16 +49,15 @@ function renderCode(result: ToolCallResult, options: ToolRenderOptions): string[
   if (!data) {
     return renderText(result, options);
   }
-  const content = stringValue(data.content);
-  if (content === undefined) {
-    return renderJson(result, options);
+  const label = fileLabel(data);
+  const content = stringValue(data.content) ?? stringValue(data.text);
+  if (options.verbosity === "compact") {
+    return [dim(label ?? "file content omitted")];
   }
-  const path = stringValue(data.path);
-  const lines = [
-    path ? dim(`path: ${path}`) : undefined,
-    limitLines(content, outputLineLimit(options.verbosity)),
-  ];
-  return lines.filter((line): line is string => Boolean(line));
+  if (!content) {
+    return label ? [dim(label)] : renderJson(result, options);
+  }
+  return [dim(label ?? "file content"), limitLines(content, outputLineLimit(options.verbosity))];
 }
 
 function renderTerminal(result: ToolCallResult, options: ToolRenderOptions): string[] {
@@ -125,10 +124,8 @@ function renderDiff(result: ToolCallResult, options: ToolRenderOptions): string[
       return ` ${line.text}`;
     }),
   );
-  const limit = options.verbosity === "compact" ? 24 : options.verbosity === "normal" ? 80 : 220;
-  const header = dim(
-    [path ? `path: ${path}` : undefined, `(+${added} -${removed})`].filter(Boolean).join(" "),
-  );
+  const limit = options.verbosity === "compact" ? 24 : 220;
+  const header = dim([path, `(+${added} -${removed})`].filter(Boolean).join(" "));
   return [header, ...limitLineArray(diffLines, limit)];
 }
 
@@ -139,6 +136,13 @@ function renderText(result: ToolCallResult, options: ToolRenderOptions): string[
 }
 
 function renderJson(result: ToolCallResult, options: ToolRenderOptions): string[] {
+  const data = record(result.data);
+  if (data && options.verbosity === "compact") {
+    const structured = renderStructuredData(data);
+    if (structured) {
+      return [dim(structured)];
+    }
+  }
   const text = JSON.stringify(result.data ?? null, null, 2);
   return [limitLines(text, outputLineLimit(options.verbosity))];
 }
@@ -155,6 +159,89 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function lineRangeLabel(data: Record<string, unknown>): string | undefined {
+  const startLine = numberValue(data.startLine) ?? numberValue(data.start_line);
+  const endLine = numberValue(data.endLine) ?? numberValue(data.end_line);
+  if (startLine === undefined || endLine === undefined) {
+    return undefined;
+  }
+  return startLine === endLine ? String(startLine) : `${startLine}-${endLine}`;
+}
+
+function fileLabel(data: Record<string, unknown>): string | undefined {
+  const path = stringValue(data.path);
+  const totalLines = numberValue(data.totalLines) ?? numberValue(data.total_lines);
+  const lineRange = lineRangeLabel(data);
+  const details = [totalLines, lineRange].filter((value) => value !== undefined);
+  if (!path) {
+    return details.length > 0 ? `(${details.join("; ")})` : undefined;
+  }
+  return details.length > 0 ? `${path} (${details.join("; ")})` : path;
+}
+
+function renderStructuredData(data: Record<string, unknown>): string | undefined {
+  const search = searchLabel(data);
+  if (search) {
+    return search;
+  }
+  const written = writeLabel(data);
+  if (written) {
+    return written;
+  }
+  return fileLabel(data);
+}
+
+function searchLabel(data: Record<string, unknown>): string | undefined {
+  const pattern = stringValue(data.pattern);
+  const resultCount = numberValue(data.resultCount) ?? numberValue(data.result_count);
+  if (!pattern && resultCount === undefined) {
+    return undefined;
+  }
+  const basePath = stringValue(data.basePath) ?? stringValue(data.path);
+  const where = basePath ? ` in ${basePath}` : "";
+  const count = resultCount === undefined ? "results" : plural(resultCount, "result");
+  return pattern ? `“${pattern}”${where} (${count})` : `${basePath ?? "search"} (${count})`;
+}
+
+function writeLabel(data: Record<string, unknown>): string | undefined {
+  const path = stringValue(data.path);
+  const bytes = numberValue(data.bytes);
+  const version = numberValue(data.version);
+  const edits = numberValue(data.edits_applied);
+  const oldBytes = numberValue(data.old_bytes);
+  const newBytes = numberValue(data.new_bytes);
+  if (!path || (bytes === undefined && version === undefined && edits === undefined)) {
+    return undefined;
+  }
+  const detail =
+    edits !== undefined
+      ? `${plural(edits, "edit")}${oldBytes !== undefined && newBytes !== undefined ? `; ${formatBytes(oldBytes)}→${formatBytes(newBytes)}` : ""}`
+      : bytes !== undefined
+        ? formatBytes(bytes)
+        : version !== undefined
+          ? `v${version}`
+          : undefined;
+  return detail ? `${path} (${detail})` : path;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000) {
+    return `${formatCompact(bytes / 1_000_000)}MB`;
+  }
+  if (bytes >= 1_000) {
+    return `${formatCompact(bytes / 1_000)}KB`;
+  }
+  return `${bytes}B`;
+}
+
+function formatCompact(value: number): string {
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
 }
 
 type RenderHunk = {
@@ -199,7 +286,7 @@ function hunkArray(value: unknown): RenderHunk[] | null {
 }
 
 function outputLineLimit(verbosity: Verbosity): number {
-  return verbosity === "compact" ? 8 : verbosity === "normal" ? 40 : 160;
+  return verbosity === "compact" ? 8 : 160;
 }
 
 function tintLine(text: string, paint: (value: string) => string): string {

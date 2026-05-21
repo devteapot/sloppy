@@ -30,9 +30,11 @@ Implemented:
 - markdown transcript rendering through pi-tui `Markdown`
 - inline cards for the first pending approval, first cancellable task, and queue
   preview, with actions available through the command palette
-- status line with workspace, model, turn phase, mode chip, and plugin indicator
-  templates
-- mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`
+- status line with workspace, model, humanized turn status, context usage, and
+  plugin indicator templates
+- boxed composer frame with the current local interaction mode label
+- mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`; this is local TUI presentation state until backed by a public session policy affordance
+- explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
 - route overlays for setup, approvals, tasks, apps, inspect, runtime, and help
@@ -89,6 +91,8 @@ execution, overlays, mode, notices, and session/supervisor updates.
 `route-overlay.ts` renders temporary route panels.
 `custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms.
 
+The composer owns the input frame, prompt gutter, placeholder, and local mode label rendering. The mode label is passed from `AppUi`; the composer does not own runtime policy.
+
 ## Interaction Map
 
 - Enter: submit composer text or slash command
@@ -101,6 +105,8 @@ execution, overlays, mode, notices, and session/supervisor updates.
 ## Design Rules
 
 - The TUI remains a consumer of public SLOP state and affordances.
+- Interaction mode labels in the composer frame are local TUI presentation state for now; `auto-approve` does not imply runtime approval policy until a public session affordance backs it.
+- Turn state is rendered through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
 - First-party UI behavior must not inspect runtime internals.
 - Thinking-output visibility toggles are local TUI presentation state; they do
   not invoke a shared session affordance or mutate the public session provider.
@@ -109,6 +115,16 @@ execution, overlays, mode, notices, and session/supervisor updates.
 - `thinking.display=visible` expands Thinking-output blocks by default;
   `thinking.display=hidden` still shows collapsed Thinking-output blocks by
   default rather than omitting them.
+- Tool-result rendering has two presentation depths: `compact` is the default
+  receipt-first chat timeline mode, while `verbose` renders bounded result data
+  for evidence and debugging. Result-kind renderers choose any raw pretty-print
+  fallback per kind.
+- Compact tool card labels come from the invocation-time affordance `label` exposed
+  on `/activity`; the TUI falls back to summaries or raw affordance identity only
+  when external providers omit a label.
+- Compact grouping is a visual transform after sequence ordering. It groups adjacent
+  receipts by provider-scoped affordance identity and renders the group title from
+  the invocation-time label; verbose mode keeps individual activity pairs.
 - Provider/plugin surfaces should be contributed through v2 `plugin.ui` where
   possible.
 - Inline UI should preserve terminal scrollback and avoid alternate-screen

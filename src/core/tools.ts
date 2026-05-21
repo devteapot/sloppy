@@ -19,6 +19,7 @@ export type RuntimeToolResolution =
       targets?: string[];
       dangerous: boolean;
       idempotent: boolean;
+      label?: string;
       resultKind?: string;
     };
 
@@ -240,11 +241,13 @@ function affordanceMetadataForResolution(
   action: string,
   path: string | null,
   targets?: string[],
-): { dangerous: boolean; idempotent: boolean; resultKind?: string } {
+): { dangerous: boolean; idempotent: boolean; label?: string; resultKind?: string } {
   const targetSet = path == null ? new Set(targets ?? []) : new Set([path]);
   let matched = 0;
   let dangerous = false;
   let idempotent = true;
+  let label: string | undefined;
+  let labelConflict = false;
   let resultKind: string | undefined;
   let resultKindConflict = false;
 
@@ -255,6 +258,15 @@ function affordanceMetadataForResolution(
         matched += 1;
         dangerous ||= affordance.dangerous === true;
         idempotent &&= affordance.idempotent === true;
+        const candidateLabel = affordance.label;
+        if (typeof candidateLabel === "string" && candidateLabel.trim().length > 0) {
+          const normalized = candidateLabel.trim();
+          if (label === undefined) {
+            label = normalized;
+          } else if (label !== normalized) {
+            labelConflict = true;
+          }
+        }
         const candidate = (affordance as { resultKind?: unknown }).resultKind;
         if (typeof candidate === "string" && candidate.trim().length > 0) {
           const normalized = candidate.trim();
@@ -276,6 +288,7 @@ function affordanceMetadataForResolution(
   return {
     dangerous,
     idempotent: matched > 0 && idempotent,
+    label: labelConflict ? undefined : label,
     resultKind: resultKindConflict ? undefined : resultKind,
   };
 }
@@ -339,6 +352,7 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         dangerous:
           affordanceMetadata.dangerous || description.includes("[DANGEROUS - confirm first]"),
         idempotent: affordanceMetadata.idempotent,
+        label: affordanceMetadata.label,
         resultKind: affordanceMetadata.resultKind,
       });
       tools.push({

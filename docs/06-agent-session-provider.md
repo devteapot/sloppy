@@ -681,6 +681,7 @@ Required props:
 Optional props:
 
 - `provider`: downstream provider id
+- `label`: invocation-time snapshot of the invoked affordance label when known
 - `path`: downstream SLOP path
 - `action`: affordance name
 - `completed_at`: ISO timestamp
@@ -693,6 +694,9 @@ Rules:
 - this is an operational timeline, not a hidden debug trace
 - private prompt internals and chain-of-thought do not belong here
 - Thinking output text belongs in `/transcript`, not `/activity`
+- Sloppy-owned affordances must provide a `label`; external providers may omit one
+- `label`, when present on a tool activity item, is copied from the observed affordance at invocation time and should not be recomputed from later provider state
+- consumers may visually group activity items only after respecting monotonic `seq`; grouping must not erase individual item status or result evidence
 - the collection should be append-oriented so multiple UIs can follow progress via patches
 
 ### `/approvals`

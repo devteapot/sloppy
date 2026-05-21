@@ -1,6 +1,6 @@
 import type { TuiRoute } from "../backend/slop-types";
 
-export type Verbosity = "compact" | "normal" | "verbose";
+export type Verbosity = "compact" | "verbose";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }
@@ -8,7 +8,7 @@ export type LocalCommand =
   | { type: "help" }
   | { type: "clear" }
   | { type: "quit" }
-  | { type: "verbosity"; mode: Verbosity | "cycle" }
+  | { type: "verbosity"; mode: Verbosity | "show" }
   | {
       type: "goal";
       action: "show" | "create" | "pause" | "resume" | "complete" | "clear";
@@ -107,15 +107,15 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     return { type: "clear" };
   }
 
-  if (name === "verbosity" || name === "verbose" || name === "compact" || name === "normal") {
-    if (name === "verbose") return { type: "verbosity", mode: "verbose" };
-    if (name === "compact") return { type: "verbosity", mode: "compact" };
-    if (name === "normal") return { type: "verbosity", mode: "normal" };
+  if (name === "verbosity") {
     const mode = args[0]?.toLowerCase();
-    if (mode === "compact" || mode === "normal" || mode === "verbose") {
+    if (!mode) {
+      return { type: "verbosity", mode: "show" };
+    }
+    if (mode === "compact" || mode === "verbose") {
       return { type: "verbosity", mode };
     }
-    return { type: "verbosity", mode: "cycle" };
+    return { type: "rejected", reason: "Usage: /verbosity [compact|verbose]" };
   }
 
   if (name === "inspect" || name === "tree" || name === "inspector") {

@@ -132,6 +132,7 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
       provider: item.provider,
       path: item.path,
       action: item.action,
+      label: item.label,
       approval_id: item.approvalId,
       task_id: item.taskId,
       tool_use_id: item.toolUseId,

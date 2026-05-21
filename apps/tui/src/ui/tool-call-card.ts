@@ -19,14 +19,15 @@ export function renderToolCallCard(
   if (!item) {
     return "";
   }
+  const label = toolActivityLabel(pair);
   const status = statusToken(item.status);
-  const label = `${item.provider ?? "provider"}:${item.action ?? "action"}`;
-  const suffix = [item.path, duration(pair.call, pair.result)].filter(Boolean).join(" ");
-  const header = `${bold("Tool")} ${status} ${label}${suffix ? ` ${suffix}` : ""}`;
-  const summary = isDuplicateSummary(item.summary, label, item.path) ? undefined : item.summary;
+  const suffix = toolActivityDuration(pair);
+  const header = `${status} ${bold(label)}${suffix ? ` ${dim(suffix)}` : ""}`;
+  const summary = isDuplicateSummary(item, label) ? undefined : item.summary;
 
   if (options.verbosity === "compact" && item.status !== "error") {
-    return [header, summary].filter(Boolean).join("\n");
+    const body = renderToolContent(item.result, options);
+    return [header, ...body].filter(Boolean).join("\n");
   }
 
   const body =
@@ -36,19 +37,119 @@ export function renderToolCallCard(
   return [header, summary, ...body].filter(Boolean).join("\n");
 }
 
-function isDuplicateSummary(
-  summary: string | undefined,
-  label: string,
-  path: string | undefined,
-): boolean {
-  if (!summary) {
+export function renderToolCallGroup(
+  pairs: ToolActivityPair[],
+  options: {
+    verbosity: Verbosity;
+    width: number;
+  },
+): string {
+  const first = pairs[0];
+  if (!first) {
+    return "";
+  }
+  const header = bold(toolActivityLabel(first));
+  const rows = pairs.map((pair) => renderToolCallRow(pair, options)).filter(Boolean);
+  return [header, ...rows].join("\n");
+}
+
+export function toolActivityLabel(pair: ToolActivityPair): string {
+  const item = pair.result ?? pair.call;
+  return item ? toolLabel(item) : "Tool call";
+}
+
+export function toolActivityGroupKey(pair: ToolActivityPair): string {
+  const item = pair.result ?? pair.call;
+  if (!item) {
+    return "unknown";
+  }
+  return [item.provider ?? "", item.action ?? "", toolLabel(item), item.result?.kind ?? ""].join(
+    "\u001f",
+  );
+}
+
+export function toolActivityDuration(pair: ToolActivityPair): string | null {
+  return duration(pair.call, pair.result);
+}
+
+function renderToolCallRow(
+  pair: ToolActivityPair,
+  options: {
+    verbosity: Verbosity;
+    width: number;
+  },
+): string {
+  const item = pair.result ?? pair.call;
+  if (!item) {
+    return "";
+  }
+  const status = statusToken(item.status);
+  const detail = rowDetail(pair, options);
+  const suffix = toolActivityDuration(pair);
+  return [status, detail, suffix ? dim(suffix) : undefined].filter(Boolean).join(" ");
+}
+
+function rowDetail(
+  pair: ToolActivityPair,
+  options: {
+    verbosity: Verbosity;
+    width: number;
+  },
+): string {
+  const item = pair.result ?? pair.call;
+  if (!item) {
+    return "";
+  }
+  if (item.status === "error") {
+    return red(item.errorMessage ?? "Provider action failed.");
+  }
+  const body = renderToolContent(item.result, { ...options, verbosity: "compact" });
+  const firstBodyLine = body.find((line) => line.trim().length > 0);
+  if (firstBodyLine) {
+    return firstBodyLine;
+  }
+  const label = toolLabel(item);
+  return isDuplicateSummary(item, label) ? dim("started") : item.summary;
+}
+
+function toolLabel(item: ActivityItem): string {
+  const label = item.label?.trim();
+  if (label) {
+    return label;
+  }
+
+  const summary = item.summary.trim();
+  if (summary && !isRawActionSummary(item, summary)) {
+    return summary;
+  }
+
+  return humanizeAction(item.action ?? item.provider ?? "tool call");
+}
+
+function humanizeAction(value: string): string {
+  const words = value.replace(/__/g, "_").split(/[_-]+/).filter(Boolean);
+  const text = words.length > 0 ? words.join(" ") : "tool call";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function isRawActionSummary(item: ActivityItem, normalized: string): boolean {
+  const rawLabel = `${item.provider ?? "provider"}:${item.action ?? "action"}`;
+  return normalized === rawLabel || normalized.startsWith(`${rawLabel} `);
+}
+
+function isDuplicateSummary(item: ActivityItem, label: string): boolean {
+  if (!item.summary) {
     return true;
   }
-  const normalized = summary.trim();
+  const normalized = item.summary.trim();
   if (normalized === label) {
     return true;
   }
-  return path ? normalized === `${label} ${path}` : false;
+  const rawLabel = `${item.provider ?? "provider"}:${item.action ?? "action"}`;
+  if (normalized === rawLabel || normalized.startsWith(`${rawLabel} `)) {
+    return true;
+  }
+  return item.path ? normalized === `${label} ${item.path}` : false;
 }
 
 function renderErrorBody(
@@ -66,11 +167,11 @@ function renderErrorBody(
 }
 
 function statusToken(status: string): string {
-  if (status === "ok") return green("[ok]");
-  if (status === "error") return red("[error]");
-  if (status === "accepted") return dim("[accepted]");
-  if (status === "cancelled") return dim("[cancelled]");
-  return dim("[running]");
+  if (status === "ok") return green("✓");
+  if (status === "error") return red("✗");
+  if (status === "accepted") return dim("…");
+  if (status === "cancelled") return dim("×");
+  return dim("…");
 }
 
 function duration(call: ActivityItem | undefined, result: ActivityItem | undefined): string | null {

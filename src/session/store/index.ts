@@ -343,6 +343,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       paramsPreview?: string;
     },
   ): void {
@@ -359,6 +360,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       taskId?: string;
       errorMessage?: string;
       result?: ToolCallResult;
@@ -376,6 +378,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       reason: string;
     },
   ): void {
