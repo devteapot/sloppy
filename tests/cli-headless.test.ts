@@ -73,6 +73,10 @@ function createTestProfileManager(config: SloppyConfig = TEST_CONFIG): LlmProfil
 function createBaseSessionAgent(overrides: Partial<SessionAgent> = {}): SessionAgent {
   return {
     start: async () => undefined,
+    listConnectedProviders: () => [
+      { id: "filesystem", name: "Filesystem" },
+      { id: "terminal", name: "Terminal" },
+    ],
     chat: async (userMessage: string) => ({ status: "completed", response: userMessage }),
     resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
     invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
@@ -220,7 +224,7 @@ describe("runHeadlessSingleShot", () => {
     expect(stdout).toContain("[tool] filesystem:read /workspace");
     expect(stdout).toContain("[result] filesystem:read /workspace");
     expect(stdout).toContain("done: inspect workspace");
-    expect(stderr).toContain("[sloppy] providers:");
+    expect(stderr).toContain("[sloppy] providers: filesystem, terminal (2)");
 
     const records = await readJsonLines(logPath);
     const kinds = records.map((record) => record.kind);

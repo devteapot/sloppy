@@ -85,6 +85,10 @@ export class ProfileSessionAgent implements SessionAgent {
     await this.ensureStartupInner();
   }
 
+  listConnectedProviders(): { id: string; name: string }[] {
+    return this.inner?.listConnectedProviders?.() ?? [];
+  }
+
   async chat(userMessage: string): Promise<AgentRunResult> {
     const inner = await this.ensureInner();
     return inner.chat(userMessage);

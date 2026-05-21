@@ -13,6 +13,11 @@ type WriteFn = (text: string) => void;
 
 type CliHeadlessStatus = "completed" | "approval_cancelled" | "error";
 
+type ConnectedProvider = {
+  id: string;
+  name: string;
+};
+
 export type CliHeadlessMetrics = {
   mode: "single";
   status: CliHeadlessStatus;
@@ -167,10 +172,16 @@ async function safeQuery(
   }
 }
 
-function buildProviderNotice(apps: SlopNode | null): string {
-  const ids = (apps?.children ?? [])
+function externalProviderIds(apps: SlopNode | null): string[] {
+  return (apps?.children ?? [])
+    .filter((app) => (stringProp(app, "status") ?? "connected") === "connected")
     .map((app) => stringProp(app, "provider_id") ?? app.id)
     .filter((id) => id.length > 0);
+}
+
+function buildProviderNotice(providers: ConnectedProvider[], apps: SlopNode | null): string {
+  const ids =
+    providers.length > 0 ? providers.map((provider) => provider.id) : externalProviderIds(apps);
   if (ids.length === 0) {
     return "[sloppy] providers: (0)\n";
   }
@@ -286,7 +297,9 @@ export async function runHeadlessSingleShot(
       }
     });
 
-    writeStderr(buildProviderNotice(await consumer.query("/apps", 1)));
+    writeStderr(
+      buildProviderNotice(runtime.listConnectedProviders(), await consumer.query("/apps", 1)),
+    );
 
     const send = await consumer.invoke("/composer", "send_message", { text: options.prompt });
     if (send.status !== "ok") {

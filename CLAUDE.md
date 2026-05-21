@@ -57,4 +57,4 @@ Default canonical label vocabulary (`needs-triage`, `needs-info`, `ready-for-age
 
 ### Domain docs
 
-Multi-context: `CONTEXT-MAP.md` at the root points to a root `CONTEXT.md` (SLOP/agent core) plus per-app contexts under `apps/*`. See `docs/agents/domain.md`.
+Multi-context-capable: `CONTEXT-MAP.md` at the root lists checked-in context files and known app areas. The root `CONTEXT.md` covers the SLOP/agent core; per-app contexts under `apps/*` are added lazily when they exist. See `docs/agents/domain.md`.

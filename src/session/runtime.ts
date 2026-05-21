@@ -213,6 +213,7 @@ function clampPreview(value: string): string {
 
 export interface SessionAgent {
   start(): Promise<void>;
+  listConnectedProviders?(): { id: string; name: string }[];
   chat(userMessage: string): Promise<AgentRunResult>;
   resumeWithToolResult(result: ResolvedApprovalToolResult): Promise<AgentRunResult>;
   invokeProvider(
@@ -483,6 +484,10 @@ export class SessionRuntime {
 
   registerSessionProviderId(providerId: string): void {
     this.localProviderIds.add(providerId);
+  }
+
+  listConnectedProviders(): { id: string; name: string }[] {
+    return this.agent.listConnectedProviders?.() ?? [];
   }
 
   getPluginSessionNodes() {
