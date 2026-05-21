@@ -37,6 +37,10 @@ type CliMetrics = {
   exitCode?: number;
   elapsedMs?: number;
   usage?: {
+    current_turn_input_tokens?: number;
+    current_turn_output_tokens?: number;
+    current_turn_model_calls?: number;
+    last_state_context_tokens?: number;
     inputTokens?: number;
     outputTokens?: number;
   };
@@ -589,25 +593,58 @@ function countTools(stdout: string): Record<string, number> {
   return counts;
 }
 
+function filesystemMutationAction(name: string): "edit_range" | "edit" | "write" | undefined {
+  const summaryAction = name.match(/^filesystem:([^/\s]+)$/)?.[1];
+  const toolIdAction = name.startsWith("filesystem__") ? name.split("__").at(-1) : undefined;
+  const action = summaryAction ?? toolIdAction;
+  return action === "edit_range" || action === "edit" || action === "write" ? action : undefined;
+}
+
 function editActions(toolCounts: Record<string, number>): string[] {
   return Object.keys(toolCounts)
-    .filter(
-      (name) =>
-        name.startsWith("filesystem__") &&
-        (name.includes("_edit_range") || name.includes("_edit") || name.includes("_write")),
-    )
+    .filter((name) => filesystemMutationAction(name) !== undefined)
     .sort();
 }
 
 function approachSatisfied(approach: Approach, actions: string[]): boolean {
-  const usedEditRange = actions.some((actionName) => actionName.includes("_edit_range"));
-  const usedEdit = actions.some(
-    (actionName) => actionName.includes("_edit") && !actionName.includes("_edit_range"),
-  );
-  const usedWrite = actions.some((actionName) => actionName.includes("_write"));
+  const mutationActions = actions.map(filesystemMutationAction);
+  const usedEditRange = mutationActions.includes("edit_range");
+  const usedEdit = mutationActions.includes("edit");
+  const usedWrite = mutationActions.includes("write");
   return approach === "legacy"
     ? usedEdit && !usedEditRange && !usedWrite
     : usedEditRange && !usedEdit && !usedWrite;
+}
+
+function numberMetric(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function inputTokensFrom(metrics: CliMetrics | undefined): number | undefined {
+  return (
+    numberMetric(metrics?.usage?.current_turn_input_tokens) ??
+    numberMetric(metrics?.usage?.inputTokens)
+  );
+}
+
+function outputTokensFrom(metrics: CliMetrics | undefined): number | undefined {
+  return (
+    numberMetric(metrics?.usage?.current_turn_output_tokens) ??
+    numberMetric(metrics?.usage?.outputTokens)
+  );
+}
+
+function modelCallsFrom(metrics: CliMetrics | undefined): number | undefined {
+  return (
+    numberMetric(metrics?.usage?.current_turn_model_calls) ??
+    (metrics?.modelCalls ? metrics.modelCalls.length : undefined)
+  );
+}
+
+function stateContextTokensFrom(metrics: CliMetrics | undefined): number | undefined {
+  return (
+    numberMetric(metrics?.usage?.last_state_context_tokens) ?? sumStateContextTokens(metrics)
+  );
 }
 
 async function readMetrics(metricsPath: string): Promise<CliMetrics | undefined> {
@@ -782,10 +819,10 @@ async function runApproachOnce(
       exitCode: result.exitCode,
       elapsedMs: Math.round((performance.now() - started) * 100) / 100,
       cliElapsedMs: metrics?.elapsedMs,
-      inputTokens: metrics?.usage?.inputTokens,
-      outputTokens: metrics?.usage?.outputTokens,
-      stateContextTokens: sumStateContextTokens(metrics),
-      modelCalls: metrics?.modelCalls?.length,
+      inputTokens: inputTokensFrom(metrics),
+      outputTokens: outputTokensFrom(metrics),
+      stateContextTokens: stateContextTokensFrom(metrics),
+      modelCalls: modelCallsFrom(metrics),
       toolCalls: metrics?.toolCalls ?? Object.values(toolCounts).reduce((sum, value) => sum + value, 0),
       toolResults: metrics?.toolResults,
       toolCounts,

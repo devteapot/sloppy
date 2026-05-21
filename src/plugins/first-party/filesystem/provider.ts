@@ -60,10 +60,10 @@ const EDIT_ITEM_SCHEMA = {
 };
 
 const EDITS_DESCRIPTION =
-  'One or more targeted replacements. Each item must be exactly { oldText, newText }. Do not put path inside each edit; for workspace-level edit, path is a top-level argument. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique -- do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Example: {"path":"src/App.jsx","edits":[{"oldText":"const title = \'Old\';","newText":"const title = \'New\';"}],"expected_version":3}. Errors return { error, edit_index } identifying the offending edit.';
+  'One or more targeted replacements. Use edit for small unique string or intra-line replacements. If replacing whole lines or blocks from a read that returned source_version, prefer edit_range. Each item must be exactly { oldText, newText }. Do not put path inside each edit; for workspace-level edit, path is a top-level argument. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique -- do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Example: {"path":"src/App.jsx","edits":[{"oldText":"const title = \'Old\';","newText":"const title = \'New\';"}],"expected_version":3}. Errors return { error, edit_index } identifying the offending edit.';
 
 const ENTRY_EDITS_DESCRIPTION =
-  "One or more targeted replacements. This per-file action already targets the file, so each item must be exactly { oldText, newText } and must not include a path. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally. (4) Keep each oldText as small as possible while still unique. Errors return { error, edit_index } identifying the offending edit.";
+  "One or more targeted replacements. Use edit for small unique string or intra-line replacements. If replacing whole lines or blocks from a read that returned source_version, prefer edit_range. This per-file action already targets the file, so each item must be exactly { oldText, newText } and must not include a path. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally. (4) Keep each oldText as small as possible while still unique. Errors return { error, edit_index } identifying the offending edit.";
 
 const RANGE_EDIT_ITEM_SCHEMA = {
   type: "object",
@@ -1198,7 +1198,7 @@ export class FilesystemProvider {
                 {
                   label: "Overwrite File",
                   description:
-                    "Replace this file entirely with new text content. Prefer `edit` for targeted changes; use `write` only for full rewrites or when the file should be regenerated from scratch.",
+                    "Replace this file entirely with new text content. Use `write` for new files, full rewrites, or regenerating a file from scratch; for targeted existing-file changes prefer `edit` or `edit_range`.",
                   estimate: "fast",
                 },
               ),
@@ -1225,7 +1225,7 @@ export class FilesystemProvider {
                 {
                   label: "Edit File",
                   description:
-                    "Apply one or more strict string-replacements to this file, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
+                    "Apply one or more strict string-replacements to this file, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
                   estimate: "fast",
                 },
               ),
@@ -1366,7 +1366,7 @@ export class FilesystemProvider {
           {
             label: "Write By Path",
             description:
-              "Write a text file relative to the workspace root. Prefer `edit` for targeted changes to existing files; use `write` for new files (with expected_version=0) or full rewrites.",
+              "Write a text file relative to the workspace root. Use `write` for new files (with expected_version=0), full rewrites, or regeneration; for targeted existing-file changes prefer `edit` or `edit_range`.",
             estimate: "fast",
           },
         ),
@@ -1400,7 +1400,7 @@ export class FilesystemProvider {
           {
             label: "Edit By Path",
             description:
-              "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
+              "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
             estimate: "fast",
           },
         ),
