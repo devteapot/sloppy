@@ -42,6 +42,9 @@ Checked in now:
   by the Codex CLI auth store created by `codex login`
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native and ACP delegated-child modes
+- opt-in live headless CLI e2e (`SLOPPY_RUN_LIVE_E2E=1 bun test
+  tests/cli-headless-e2e.test.ts`) covering `-p`, the configured LLM, and the
+  filesystem provider in one run
 - runtime doctor (`bun run runtime:doctor`) with core checks plus first-party
   plugin contributions for live OpenAI-compatible routers, configured ACP
   adapters, startup subprocess commands, persistence, audit, socket, and

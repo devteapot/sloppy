@@ -53,6 +53,7 @@ bun run typecheck
 bun run test
 ```
 
+- Headless CLI single-shot mode uses `bun run src/cli.ts -p "<prompt>"`.
 - Current test runner: Bun's built-in runner.
 - Preferred single-test commands:
 
@@ -70,6 +71,12 @@ bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
 bun test tests/gemini-adapter.test.ts
 bun test tests/tui-session-client.test.ts
+```
+
+- Opt-in live LLM/runtime e2e:
+
+```sh
+SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 ```
 
 - Run the narrowest test slice that proves your change.

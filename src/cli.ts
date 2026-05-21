@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { CLI_USAGE, parseCliArgs } from "./cli-args";
+import { runHeadlessSingleShot } from "./cli-headless";
 import { defaultConfigPromise } from "./config/load";
 import { Agent, type AgentRunResult } from "./core/agent";
 
@@ -36,54 +38,13 @@ function summarizeApprovalResult(result: AgentRunResult | null): void {
 }
 
 async function runSingleShot(prompt: string): Promise<number> {
-  let streamed = false;
-  const agent = new Agent({
+  return runHeadlessSingleShot({
+    prompt,
     config: DEFAULT_CONFIG,
-    onText: (chunk) => {
-      streamed = true;
-      writeStdout(chunk);
-    },
-    onToolCall: (summary) => {
-      writeStdout(`\n[tool] ${summary}\n`);
-    },
-    onToolResult: (summary) => {
-      writeStdout(`[result] ${summary}\n`);
-    },
+    metricsPath: Bun.env.SLOPPY_CLI_METRICS_PATH,
+    writeStdout,
+    writeStderr,
   });
-
-  try {
-    await agent.start();
-    writeProviderNotice(agent);
-    const response = await agent.chat(prompt);
-    if (response.status === "completed") {
-      if (!streamed && response.response) {
-        writeStdout(response.response);
-      }
-      writeStdout("\n");
-      return 0;
-    }
-    // Single-shot cannot resolve the approval (the agent and its hub are
-    // about to be torn down in `finally`). Reject the queued approval so
-    // we don't leave a live, approvable destructive command behind, then
-    // tell the user accurately that the turn was dropped.
-    const approvalId = agent.getPendingApprovalSourceId();
-    if (approvalId) {
-      try {
-        agent.rejectApprovalDirect(approvalId, "Single-shot CLI cannot resolve approvals.");
-      } catch {
-        // best-effort
-      }
-    }
-    writeStdout(
-      `\n[approval] turn was dropped — single-shot CLI cannot resolve approvals${approvalId ? ` (${approvalId})` : ""}. Run \`bun src/cli.ts\` interactively to handle approvals.\n`,
-    );
-    return 2;
-  } catch (error) {
-    writeStderr(`[error] ${errorMessage(error)}\n`);
-    return 1;
-  } finally {
-    agent.shutdown();
-  }
 }
 
 const REPL_HELP = [
@@ -224,8 +185,19 @@ async function runRepl(): Promise<number> {
   }
 }
 
-const inputPrompt = Bun.argv.slice(2).join(" ").trim();
-const exitCode = inputPrompt ? await runSingleShot(inputPrompt) : await runRepl();
+const cliArgs = parseCliArgs(Bun.argv.slice(2));
+let exitCode: number;
+if (cliArgs.mode === "single") {
+  exitCode = await runSingleShot(cliArgs.prompt);
+} else if (cliArgs.mode === "help") {
+  writeStdout(CLI_USAGE);
+  exitCode = 0;
+} else if (cliArgs.mode === "error") {
+  writeStderr(`[error] ${cliArgs.message}\n${CLI_USAGE}`);
+  exitCode = 1;
+} else {
+  exitCode = await runRepl();
+}
 
 await stdout.flush();
 await stderr.flush();

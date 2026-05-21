@@ -248,10 +248,21 @@ bun run test
 bun run build
 ```
 
-Run the CLI with the default Anthropic config:
+Run the CLI in headless single-shot mode with the configured LLM:
 
 ```sh
 export ANTHROPIC_API_KEY=...
+bun run src/cli.ts -p "list the files in the current workspace"
+```
+
+Single-shot mode runs an ephemeral in-process session provider and drives it
+through the public session surface. It does not open a Unix socket or persist a
+session snapshot, but it uses the same turn, usage, activity, task, approval, and
+audit plumbing as `session:serve`.
+
+Bare prompt arguments are still accepted for compatibility:
+
+```sh
 bun run src/cli.ts "list the files in the current workspace"
 ```
 
@@ -344,6 +355,10 @@ Add `--event-log /path/to/events.jsonl` or set `SLOPPY_EVENT_LOG` to capture a
 JSONL audit trail of runtime events such as topology proposals, route dispatch,
 tool calls, provider task changes, and approvals.
 
+For CLI single-shot diagnostics, set `SLOPPY_CLI_METRICS_PATH` to write a
+best-effort JSON summary of the run from session state. Metrics write failures
+emit a warning but do not change the CLI exit code.
+
 Native mode uses the active LLM profile selected by the LLM profile manager
 unless `--profile <id>` is provided. For a local OpenAI-compatible router, point
 the run at that endpoint with the normal one-shot LLM environment overrides, for
@@ -355,6 +370,14 @@ SLOPPY_MODEL=<model> \
 SLOPPY_LLM_BASE_URL=http://sloppy-mba.local:8001/v1 \
 OPENAI_API_KEY=<router-key-or-dummy> \
 bun run runtime:smoke -- --mode native
+```
+
+Run the opt-in live headless CLI e2e when an LLM is configured. This invokes the
+actual `bun run src/cli.ts -p "<prompt>"` path, asks the model to use the
+filesystem provider, and may use network/model quota:
+
+```sh
+SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 ```
 
 Check live runtime dependencies before a smoke run:

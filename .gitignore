@@ -5,6 +5,7 @@ dist/
 .sloppy-demo/
 .sloppy-debug/
 .claude/
+.agents/
 test-artifacts/
 .env
 *.log

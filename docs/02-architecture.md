@@ -41,9 +41,11 @@ Everything visible to the agent is a provider state tree with affordances:
   local controls, approvals, malformed calls, unknown tools, and unmarked
   mutating affordances as sequential barriers
 
-Built-in capabilities are providers, not privileged runtime branches. Optional
-providers include `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`,
-`spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
+Built-in capabilities ship as plugins, not privileged runtime branches. A plugin
+is the first-party package and catalog unit; each plugin contributes one or more
+providers and/or a session plugin. Optional plugins include `web`, `browser`,
+`cron`, `messaging`, `vision`, `delegation`, `spec`, `mcp`, `workspaces`, `a2a`,
+and `meta-runtime`.
 
 ## MCP Compatibility
 
@@ -251,7 +253,7 @@ The `skills` provider remains compatible with Hermes/agentskills.io-style
 compact index; `skill_view(name)` loads `SKILL.md`; `skill_view(name,
 file_path)` loads a supporting file under the skill directory. It reads nested
 `metadata.sloppy`, category, platform, tag, and supporting-file metadata. The
-index also exposes extension metadata and lightweight usage telemetry (`view_count`,
+index also exposes extension-record metadata and lightweight usage telemetry (`view_count`,
 `last_viewed_at`, and aggregate `skill_views_count`) so curator skills can
 review which procedural memories are actually being used. The built-in
 `skill-curator` skill uses this state plus transcript/activity evidence to
@@ -260,7 +262,7 @@ policy to the runtime.
 
 The public session provider has a generic `/extensions` metadata substrate for
 skill-backed session features and a `/plugins` registry for first-party session
-runtime plugins. Plugins can contribute session nodes, extension event
+runtime plugins. Plugins can contribute session nodes, extension-record event
 projections, runtime-local turn tools, queued or automatic turns, snapshot
 migration/recovery hooks, startup/shutdown hooks, policy rules, audit metadata
 enrichers, doctor checks, startup subprocess probes, supervisor summary fields,
@@ -273,8 +275,8 @@ visible. `/goal` is now a stable projection contributed by the bundled
 `persistent-goal` plugin over the `goal` extension record owned by the bundled
 `persistent-goal` skill; the plugin owns stale-turn goal recovery, while the
 runtime provides the generic durable snapshot envelope. The skill defines the
-working procedure and completion evidence expectations. Extension cleanup is
-manual plus TTL, so missing or unloaded skills do not delete state automatically.
+working procedure and completion evidence expectations. Extension-record cleanup
+is manual plus TTL, so missing or unloaded skills do not delete state automatically.
 
 Agents can create and maintain procedural memory through `skill_manage`:
 `create`, `patch`, `edit`, `delete`, `write_file`, and `remove_file`.

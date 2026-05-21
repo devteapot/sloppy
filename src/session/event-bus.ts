@@ -328,6 +328,7 @@ export function mergeCallbacks(a: AgentCallbacks, b: AgentCallbacks): AgentCallb
     onToolCall: chain(a.onToolCall, b.onToolCall),
     onToolResult: chain(a.onToolResult, b.onToolResult),
     onToolEvent: chain(a.onToolEvent, b.onToolEvent),
+    onTurnUsage: chain(a.onTurnUsage, b.onTurnUsage),
     onExternalProviderStates: chain(a.onExternalProviderStates, b.onExternalProviderStates),
     onProviderSnapshot: chain(a.onProviderSnapshot, b.onProviderSnapshot),
   };
