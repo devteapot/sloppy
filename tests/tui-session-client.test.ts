@@ -12,12 +12,16 @@ import {
   mapTranscriptNode,
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
+import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
+import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
 import {
   evaluatePluginNotifications,
   readPluginNotificationValue,
 } from "../apps/tui/src/state/plugin-notifications";
 import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
 import { assembleTranscript } from "../apps/tui/src/state/stream-assembler";
+import { routeOverlayText } from "../apps/tui/src/ui/route-overlay";
+import { StatusLine } from "../apps/tui/src/ui/status-line";
 
 const listeners: Array<{ close: () => void }> = [];
 
@@ -125,7 +129,75 @@ describe("TUI v2 manifest mapping", () => {
 
     expect(buildSlashEntries().some((entry) => entry.name === "goal")).toBe(false);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "goal")).toBe(true);
+    expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
     expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("goal");
+  });
+
+  test("projects plugin actions, indicators, and command palette entries from live state", () => {
+    const withPlugins = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
+      id: "plugins",
+      type: "collection",
+      properties: { count: 1, ui_manifest_version: 2 },
+      children: [
+        {
+          id: "persistent-goal",
+          type: "item",
+          properties: {
+            id: "persistent-goal",
+            version: "1.0.0",
+            status: "active",
+            ui: {
+              subscriptions: [{ path: "/goal", depth: 1 }],
+              actions: [
+                {
+                  id: "goal:pause",
+                  label: "Pause Goal",
+                  description: "Pause automatic goal continuation",
+                  invoke: { path: "/goal", action: "pause_goal" },
+                  whenAvailable: "pause_goal",
+                },
+              ],
+              indicators: [
+                {
+                  id: "goal-status",
+                  path: "/goal",
+                  template: "goal {status} {total_tokens}",
+                  fields: { total_tokens: { format: "number" } },
+                  visibleWhen: { prop: "exists", equals: true },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const withGoal = applyPathSnapshot(withPlugins, "/goal", {
+      id: "goal",
+      type: "control",
+      properties: { exists: true, status: "active", total_tokens: 1200 },
+      affordances: [{ action: "pause_goal" }],
+    });
+
+    expect(projectPluginActions(withGoal)).toMatchObject([
+      {
+        pluginId: "persistent-goal",
+        available: true,
+        action: { id: "goal:pause" },
+      },
+    ]);
+    expect(projectIndicators(withGoal)).toMatchObject([
+      {
+        pluginId: "persistent-goal",
+        text: "goal active 1,200",
+      },
+    ]);
+    expect(
+      buildCommandPaletteCommands(withGoal).some((item) => item.id.includes("goal:pause")),
+    ).toBe(true);
+    const statusLine = new StatusLine();
+    statusLine.update(withGoal, "default");
+    expect(statusLine.render(120).join("\n")).toContain("goal active 1,200");
+    expect(routeOverlayText("help", withGoal, null)).toContain("/help");
   });
 
   test("evaluates plugin manifest notifications against session snapshots", () => {

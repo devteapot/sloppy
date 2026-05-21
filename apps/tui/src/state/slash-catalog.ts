@@ -22,6 +22,7 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
   { name: "tasks", description: "Inspect provider tasks" },
   { name: "apps", description: "List attached external providers" },
   { name: "inspect", aliases: ["tree"], description: "Open the SLOP state inspector" },
+  { name: "runtime", description: "Open runtime status and supervised sessions" },
 
   {
     name: "verbosity",
@@ -29,12 +30,6 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     signature: "[compact|normal|verbose]",
     description: "Cycle or set chat verbosity",
   },
-  {
-    name: "mouse",
-    signature: "[on|off|toggle]",
-    description: "Toggle mouse capture inside the TUI",
-  },
-
   {
     name: "query",
     signature: "[app-id:]path depth [--window a:b] [--max-nodes n]",
@@ -55,7 +50,7 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     name: "profile-secret",
     aliases: ["secret-profile"],
     signature: "<provider> <model>",
-    description: "Save an LLM profile with masked API key entry",
+    description: "Deferred: masked profile entry is not available in the inline TUI",
   },
 
   {

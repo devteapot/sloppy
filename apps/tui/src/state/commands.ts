@@ -8,7 +8,6 @@ export type LocalCommand =
   | { type: "help" }
   | { type: "clear" }
   | { type: "quit" }
-  | { type: "mouse"; mode: "on" | "off" | "toggle" }
   | { type: "verbosity"; mode: Verbosity | "cycle" }
   | {
       type: "goal";
@@ -102,14 +101,6 @@ export function parseLocalCommand(input: string): LocalCommand | null {
 
   if (name === "clear" || name === "new" || name === "queue-clear" || name === "discard-queue") {
     return { type: "clear" };
-  }
-
-  if (name === "mouse") {
-    const mode = args[0]?.toLowerCase();
-    if (mode === "on" || mode === "off" || mode === "toggle" || mode === undefined) {
-      return { type: "mouse", mode: mode ?? "toggle" };
-    }
-    return { type: "unknown", name: trimmed };
   }
 
   if (name === "verbosity" || name === "verbose" || name === "compact" || name === "normal") {

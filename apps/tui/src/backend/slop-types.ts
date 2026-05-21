@@ -9,6 +9,7 @@ export type TuiRoute =
   | "tasks"
   | "apps"
   | "inspect"
+  | "help"
   | "runtime"
   | "settings";
 
