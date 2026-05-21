@@ -73,7 +73,7 @@ export class StatusLine implements Component {
   }
 }
 
-function turnStatusLabel(snapshot: SessionViewSnapshot): string {
+export function turnStatusLabel(snapshot: SessionViewSnapshot): string {
   const state = snapshot.turn.state;
   if (state === "idle") {
     return "Idle";

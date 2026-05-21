@@ -30,8 +30,8 @@ Implemented:
 - markdown transcript rendering through pi-tui `Markdown`
 - inline cards for the first pending approval, first cancellable task, and queue
   preview, with actions available through the command palette
-- status line with workspace, model, humanized turn status, context usage, and
-  plugin indicator templates
+- status line with workspace, model, context usage, and plugin indicator templates
+- above-composer turn status text rendered from the TUI human label mapper
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`; this is local TUI presentation state until backed by a public session policy affordance
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
@@ -106,7 +106,7 @@ The composer owns the input frame, prompt gutter, placeholder, and local mode la
 
 - The TUI remains a consumer of public SLOP state and affordances.
 - Interaction mode labels in the composer frame are local TUI presentation state for now; `auto-approve` does not imply runtime approval policy until a public session affordance backs it.
-- Turn state is rendered through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
+- Turn state is rendered above the composer through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
 - First-party UI behavior must not inspect runtime internals.
 - Thinking-output visibility toggles are local TUI presentation state; they do
   not invoke a shared session affordance or mutate the public session provider.

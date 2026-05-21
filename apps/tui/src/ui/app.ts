@@ -18,7 +18,7 @@ import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
 import { RouteOverlay, routeOverlayText } from "./route-overlay";
-import { type InteractionMode, StatusLine } from "./status-line";
+import { type InteractionMode, StatusLine, turnStatusLabel } from "./status-line";
 
 export type AppUiOptions = {
   supervisor?: SessionSupervisorClient;
@@ -32,6 +32,7 @@ export class AppUi {
   private readonly chatLog = new ChatLog();
   private readonly statusLine = new StatusLine();
   private readonly notice = new Text("");
+  private readonly turnStatus = new Text("", 1, 0);
   private readonly editor: CustomEditor;
   private snapshot: SessionViewSnapshot | null = null;
   private supervisorSnapshot: SupervisorSnapshot | null = null;
@@ -60,6 +61,7 @@ export class AppUi {
     this.root.addChild(this.header);
     this.root.addChild(this.chatLog);
     this.root.addChild(this.notice);
+    this.root.addChild(this.turnStatus);
     this.root.addChild(this.editor);
     this.root.addChild(this.statusLine);
     this.tui.addChild(this.root);
@@ -112,6 +114,7 @@ export class AppUi {
       thinking: this.thinkingRenderMode(),
     });
     this.statusLine.update(snapshot, this.mode);
+    this.turnStatus.setText(turnStatusLabel(snapshot));
     this.editor.setModeLabel(this.mode);
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
