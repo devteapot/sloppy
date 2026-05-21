@@ -255,6 +255,11 @@ export ANTHROPIC_API_KEY=...
 bun run src/cli.ts -p "list the files in the current workspace"
 ```
 
+Single-shot mode runs an ephemeral in-process session provider and drives it
+through the public session surface. It does not open a Unix socket or persist a
+session snapshot, but it uses the same turn, usage, activity, task, approval, and
+audit plumbing as `session:serve`.
+
 Bare prompt arguments are still accepted for compatibility:
 
 ```sh
@@ -349,6 +354,10 @@ bun run runtime:smoke -- --mode acp --acp-adapter claude
 Add `--event-log /path/to/events.jsonl` or set `SLOPPY_EVENT_LOG` to capture a
 JSONL audit trail of runtime events such as topology proposals, route dispatch,
 tool calls, provider task changes, and approvals.
+
+For CLI single-shot diagnostics, set `SLOPPY_CLI_METRICS_PATH` to write a
+best-effort JSON summary of the run from session state. Metrics write failures
+emit a warning but do not change the CLI exit code.
 
 Native mode uses the active LLM profile selected by the LLM profile manager
 unless `--profile <id>` is provided. For a local OpenAI-compatible router, point

@@ -84,8 +84,9 @@ SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 
 The test creates an ignored `test-artifacts/` marker file, runs
 `bun run src/cli.ts -p "<prompt>"`, asks the configured model to read that file
-through the filesystem provider, and verifies the marker in stdout. It is not
-part of default preflight because it can use network and model quota.
+through the filesystem provider, and verifies both the marker in stdout and the
+filesystem tool events in the audit log. It is not part of default preflight
+because it can use network and model quota.
 
 ## Audit Log
 
@@ -94,6 +95,15 @@ Set an event log path for any run that needs an operator trail:
 ```sh
 SLOPPY_EVENT_LOG=/var/tmp/sloppy-events.jsonl bun run session:serve
 ```
+
+`bun run src/cli.ts -p "<prompt>"` also honors `SLOPPY_EVENT_LOG`. The CLI uses
+an ephemeral in-process session provider, so its audit entries come from the
+same session-runtime lifecycle as `/composer`, `/turn`, `/usage`, `/activity`,
+`/tasks`, and `/approvals`.
+
+For a one-file summary of a single CLI run, set `SLOPPY_CLI_METRICS_PATH`.
+Metrics are best-effort diagnostics; write failures are warnings and never
+change the CLI exit code.
 
 The runtime writes JSONL lifecycle events such as turn start/completion/failure,
 queued messages, goal status changes, approval waits, tool calls, provider task

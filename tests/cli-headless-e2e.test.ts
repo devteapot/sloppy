@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const LIVE_E2E_ENV = "SLOPPY_RUN_LIVE_E2E";
@@ -56,6 +56,7 @@ describe("CLI headless live e2e", () => {
       const relativeDir = join("test-artifacts", "headless-e2e", id);
       const relativeFile = join(relativeDir, "marker.txt");
       const artifactDir = join(process.cwd(), relativeDir);
+      const eventLogPath = join(artifactDir, "events.jsonl");
 
       await mkdir(artifactDir, { recursive: true });
       await writeFile(join(process.cwd(), relativeFile), `${marker}\n`);
@@ -73,6 +74,7 @@ describe("CLI headless live e2e", () => {
           env: {
             ...process.env,
             SLOPPY_MAX_ITERATIONS: process.env.SLOPPY_MAX_ITERATIONS ?? "6",
+            SLOPPY_EVENT_LOG: eventLogPath,
           },
           stdin: "ignore",
           stdout: "pipe",
@@ -84,6 +86,22 @@ describe("CLI headless live e2e", () => {
         expect(result.stderr).toContain("[sloppy] providers:");
         expect(result.stdout).toContain(marker);
         expect(result.stdout).not.toContain("BAD_FLAG");
+
+        const records = (await readFile(eventLogPath, "utf8"))
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { kind?: string; providerId?: string });
+        expect(
+          records.some(
+            (record) => record.kind === "tool_started" && record.providerId === "filesystem",
+          ),
+        ).toBe(true);
+        expect(
+          records.some(
+            (record) => record.kind === "tool_completed" && record.providerId === "filesystem",
+          ),
+        ).toBe(true);
       } finally {
         await rm(artifactDir, { recursive: true, force: true });
       }

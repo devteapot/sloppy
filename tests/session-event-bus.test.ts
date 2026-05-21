@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { filesystemToolEventEnricher } from "../src/plugins/first-party/filesystem/audit";
-import { createAgentEventBus } from "../src/session/event-bus";
+import { createAgentEventBus, mergeCallbacks } from "../src/session/event-bus";
 
 const tempPaths: string[] = [];
 
@@ -178,5 +178,31 @@ describe("createAgentEventBus", () => {
       version: 2,
       summary: "build was scheduled for delegation.",
     });
+  });
+
+  test("chains token usage callbacks when merging audit callbacks", () => {
+    const calls: string[] = [];
+    const merged = mergeCallbacks(
+      {
+        onTurnUsage: (usage) => {
+          calls.push(`session:${usage.inputTokens ?? "none"}`);
+        },
+      },
+      {
+        onTurnUsage: (usage) => {
+          calls.push(`audit:${usage.inputTokens ?? "none"}`);
+        },
+      },
+    );
+
+    merged.onTurnUsage?.({
+      inputTokens: 7,
+      outputTokens: 3,
+      inputTokenSource: "reported",
+      outputTokenSource: "reported",
+      stateContextTokenSource: "unavailable",
+    });
+
+    expect(calls).toEqual(["session:7", "audit:7"]);
   });
 });
