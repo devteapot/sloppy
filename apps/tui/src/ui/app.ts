@@ -32,9 +32,6 @@ export class AppUi {
   private readonly chatLog = new ChatLog();
   private readonly statusLine = new StatusLine();
   private readonly notice = new Text("");
-  private readonly footer = new Text(
-    "Enter sends | Ctrl+O thinking | Ctrl+C exits | Esc cancels turn",
-  );
   private readonly editor: CustomEditor;
   private snapshot: SessionViewSnapshot | null = null;
   private supervisorSnapshot: SupervisorSnapshot | null = null;
@@ -62,10 +59,9 @@ export class AppUi {
 
     this.root.addChild(this.header);
     this.root.addChild(this.chatLog);
-    this.root.addChild(this.statusLine);
     this.root.addChild(this.notice);
-    this.root.addChild(this.footer);
     this.root.addChild(this.editor);
+    this.root.addChild(this.statusLine);
     this.tui.addChild(this.root);
     this.tui.setFocus(this.editor);
     this.tui.addInputListener((data) => {
@@ -116,6 +112,7 @@ export class AppUi {
       thinking: this.thinkingRenderMode(),
     });
     this.statusLine.update(snapshot, this.mode);
+    this.editor.setModeLabel(this.mode);
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
     }
@@ -354,6 +351,7 @@ export class AppUi {
     const modes: InteractionMode[] = ["default", "auto-approve", "plan"];
     const next = modes[(modes.indexOf(this.mode) + 1) % modes.length] ?? "default";
     this.mode = next;
+    this.editor.setModeLabel(this.mode);
     if (this.snapshot) {
       this.statusLine.update(this.snapshot, this.mode);
     }

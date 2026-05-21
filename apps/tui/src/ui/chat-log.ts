@@ -3,8 +3,10 @@ import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tu
 import type { ActivityItem, SessionViewSnapshot } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
 import { assembleTranscript, type ThinkingRenderMode } from "../state/stream-assembler";
-import { markdownTheme } from "./theme";
+import { markdownTheme, userMessageOverlay } from "./theme";
 import { renderToolCallCard, type ToolActivityPair } from "./tool-call-card";
+
+const CONTENT_PADDING_X = 1;
 
 export class ChatLog extends Container {
   private readonly renderedEntries = new Map<string, RenderedEntry>();
@@ -29,20 +31,20 @@ export class ChatLog extends Container {
 
     this.clear();
     if (timeline.length === 0) {
-      this.addChild(new Markdown("No transcript yet.", 0, 0, markdownTheme));
+      this.addChild(new Markdown("No transcript yet.", CONTENT_PADDING_X, 0, markdownTheme));
     }
     for (const item of timeline) {
       this.addChild(this.renderEntry(item));
     }
     const cards = inlineCards(snapshot);
     if (cards.length > 0) {
-      this.addChild(new Markdown(cards.join("\n\n"), 0, 1, markdownTheme));
+      this.addChild(new Markdown(cards.join("\n\n"), CONTENT_PADDING_X, 1, markdownTheme));
     }
   }
 
   private renderEntry(entry: ChatLogEntry): Component {
     const rendered = this.renderedEntries.get(entry.key);
-    if (rendered && rendered.mode === entry.mode) {
+    if (rendered && rendered.mode === entry.mode && rendered.variant === entry.variant) {
       if (rendered.content !== entry.content) {
         rendered.component.setText(entry.content);
         rendered.content = entry.content;
@@ -52,22 +54,27 @@ export class ChatLog extends Container {
 
     const component =
       entry.mode === "markdown"
-        ? new Markdown(entry.content, 0, 1, markdownTheme)
-        : new Text(entry.content, 0, 1);
+        ? new Markdown(entry.content, CONTENT_PADDING_X, 1, markdownTheme)
+        : entry.variant === "user"
+          ? new Text(entry.content, CONTENT_PADDING_X, 1, userMessageOverlay)
+          : new Text(entry.content, CONTENT_PADDING_X, 1);
     this.renderedEntries.set(entry.key, {
       component,
       content: entry.content,
       mode: entry.mode,
+      variant: entry.variant,
     });
     return component;
   }
 }
 
 export type ChatLogRenderMode = "plain" | "markdown";
+export type ChatLogEntryVariant = "default" | "user";
 
 export type ChatLogEntry = {
   key: string;
   mode: ChatLogRenderMode;
+  variant: ChatLogEntryVariant;
   content: string;
 };
 
@@ -75,6 +82,7 @@ type RenderedEntry = {
   component: Component & { setText(text: string): void };
   content: string;
   mode: ChatLogRenderMode;
+  variant: ChatLogEntryVariant;
 };
 
 export function buildChatLogEntries(
@@ -84,19 +92,21 @@ export function buildChatLogEntries(
   const messages = assembleTranscript(snapshot.transcript, {
     thinking: options.thinking ?? "default",
   }).map((message) => {
-    const label = message.role === "assistant" ? "assistant" : message.role;
     const mode = messageRenderMode(message.role, message.state);
+    const variant: ChatLogEntryVariant = message.role === "user" ? "user" : "default";
     const body = message.text || message.state;
     return {
       key: `msg:${message.id}`,
       mode,
+      variant,
       seq: message.seq,
-      content: mode === "markdown" ? `**${label}>**\n\n${body}` : `${label}>\n\n${body}`,
+      content: body,
     };
   });
   const tools = buildToolPairs(snapshot.activity).map((pair) => ({
     key: `tool:${(pair.result ?? pair.call)?.toolUseId ?? (pair.result ?? pair.call)?.id ?? "unknown"}`,
     mode: "plain" as const,
+    variant: "default" as const,
     seq: (pair.result ?? pair.call)?.seq ?? 0,
     content: renderToolCallCard(pair, {
       verbosity: options.verbosity,
@@ -106,7 +116,7 @@ export function buildChatLogEntries(
   return [...messages, ...tools]
     .filter((item) => item.content.length > 0)
     .sort((left, right) => left.seq - right.seq)
-    .map(({ key, mode, content }) => ({ key, mode, content }));
+    .map(({ key, mode, variant, content }) => ({ key, mode, variant, content }));
 }
 
 function messageRenderMode(

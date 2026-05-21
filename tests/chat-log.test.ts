@@ -110,14 +110,59 @@ describe("ChatLog", () => {
       {
         key: "msg:user-1",
         mode: "plain",
-        content: "user>\n\n# literal\n\na * b",
+        variant: "user",
+        content: "# literal\n\na * b",
       },
       {
         key: "msg:assistant-1",
         mode: "plain",
-        content: "assistant>\n\n```ts\nconst half = true;",
+        variant: "default",
+        content: "```ts\nconst half = true;",
       },
     ]);
+  });
+
+  test("renders user messages with a muted line overlay", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [
+          message({
+            id: "user-1",
+            seq: 1,
+            role: "user",
+            state: "complete",
+            text: "hello",
+          }),
+        ],
+      }),
+    );
+
+    const lines = log.children[0]?.render(40) ?? [];
+    const rendered = lines.join("\n");
+    expect(rendered).toContain("\x1b[48;5;237m");
+    expect(rendered).toContain("hello");
+    expect(lines).toHaveLength(3);
+  });
+
+  test("pads non-composer chat content horizontally", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [
+          message({
+            id: "assistant-1",
+            seq: 1,
+            role: "assistant",
+            state: "streaming",
+            text: "part",
+          }),
+        ],
+      }),
+    );
+
+    const lines = log.children[0]?.render(20) ?? [];
+    expect(lines.some((line) => line.startsWith(" part"))).toBe(true);
   });
 
   test("uses markdown for completed assistant and system entries, plain for tools", () => {
@@ -174,8 +219,8 @@ describe("ChatLog", () => {
       { key: "msg:assistant-1", mode: "markdown" },
       { key: "tool:tool-1", mode: "plain" },
     ]);
-    expect(entries[0]?.content).toBe("**system>**\n\n## Status");
-    expect(entries[1]?.content).toBe("**assistant>**\n\n**Done**");
+    expect(entries[0]?.content).toBe("## Status");
+    expect(entries[1]?.content).toBe("**Done**");
     expect(entries[2]?.content).toContain("Tool");
   });
 
