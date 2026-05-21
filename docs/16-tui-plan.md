@@ -69,7 +69,7 @@ Useful lessons:
 - attaching to an existing server is worth designing early
 
 Fit for Sloppy: best architectural match if the goal is a rich TUI, because
-Sloppy is already Bun/TypeScript and already depends on Solid for the dashboard.
+Sloppy is already Bun/TypeScript and the current TUI is Solid-based.
 
 Sources:
 
@@ -144,7 +144,7 @@ Why:
 
 - shares language, package manager, runtime, and build path with Sloppy
 - can consume `@slop-ai/consumer` directly over `NodeSocketClientTransport`
-- reuses the repo's existing Solid direction from `apps/dashboard`
+- matches the repo's current OpenTUI/Solid implementation
 - supports a full-screen app model with routes, dialogs, command palette,
   keyboard handling, and future plugin slots
 - avoids a second Go/Rust protocol model while the session-provider contract is
@@ -594,7 +594,7 @@ affordances second.
 
 ## Visual Direction
 
-Terminal visual design should be simpler than the dashboard design system.
+Terminal visual design should stay simpler than a web dashboard design system.
 Borrow Codex's restraint:
 
 - default terminal foreground for most text

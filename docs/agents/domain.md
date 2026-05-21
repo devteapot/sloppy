@@ -2,7 +2,7 @@
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
-This repo is **multi-context-capable**: the SLOP/agent core under `src/` has a checked-in context file now, and standalone applications under `apps/` (`dashboard`, `sloppy-voice`, `tui`) may add their own context files as their vocabulary stabilizes.
+This repo is **multi-context-capable**: the SLOP/agent core under `src/` has a checked-in context file now, and standalone applications under `apps/` (`sloppy-voice`, `tui`) may add their own context files as their vocabulary stabilizes.
 
 ## Before exploring, read these
 
@@ -23,7 +23,6 @@ If an optional per-app context or ADR folder doesn't exist, **proceed silently**
 ├── docs/adr/                          ← system-wide decisions
 ├── src/                               ← core: agent loop, providers, LLM adapters
 └── apps/
-    ├── dashboard/                     ← optional CONTEXT.md and docs/adr/
     ├── sloppy-voice/                  ← optional CONTEXT.md and docs/adr/
     └── tui/                           ← optional CONTEXT.md and docs/adr/
 ```

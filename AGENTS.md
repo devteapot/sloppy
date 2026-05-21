@@ -31,7 +31,7 @@
 - The agent loop may execute contiguous same-turn `slop_query_state` calls and explicitly idempotent, non-dangerous affordance calls concurrently with bounded fanout. It keeps result blocks in original model order; focus changes, local/session controls, malformed calls, unknown tools, approvals, and unmarked or mutating affordances remain sequential barriers.
 - `session:serve`, `session:serve -- --supervisor`, and managed TUI sessions can load selected workspace/project config layers with `--workspace-id` and `--project-id`; the launcher pins terminal/filesystem roots to the selected scope while keeping provider wiring in normal config.
 - The session provider exposes `/extensions` for generic extension metadata and `/plugins` for first-party session runtime plugin metadata and TUI manifests. When the opt-in `persistent-goal` plugin is enabled, it contributes `/goal` as the stable public projection for persistent long-running objectives with create/pause/resume/complete/clear controls, usage accounting, cleanup retention, and automatic continuation while active. Plugin-owned TUI palette actions should invoke public session affordances from the manifest, not hardcoded TUI feature branches. Keep reusable goal strategy in the `persistent-goal` skill; do not add planner-specific DAG policy to core.
-- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state, `/apps` external-provider attachment visibility, and a public session supervisor, a TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session/supervisor sockets, and a canvas/HTML dashboard prototype under `apps/dashboard/`.
+- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state, `/apps` external-provider attachment visibility, a public session supervisor, and a TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session/supervisor sockets.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -43,7 +43,6 @@ bun install
 bun run benchmark:filesystem-view-edits
 bun run benchmark:headless-view-edits
 bun run build
-bun run dashboard:serve
 bun run lint
 bun run preflight
 bun run runtime:doctor
@@ -88,7 +87,6 @@ SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 
 ```text
 apps/
-  dashboard/
   tui/
 src/
   cli.ts

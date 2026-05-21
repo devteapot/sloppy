@@ -80,7 +80,3 @@ workspaces:
           name: Runtime
           root: .
           configPath: .sloppy/config.yaml
-        dashboard:
-          name: Dashboard
-          root: apps/dashboard
-          configPath: .sloppy/config.yaml

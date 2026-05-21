@@ -14,7 +14,6 @@ The repo currently has application surfaces under `apps/`, but no checked-in
 per-app `CONTEXT.md` files yet. When an app develops its own stable vocabulary,
 add `apps/<app>/CONTEXT.md` and list it here.
 
-- `apps/dashboard/` - canvas/HTML dashboard prototype.
 - `apps/sloppy-voice/` - native voice app project shell.
 - `apps/tui/` - TypeScript/OpenTUI client over public session/supervisor sockets.
 

@@ -85,7 +85,6 @@ Current checked-in implementation includes:
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
 - session-provider `/apps` attachment state for external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with managed session-supervisor startup, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
-- canvas + HTML dashboard prototype under `apps/dashboard/`
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all first-party plugin providers
@@ -98,7 +97,6 @@ Near-term direction:
 
 - keep the core runtime headless
 - add richer interfaces under `apps/`, starting with `apps/tui/`
-- keep the dashboard prototype read-only until it consumes the public SLOP provider surface directly
 - expose the running agent session through a public bridge or provider surface
 - have first-party and third-party UIs use that same public contract
 - allow multiple UIs to attach to the same session concurrently
@@ -351,16 +349,6 @@ sessions` without reading runtime internals:
 bun run tui -- --workspace-id sloppy --project-id runtime --title "Runtime"
 ```
 
-Run the dashboard prototype:
-
-```sh
-bun run dashboard:serve
-```
-
-The dashboard serves `http://localhost:8787` by default. It is currently a
-developer prototype and should move toward consuming the public session/provider
-surface directly.
-
 Run the runtime smoke harness:
 
 ```sh
@@ -578,10 +566,6 @@ workspaces:
         runtime:
           name: Runtime
           root: .
-          configPath: .sloppy/config.yaml
-        dashboard:
-          name: Dashboard
-          root: apps/dashboard
           configPath: .sloppy/config.yaml
 ```
 
