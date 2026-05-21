@@ -59,6 +59,11 @@ type ToolResult = {
   summary: string;
 };
 
+export type AgentToolResult = {
+  kind?: string;
+  data?: unknown;
+};
+
 export type LocalRuntimeToolResult = {
   status: "ok" | "error";
   summary: string;
@@ -91,6 +96,7 @@ export type AgentToolInvocation = {
   providerId?: string;
   path?: string;
   action: string;
+  resultKind?: string;
   params: Record<string, unknown>;
 };
 
@@ -108,6 +114,7 @@ export type AgentToolEvent =
       taskId?: string;
       errorCode?: string;
       errorMessage?: string;
+      result?: AgentToolResult;
     }
   | {
       kind: "approval_requested";
@@ -162,6 +169,7 @@ type ExecuteToolCallResult =
       taskId?: string;
       errorCode?: string;
       errorMessage?: string;
+      activityResult?: AgentToolResult;
     }
   | {
       kind: "approval_requested";
@@ -513,6 +521,7 @@ async function executeToolCall(
       providerId: resolution.providerId,
       path,
       action: resolution.action,
+      resultKind: resolution.resultKind,
       params: rawInput,
     };
     const summary = `${resolution.providerId}:${resolution.action} ${path}`;
@@ -596,6 +605,10 @@ async function executeToolCall(
       taskId,
       errorCode: result.error?.code,
       errorMessage: result.error?.message,
+      activityResult: {
+        kind: resolution.resultKind,
+        data: result.data,
+      },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -643,6 +656,7 @@ function emitCompletedToolCall(
       taskId: result.taskId,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
+      result: result.activityResult,
     });
   }
 }

@@ -283,6 +283,7 @@ describe("TUI transcript assembly", () => {
     expect(assembleTranscript(transcript)).toEqual([
       {
         id: "msg-1",
+        seq: 0,
         role: "assistant",
         state: "streaming",
         text: "hello\nscreenshot preview",

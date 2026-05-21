@@ -829,6 +829,23 @@ describe("FilesystemProvider", () => {
       const data = result.data as { version: number; edits_applied: number; bytes: number };
       expect(data.edits_applied).toBe(1);
       expect(data.version).toBeGreaterThan(v1);
+      const diffData = result.data as {
+        hunks: Array<{
+          lines: Array<{ kind: string; text: string; oldLine?: number; newLine?: number }>;
+        }>;
+      };
+      expect(diffData.hunks[0]?.lines).toContainEqual({
+        kind: "remove",
+        text: "world",
+        oldLine: 1,
+      });
+      expect(diffData.hunks[0]?.lines).toContainEqual({ kind: "add", text: "there", newLine: 1 });
+
+      const workspace = await consumer.query("/workspace", 1);
+      const editAffordance = workspace.affordances?.find((item) => item.action === "edit") as
+        | { resultKind?: string }
+        | undefined;
+      expect(editAffordance?.resultKind).toBe("diff");
 
       const after = await consumer.invoke("/workspace", "read", { path: "src.ts" });
       expect((after.data as { content: string }).content).toBe("hello there");

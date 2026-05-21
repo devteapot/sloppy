@@ -184,6 +184,73 @@ describe("runLoop tool execution", () => {
     }
   });
 
+  test("emits provider result data with affordance result kind", async () => {
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        inspect: action(async () => ({ value: 42 }), {
+          label: "Inspect",
+          description: "Inspect structured data.",
+          estimate: "fast",
+          resultKind: "json",
+        }),
+      },
+    }));
+
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "first-party",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    const llm = new ToolBatchProbeLlm([
+      {
+        type: "tool_use",
+        id: "call-inspect",
+        name: "demo__workspace__inspect",
+        input: {},
+      },
+    ]);
+    const events: AgentToolEvent[] = [];
+    history.addUserText("inspect");
+
+    try {
+      await hub.connect();
+      const result = await runLoop({
+        config: TEST_CONFIG,
+        hub,
+        history,
+        llm,
+        onToolEvent: (event) => events.push(event),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "completed",
+          result: {
+            kind: "json",
+            data: { value: 42 },
+          },
+        }),
+      );
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("runs idempotent non-dangerous affordance calls concurrently and preserves result order", async () => {
     let secondStarted!: () => void;
     const secondStartedPromise = new Promise<void>((resolve) => {

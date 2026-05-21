@@ -11,6 +11,7 @@ import type {
   SessionStoreGranularListener,
   SessionTask,
   TokenAccountingSource,
+  ToolCallResult,
 } from "../types";
 import * as activity from "./activity";
 import * as apps from "./apps";
@@ -335,6 +336,7 @@ export class SessionStore {
       action?: string;
       taskId?: string;
       errorMessage?: string;
+      result?: ToolCallResult;
     },
   ): void {
     activity.recordToolCompletion(this.state, turnId, options);

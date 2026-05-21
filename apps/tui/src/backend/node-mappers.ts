@@ -18,6 +18,7 @@ import type {
   SessionMeta,
   SessionViewSnapshot,
   TaskItem,
+  ToolCallResult,
   TranscriptBlock,
   TranscriptMessage,
   TurnState,
@@ -163,6 +164,21 @@ function optionalRecordProp(
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function toolCallResultProp(
+  source: Record<string, unknown>,
+  key: string,
+): ToolCallResult | undefined {
+  const value = optionalRecordProp(source, key);
+  if (!value) {
+    return undefined;
+  }
+  return {
+    kind: optionalStringProp(value, "kind"),
+    data: value.data,
+    truncated: booleanProp(value, "truncated"),
+  };
 }
 
 function recordArray(value: unknown): Array<Record<string, unknown>> {
@@ -340,6 +356,7 @@ export function mapTranscriptNode(node: SlopNode | null | undefined): Transcript
     const contentNode = children(message).find((child) => child.id === "content");
     return {
       id: message.id,
+      seq: numberProp(p, "seq"),
       role: roleProp(stringProp(p, "role", "unknown")),
       state: stringProp(p, "state", "unknown"),
       turnId: nullableStringProp(p, "turn_id"),
@@ -378,6 +395,7 @@ export function mapActivityNode(node: SlopNode | null | undefined): ActivityItem
     const p = props(item);
     return {
       id: item.id,
+      seq: numberProp(p, "seq"),
       kind: stringProp(p, "kind", "unknown"),
       status: stringProp(p, "status", "unknown"),
       summary: stringProp(p, "summary", item.meta?.summary ?? ""),
@@ -389,6 +407,8 @@ export function mapActivityNode(node: SlopNode | null | undefined): ActivityItem
       approvalId: optionalStringProp(p, "approval_id"),
       toolUseId: optionalStringProp(p, "tool_use_id"),
       paramsPreview: optionalStringProp(p, "params_preview"),
+      errorMessage: optionalStringProp(p, "error_message"),
+      result: toolCallResultProp(p, "result"),
       startedAt: optionalStringProp(p, "started_at"),
       updatedAt: optionalStringProp(p, "updated_at"),
       completedAt: optionalStringProp(p, "completed_at"),

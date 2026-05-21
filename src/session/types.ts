@@ -29,6 +29,7 @@ export type TranscriptContentBlock = TranscriptTextBlock | TranscriptMediaBlock;
 
 export type TranscriptMessage = {
   id: string;
+  seq: number;
   role: TranscriptMessageRole;
   state: TranscriptMessageState;
   turnId: string | null;
@@ -78,6 +79,12 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+export type ToolCallResult = {
+  kind?: string;
+  data?: JsonValue;
+  truncated?: boolean;
+};
+
 export type SessionExtensionLifecycle = "active" | "completed" | "orphaned";
 
 export type SessionExtensionCleanupPolicy = {
@@ -119,6 +126,7 @@ export type ActivityStatus = "running" | "ok" | "error" | "accepted" | "cancelle
 
 export type ActivityItem = {
   id: string;
+  seq: number;
   kind: ActivityKind;
   status: ActivityStatus;
   summary: string;
@@ -133,6 +141,8 @@ export type ActivityItem = {
   taskId?: string;
   toolUseId?: string;
   paramsPreview?: string;
+  errorMessage?: string;
+  result?: ToolCallResult;
 };
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";

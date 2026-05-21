@@ -1,5 +1,5 @@
 import type { TranscriptMessage } from "../types";
-import { buildId, now, updateTurnPhase } from "./helpers";
+import { buildId, nextSeq, now, updateTurnPhase } from "./helpers";
 import type { SessionStoreState } from "./state";
 
 export function getOrCreateAssistantMessage(
@@ -17,6 +17,7 @@ export function getOrCreateAssistantMessage(
 
   const message: TranscriptMessage = {
     id: buildId("msg"),
+    seq: nextSeq(state),
     role: "assistant",
     state: "streaming",
     turnId,
@@ -54,6 +55,7 @@ export function appendAssistantText(
   if (!message) {
     message = {
       id: buildId("msg"),
+      seq: nextSeq(state),
       role: "assistant",
       state: "streaming",
       turnId,
@@ -119,6 +121,7 @@ export function appendAssistantMedia(
   if (!message) {
     message = {
       id: buildId("msg"),
+      seq: nextSeq(state),
       role: "assistant",
       state: "complete",
       turnId,

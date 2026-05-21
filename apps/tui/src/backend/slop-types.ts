@@ -141,6 +141,7 @@ export type TranscriptBlock = {
 
 export type TranscriptMessage = {
   id: string;
+  seq: number;
   role: "user" | "assistant" | "system" | "unknown";
   state: string;
   turnId: string | null;
@@ -150,8 +151,15 @@ export type TranscriptMessage = {
   blocks: TranscriptBlock[];
 };
 
+export type ToolCallResult = {
+  kind?: string;
+  data?: unknown;
+  truncated?: boolean;
+};
+
 export type ActivityItem = {
   id: string;
+  seq: number;
   kind: string;
   status: string;
   summary: string;
@@ -163,6 +171,8 @@ export type ActivityItem = {
   approvalId?: string;
   toolUseId?: string;
   paramsPreview?: string;
+  errorMessage?: string;
+  result?: ToolCallResult;
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;

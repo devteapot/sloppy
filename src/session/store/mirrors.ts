@@ -1,5 +1,5 @@
 import type { ApprovalItem, SessionTask } from "../types";
-import { buildId, now, updateActivity } from "./helpers";
+import { buildId, nextSeq, now, updateActivity } from "./helpers";
 import type { SessionStoreState } from "./state";
 
 export function syncProviderApprovals(
@@ -21,6 +21,7 @@ export function syncProviderApprovals(
 
     state.snapshot.activity.push({
       id: buildId("activity"),
+      seq: nextSeq(state),
       kind: "approval",
       status:
         approval.status === "approved"

@@ -2,6 +2,14 @@ diff --git a/src/descriptor.ts b/src/descriptor.ts
 index ff9ab28f0e50bca743b6af43b2de0e5caeb14620..0950d789425e2b97adb78d9f2fe802b238d91536 100644
 --- a/src/descriptor.ts
 +++ b/src/descriptor.ts
+@@ -153,6 +153,7 @@ function normalizeActions(
+         ...(action.dangerous && { dangerous: true }),
+         ...(action.idempotent && { idempotent: true }),
+         ...(action.estimate && { estimate: action.estimate }),
++        ...(action.resultKind && { resultKind: action.resultKind }),
+         ...(action.params && { params: normalizeParams(action.params) }),
+       });
+     }
 @@ -170,6 +170,7 @@ function normalizeParams(params: Record<string, ParamDef>): JsonSchema {
    for (const [key, def] of Object.entries(params)) {
      if (typeof def === "string") {
@@ -24,6 +32,14 @@ diff --git a/src/types.ts b/src/types.ts
 index 5e88c227adaaef6bb62daa85eefece2f692e45f8..a5ed23c32f80afbc6704af00bd1b2d1ae98901fa 100644
 --- a/src/types.ts
 +++ b/src/types.ts
+@@ -17,6 +17,7 @@ export interface Affordance {
+   dangerous?: boolean;
+   idempotent?: boolean;
+   estimate?: "instant" | "fast" | "slow" | "async";
++  resultKind?: string;
+ }
+ 
+ export interface NodeMeta {
 @@ -61,7 +61,9 @@ export interface PatchOp {
  
  export type ActionHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -35,3 +51,30 @@ index 5e88c227adaaef6bb62daa85eefece2f692e45f8..a5ed23c32f80afbc6704af00bd1b2d1a
  
  export type Action =
    | ActionHandler
+@@ -75,6 +77,7 @@ export type Action =
+       dangerous?: boolean;
+       idempotent?: boolean;
+       estimate?: "instant" | "fast" | "slow" | "async";
++      resultKind?: string;
+     };
+ 
+ export interface ContentRef {
+diff --git a/src/helpers.ts b/src/helpers.ts
+index 8bcbf01df1e6d7c943f1bba271b8ee81608dc905..f51af4b85cf9df6fd1c0679b343fa2f3ce21c821 100644
+--- a/src/helpers.ts
++++ b/src/helpers.ts
+@@ -25,6 +25,7 @@ export function action<const P extends Record<string, ParamDef>>(
+     dangerous?: boolean;
+     idempotent?: boolean;
+     estimate?: "instant" | "fast" | "slow" | "async";
++    resultKind?: string;
+   },
+ ): Action;
+ 
+@@ -37,6 +38,7 @@ export function action(
+     dangerous?: boolean;
+     idempotent?: boolean;
+     estimate?: "instant" | "fast" | "slow" | "async";
++    resultKind?: string;
+   },
+ ): Action;

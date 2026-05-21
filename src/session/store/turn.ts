@@ -1,5 +1,5 @@
 import type { TranscriptMessage, TranscriptMessageRole } from "../types";
-import { buildId, deriveTitle, now, updateActivity, updateTurn } from "./helpers";
+import { buildId, deriveTitle, nextSeq, now, updateActivity, updateTurn } from "./helpers";
 import { trimResolvedApprovals, trimResolvedTasks } from "./mirrors";
 import type { SessionStoreState } from "./state";
 
@@ -20,6 +20,7 @@ export function beginTurn(
   const role = options?.role ?? "user";
   const userMessage: TranscriptMessage = {
     id: buildId("msg"),
+    seq: nextSeq(state),
     role,
     state: "complete",
     turnId,
@@ -43,6 +44,7 @@ export function beginTurn(
   state.snapshot.transcript.push(userMessage);
   state.snapshot.activity.push({
     id: modelActivityId,
+    seq: nextSeq(state),
     kind: "model_call",
     status: "running",
     summary: "Running model turn",
@@ -130,6 +132,7 @@ export function failTurn(state: SessionStoreState, turnId: string, message: stri
 
   state.snapshot.activity.push({
     id: buildId("activity"),
+    seq: nextSeq(state),
     kind: "error",
     status: "error",
     summary: message,

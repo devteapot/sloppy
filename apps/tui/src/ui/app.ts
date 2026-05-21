@@ -12,7 +12,7 @@ import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
 import { submitMessage } from "../handlers/submit";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
-import { type LocalCommand, parseLocalCommand } from "../state/commands";
+import { type LocalCommand, parseLocalCommand, type Verbosity } from "../state/commands";
 import { evaluatePluginNotifications } from "../state/plugin-notifications";
 import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
@@ -38,6 +38,7 @@ export class AppUi {
   private supervisorSnapshot: SupervisorSnapshot | null = null;
   private route: TuiRoute = "chat";
   private mode: InteractionMode = "default";
+  private verbosity: Verbosity = "normal";
   private notificationValues = new Map<string, string | undefined>();
   private routeOverlay: OverlayHandle | null = null;
   private routeOverlayComponent: RouteOverlay | null = null;
@@ -103,7 +104,7 @@ export class AppUi {
   update(snapshot: SessionViewSnapshot): void {
     this.snapshot = snapshot;
     this.header.setText(this.headerText(snapshot));
-    this.chatLog.update(snapshot);
+    this.chatLog.update(snapshot, { verbosity: this.verbosity });
     this.statusLine.update(snapshot, this.mode);
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
@@ -167,7 +168,7 @@ export class AppUi {
       return;
     }
     if (command.type === "verbosity") {
-      this.setNotice("Verbosity controls are not wired in this TUI yet.");
+      this.setVerbosity(command.mode);
       return;
     }
     if (command.type === "route") {
@@ -347,6 +348,19 @@ export class AppUi {
       this.statusLine.update(this.snapshot, this.mode);
     }
     this.setNotice(`Mode: ${this.mode}`);
+  }
+
+  private setVerbosity(mode: Verbosity | "cycle"): void {
+    const modes: Verbosity[] = ["compact", "normal", "verbose"];
+    const next =
+      mode === "cycle"
+        ? (modes[(modes.indexOf(this.verbosity) + 1) % modes.length] ?? "normal")
+        : mode;
+    this.verbosity = next;
+    if (this.snapshot) {
+      this.chatLog.update(this.snapshot, { verbosity: this.verbosity });
+    }
+    this.setNotice(`Verbosity: ${this.verbosity}`);
   }
 
   private refreshRouteOverlay(): void {

@@ -29,6 +29,7 @@ import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
+  type AgentToolResult,
   type LocalRuntimeTool,
   type PendingApprovalContinuation,
   type RunLoopHooks,
@@ -76,6 +77,7 @@ export type ResolvedApprovalToolResult = {
   taskId?: string;
   errorCode?: string;
   errorMessage?: string;
+  result?: AgentToolResult;
 };
 
 export interface AgentCallbacks {
@@ -345,6 +347,7 @@ export class Agent {
       taskId: result.taskId,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
+      result: result.result,
     });
 
     return this.runLoopWithAbort(async (signal) => {
@@ -526,6 +529,10 @@ export class Agent {
       summary,
       errorCode: result.error?.code,
       errorMessage: result.error?.message,
+      result: {
+        kind: pending.blockedInvocation.resultKind,
+        data: result.data,
+      },
     });
   }
 

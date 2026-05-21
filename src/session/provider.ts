@@ -69,6 +69,7 @@ function buildTranscriptItem(message: TranscriptMessage): ItemDescriptor {
     id: message.id,
     props: {
       role: message.role,
+      seq: message.seq,
       state: message.state,
       turn_id: message.turnId,
       created_at: message.createdAt,
@@ -99,6 +100,7 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
     id: item.id,
     props: {
       kind: item.kind,
+      seq: item.seq,
       status: item.status,
       summary: item.summary,
       started_at: item.startedAt,
@@ -112,6 +114,8 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
       task_id: item.taskId,
       tool_use_id: item.toolUseId,
       params_preview: item.paramsPreview,
+      error_message: item.errorMessage,
+      result: item.result,
     },
     summary: item.summary,
   };

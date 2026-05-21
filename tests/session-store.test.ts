@@ -131,6 +131,7 @@ describe("SessionStore — initial state", () => {
     // Mutate the clone
     snapshot.transcript.push({
       id: "msg-x",
+      seq: 1,
       role: "assistant",
       state: "complete",
       turnId: null,
@@ -571,6 +572,10 @@ describe("SessionStore — tool lifecycle", () => {
       summary: "Read OK",
       status: "ok",
       provider: "filesystem",
+      result: {
+        kind: "json",
+        data: { ok: true },
+      },
     });
 
     const snapshot = store.getSnapshot();
@@ -582,9 +587,29 @@ describe("SessionStore — tool lifecycle", () => {
     expect(toolResult?.status).toBe("ok");
     expect(toolResult?.summary).toBe("Read OK");
     expect(toolResult?.toolUseId).toBe("tu-1");
+    expect(toolResult?.result).toEqual({ kind: "json", data: { ok: true } });
 
     expect(snapshot.turn.phase).toBe("model");
     expect(snapshot.turn.waitingOn).toBe("model");
+  });
+
+  test("stamps monotonic seq across transcript and activity", () => {
+    const store = createStore();
+    const turnId = store.beginTurn("hi");
+    store.recordToolStart(turnId, {
+      toolUseId: "tu-1",
+      summary: "Reading",
+    });
+    store.recordToolCompletion(turnId, {
+      toolUseId: "tu-1",
+      summary: "Read OK",
+      status: "ok",
+    });
+    store.appendAssistantText(turnId, "done");
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.transcript.map((item) => item.seq)).toEqual([1, 5]);
+    expect(snapshot.activity.map((item) => item.seq)).toEqual([2, 3, 4]);
   });
 
   test("recordToolCompletion with accepted status creates a mirrored task", () => {

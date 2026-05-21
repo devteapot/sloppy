@@ -3,6 +3,12 @@ import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { debug } from "../../../core/debug";
+import {
+  buildEditDiffHunks,
+  buildTextDiffHunk,
+  type DiffHunk,
+  type EditPair,
+} from "../../../core/diff";
 import { isWithinRoot, realpathOfPrefix, safeRealpath } from "../../../providers/path-containment";
 
 const TEXT_DECODER = new TextDecoder();
@@ -27,6 +33,16 @@ type RangeEdit = {
   startLine: number;
   endLine: number;
   newText: string;
+};
+
+type EditSuccessResult = {
+  path: string;
+  bytes: number;
+  version: number;
+  edits_applied: number;
+  old_bytes: number;
+  new_bytes: number;
+  hunks: DiffHunk[];
 };
 
 type SourceSnapshot = {
@@ -712,7 +728,7 @@ export class FilesystemProvider {
     edits: ReadonlyArray<{ oldText: string; newText: string }>,
     expectedVersion?: number,
   ): Promise<
-    | { path: string; bytes: number; version: number; edits_applied: number }
+    | EditSuccessResult
     | { error: "version_conflict"; currentVersion: number; path: string }
     | {
         error: "no_match" | "multiple_matches" | "overlap" | "empty_old_text" | "identical_text";
@@ -831,6 +847,9 @@ export class FilesystemProvider {
         bytes,
         version,
         edits_applied: edits.length,
+        old_bytes: originalBytes.byteLength,
+        new_bytes: bytes,
+        hunks: buildEditDiffHunks(edits),
       };
     });
   }
@@ -841,7 +860,7 @@ export class FilesystemProvider {
     edits: ReadonlyArray<RangeEdit>,
     expectedVersion?: number,
   ): Promise<
-    | { path: string; bytes: number; version: number; edits_applied: number }
+    | EditSuccessResult
     | { error: "version_conflict"; currentVersion: number; path: string }
     | {
         error:
@@ -905,6 +924,7 @@ export class FilesystemProvider {
       const original = TEXT_DECODER.decode(originalBytes);
       const lineEnding = detectLineEnding(original);
       const currentLines = splitTextLines(original);
+      const diffPairs: Array<EditPair & { startLine: number }> = [];
 
       const sorted = [...edits].sort((left, right) => left.startLine - right.startLine);
       for (let index = 0; index < sorted.length; index += 1) {
@@ -981,6 +1001,11 @@ export class FilesystemProvider {
             edit_index: originalIndex,
           };
         }
+        diffPairs.push({
+          oldText: oldLines.join(lineEnding),
+          newText: edit.newText,
+          startLine: edit.startLine,
+        });
       }
 
       const nextLines = [...currentLines];
@@ -1024,6 +1049,14 @@ export class FilesystemProvider {
         bytes,
         version,
         edits_applied: edits.length,
+        old_bytes: originalBytes.byteLength,
+        new_bytes: bytes,
+        hunks: diffPairs.map((pair) =>
+          buildTextDiffHunk(pair.oldText, pair.newText, {
+            oldStart: pair.startLine,
+            newStart: pair.startLine,
+          }),
+        ),
       };
     });
   }
@@ -1243,6 +1276,7 @@ export class FilesystemProvider {
                   description:
                     "Apply one or more strict string-replacements to this file, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
                   estimate: "fast",
+                  resultKind: "diff",
                 },
               ),
               edit_range: action(
@@ -1276,6 +1310,7 @@ export class FilesystemProvider {
                   description:
                     "Apply one or more line-range replacements to this file using the remembered source view from a prior read. Preferred for whole-line/block edits when line numbers are known.",
                   estimate: "fast",
+                  resultKind: "diff",
                 },
               ),
             },
@@ -1418,6 +1453,7 @@ export class FilesystemProvider {
             description:
               "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
             estimate: "fast",
+            resultKind: "diff",
           },
         ),
         edit_range: action(
@@ -1455,6 +1491,7 @@ export class FilesystemProvider {
             description:
               "Apply one or more line-range replacements using the remembered source view from a prior read. Preferred for whole-line/block edits when line numbers are known and oldText echoing would be noisy.",
             estimate: "fast",
+            resultKind: "diff",
           },
         ),
         mkdir: action(
