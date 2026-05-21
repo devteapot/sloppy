@@ -11,6 +11,7 @@ export const filesystemToolEventEnricher: ToolEventEnricher = (invocation: Agent
     read: "read",
     write: "write",
     edit: "write",
+    edit_range: "write",
     mkdir: "mkdir",
     search: "search",
     set_focus: "focus",

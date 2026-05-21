@@ -183,8 +183,16 @@ It supports affordances such as:
 - `set_focus`
 - `read`
 - `write`
+- `edit`
+- `edit_range`
 - `mkdir`
 - `search`
+
+Reads of text files return a `source_version` when the provider has cached the
+observed line text. `edit_range` can then replace whole line ranges by
+`start_line`/`end_line` without echoing old text or line hashes. Before writing,
+the provider checks that the current file still matches the remembered source
+view at those lines; stale ranges fail instead of editing the wrong location.
 
 ### Terminal provider
 
@@ -246,6 +254,24 @@ bun run typecheck
 bun run tui:typecheck
 bun run test
 bun run build
+```
+
+Run the source-view filesystem edit benchmark:
+
+```sh
+bun run benchmark:filesystem-view-edits
+bun run benchmark:filesystem-view-edits -- --iterations 5 --json
+```
+
+Run the opt-in live headless source-view edit benchmark when an LLM is
+configured. This invokes the real `bun run src/cli.ts -p "<prompt>"` path
+against temp workspaces and compares model-driven legacy `edit` with
+source-view `edit_range`:
+
+```sh
+bun run benchmark:headless-view-edits -- --dry-run
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits -- --cases all
 ```
 
 Run the CLI in headless single-shot mode with the configured LLM:

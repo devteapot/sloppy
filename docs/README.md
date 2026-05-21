@@ -23,6 +23,8 @@ These documents describe intended directions that should not be treated as imple
 
 - `future/agent-identity.md` — identity, persona, and memory-tier direction.
 - `future/executor-binding.md` — typed executor-binding and routing direction.
+- `future/filesystem-view-edits.md` — snapshot-backed line edit direction and
+  its relationship to shared anchors.
 
 ## Research
 

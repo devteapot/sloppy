@@ -7,6 +7,7 @@ import { isWithinRoot, realpathOfPrefix, safeRealpath } from "../../../providers
 
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
+const SOURCE_SNAPSHOT_LIMIT = 64;
 
 type SearchResult = {
   id: string;
@@ -20,6 +21,19 @@ type RecentFileOperation = {
   action: string;
   path: string;
   detail?: string;
+};
+
+type RangeEdit = {
+  startLine: number;
+  endLine: number;
+  newText: string;
+};
+
+type SourceSnapshot = {
+  path: string;
+  version: number;
+  totalLines: number;
+  lines: Map<number, string>;
 };
 
 const WORKSPACE_FILE_PATH_DESCRIPTION =
@@ -46,10 +60,37 @@ const EDIT_ITEM_SCHEMA = {
 };
 
 const EDITS_DESCRIPTION =
-  'One or more targeted replacements. Each item must be exactly { oldText, newText }. Do not put path inside each edit; for workspace-level edit, path is a top-level argument. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique -- do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Example: {"path":"src/App.jsx","edits":[{"oldText":"const title = \'Old\';","newText":"const title = \'New\';"}],"expected_version":3}. Errors return { error, edit_index } identifying the offending edit.';
+  'One or more targeted replacements. Use edit for small unique string or intra-line replacements. If replacing whole lines or blocks from a read that returned source_version, prefer edit_range. Each item must be exactly { oldText, newText }. Do not put path inside each edit; for workspace-level edit, path is a top-level argument. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally, so reason about each edit independently. (4) Keep each oldText as small as possible while still unique -- do not quote the whole function. (5) If two changes touch the same block or adjacent lines, merge them into a single edit rather than emitting overlapping ones. Example: {"path":"src/App.jsx","edits":[{"oldText":"const title = \'Old\';","newText":"const title = \'New\';"}],"expected_version":3}. Errors return { error, edit_index } identifying the offending edit.';
 
 const ENTRY_EDITS_DESCRIPTION =
-  "One or more targeted replacements. This per-file action already targets the file, so each item must be exactly { oldText, newText } and must not include a path. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally. (4) Keep each oldText as small as possible while still unique. Errors return { error, edit_index } identifying the offending edit.";
+  "One or more targeted replacements. Use edit for small unique string or intra-line replacements. If replacing whole lines or blocks from a read that returned source_version, prefer edit_range. This per-file action already targets the file, so each item must be exactly { oldText, newText } and must not include a path. Rules: (1) oldText must match EXACTLY -- no fuzzy/whitespace tolerance. (2) Each oldText must occur exactly ONCE in the original file; if it appears multiple times, expand it with surrounding context until unique. (3) All edits are matched against the ORIGINAL file content, not incrementally. (4) Keep each oldText as small as possible while still unique. Errors return { error, edit_index } identifying the offending edit.";
+
+const RANGE_EDIT_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    start_line: {
+      type: "number",
+      description: "1-based first line in the range to replace.",
+    },
+    end_line: {
+      type: "number",
+      description: "1-based final line in the range to replace, inclusive.",
+    },
+    new_text: {
+      type: "string",
+      description:
+        "Replacement text for the line range. Empty string deletes the range. Do not add a trailing newline unless you intentionally want an extra blank line before the following file line.",
+    },
+  },
+  required: ["start_line", "end_line", "new_text"],
+  additionalProperties: false,
+};
+
+const RANGE_EDITS_DESCRIPTION =
+  "One or more line-range replacements against a source_version returned by a prior read. Use edit_range when replacing whole lines or blocks and you already know the line numbers from the observed file view. The provider remembers the old line text it returned, validates that the current file still has the same text at those lines, and rejects with range_conflict if the view is stale. This avoids echoing oldText or model-visible hashes while still preventing wrong-place edits.";
+
+const ENTRY_RANGE_EDITS_DESCRIPTION =
+  "One or more line-range replacements against a source_version returned by a prior read of this file. The provider remembers the old line text it returned, validates that the current file still has the same text at those lines, and rejects with range_conflict if the view is stale. Use expected_version only when whole-file CAS is required.";
 
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -57,6 +98,19 @@ function truncateText(text: string, maxChars: number): string {
   }
 
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
+}
+
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  const crlfCount = text.match(/\r\n/g)?.length ?? 0;
+  if (crlfCount === 0) {
+    return "\n";
+  }
+  const lfCount = (text.match(/\n/g)?.length ?? 0) - crlfCount;
+  return crlfCount >= lfCount ? "\r\n" : "\n";
+}
+
+function splitTextLines(text: string): string[] {
+  return text.split(/\r?\n/);
 }
 
 function isProbablyBinary(content: Uint8Array): boolean {
@@ -117,6 +171,36 @@ function coerceEdits(value: unknown): Array<{ oldText: string; newText: string }
   return out;
 }
 
+function coerceRangeEdits(value: unknown): RangeEdit[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: RangeEdit[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
+    const { start_line, end_line, new_text } = raw as {
+      start_line?: unknown;
+      end_line?: unknown;
+      new_text?: unknown;
+    };
+    if (
+      typeof start_line !== "number" ||
+      typeof end_line !== "number" ||
+      typeof new_text !== "string"
+    ) {
+      continue;
+    }
+    out.push({
+      startLine: start_line,
+      endLine: end_line,
+      newText: new_text,
+    });
+  }
+  return out;
+}
+
 function pathFromNestedEdits(value: unknown): string | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -167,6 +251,7 @@ export class FilesystemProvider {
   private fileVersions = new Map<string, number>();
   private cachedMtimes = new Map<string, number>();
   private writeLocks = new Map<string, Promise<unknown>>();
+  private sourceSnapshots = new Map<string, SourceSnapshot>();
 
   constructor(options: {
     root: string;
@@ -355,6 +440,47 @@ export class FilesystemProvider {
     return next;
   }
 
+  private sourceSnapshotKey(path: string, version: number): string {
+    return `${path}\0${version}`;
+  }
+
+  private rememberSourceLines(
+    relPath: string,
+    version: number,
+    lines: string[],
+    startLine: number,
+    endLine: number,
+  ): void {
+    const key = this.sourceSnapshotKey(relPath, version);
+    const existing = this.sourceSnapshots.get(key);
+    const snapshot =
+      existing ??
+      ({
+        path: relPath,
+        version,
+        totalLines: lines.length,
+        lines: new Map<number, string>(),
+      } satisfies SourceSnapshot);
+
+    snapshot.totalLines = Math.max(snapshot.totalLines, lines.length);
+    for (let line = startLine; line <= endLine; line += 1) {
+      snapshot.lines.set(line, lines[line - 1] ?? "");
+    }
+
+    if (existing) {
+      this.sourceSnapshots.delete(key);
+    }
+    this.sourceSnapshots.set(key, snapshot);
+
+    while (this.sourceSnapshots.size > SOURCE_SNAPSHOT_LIMIT) {
+      const oldest = this.sourceSnapshots.keys().next().value;
+      if (typeof oldest !== "string") {
+        break;
+      }
+      this.sourceSnapshots.delete(oldest);
+    }
+  }
+
   private async setFocus(inputPath: string): Promise<{ path: string }> {
     const nextPath = this.ensureWithinRoot(inputPath);
     const info = await Bun.file(nextPath)
@@ -385,6 +511,7 @@ export class FilesystemProvider {
     preview_only?: boolean;
     total_bytes?: number;
     ref?: { kind: "fs"; path: string; version: number; total_bytes: number; total_lines: number };
+    source_version?: number;
     kind?: "file" | "directory";
     entries?: Array<{ name: string; path: string; kind: "file" | "directory"; size: number }>;
     hint?: string;
@@ -458,7 +585,8 @@ export class FilesystemProvider {
 
     if (hasRange) {
       const fullText = TEXT_DECODER.decode(bytes);
-      const lines = fullText.split("\n");
+      const lineEnding = detectLineEnding(fullText);
+      const lines = splitTextLines(fullText);
       const totalLines = lines.length;
       const startLine = Math.max(1, range?.startLine ?? 1);
       const endLine = Math.min(totalLines, range?.endLine ?? totalLines);
@@ -467,9 +595,12 @@ export class FilesystemProvider {
         throw new Error(`Invalid range: start_line (${startLine}) is after end_line (${endLine}).`);
       }
 
-      const sliced = lines.slice(startLine - 1, endLine).join("\n");
+      const sliced = lines.slice(startLine - 1, endLine).join(lineEnding);
       const truncated = sliced.length > this.readMaxBytes;
       const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
+      if (!truncated) {
+        this.rememberSourceLines(relPath, version, lines, startLine, endLine);
+      }
       this.recordRecent("read", relPath, `lines ${startLine}-${endLine}`);
 
       return {
@@ -482,13 +613,14 @@ export class FilesystemProvider {
         startLine,
         endLine,
         totalLines,
+        source_version: truncated ? undefined : version,
       };
     }
 
     // No explicit range: decide whether to return full content or a preview+ref.
     if (bytes.byteLength > this.contentRefThresholdBytes) {
       const previewText = TEXT_DECODER.decode(bytes.subarray(0, this.previewBytes));
-      const totalLines = TEXT_DECODER.decode(bytes).split("\n").length;
+      const totalLines = splitTextLines(TEXT_DECODER.decode(bytes)).length;
       this.recordRecent("read", relPath, "preview+ref");
 
       return {
@@ -513,6 +645,10 @@ export class FilesystemProvider {
 
     const truncated = bytes.byteLength > this.readMaxBytes;
     const text = TEXT_DECODER.decode(bytes.subarray(0, this.readMaxBytes));
+    if (!truncated) {
+      const lines = splitTextLines(text);
+      this.rememberSourceLines(relPath, version, lines, 1, lines.length);
+    }
     this.recordRecent("read", relPath);
 
     return {
@@ -522,6 +658,7 @@ export class FilesystemProvider {
       version,
       exists: true,
       kind: "file",
+      source_version: truncated ? undefined : version,
     };
   }
 
@@ -683,6 +820,199 @@ export class FilesystemProvider {
       );
       debug("filesystem", "edit_applied", {
         path: relPath,
+        edits: edits.length,
+        bytes_delta: delta,
+        version,
+      });
+      this.server.refresh();
+
+      return {
+        path: relPath,
+        bytes,
+        version,
+        edits_applied: edits.length,
+      };
+    });
+  }
+
+  private async editRangeTextFile(
+    inputPath: string,
+    sourceVersion: number | undefined,
+    edits: ReadonlyArray<RangeEdit>,
+    expectedVersion?: number,
+  ): Promise<
+    | { path: string; bytes: number; version: number; edits_applied: number }
+    | { error: "version_conflict"; currentVersion: number; path: string }
+    | {
+        error:
+          | "empty_edits"
+          | "file_not_found"
+          | "invalid_range"
+          | "missing_source"
+          | "source_range_not_observed"
+          | "range_conflict"
+          | "overlap"
+          | "identical_text";
+        path: string;
+        source_version?: number;
+        edit_index?: number;
+        line?: number;
+      }
+  > {
+    const fullPath = this.ensureWithinRoot(inputPath);
+    const relPath = relativePath(this.root, fullPath);
+
+    if (edits.length === 0) {
+      return { error: "empty_edits" as const, path: relPath };
+    }
+    if (sourceVersion === undefined || !Number.isInteger(sourceVersion) || sourceVersion < 1) {
+      return { error: "missing_source" as const, path: relPath };
+    }
+
+    const snapshot = this.sourceSnapshots.get(this.sourceSnapshotKey(relPath, sourceVersion));
+    if (!snapshot) {
+      return {
+        error: "missing_source" as const,
+        path: relPath,
+        source_version: sourceVersion,
+      };
+    }
+
+    return this.withWriteLock(fullPath, async () => {
+      const preStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const currentVersion = this.observeVersion(fullPath, preStat?.mtimeMs ?? null);
+
+      if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+        debug("filesystem", "edit_range_version_conflict", {
+          path: relPath,
+          expected: expectedVersion,
+          current: currentVersion,
+        });
+        return {
+          error: "version_conflict" as const,
+          currentVersion,
+          path: relPath,
+        };
+      }
+
+      if (!preStat) {
+        return { error: "file_not_found" as const, path: relPath };
+      }
+
+      const originalBytes = await Bun.file(fullPath).bytes();
+      const original = TEXT_DECODER.decode(originalBytes);
+      const lineEnding = detectLineEnding(original);
+      const currentLines = splitTextLines(original);
+
+      const sorted = [...edits].sort((left, right) => left.startLine - right.startLine);
+      for (let index = 0; index < sorted.length; index += 1) {
+        const edit = sorted[index];
+        if (!edit) {
+          continue;
+        }
+        if (
+          !Number.isInteger(edit.startLine) ||
+          !Number.isInteger(edit.endLine) ||
+          edit.startLine < 1 ||
+          edit.endLine < edit.startLine
+        ) {
+          return {
+            error: "invalid_range" as const,
+            path: relPath,
+            source_version: sourceVersion,
+            edit_index: edits.indexOf(edit),
+          };
+        }
+        const previous = sorted[index - 1];
+        if (previous && edit.startLine <= previous.endLine) {
+          return {
+            error: "overlap" as const,
+            path: relPath,
+            source_version: sourceVersion,
+            edit_index: edits.indexOf(edit),
+          };
+        }
+      }
+
+      for (const edit of edits) {
+        const originalIndex = edits.indexOf(edit);
+        const oldLines: string[] = [];
+        for (let line = edit.startLine; line <= edit.endLine; line += 1) {
+          const oldLine = snapshot.lines.get(line);
+          if (oldLine === undefined) {
+            return {
+              error: "source_range_not_observed" as const,
+              path: relPath,
+              source_version: sourceVersion,
+              edit_index: originalIndex,
+              line,
+            };
+          }
+          oldLines.push(oldLine);
+        }
+
+        for (let offset = 0; offset < oldLines.length; offset += 1) {
+          const line = edit.startLine + offset;
+          if (currentLines[line - 1] !== oldLines[offset]) {
+            debug("filesystem", "edit_range_conflict", {
+              path: relPath,
+              source_version: sourceVersion,
+              edit_index: originalIndex,
+              line,
+            });
+            return {
+              error: "range_conflict" as const,
+              path: relPath,
+              source_version: sourceVersion,
+              edit_index: originalIndex,
+              line,
+            };
+          }
+        }
+
+        const replacementLines = edit.newText.length === 0 ? [] : splitTextLines(edit.newText);
+        if (oldLines.join("\n") === replacementLines.join("\n")) {
+          return {
+            error: "identical_text" as const,
+            path: relPath,
+            source_version: sourceVersion,
+            edit_index: originalIndex,
+          };
+        }
+      }
+
+      const nextLines = [...currentLines];
+      for (let index = sorted.length - 1; index >= 0; index -= 1) {
+        const edit = sorted[index];
+        if (!edit) {
+          continue;
+        }
+        const replacementLines = edit.newText.length === 0 ? [] : splitTextLines(edit.newText);
+        nextLines.splice(
+          edit.startLine - 1,
+          edit.endLine - edit.startLine + 1,
+          ...replacementLines,
+        );
+      }
+
+      const next = nextLines.join(lineEnding);
+      await Bun.write(fullPath, next);
+      const postStat = await Bun.file(fullPath)
+        .stat()
+        .catch(() => null);
+      const version = this.bumpVersion(fullPath, postStat?.mtimeMs ?? null);
+      const bytes = TEXT_ENCODER.encode(next).byteLength;
+      const delta = bytes - originalBytes.byteLength;
+      this.recordRecent(
+        "edit_range",
+        relPath,
+        `${edits.length} edit${edits.length === 1 ? "" : "s"}, ${delta >= 0 ? "+" : ""}${delta} bytes`,
+      );
+      debug("filesystem", "edit_range_applied", {
+        path: relPath,
+        source_version: sourceVersion,
         edits: edits.length,
         bytes_delta: delta,
         version,
@@ -860,7 +1190,7 @@ export class FilesystemProvider {
                 {
                   label: "Read File",
                   description:
-                    "Read this file as text. Returns { content, version, exists, ... }. Pass start_line/end_line to read just a slice.",
+                    "Read this file as text. Returns { content, version, source_version, exists, ... }. Pass start_line/end_line to read just a slice. Use source_version with edit_range for line-range edits against this observed view.",
                   idempotent: true,
                   estimate: "fast",
                 },
@@ -884,7 +1214,7 @@ export class FilesystemProvider {
                 {
                   label: "Overwrite File",
                   description:
-                    "Replace this file entirely with new text content. Prefer `edit` for targeted changes; use `write` only for full rewrites or when the file should be regenerated from scratch.",
+                    "Replace this file entirely with new text content. Use `write` for new files, full rewrites, or regenerating a file from scratch; for targeted existing-file changes prefer `edit` or `edit_range`.",
                   estimate: "fast",
                 },
               ),
@@ -911,7 +1241,40 @@ export class FilesystemProvider {
                 {
                   label: "Edit File",
                   description:
-                    "Apply one or more strict string-replacements to this file, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
+                    "Apply one or more strict string-replacements to this file, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
+                  estimate: "fast",
+                },
+              ),
+              edit_range: action(
+                {
+                  source_version: {
+                    type: "number",
+                    description:
+                      "Required source view returned by a prior read of this file. The provider validates current file lines against the remembered source view before applying edits.",
+                  },
+                  edits: {
+                    type: "array",
+                    description: ENTRY_RANGE_EDITS_DESCRIPTION,
+                    items: RANGE_EDIT_ITEM_SCHEMA,
+                  },
+                  expected_version: {
+                    type: "number",
+                    description:
+                      "Optional strict whole-file CAS guard. Omit this to allow unrelated file changes when the edited range still matches the remembered source view.",
+                    optional: true,
+                  },
+                },
+                async ({ source_version, edits, expected_version }) =>
+                  this.editRangeTextFile(
+                    relativeToRoot,
+                    typeof source_version === "number" ? source_version : undefined,
+                    coerceRangeEdits(edits),
+                    typeof expected_version === "number" ? expected_version : undefined,
+                  ),
+                {
+                  label: "Edit Line Range",
+                  description:
+                    "Apply one or more line-range replacements to this file using the remembered source view from a prior read. Preferred for whole-line/block edits when line numbers are known.",
                   estimate: "fast",
                 },
               ),
@@ -987,7 +1350,7 @@ export class FilesystemProvider {
           {
             label: "Read By Path",
             description:
-              "Read a path relative to the workspace root. For files, returns { content, version, exists, kind: 'file', ... }. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file.",
+              "Read a path relative to the workspace root. For files, returns { content, version, source_version, exists, kind: 'file', ... }. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file. Use source_version with edit_range for line-range edits against the observed view.",
             idempotent: true,
             estimate: "fast",
           },
@@ -1019,7 +1382,7 @@ export class FilesystemProvider {
           {
             label: "Write By Path",
             description:
-              "Write a text file relative to the workspace root. Prefer `edit` for targeted changes to existing files; use `write` for new files (with expected_version=0) or full rewrites.",
+              "Write a text file relative to the workspace root. Use `write` for new files (with expected_version=0), full rewrites, or regeneration; for targeted existing-file changes prefer `edit` or `edit_range`.",
             estimate: "fast",
           },
         ),
@@ -1053,7 +1416,44 @@ export class FilesystemProvider {
           {
             label: "Edit By Path",
             description:
-              "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Preferred over `write` for targeted changes: cheaper, safer, and each oldText being unique prevents wrong-place edits. See the `edits` parameter for the contract.",
+              "Apply one or more strict string-replacements to a file relative to the workspace root, atomically. Use for small unique string or intra-line replacements. For whole-line/block edits after a read returned source_version, prefer `edit_range`.",
+            estimate: "fast",
+          },
+        ),
+        edit_range: action(
+          {
+            path: {
+              type: "string",
+              description: WORKSPACE_FILE_PATH_DESCRIPTION,
+            },
+            source_version: {
+              type: "number",
+              description:
+                "Required source view returned by a prior read of this path. The provider validates current file lines against the remembered source view before applying edits.",
+            },
+            edits: {
+              type: "array",
+              description: RANGE_EDITS_DESCRIPTION,
+              items: RANGE_EDIT_ITEM_SCHEMA,
+            },
+            expected_version: {
+              type: "number",
+              description:
+                "Optional strict whole-file CAS guard. Omit this to allow unrelated file changes when the edited range still matches the remembered source view.",
+              optional: true,
+            },
+          },
+          async ({ path, source_version, edits, expected_version }) =>
+            this.editRangeTextFile(
+              requireString(path, "path"),
+              typeof source_version === "number" ? source_version : undefined,
+              coerceRangeEdits(edits),
+              typeof expected_version === "number" ? expected_version : undefined,
+            ),
+          {
+            label: "Edit Line Range By Path",
+            description:
+              "Apply one or more line-range replacements using the remembered source view from a prior read. Preferred for whole-line/block edits when line numbers are known and oldText echoing would be noisy.",
             estimate: "fast",
           },
         ),

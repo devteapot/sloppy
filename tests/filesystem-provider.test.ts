@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -429,6 +429,339 @@ describe("FilesystemProvider", () => {
       });
       expect(rejected.status).toBe("error");
       expect(rejected.error?.message).toContain("Invalid range");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range applies a snapshot-validated line replacement", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma\ndelta", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "f.txt",
+        start_line: 2,
+        end_line: 3,
+      });
+      const readData = read.data as {
+        source_version: number;
+        version: number;
+      };
+      expect(readData.source_version).toBe(readData.version);
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "f.txt",
+        source_version: readData.source_version,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 3,
+            new_text: "BETA\nGAMMA",
+          },
+        ],
+      });
+
+      expect(result.status).toBe("ok");
+      expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
+
+      const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
+      expect((after.data as { content: string }).content).toBe("alpha\nBETA\nGAMMA\ndelta");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range preserves CRLF line endings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-crlf-"));
+    tempPaths.push(root);
+    const filePath = join(root, "crlf.txt");
+    await writeFile(filePath, "alpha\r\nbeta\r\ngamma\r\ndelta\r\n", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "crlf.txt",
+        start_line: 2,
+        end_line: 2,
+      });
+      expect((read.data as { content: string }).content).toBe("beta");
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "crlf.txt",
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 2,
+            new_text: "BETA",
+          },
+        ],
+      });
+
+      expect(result.status).toBe("ok");
+      expect(await readFile(filePath, "utf8")).toBe("alpha\r\nBETA\r\ngamma\r\ndelta\r\n");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range allows unrelated external changes when the observed lines still match", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-drift-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma\ndelta", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "f.txt",
+        start_line: 2,
+        end_line: 3,
+      });
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      await Bun.sleep(20);
+      await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma\ndelta!", "utf8");
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "f.txt",
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 3,
+            new_text: "BETA\nGAMMA",
+          },
+        ],
+      });
+
+      expect(result.status).toBe("ok");
+      const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
+      expect((after.data as { content: string }).content).toBe("alpha\nBETA\nGAMMA\ndelta!");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range rejects stale line numbers when the current range no longer matches", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-conflict-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma\ndelta", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "f.txt",
+        start_line: 2,
+        end_line: 3,
+      });
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      await Bun.sleep(20);
+      const moved = "inserted\nalpha\nbeta\ngamma\ndelta";
+      await writeFile(join(root, "f.txt"), moved, "utf8");
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "f.txt",
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 3,
+            new_text: "BETA\nGAMMA",
+          },
+        ],
+      });
+
+      expect((result.data as { error?: string; line?: number }).error).toBe("range_conflict");
+      expect((result.data as { line?: number }).line).toBe(2);
+      const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
+      expect((after.data as { content: string }).content).toBe(moved);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range rejects ranges outside the remembered source view", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-missing-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma\ndelta", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "f.txt",
+        start_line: 2,
+        end_line: 2,
+      });
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "f.txt",
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 3,
+            end_line: 3,
+            new_text: "GAMMA",
+          },
+        ],
+      });
+
+      expect((result.data as { error?: string; line?: number }).error).toBe(
+        "source_range_not_observed",
+      );
+      expect((result.data as { line?: number }).line).toBe(3);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range enforces expected_version when provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-cas-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "f.txt",
+        start_line: 2,
+        end_line: 2,
+      });
+      const readData = read.data as { source_version: number; version: number };
+
+      await Bun.sleep(20);
+      await writeFile(join(root, "f.txt"), "alpha\nbeta\ngamma!", "utf8");
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "f.txt",
+        source_version: readData.source_version,
+        expected_version: readData.version,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 2,
+            new_text: "BETA",
+          },
+        ],
+      });
+
+      const data = result.data as { error?: string; currentVersion?: number };
+      expect(data.error).toBe("version_conflict");
+      expect(data.currentVersion).toBeGreaterThan(readData.version);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range works via the focused-file action", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-focused-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "per-entry.txt"), "alpha\nbeta", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace/entries/per-entry.txt", "read", {
+        start_line: 2,
+        end_line: 2,
+      });
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      const result = await consumer.invoke("/workspace/entries/per-entry.txt", "edit_range", {
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 2,
+            new_text: "BETA",
+          },
+        ],
+      });
+
+      expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
+      const after = await consumer.invoke("/workspace", "read", { path: "per-entry.txt" });
+      expect((after.data as { content: string }).content).toBe("alpha\nBETA");
     } finally {
       provider.stop();
     }

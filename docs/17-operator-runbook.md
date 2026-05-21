@@ -88,6 +88,20 @@ through the filesystem provider, and verifies both the marker in stdout and the
 filesystem tool events in the audit log. It is not part of default preflight
 because it can use network and model quota.
 
+Run the live source-view edit benchmark when you need to compare model behavior
+between exact legacy edits and source-version line-range edits:
+
+```sh
+bun run benchmark:headless-view-edits -- --dry-run
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits
+SLOPPY_RUN_LIVE_BENCHMARK=1 bun run benchmark:headless-view-edits -- --cases all
+```
+
+The benchmark uses the same headless CLI path, creates isolated temp
+workspaces, instructs the model to use either `edit` or `edit_range`, and
+records stdout/stderr, CLI metrics, runtime event logs, validation, and final
+files under `test-artifacts/headless-view-edits/<timestamp>/`.
+
 ## Audit Log
 
 Set an event log path for any run that needs an operator trail:
