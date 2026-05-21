@@ -4,6 +4,8 @@ This directory is split by whether a document is current operating guidance, fut
 
 ## Current Sources
 
+- `../CONTEXT.md` — canonical glossary for the core-runtime domain language.
+- `adr/` — architecture decision records (start at `0001`).
 - `02-architecture.md` — current SLOP-first runtime architecture.
 - `03-mvp-plan.md` — implementation plan and near-term roadmap.
 - `04-slop-protocol-reference.md` — local protocol vocabulary and message semantics.

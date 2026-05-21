@@ -44,3 +44,17 @@ src/            — Source code (TypeScript)
 - `docs/16-tui-plan.md` — TypeScript/OpenTUI TUI plan
 - `docs/archive/session-provider-phase-2-plan.md` — Archived Phase 2 session-provider sketch
 - `docs/ui-design-system.md` — UI design system ("Nocturnal Observer")
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues on `devteapot/sloppy`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context: `CONTEXT-MAP.md` at the root points to a root `CONTEXT.md` (SLOP/agent core) plus per-app contexts under `apps/*`. See `docs/agents/domain.md`.
