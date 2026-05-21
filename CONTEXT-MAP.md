@@ -15,7 +15,7 @@ per-app `CONTEXT.md` files yet. When an app develops its own stable vocabulary,
 add `apps/<app>/CONTEXT.md` and list it here.
 
 - `apps/sloppy-voice/` - native voice app project shell.
-- `apps/tui/` - TypeScript/OpenTUI client over public session/supervisor sockets.
+- `apps/tui/` - TypeScript TUI (pi-tui, inline/scrollback-preserving) consuming public session/supervisor sockets.
 
 ## Maintenance
 

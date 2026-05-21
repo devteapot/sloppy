@@ -20,7 +20,7 @@ import type {
   SessionClientEvent,
   SessionClientListener,
   SessionViewSnapshot,
-} from "./types";
+} from "./slop-types";
 
 type SessionSubscription = { path: string; depth: number; optional?: boolean };
 
@@ -411,7 +411,7 @@ export class SessionClient {
       if (plugin.status !== "active") {
         continue;
       }
-      for (const subscription of plugin.tui.subscriptions ?? []) {
+      for (const subscription of plugin.ui.subscriptions ?? []) {
         desired.set(
           subscription.path,
           Math.max(desired.get(subscription.path) ?? 0, subscription.depth),

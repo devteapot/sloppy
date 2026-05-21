@@ -1,4 +1,4 @@
-import type { PluginItem } from "../slop/types";
+import type { PluginItem } from "../backend/slop-types";
 
 // Catalog of built-in slash commands surfaced in the autocomplete popover.
 // Keep entries terse — `name` is the canonical form (no leading slash);
@@ -86,14 +86,31 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
 
 export function buildSlashEntries(plugins: PluginItem[] = []): SlashEntry[] {
   const pluginEntries = plugins.flatMap((plugin) =>
-    (plugin.tui.commands ?? []).map(
-      (command): SlashEntry => ({
-        name: command.name,
-        aliases: command.aliases,
-        signature: command.signature,
-        description: command.description,
-      }),
-    ),
+    (plugin.ui.actions ?? []).flatMap((action): SlashEntry[] => {
+      const tui = action.presentation?.tui;
+      const slash =
+        tui && typeof tui === "object" && !Array.isArray(tui)
+          ? (tui as Record<string, unknown>).slash
+          : undefined;
+      if (!slash || typeof slash !== "object" || Array.isArray(slash)) {
+        return [];
+      }
+      const slashRecord = slash as Record<string, unknown>;
+      const name = slashRecord.name;
+      if (typeof name !== "string" || name.length === 0) {
+        return [];
+      }
+      return [
+        {
+          name,
+          aliases: Array.isArray(slashRecord.aliases)
+            ? slashRecord.aliases.filter((alias): alias is string => typeof alias === "string")
+            : undefined,
+          signature: typeof slashRecord.signature === "string" ? slashRecord.signature : undefined,
+          description: action.description,
+        },
+      ];
+    }),
   );
   return [...BUILTIN_SLASH_ENTRIES, ...pluginEntries];
 }

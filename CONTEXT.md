@@ -15,12 +15,20 @@ A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`)
 _Avoid_: calling a Plugin a Provider; calling the optional capabilities "optional providers" — they are Plugins.
 
 **Session plugin**:
-The session-provider extension a Plugin produces via `createSessionPlugin` (code type `SessionRuntimePlugin`). It registers into the session provider, contributing session nodes, runtime-local turn tools, hooks, policy rules, and declarative TUI manifests. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
+The session-provider extension a Plugin produces via `createSessionPlugin` (code type `SessionRuntimePlugin`). It registers into the session provider, contributing session nodes, runtime-local turn tools, hooks, policy rules, and a declarative UI contribution manifest. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
 _Avoid_: shortening to "plugin" when the package is meant.
 
 **Skill**:
 A `SKILL.md` directory of instructions plus supporting files, loaded by progressive disclosure. A Skill is the runtime's **procedural memory** — a repeatable how-to workflow expressed as instructions over existing affordances. Contrast with the `memory` Provider (facts/episodic memory) and identity memory: those are different memory kinds, not Skills.
 _Avoid_: treating "procedural memory" as a separate artifact — it is the role a Skill plays.
+
+**UI**:
+A client that consumes a Session provider (or Session supervisor) over its socket and renders it for a human. The TUI is a UI; a future web dashboard would be a UI. A UI is not a Provider and not part of the Runtime — UIs live under `apps/`.
+_Avoid_: "frontend", "surface", "client" used loosely — the consumer of a Session that renders it for a human is a UI.
+
+**UI contribution manifest**:
+The declarative, UI-agnostic manifest a Session plugin publishes (code type `UiContributionManifest`, exposed at `/plugins`) describing how it extends a UI: state subscriptions, affordance-bound actions, status indicators, and notifications. UI-specific presentation is an optional, ignorable hint keyed by UI; the manifest itself names no rendering technology.
+_Avoid_: "TUI manifest" — the manifest is not TUI-specific.
 
 ### Session state
 

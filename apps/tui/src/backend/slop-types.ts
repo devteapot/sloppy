@@ -216,39 +216,56 @@ export type AppItem = {
   lastError?: string;
 };
 
-export type PluginCommandContribution = {
-  id: string;
-  name: string;
-  aliases?: string[];
-  signature?: string;
-  description: string;
-};
-
 export type PluginNotificationContribution = {
   id: string;
-  path: string;
-  prop: string;
+  source: {
+    path: string;
+    prop: string;
+  };
   to: string;
   message: string;
 };
 
-export type PluginPaletteContribution = {
+export type PluginActionContribution = {
   id: string;
   label: string;
   description: string;
-  path: string;
-  action: string;
-  params?: Record<string, unknown>;
-  shortcut?: string;
-  whenActionAvailable?: string;
+  invoke: {
+    path: string;
+    action: string;
+    params?: Record<string, unknown>;
+  };
+  whenAvailable?: string;
+  argument?: {
+    name: string;
+    description?: string;
+    required?: boolean;
+    param?: string;
+  };
+  presentation?: Record<string, unknown>;
 };
 
-export type PluginTuiManifest = {
+export type PluginIndicatorContribution = {
+  id: string;
+  path: string;
+  depth?: number;
+  template: string;
+  fields?: Record<string, { format: "text" | "number" | "duration" | "percent" | "bytes" }>;
+  visibleWhen?: {
+    prop: string;
+    equals?: unknown;
+  };
+  severity?: {
+    prop: string;
+    map: Record<string, string>;
+  };
+};
+
+export type PluginUiManifest = {
   subscriptions?: Array<{ path: string; depth: number }>;
-  commands?: PluginCommandContribution[];
-  palette?: PluginPaletteContribution[];
-  status?: Array<Record<string, unknown>>;
+  actions?: PluginActionContribution[];
   notifications?: PluginNotificationContribution[];
+  indicators?: PluginIndicatorContribution[];
 };
 
 export type PluginItem = {
@@ -257,7 +274,7 @@ export type PluginItem = {
   status: string;
   description?: string;
   sessionPaths: string[];
-  tui: PluginTuiManifest;
+  ui: PluginUiManifest;
 };
 
 export type InspectState = {

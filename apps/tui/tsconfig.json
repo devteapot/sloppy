@@ -1,10 +1,8 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
-    "types": ["bun-types", "node"],
-    "lib": ["ES2023", "DOM"]
+    "rootDir": "../..",
+    "types": ["bun-types", "node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": ["src/**/*.ts"]
 }

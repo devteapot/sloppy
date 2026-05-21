@@ -9,11 +9,11 @@ import type {
   InspectState,
   LlmProfile,
   LlmState,
-  PluginCommandContribution,
+  PluginActionContribution,
+  PluginIndicatorContribution,
   PluginItem,
   PluginNotificationContribution,
-  PluginPaletteContribution,
-  PluginTuiManifest,
+  PluginUiManifest,
   QueuedItem,
   SessionMeta,
   SessionViewSnapshot,
@@ -22,7 +22,7 @@ import type {
   TranscriptMessage,
   TurnState,
   UsageState,
-} from "./types";
+} from "./slop-types";
 
 const EMPTY_INSPECT: InspectState = {
   targetId: "session",
@@ -465,7 +465,7 @@ export function mapAppsNode(node: SlopNode | null | undefined): AppItem[] {
   });
 }
 
-function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest {
+function mapPluginUiManifest(value: Record<string, unknown>): PluginUiManifest {
   return {
     subscriptions: recordArray(value.subscriptions)
       .map((entry) => ({
@@ -473,29 +473,13 @@ function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest
         depth: numberProp(entry, "depth", 1),
       }))
       .filter((entry) => entry.path.startsWith("/")),
-    commands: recordArray(value.commands).flatMap((entry): PluginCommandContribution[] => {
-      const id = optionalStringProp(entry, "id");
-      const name = optionalStringProp(entry, "name");
-      const description = optionalStringProp(entry, "description");
-      if (!id || !name || !description) {
-        return [];
-      }
-      return [
-        {
-          id,
-          name,
-          aliases: stringArrayProp(entry, "aliases"),
-          signature: optionalStringProp(entry, "signature"),
-          description,
-        },
-      ];
-    }),
-    palette: recordArray(value.palette).flatMap((entry): PluginPaletteContribution[] => {
+    actions: recordArray(value.actions).flatMap((entry): PluginActionContribution[] => {
       const id = optionalStringProp(entry, "id");
       const label = optionalStringProp(entry, "label");
       const description = optionalStringProp(entry, "description");
-      const path = optionalStringProp(entry, "path");
-      const action = optionalStringProp(entry, "action");
+      const invoke = optionalRecordProp(entry, "invoke");
+      const path = invoke ? optionalStringProp(invoke, "path") : undefined;
+      const action = invoke ? optionalStringProp(invoke, "action") : undefined;
       if (!id || !label || !description || !path?.startsWith("/") || !action) {
         return [];
       }
@@ -504,26 +488,54 @@ function mapPluginTuiManifest(value: Record<string, unknown>): PluginTuiManifest
           id,
           label,
           description,
-          path,
-          action,
-          params: optionalRecordProp(entry, "params"),
-          shortcut: optionalStringProp(entry, "shortcut"),
-          whenActionAvailable: optionalStringProp(entry, "whenActionAvailable"),
+          invoke: {
+            path,
+            action,
+            params: invoke ? optionalRecordProp(invoke, "params") : undefined,
+          },
+          whenAvailable: optionalStringProp(entry, "whenAvailable"),
+          argument: optionalRecordProp(entry, "argument") as
+            | PluginActionContribution["argument"]
+            | undefined,
+          presentation: optionalRecordProp(entry, "presentation"),
         },
       ];
     }),
-    status: recordArray(value.status),
+    indicators: recordArray(value.indicators).flatMap((entry): PluginIndicatorContribution[] => {
+      const id = optionalStringProp(entry, "id");
+      const path = optionalStringProp(entry, "path");
+      const template = optionalStringProp(entry, "template");
+      if (!id || !path?.startsWith("/") || !template) {
+        return [];
+      }
+      return [
+        {
+          id,
+          path,
+          depth: numberProp(entry, "depth", 1),
+          template,
+          fields: optionalRecordProp(entry, "fields") as PluginIndicatorContribution["fields"],
+          visibleWhen: optionalRecordProp(entry, "visibleWhen") as
+            | PluginIndicatorContribution["visibleWhen"]
+            | undefined,
+          severity: optionalRecordProp(entry, "severity") as
+            | PluginIndicatorContribution["severity"]
+            | undefined,
+        },
+      ];
+    }),
     notifications: recordArray(value.notifications).flatMap(
       (entry): PluginNotificationContribution[] => {
         const id = optionalStringProp(entry, "id");
-        const path = optionalStringProp(entry, "path");
-        const prop = optionalStringProp(entry, "prop");
+        const source = optionalRecordProp(entry, "source");
+        const path = source ? optionalStringProp(source, "path") : undefined;
+        const prop = source ? optionalStringProp(source, "prop") : undefined;
         const to = optionalStringProp(entry, "to");
         const message = optionalStringProp(entry, "message");
         if (!id || !path?.startsWith("/") || !prop || to === undefined || !message) {
           return [];
         }
-        return [{ id, path, prop, to, message }];
+        return [{ id, source: { path, prop }, to, message }];
       },
     ),
   };
@@ -538,7 +550,7 @@ export function mapPluginsNode(node: SlopNode | null | undefined): PluginItem[] 
       status: stringProp(p, "status", "unknown"),
       description: optionalStringProp(p, "description"),
       sessionPaths: stringArrayProp(p, "session_paths"),
-      tui: mapPluginTuiManifest(recordProp(p, "tui")),
+      ui: mapPluginUiManifest(recordProp(p, "ui")),
     };
   });
 }

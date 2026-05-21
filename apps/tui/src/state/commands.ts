@@ -1,5 +1,6 @@
-import type { TuiRoute } from "../slop/types";
-import type { Verbosity } from "./verbosity";
+import type { TuiRoute } from "../backend/slop-types";
+
+export type Verbosity = "compact" | "normal" | "verbose";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }
