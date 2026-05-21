@@ -26,12 +26,7 @@ export class StatusLine implements Component {
       .map((indicator) => indicator.text)
       .filter(Boolean);
 
-    this.leftText = [
-      dim(workspace),
-      dim(model || "model unset"),
-      dim(turnStatusLabel(snapshot)),
-      ...indicators,
-    ]
+    this.leftText = [dim(workspace), dim(model || "model unset"), ...indicators]
       .filter(Boolean)
       .join(" | ");
     this.rightText = contextLabel(snapshot);
