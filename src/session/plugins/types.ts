@@ -6,6 +6,7 @@ import type { AgentRunResult, LocalRuntimeTool } from "../../core/agent";
 import type { SessionStore } from "../store";
 import type { SessionSnapshotMigrator, SessionSnapshotRecoverer } from "../store/persistence";
 import type { AgentSessionSnapshot, QueuedSessionMessage, SessionStoreEventType } from "../types";
+import type { UiContributionManifest } from "./ui-contributions";
 
 export type PluginTurnRequest = {
   pluginId: string;
@@ -75,47 +76,6 @@ export type SessionNodeContribution = {
   build: (ctx: PluginRuntimeContext) => NodeDescriptor;
 };
 
-export type TuiCommandContribution = {
-  id: string;
-  name: string;
-  aliases?: string[];
-  signature?: string;
-  description: string;
-};
-
-export type TuiPaletteContribution = {
-  id: string;
-  label: string;
-  description: string;
-  path: string;
-  action: string;
-  params?: Record<string, unknown>;
-  shortcut?: string;
-  whenActionAvailable?: string;
-};
-
-export type TuiStatusContribution = {
-  id: string;
-  path: string;
-  renderer: string;
-};
-
-export type TuiNotificationContribution = {
-  id: string;
-  path: string;
-  prop: string;
-  to: string;
-  message: string;
-};
-
-export type TuiContributionManifest = {
-  subscriptions?: Array<{ path: string; depth: number }>;
-  commands?: TuiCommandContribution[];
-  palette?: TuiPaletteContribution[];
-  status?: TuiStatusContribution[];
-  notifications?: TuiNotificationContribution[];
-};
-
 export type SessionSummaryContribution = {
   props?: Record<string, unknown>;
   summary?: string;
@@ -146,5 +106,5 @@ export type SessionRuntimePlugin = {
   onTurnComplete?: (event: PluginTurnCompleteEvent, ctx: PluginRuntimeContext) => void;
   onTurnFailure?: (event: PluginTurnFailureEvent, ctx: PluginRuntimeContext) => void;
   sessionSummary?: (ctx: PluginRuntimeContext) => SessionSummaryContribution | null;
-  tui?: TuiContributionManifest;
+  ui?: UiContributionManifest;
 };

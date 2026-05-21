@@ -7,5 +7,5 @@ export type {
   PluginTurnRequest,
   SessionNodeContribution,
   SessionRuntimePlugin,
-  TuiContributionManifest,
 } from "./types";
+export type { UiContributionManifest } from "./ui-contributions";

@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listenUnix } from "@slop-ai/server/unix";
 
-import { SessionClient } from "../apps/tui/src/slop/session-client";
-import { SessionSupervisorClient } from "../apps/tui/src/slop/supervisor-client";
+import { SessionClient } from "../apps/tui/src/backend/session-client";
+import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
 import { SessionSupervisorProvider, startSessionSupervisor } from "../src/session/supervisor";
 
 const tempPaths: string[] = [];

@@ -903,58 +903,86 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
         summary: `goal=${goal?.status ?? "none"}`,
       };
     },
-    tui: {
+    ui: {
       subscriptions: [{ path: "/goal", depth: 1 }],
-      commands: [
+      actions: [
         {
-          id: "goal",
-          name: "goal",
-          signature: "<objective>|pause|resume|complete|clear",
-          description: "Persistent session goal controls",
+          id: "goal:create",
+          label: "Create Goal",
+          description: "Create a persistent session goal",
+          invoke: { path: "/goal", action: "create_goal" },
+          whenAvailable: "create_goal",
+          argument: {
+            name: "objective",
+            description: "Goal objective",
+            required: true,
+            param: "objective",
+          },
+          presentation: {
+            tui: {
+              slash: {
+                name: "goal",
+                signature: "<objective>|pause|resume|complete|clear",
+              },
+            },
+          },
         },
-      ],
-      palette: [
         {
           id: "goal:pause",
           label: "Pause Goal",
           description: "Pause automatic goal continuation",
-          path: "/goal",
-          action: "pause_goal",
-          whenActionAvailable: "pause_goal",
+          invoke: { path: "/goal", action: "pause_goal" },
+          whenAvailable: "pause_goal",
         },
         {
           id: "goal:resume",
           label: "Resume Goal",
           description: "Resume automatic goal continuation",
-          path: "/goal",
-          action: "resume_goal",
-          whenActionAvailable: "resume_goal",
+          invoke: { path: "/goal", action: "resume_goal" },
+          whenAvailable: "resume_goal",
         },
         {
           id: "goal:complete",
           label: "Complete Goal",
           description: "Mark the active goal complete",
-          path: "/goal",
-          action: "complete_goal",
-          whenActionAvailable: "complete_goal",
+          invoke: { path: "/goal", action: "complete_goal" },
+          whenAvailable: "complete_goal",
         },
         {
           id: "goal:clear",
           label: "Clear Goal",
           description: "Clear the active goal state",
-          path: "/goal",
-          action: "clear_goal",
-          whenActionAvailable: "clear_goal",
+          invoke: { path: "/goal", action: "clear_goal" },
+          whenAvailable: "clear_goal",
         },
       ],
-      status: [{ id: "goal", path: "/goal", renderer: "goal-status" }],
+      indicators: [
+        {
+          id: "goal-status",
+          path: "/goal",
+          depth: 1,
+          template: "goal {status} · {total_tokens} tokens",
+          fields: {
+            status: { format: "text" },
+            total_tokens: { format: "number" },
+          },
+          visibleWhen: { prop: "exists", equals: true },
+          severity: {
+            prop: "status",
+            map: {
+              active: "info",
+              paused: "warning",
+              complete: "success",
+            },
+          },
+        },
+      ],
       notifications: [
         {
           id: "goal-complete",
-          path: "/goal",
-          prop: "status",
+          source: { path: "/goal", prop: "status" },
           to: "complete",
-          message: "Goal complete.",
+          message: "Goal complete: {objective}",
         },
       ],
     },

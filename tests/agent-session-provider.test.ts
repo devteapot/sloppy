@@ -990,27 +990,27 @@ describe("AgentSessionProvider", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       expect(plugins.properties?.count).toBeGreaterThanOrEqual(1);
-      expect(plugins.properties?.ui_manifest_version).toBe(1);
+      expect(plugins.properties?.ui_manifest_version).toBe(2);
 
       const goalPlugin = plugins.children?.find((item) => item.id === "persistent-goal");
       expect(goalPlugin?.properties?.status).toBe("active");
       expect(goalPlugin?.properties?.session_paths).toContain("/goal");
 
-      const tui = goalPlugin?.properties?.tui as
+      const ui = goalPlugin?.properties?.ui as
         | {
-            commands?: Array<Record<string, unknown>>;
+            actions?: Array<Record<string, unknown>>;
             subscriptions?: Array<Record<string, unknown>>;
           }
         | undefined;
-      expect(tui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
-      expect(tui?.commands?.some((command) => command.name === "goal")).toBe(true);
+      expect(ui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
+      expect(ui?.actions?.some((action) => action.id === "goal:create")).toBe(true);
 
       const manifest = await consumer.invoke("/plugins/persistent-goal", "inspect_manifest", {});
       expect(manifest.status).toBe("ok");
       const manifestData = manifest.data as {
-        manifest?: { commands?: Array<{ name?: string }> };
+        manifest?: { actions?: Array<{ id?: string }> };
       };
-      expect(manifestData.manifest?.commands?.[0]?.name).toBe("goal");
+      expect(manifestData.manifest?.actions?.[0]?.id).toBe("goal:create");
 
       const goal = await consumer.query("/goal", 1);
       expect(goal.properties?.status).toBe("none");
@@ -2040,12 +2040,7 @@ describe("AgentSessionProvider", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       const metaPlugin = plugins.children?.find((item) => item.id === "meta-runtime");
-      const metaTui = metaPlugin?.properties?.tui as
-        | { commands?: Array<{ name?: string; signature?: string }> }
-        | undefined;
-      const runtimeCommand = metaTui?.commands?.find((command) => command.name === "runtime");
-      expect(runtimeCommand?.signature).toContain("refresh");
-      expect(runtimeCommand?.signature).toContain("revert <proposal-id>");
+      expect(metaPlugin?.properties?.ui).toEqual({});
 
       const apps = await consumer.query("/apps", 1);
       expect(apps.affordances?.some((affordance) => affordance.action === "query_provider")).toBe(

@@ -74,13 +74,13 @@ export class SessionPluginManager {
           provider_ids: plugin.providerIds ?? [],
           extension_namespaces: plugin.extensionNamespaces ?? [],
           session_paths: sessionPaths,
-          tui: plugin.tui ?? {},
+          ui: plugin.ui ?? {},
         },
         summary: plugin.description ?? plugin.id,
         actions: {
-          inspect_manifest: action(async () => ({ status: "ok", manifest: plugin.tui ?? {} }), {
+          inspect_manifest: action(async () => ({ status: "ok", manifest: plugin.ui ?? {} }), {
             label: "Inspect UI Manifest",
-            description: "Return this session plugin's declarative TUI contribution manifest.",
+            description: "Return this session plugin's declarative UI contribution manifest.",
             estimate: "instant",
             idempotent: true,
           }),
@@ -93,7 +93,7 @@ export class SessionPluginManager {
       props: {
         count: items.length,
         ids: items.map((item) => item.id),
-        ui_manifest_version: 1,
+        ui_manifest_version: 2,
       },
       summary: "Active first-party session runtime plugins.",
       items,
