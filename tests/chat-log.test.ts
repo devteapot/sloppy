@@ -8,6 +8,11 @@ import type {
 } from "../apps/tui/src/backend/slop-types";
 import { buildChatLogEntries, ChatLog } from "../apps/tui/src/ui/chat-log";
 
+function stripAnsi(value: string): string {
+  const sgrPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  return value.replace(sgrPattern, "");
+}
+
 function snapshotWith(
   partial: Partial<Pick<SessionViewSnapshot, "activity" | "transcript">>,
 ): SessionViewSnapshot {
@@ -83,7 +88,7 @@ function activity(
 }
 
 describe("ChatLog", () => {
-  test("builds plain entries for user and streaming assistant messages", () => {
+  test("builds block-aware entries for user and streaming assistant messages", () => {
     const entries = buildChatLogEntries(
       snapshotWith({
         transcript: [
@@ -115,7 +120,7 @@ describe("ChatLog", () => {
       },
       {
         key: "msg:assistant-1",
-        mode: "plain",
+        mode: "streaming-markdown",
         variant: "default",
         content: "```ts\nconst half = true;",
       },
@@ -166,7 +171,7 @@ describe("ChatLog", () => {
     expect(lines.some((line) => line.startsWith(" part"))).toBe(true);
   });
 
-  test("uses markdown for completed assistant and system entries, plain for tools", () => {
+  test("uses final markdown for completed assistant and system entries, plain for tools", () => {
     const entries = buildChatLogEntries(
       snapshotWith({
         transcript: [
@@ -218,13 +223,66 @@ describe("ChatLog", () => {
     );
 
     expect(entries.map(({ key, mode }) => ({ key, mode }))).toEqual([
-      { key: "msg:system-1", mode: "markdown" },
-      { key: "msg:assistant-1", mode: "markdown" },
+      { key: "msg:system-1", mode: "final-markdown" },
+      { key: "msg:assistant-1", mode: "final-markdown" },
       { key: "tool:tool-1", mode: "plain" },
     ]);
     expect(entries[0]?.content).toBe("## Status");
     expect(entries[1]?.content).toBe("**Done**");
     expect(entries[2]?.content).toContain("Read File");
+  });
+
+  test("renders assistant fenced code blocks without markdown fence markers", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [
+          message({
+            id: "assistant-1",
+            seq: 1,
+            role: "assistant",
+            state: "complete",
+            text: [
+              "```ts",
+              "class BottomPaddedText extends Text {",
+              "  render(width: number): string[] {",
+              "    return [];",
+              "  }",
+              "}",
+              "```",
+            ].join("\n"),
+          }),
+        ],
+      }),
+    );
+
+    const rendered = stripAnsi(log.children[0]?.render(80).join("\n") ?? "");
+    expect(rendered).toContain("class BottomPaddedText extends Text {");
+    expect(rendered).not.toContain("```ts");
+    expect(rendered).not.toContain("```");
+  });
+
+  test("highlights fenced markdown diffs like edit diffs", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [
+          message({
+            id: "assistant-1",
+            seq: 1,
+            role: "assistant",
+            state: "complete",
+            text: ["```diff", "-old", "+new", "```"].join("\n"),
+          }),
+        ],
+      }),
+    );
+
+    const rendered = log.children[0]?.render(80).join("\n") ?? "";
+    expect(stripAnsi(rendered)).toContain("-old");
+    expect(stripAnsi(rendered)).toContain("+new");
+    expect(rendered).toContain("\x1b[48;5;52m-old\x1b[49m");
+    expect(rendered).toContain("\x1b[48;5;22m+new\x1b[49m");
   });
 
   test("orders tool pairs by activity sequence before compact grouping", () => {
@@ -305,8 +363,8 @@ describe("ChatLog", () => {
 
     expect(streaming?.key).toBe("msg:assistant-1");
     expect(complete?.key).toBe("msg:assistant-1");
-    expect(streaming?.mode).toBe("plain");
-    expect(complete?.mode).toBe("markdown");
+    expect(streaming?.mode).toBe("streaming-markdown");
+    expect(complete?.mode).toBe("final-markdown");
   });
 
   test("renders thinking output collapsed or expanded without dropping transcript state", () => {
@@ -344,7 +402,7 @@ describe("ChatLog", () => {
     expect(collapsedVisibleEntry?.content).not.toContain("private calculation");
   });
 
-  test("reuses stable components and swaps only when render mode changes", () => {
+  test("reuses transcript message components while child renderers change", () => {
     const log = new ChatLog();
     const completeUser = message({
       id: "user-1",
@@ -406,6 +464,6 @@ describe("ChatLog", () => {
       }),
     );
     expect(log.children[0]).toBe(firstUserComponent);
-    expect(log.children[1]).not.toBe(streamingAssistantComponent);
+    expect(log.children[1]).toBe(streamingAssistantComponent);
   });
 });

@@ -2,11 +2,33 @@ import type { TranscriptMessage } from "../backend/slop-types";
 
 export type ThinkingRenderMode = "default" | "expanded" | "collapsed";
 
-export type RenderableMessage = {
+export type RenderableTextBlock = {
   id: string;
-  seq: number;
-  role: TranscriptMessage["role"];
   text: string;
+  type: "text";
+};
+
+export type RenderableThinkingBlock = {
+  expanded: boolean;
+  id: string;
+  label: string;
+  text: string;
+  type: "thinking";
+};
+
+export type RenderablePlainBlock = {
+  id: string;
+  text: string;
+  type: "plain";
+};
+
+export type RenderableBlock = RenderableTextBlock | RenderableThinkingBlock | RenderablePlainBlock;
+
+export type RenderableMessage = {
+  blocks: RenderableBlock[];
+  id: string;
+  role: TranscriptMessage["role"];
+  seq: number;
   state: string;
 };
 
@@ -15,23 +37,27 @@ export function assembleTranscript(
   options?: { thinking?: ThinkingRenderMode },
 ): RenderableMessage[] {
   return messages.map((message) => ({
+    blocks: message.blocks
+      .map((block) => renderBlock(block, options?.thinking ?? "default"))
+      .filter((block) => block.text.length > 0 || block.type === "thinking"),
     id: message.id,
     seq: message.seq,
     role: message.role,
     state: message.state,
-    text: message.blocks
-      .map((block) => renderBlock(block, options?.thinking ?? "default"))
-      .filter(Boolean)
-      .join("\n"),
   }));
 }
 
 function renderBlock(
   block: TranscriptMessage["blocks"][number],
   thinkingMode: ThinkingRenderMode,
-): string {
+): RenderableBlock {
   if (block.type !== "thinking") {
-    return block.text ?? block.preview ?? block.summary ?? "";
+    const text = block.text ?? block.preview ?? block.summary ?? "";
+    return {
+      id: block.id,
+      text,
+      type: block.type === "text" ? "text" : "plain",
+    };
   }
 
   const expanded =
@@ -46,10 +72,24 @@ function renderBlock(
     .filter(Boolean)
     .join(" · ");
   const label = `thinking${details ? ` · ${details}` : ""}`;
-  if (!expanded) {
-    return `[${label}]`;
+  return {
+    expanded,
+    id: block.id,
+    label,
+    text: expanded ? (block.text ?? "") : "",
+    type: "thinking",
+  };
+}
+
+export function renderableBlockText(block: RenderableBlock): string {
+  if (block.type === "thinking") {
+    return [`[${block.label}]`, block.expanded ? block.text : undefined].filter(Boolean).join("\n");
   }
-  return [`[${label}]`, block.text].filter(Boolean).join("\n");
+  return block.text;
+}
+
+export function renderableMessageText(message: RenderableMessage): string {
+  return message.blocks.map(renderableBlockText).filter(Boolean).join("\n");
 }
 
 function formatDuration(ms: number): string {

@@ -1,5 +1,6 @@
 import type { ActivityItem } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
+import { sanitizeTerminalText } from "./render-safety";
 import { bold, dim, green, red } from "./theme";
 import { renderToolContent } from "./tool-renderers";
 
@@ -23,7 +24,7 @@ export function renderToolCallCard(
   const status = statusToken(item.status);
   const suffix = toolActivityDuration(pair);
   const header = `${status} ${bold(label)}${suffix ? ` ${dim(suffix)}` : ""}`;
-  const summary = isDuplicateSummary(item, label) ? undefined : item.summary;
+  const summary = isDuplicateSummary(item, label) ? undefined : sanitizeTerminalText(item.summary);
 
   if (options.verbosity === "compact" && item.status !== "error") {
     const body = renderToolContent(item.result, options);
@@ -101,7 +102,7 @@ function rowDetail(
     return "";
   }
   if (item.status === "error") {
-    return red(item.errorMessage ?? "Provider action failed.");
+    return red(sanitizeTerminalText(item.errorMessage ?? "Provider action failed."));
   }
   const body = renderToolContent(item.result, { ...options, verbosity: "compact" });
   const firstBodyLine = body.find((line) => line.trim().length > 0);
@@ -109,21 +110,21 @@ function rowDetail(
     return firstBodyLine;
   }
   const label = toolLabel(item);
-  return isDuplicateSummary(item, label) ? dim("started") : item.summary;
+  return isDuplicateSummary(item, label) ? dim("started") : sanitizeTerminalText(item.summary);
 }
 
 function toolLabel(item: ActivityItem): string {
-  const label = item.label?.trim();
+  const label = sanitizeTerminalText(item.label ?? "").trim();
   if (label) {
     return label;
   }
 
-  const summary = item.summary.trim();
+  const summary = sanitizeTerminalText(item.summary).trim();
   if (summary && !isRawActionSummary(item, summary)) {
     return summary;
   }
 
-  return humanizeAction(item.action ?? item.provider ?? "tool call");
+  return humanizeAction(sanitizeTerminalText(item.action ?? item.provider ?? "tool call"));
 }
 
 function humanizeAction(value: string): string {
@@ -159,9 +160,9 @@ function renderErrorBody(
     width: number;
   },
 ): string[] {
-  const lines = [red(item.errorMessage ?? "Provider action failed.")];
+  const lines = [red(sanitizeTerminalText(item.errorMessage ?? "Provider action failed."))];
   if (item.result?.data !== undefined) {
-    lines.push(JSON.stringify(item.result.data, null, 2));
+    lines.push(sanitizeTerminalText(JSON.stringify(item.result.data, null, 2)));
   }
   return options.verbosity === "compact" ? lines.slice(0, 1) : lines;
 }

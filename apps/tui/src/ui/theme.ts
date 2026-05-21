@@ -34,13 +34,33 @@ export const editorTheme: EditorTheme = {
   selectList: selectListTheme,
 };
 
+function highlightMarkdownCode(code: string, lang?: string): string[] {
+  if (!isDiffLanguage(lang)) {
+    return code.split("\n").map(dim);
+  }
+  return code.split("\n").map((line) => {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      return bgAdd(line);
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      return bgRemove(line);
+    }
+    return dim(line);
+  });
+}
+
+function isDiffLanguage(lang: string | undefined): boolean {
+  const normalized = lang?.trim().toLowerCase();
+  return normalized === "diff" || normalized === "patch";
+}
+
 export const markdownTheme: MarkdownTheme = {
   heading: (value) => accent(bold(value)),
   link: underline,
   linkUrl: dim,
   code: dim,
   codeBlock: dim,
-  codeBlockBorder: dim,
+  codeBlockBorder: () => "",
   quote: dim,
   quoteBorder: dim,
   hr: dim,
@@ -49,4 +69,5 @@ export const markdownTheme: MarkdownTheme = {
   italic,
   strikethrough,
   underline,
+  highlightCode: highlightMarkdownCode,
 };

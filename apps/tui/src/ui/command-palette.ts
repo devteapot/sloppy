@@ -1,6 +1,7 @@
 import { type SelectItem, SelectList, type TUI } from "@earendil-works/pi-tui";
 
 import type { PaletteCommand } from "../state/command-palette";
+import { sanitizeTerminalText } from "./render-safety";
 import { selectListTheme } from "./theme";
 
 export class CommandPalette extends SelectList {
@@ -14,8 +15,8 @@ export class CommandPalette extends SelectList {
   ) {
     const items: SelectItem[] = commands.map((command) => ({
       value: command.id,
-      label: command.label,
-      description: command.description,
+      label: sanitizeTerminalText(command.label),
+      description: command.description ? sanitizeTerminalText(command.description) : undefined,
     }));
     super(items, 12, selectListTheme);
     for (const command of commands) {

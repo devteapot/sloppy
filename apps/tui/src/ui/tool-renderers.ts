@@ -1,5 +1,6 @@
 import type { ToolCallResult } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
+import { sanitizeTerminalText } from "./render-safety";
 import { bgAdd, bgRemove, bold, dim, red } from "./theme";
 
 export type ToolRenderOptions = {
@@ -130,8 +131,9 @@ function renderDiff(result: ToolCallResult, options: ToolRenderOptions): string[
 }
 
 function renderText(result: ToolCallResult, options: ToolRenderOptions): string[] {
-  const text =
-    typeof result.data === "string" ? result.data : JSON.stringify(result.data ?? null, null, 2);
+  const text = sanitizeTerminalText(
+    typeof result.data === "string" ? result.data : JSON.stringify(result.data ?? null, null, 2),
+  );
   return [limitLines(text, outputLineLimit(options.verbosity))];
 }
 
@@ -143,7 +145,7 @@ function renderJson(result: ToolCallResult, options: ToolRenderOptions): string[
       return [dim(structured)];
     }
   }
-  const text = JSON.stringify(result.data ?? null, null, 2);
+  const text = sanitizeTerminalText(JSON.stringify(result.data ?? null, null, 2));
   return [limitLines(text, outputLineLimit(options.verbosity))];
 }
 
@@ -154,7 +156,11 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const sanitized = sanitizeTerminalText(value);
+  return sanitized.length > 0 ? sanitized : undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -265,7 +271,7 @@ function hunkArray(value: unknown): RenderHunk[] | null {
       ? hunk.lines.flatMap((line): Array<{ kind: string; text: string }> => {
           const item = record(line);
           const kind = stringValue(item?.kind);
-          const text = typeof item?.text === "string" ? item.text : undefined;
+          const text = typeof item?.text === "string" ? sanitizeTerminalText(item.text) : undefined;
           return kind && text !== undefined ? [{ kind, text }] : [];
         })
       : [];

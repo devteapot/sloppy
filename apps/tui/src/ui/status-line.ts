@@ -3,6 +3,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { SessionViewSnapshot } from "../backend/slop-types";
 import { projectIndicators } from "../state/manifest-projection";
 import { formatHomePath } from "./display-path";
+import { sanitizeTerminalText } from "./render-safety";
 import { dim } from "./theme";
 
 export type InteractionMode = "default" | "auto-approve" | "plan";
@@ -17,13 +18,16 @@ export class StatusLine implements Component {
 
   update(snapshot: SessionViewSnapshot, _mode: InteractionMode): void {
     const workspace = snapshot.session.workspaceRoot
-      ? formatHomePath(snapshot.session.workspaceRoot)
+      ? formatHomePath(sanitizeTerminalText(snapshot.session.workspaceRoot))
       : "workspace";
-    const model = [snapshot.session.modelProvider, snapshot.session.model]
+    const model = [
+      sanitizeTerminalText(snapshot.session.modelProvider ?? ""),
+      sanitizeTerminalText(snapshot.session.model ?? ""),
+    ]
       .filter(Boolean)
       .join("/");
     const indicators = projectIndicators(snapshot)
-      .map((indicator) => indicator.text)
+      .map((indicator) => sanitizeTerminalText(indicator.text))
       .filter(Boolean);
 
     this.leftText = [dim(workspace), dim(model || "model unset"), ...indicators]

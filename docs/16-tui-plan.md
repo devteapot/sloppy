@@ -28,6 +28,13 @@ Implemented:
   `/plugins`, and `/queue`
 - dynamic subscriptions from v2 plugin manifests
 - markdown transcript rendering through pi-tui `Markdown`
+- block-aware transcript rendering that keeps Thinking output plain/labeled while
+  assistant and system text blocks use Markdown paths
+- progressive streaming Markdown for assistant/system text blocks with
+  parser-safe render-unit caching, tolerant open-fence rendering, and final
+  whole-document rendering on completion
+- render-layer terminal sanitization for dynamic TUI text plus Markdown escaping
+  for dynamic operational fields inserted into Markdown-authored UI chrome
 - inline cards for the first pending approval, first cancellable task, and queue
   preview, with actions available through the command palette
 - status line with workspace, model, context usage, and plugin indicator templates
@@ -48,7 +55,7 @@ Still deferred:
 
 - true masked API-key entry for `/profile-secret`
 - clickable or focusable per-card buttons inside the transcript
-- syntax-highlighted code blocks and rich diff rendering
+- full syntax-highlighted code blocks and richer structured diff rendering
 - responsive narrow/wide layout variants beyond pi-tui wrapping and overlay width
 - richer runtime proposal cards and mutating todo cards
 
@@ -85,7 +92,7 @@ same `SessionClient` between ordinary session-provider sockets.
 `apps/tui/src/ui/app.ts` owns the pi-tui root, keyboard handling, command
 execution, overlays, mode, notices, and session/supervisor updates.
 
-`chat-log.ts` renders the transcript plus inline operational cards.
+`chat-log.ts` renders the transcript plus inline operational cards. Transcript rendering is block-aware: assistant/system text blocks use Markdown paths, Thinking-output blocks use plain labeled text, and tool activity remains separate `/activity` data.
 `status-line.ts` renders ambient session status and plugin indicators.
 `command-palette.ts` wraps pi-tui `SelectList` for Ctrl+K.
 `route-overlay.ts` renders temporary route panels.
@@ -115,6 +122,26 @@ The composer owns the input frame, prompt gutter, placeholder, and local mode la
 - `thinking.display=visible` expands Thinking-output blocks by default;
   `thinking.display=hidden` still shows collapsed Thinking-output blocks by
   default rather than omitting them.
+- User transcript text remains sanitized plain text in the existing muted box
+  presentation. Progressive Markdown rendering is scoped to assistant/system
+  text blocks. Streaming blocks use render-unit segmentation and tolerant
+  Markdown preparation; errored blocks use one tolerant full render with
+  synthetic closers; completed blocks use one sanitized final Markdown render.
+  Thinking-output blocks remain plain labeled transcript display content so
+  their visibility policy stays separate from assistant prose rendering.
+- Streaming stability advances at conservative parser-safe Markdown render-unit
+  boundaries, not at every newline or byte-size threshold: table and list
+  candidates stay mutable until their block closes. Completed messages render as
+  one sanitized final Markdown document so final output matches whole-document
+  parsing.
+- Render-layer sanitization applies before display to dynamic text from
+  transcript, activity, plugin manifests, provider/session state, user input,
+  and errors. Dynamic operational UI text inserted into Markdown-authored UI
+  chrome is also Markdown-escaped; assistant/system text blocks are intentional
+  Markdown content and are not Markdown-escaped. Markdown table-fence
+  normalization applies only to complete assistant/system `md` or `markdown`
+  fenced blocks whose body contains a pipe table, and stored Session state
+  remains unchanged.
 - Tool-result rendering has two presentation depths: `compact` is the default
   receipt-first chat timeline mode, while `verbose` renders bounded result data
   for evidence and debugging. Result-kind renderers choose any raw pretty-print
@@ -128,6 +155,8 @@ The composer owns the input frame, prompt gutter, placeholder, and local mode la
 - Provider/plugin surfaces should be contributed through v2 `plugin.ui` where
   possible.
 - Inline UI should preserve terminal scrollback and avoid alternate-screen
-  assumptions.
+  assumptions. Progressive Markdown may cache stable and tail rendered lines
+  inside components, but it must not introduce a separate commit queue, render
+  timer, or permanent scrollback append lifecycle outside pi-tui.
 - Follow-on rich interactions should deepen the same public session boundary,
   not reintroduce a privileged UI/runtime branch.

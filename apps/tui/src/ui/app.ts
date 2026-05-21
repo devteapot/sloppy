@@ -17,6 +17,7 @@ import { evaluatePluginNotifications } from "../state/plugin-notifications";
 import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
+import { sanitizeTerminalText } from "./render-safety";
 import { RouteOverlay, routeOverlayText } from "./route-overlay";
 import { type InteractionMode, StatusLine, turnStatusLabel } from "./status-line";
 import { dim } from "./theme";
@@ -135,7 +136,7 @@ export class AppUi {
   }
 
   setNotice(message: string): void {
-    this.notice.setText(message);
+    this.notice.setText(sanitizeTerminalText(message));
     this.tui.requestRender();
   }
 

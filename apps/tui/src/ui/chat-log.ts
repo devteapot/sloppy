@@ -9,7 +9,16 @@ import {
 
 import type { ActivityItem, SessionViewSnapshot } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
-import { assembleTranscript, type ThinkingRenderMode } from "../state/stream-assembler";
+import {
+  assembleTranscript,
+  type RenderableBlock,
+  type RenderableMessage,
+  renderableBlockText,
+  renderableMessageText,
+  type ThinkingRenderMode,
+} from "../state/stream-assembler";
+import { safeMarkdownText, safePlainText } from "./render-safety";
+import { PlainTranscriptText, SafeMarkdown, StreamingMarkdown } from "./streaming-markdown";
 import { dim, markdownTheme } from "./theme";
 import {
   renderToolCallCard,
@@ -19,6 +28,8 @@ import {
 } from "./tool-call-card";
 
 const CONTENT_PADDING_X = 1;
+
+type UpdatableComponent = Component & { setText(text: string): void };
 
 export class ChatLog extends Container {
   private readonly renderedEntries = new Map<string, RenderedEntry>();
@@ -55,30 +66,124 @@ export class ChatLog extends Container {
   }
 
   private renderEntry(entry: ChatLogEntry): Component {
+    const rendererKey = entryRendererKey(entry);
     const rendered = this.renderedEntries.get(entry.key);
-    if (rendered && rendered.mode === entry.mode && rendered.variant === entry.variant) {
-      if (rendered.content !== entry.content) {
-        rendered.component.setText(entry.content);
+    if (rendered && rendered.rendererKey === rendererKey) {
+      if (entry.kind === "message") {
+        rendered.messageComponent?.setMessage(entry.message);
+      } else if (rendered.content !== entry.content) {
+        rendered.textComponent?.setText(entry.content);
         rendered.content = entry.content;
       }
       return rendered.component;
     }
 
-    const component =
-      entry.mode === "markdown"
-        ? new Markdown(entry.content, CONTENT_PADDING_X, 1, markdownTheme)
-        : entry.variant === "user"
-          ? new BorderedUserMessage(entry.content)
-          : entry.variant === "tool"
-            ? new BottomPaddedText(entry.content)
-            : new Text(entry.content, CONTENT_PADDING_X, 1);
+    if (entry.kind === "message") {
+      const component = new TranscriptMessageComponent(entry.message);
+      this.renderedEntries.set(entry.key, {
+        component,
+        messageComponent: component,
+        rendererKey,
+      });
+      return component;
+    }
+
+    const component = new BottomPaddedText(entry.content);
     this.renderedEntries.set(entry.key, {
       component,
       content: entry.content,
-      mode: entry.mode,
-      variant: entry.variant,
+      rendererKey,
+      textComponent: component,
     });
     return component;
+  }
+}
+
+class TranscriptMessageComponent implements Component {
+  private readonly renderedBlocks = new Map<string, RenderedBlock>();
+
+  constructor(private message: RenderableMessage) {}
+
+  setMessage(message: RenderableMessage): void {
+    this.message = message;
+  }
+
+  invalidate(): void {
+    for (const block of this.renderedBlocks.values()) {
+      block.component.invalidate?.();
+    }
+  }
+
+  render(width: number): string[] {
+    if (this.message.role === "user") {
+      return this.renderUserMessage(width);
+    }
+
+    const activeKeys = new Set<string>();
+    const lines: string[] = [];
+    for (const block of this.message.blocks) {
+      const content = renderableBlockText(block);
+      if (content.length === 0) {
+        continue;
+      }
+      const key = `${block.id}:${blockRendererKey(this.message, block)}`;
+      activeKeys.add(key);
+      const component = this.componentForBlock(key, block, content);
+      lines.push(...component.render(width));
+    }
+    this.pruneInactiveBlocks(activeKeys);
+    return lines;
+  }
+
+  private renderUserMessage(width: number): string[] {
+    const key = `user:${this.message.id}`;
+    const content = renderableMessageText(this.message);
+    const component = this.componentForKey(
+      key,
+      "user",
+      content,
+      () => new BorderedUserMessage(content),
+    );
+    this.pruneInactiveBlocks(new Set([key]));
+    return component.render(width);
+  }
+
+  private componentForBlock(
+    key: string,
+    block: RenderableBlock,
+    content: string,
+  ): UpdatableComponent {
+    const rendererKey = blockRendererKey(this.message, block);
+    return this.componentForKey(key, rendererKey, content, () =>
+      createBlockComponent(rendererKey, content),
+    );
+  }
+
+  private componentForKey(
+    key: string,
+    rendererKey: string,
+    content: string,
+    create: () => UpdatableComponent,
+  ): UpdatableComponent {
+    const rendered = this.renderedBlocks.get(key);
+    if (rendered && rendered.rendererKey === rendererKey) {
+      if (rendered.content !== content) {
+        rendered.component.setText(content);
+        rendered.content = content;
+      }
+      return rendered.component;
+    }
+    const component = create();
+    this.renderedBlocks.set(key, { component, content, rendererKey });
+    return component;
+  }
+
+  private pruneInactiveBlocks(activeKeys: Set<string>): void {
+    for (const key of this.renderedBlocks.keys()) {
+      if (!activeKeys.has(key)) {
+        this.renderedBlocks.delete(key);
+      }
+    }
   }
 }
 
@@ -122,7 +227,10 @@ class BorderedUserMessage implements Component {
     const outerWidth = Math.max(8, Math.floor(width));
     const innerWidth = outerWidth - 2;
     const contentWidth = Math.max(1, innerWidth - 2);
-    const contentLines = wrapTextWithAnsi(this.text.replace(/\t/g, "   "), contentWidth);
+    const contentLines = wrapTextWithAnsi(
+      safePlainText(this.text).replace(/\t/g, "   "),
+      contentWidth,
+    );
     const border = dim;
     const lines = [
       border(`┌${"─".repeat(innerWidth)}┐`),
@@ -139,51 +247,109 @@ class BorderedUserMessage implements Component {
   }
 }
 
+function createBlockComponent(rendererKey: string, content: string): UpdatableComponent {
+  if (rendererKey === "streaming-markdown") {
+    return new StreamingMarkdown(content, CONTENT_PADDING_X, 1);
+  }
+  if (rendererKey === "final-markdown") {
+    return new SafeMarkdown(content, "final", CONTENT_PADDING_X, 1);
+  }
+  if (rendererKey === "tolerant-markdown") {
+    return new SafeMarkdown(content, "tolerant", CONTENT_PADDING_X, 1);
+  }
+  return new PlainTranscriptText(content, CONTENT_PADDING_X, 1);
+}
+
+function blockRendererKey(message: RenderableMessage, block: RenderableBlock): string {
+  if (block.type === "thinking") {
+    return "thinking";
+  }
+  if (block.type !== "text") {
+    return "plain";
+  }
+  if (message.role !== "assistant" && message.role !== "system") {
+    return "plain";
+  }
+  if (message.state === "streaming") {
+    return "streaming-markdown";
+  }
+  if (message.state === "error") {
+    return "tolerant-markdown";
+  }
+  if (message.state === "complete") {
+    return "final-markdown";
+  }
+  return "plain";
+}
+
 function padToWidth(line: string, width: number): string {
   const visible = visibleWidth(line);
   return `${line}${" ".repeat(Math.max(0, width - visible))}`;
 }
 
-export type ChatLogRenderMode = "plain" | "markdown";
-export type ChatLogEntryVariant = "default" | "user" | "tool";
+export type ChatLogRenderMode =
+  | "final-markdown"
+  | "message"
+  | "plain"
+  | "streaming-markdown"
+  | "tolerant-markdown";
+export type ChatLogEntryVariant = "default" | "tool" | "user";
 
-export type ChatLogEntry = {
-  key: string;
-  mode: ChatLogRenderMode;
-  variant: ChatLogEntryVariant;
+export type ChatLogEntry = MessageChatLogEntry | ToolChatLogEntry;
+
+type MessageChatLogEntry = {
   content: string;
+  key: string;
+  kind: "message";
+  message: RenderableMessage;
+  mode: ChatLogRenderMode;
+  variant: Exclude<ChatLogEntryVariant, "tool">;
 };
 
-type RenderedEntry = {
-  component: Component & { setText(text: string): void };
+type ToolChatLogEntry = {
   content: string;
-  mode: ChatLogRenderMode;
-  variant: ChatLogEntryVariant;
+  key: string;
+  kind: "tool";
+  mode: "plain";
+  variant: "tool";
+};
+
+type SequencedChatLogEntry = ChatLogEntry & { seq: number };
+
+type RenderedEntry = {
+  component: Component;
+  content?: string;
+  messageComponent?: TranscriptMessageComponent;
+  rendererKey: string;
+  textComponent?: UpdatableComponent;
+};
+
+type RenderedBlock = {
+  component: UpdatableComponent;
+  content: string;
+  rendererKey: string;
 };
 
 export function buildChatLogEntries(
   snapshot: SessionViewSnapshot,
   options: { verbosity: Verbosity; width: number; thinking?: ThinkingRenderMode },
 ): ChatLogEntry[] {
-  const messages = assembleTranscript(snapshot.transcript, {
+  const messages: SequencedChatLogEntry[] = assembleTranscript(snapshot.transcript, {
     thinking: options.thinking ?? "default",
-  }).map((message) => {
-    const mode = messageRenderMode(message.role, message.state);
-    const variant: ChatLogEntryVariant = message.role === "user" ? "user" : "default";
-    const body = message.text || message.state;
-    return {
-      key: `msg:${message.id}`,
-      mode,
-      variant,
-      seq: message.seq,
-      content: body,
-    };
-  });
+  }).map((message) => ({
+    content: renderableMessageText(message),
+    key: `msg:${message.id}`,
+    kind: "message",
+    message,
+    mode: messageRenderMode(message.role, message.state),
+    seq: message.seq,
+    variant: message.role === "user" ? "user" : "default",
+  }));
   const tools = buildToolEntries(buildToolPairs(snapshot.activity), options);
   return [...messages, ...tools]
     .filter((item) => item.content.length > 0)
     .sort((left, right) => left.seq - right.seq)
-    .map(({ key, mode, variant, content }) => ({ key, mode, variant, content }));
+    .map(({ seq: _seq, ...entry }) => entry);
 }
 
 function messageRenderMode(
@@ -193,17 +359,30 @@ function messageRenderMode(
   if (role === "user") {
     return "plain";
   }
+  if ((role === "assistant" || role === "system") && state === "streaming") {
+    return "streaming-markdown";
+  }
+  if ((role === "assistant" || role === "system") && state === "error") {
+    return "tolerant-markdown";
+  }
   if ((role === "assistant" || role === "system") && state === "complete") {
-    return "markdown";
+    return "final-markdown";
   }
   return "plain";
+}
+
+function entryRendererKey(entry: ChatLogEntry): string {
+  if (entry.kind === "message") {
+    return `message:${entry.message.role}`;
+  }
+  return `${entry.mode}:${entry.variant}`;
 }
 
 function buildToolEntries(
   pairs: ToolActivityPair[],
   options: { verbosity: Verbosity; width: number },
-): Array<ChatLogEntry & { seq: number }> {
-  const entries: Array<ChatLogEntry & { seq: number }> = [];
+): Array<ToolChatLogEntry & { seq: number }> {
+  const entries: Array<ToolChatLogEntry & { seq: number }> = [];
   const orderedPairs = [...pairs].sort((left, right) => toolPairSeq(left) - toolPairSeq(right));
   const groups =
     options.verbosity === "compact"
@@ -215,6 +394,7 @@ function buildToolEntries(
       const pair = group[0];
       entries.push({
         key: `tool:${toolPairId(pair)}`,
+        kind: "tool",
         mode: "plain",
         variant: "tool",
         seq: toolPairSeq(pair),
@@ -224,6 +404,7 @@ function buildToolEntries(
     }
     entries.push({
       key: `tool-group:${toolPairId(group[0])}:${group.length}`,
+      kind: "tool",
       mode: "plain",
       variant: "tool",
       seq: toolPairSeq(group[0]),
@@ -284,9 +465,9 @@ function inlineCards(snapshot: SessionViewSnapshot): string[] {
   if (approval) {
     cards.push(
       [
-        `**Approval** ${approval.provider}.${approval.action}`,
-        approval.reason,
-        approval.paramsPreview ? `\`${approval.paramsPreview}\`` : "",
+        `**Approval** ${safeMarkdownText(`${approval.provider}.${approval.action}`)}`,
+        safeMarkdownText(approval.reason),
+        approval.paramsPreview ? safeMarkdownText(approval.paramsPreview) : "",
         approval.canApprove || approval.canReject ? "`Ctrl+K` for approve/reject" : "",
       ]
         .filter(Boolean)
@@ -297,8 +478,8 @@ function inlineCards(snapshot: SessionViewSnapshot): string[] {
   if (task) {
     cards.push(
       [
-        `**Task** ${task.providerTaskId}`,
-        task.message,
+        `**Task** ${safeMarkdownText(task.providerTaskId)}`,
+        safeMarkdownText(task.message),
         task.progress === undefined ? "" : `${Math.round(task.progress * 100)}%`,
         "`Ctrl+K` to cancel task",
       ]
@@ -310,7 +491,9 @@ function inlineCards(snapshot: SessionViewSnapshot): string[] {
     cards.push(
       [
         `**Queue** ${snapshot.queue.length} message${snapshot.queue.length === 1 ? "" : "s"}`,
-        ...snapshot.queue.slice(0, 3).map((item) => `${item.position}. ${item.summary}`),
+        ...snapshot.queue
+          .slice(0, 3)
+          .map((item) => `${item.position}. ${safeMarkdownText(item.summary)}`),
       ].join("\n"),
     );
   }

@@ -306,7 +306,10 @@ describe("TUI transcript assembly", () => {
         seq: 0,
         role: "assistant",
         state: "streaming",
-        text: "hello\nscreenshot preview",
+        blocks: [
+          { id: "block-1", text: "hello", type: "text" },
+          { id: "block-2", text: "screenshot preview", type: "plain" },
+        ],
       },
     ]);
   });

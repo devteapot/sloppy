@@ -4,6 +4,7 @@ import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SupervisorSnapshot } from "../backend/supervisor-client";
 import { projectIndicators } from "../state/manifest-projection";
 import { buildSlashEntries } from "../state/slash-catalog";
+import { sanitizeTerminalText } from "./render-safety";
 
 function line(value: string | undefined): string {
   return value && value.length > 0 ? value : "-";
@@ -103,13 +104,13 @@ export function routeOverlayText(
   snapshot: SessionViewSnapshot,
   supervisor: SupervisorSnapshot | null,
 ): string {
-  if (route === "approvals") return renderApprovals(snapshot);
-  if (route === "tasks") return renderTasks(snapshot);
-  if (route === "apps") return renderApps(snapshot);
-  if (route === "setup") return renderSetup(snapshot);
-  if (route === "help") return renderHelp(snapshot);
-  if (route === "runtime") return renderRuntime(snapshot, supervisor);
-  if (route === "inspect") return renderInspect(snapshot);
+  if (route === "approvals") return sanitizeTerminalText(renderApprovals(snapshot));
+  if (route === "tasks") return sanitizeTerminalText(renderTasks(snapshot));
+  if (route === "apps") return sanitizeTerminalText(renderApps(snapshot));
+  if (route === "setup") return sanitizeTerminalText(renderSetup(snapshot));
+  if (route === "help") return sanitizeTerminalText(renderHelp(snapshot));
+  if (route === "runtime") return sanitizeTerminalText(renderRuntime(snapshot, supervisor));
+  if (route === "inspect") return sanitizeTerminalText(renderInspect(snapshot));
   return "";
 }
 

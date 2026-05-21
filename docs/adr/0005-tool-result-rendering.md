@@ -12,6 +12,8 @@ Affordance `label` is also provider-side metadata. Sloppy-owned Affordances must
 
 The session provider keeps `/transcript` conversation-focused and publishes tool execution details through `/activity`. Transcript messages and activity items both carry a monotonic session-local `seq`, so UIs can compose a chat stream without relying on wall-clock timestamps.
 
+Assistant-authored fenced `diff` or `patch` Markdown is transcript content, not an Affordance result. It may share add/remove colors with the `diff` result-kind renderer, but it must not reuse structured diff receipt behavior such as file headers, status, hunk metadata, or operation semantics.
+
 The TUI has two presentation depths: `compact` and `verbose`. `compact` is the default chat timeline mode and renders tool activity as receipts. `verbose` is the evidence mode and should render the bounded result data. A result-kind renderer may use raw pretty printing as a fallback at whichever depth is appropriate for that kind.
 
 Compact views may visually group adjacent tool receipts only after composing the stream in monotonic `seq` order. Grouping is by provider-scoped affordance identity (`provider`, `action`, invocation-time `label`, and `resultKind` when known), while the group title renders the label. Verbose views render one activity pair at a time.
