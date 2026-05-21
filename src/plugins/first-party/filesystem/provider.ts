@@ -1226,6 +1226,7 @@ export class FilesystemProvider {
                     "Read this file as text. Returns { content, version, source_version, exists, ... }. Pass start_line/end_line to read just a slice. Use source_version with edit_range for line-range edits against this observed view.",
                   idempotent: true,
                   estimate: "fast",
+                  resultKind: "code",
                 },
               ),
               write: action(
@@ -1388,6 +1389,7 @@ export class FilesystemProvider {
               "Read a path relative to the workspace root. For files, returns { content, version, source_version, exists, kind: 'file', ... }. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file. Use source_version with edit_range for line-range edits against the observed view.",
             idempotent: true,
             estimate: "fast",
+            resultKind: "code",
           },
         ),
         write: action(
@@ -1571,6 +1573,7 @@ export class FilesystemProvider {
             description: "Read the file that contains this search hit.",
             idempotent: true,
             estimate: "fast",
+            resultKind: "code",
           }),
           focus_parent: action(async () => this.setFocus(dirname(result.path)), {
             label: "Focus Parent Directory",

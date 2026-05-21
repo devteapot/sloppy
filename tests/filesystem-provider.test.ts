@@ -820,6 +820,11 @@ describe("FilesystemProvider", () => {
 
       const read = await consumer.invoke("/workspace", "read", { path: "src.ts" });
       const v1 = (read.data as { version: number }).version;
+      const workspace = await consumer.query("/workspace", 1);
+      const readAffordance = workspace.affordances?.find((item) => item.action === "read") as
+        | { resultKind?: string }
+        | undefined;
+      expect(readAffordance?.resultKind).toBe("code");
 
       const result = await consumer.invoke("/workspace", "edit", {
         path: "src.ts",
@@ -841,7 +846,6 @@ describe("FilesystemProvider", () => {
       });
       expect(diffData.hunks[0]?.lines).toContainEqual({ kind: "add", text: "there", newLine: 1 });
 
-      const workspace = await consumer.query("/workspace", 1);
       const editAffordance = workspace.affordances?.find((item) => item.action === "edit") as
         | { resultKind?: string }
         | undefined;

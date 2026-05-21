@@ -62,6 +62,52 @@ describe("tool result capture and rendering", () => {
     expect(terminal).toContain("hi");
   });
 
+  test("renders code result kind from content without JSON escaping", () => {
+    const rendered = renderToolContent(
+      {
+        kind: "code",
+        data: {
+          path: "src/app.ts",
+          content: 'const title = "Hello";\nconsole.log(title);',
+        },
+      },
+      { verbosity: "normal", width: 80 },
+    ).join("\n");
+
+    expect(rendered).toContain("path: src/app.ts");
+    expect(rendered).toContain("```ts");
+    expect(rendered).toContain('const title = "Hello";');
+    expect(rendered).not.toContain("\\n");
+  });
+
+  test("omits duplicate tool summary line", () => {
+    const card = renderToolCallCard(
+      {
+        result: {
+          id: "activity-1",
+          seq: 1,
+          kind: "tool_result",
+          status: "ok",
+          summary: "filesystem:read /workspace",
+          provider: "filesystem",
+          path: "/workspace",
+          action: "read",
+          toolUseId: "tool-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+          completedAt: "2026-01-01T00:00:01.000Z",
+          result: {
+            kind: "code",
+            data: { content: "hello" },
+          },
+        },
+      },
+      { verbosity: "normal", width: 80 },
+    );
+
+    expect(card.match(/filesystem:read \/workspace/g)).toHaveLength(1);
+  });
+
   test("falls back unknown result kinds to JSON", () => {
     const rendered = renderToolContent(
       { kind: "custom", data: { ok: true } },

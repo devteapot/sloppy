@@ -8,7 +8,8 @@ export type ToolRenderOptions = {
 
 type RenderFn = (result: ToolCallResult, options: ToolRenderOptions) => string[];
 
-const registry: Record<"diff" | "terminal" | "text" | "json", RenderFn> = {
+const registry: Record<"code" | "diff" | "terminal" | "text" | "json", RenderFn> = {
+  code: renderCode,
   diff: renderDiff,
   terminal: renderTerminal,
   text: renderText,
@@ -28,13 +29,36 @@ export function renderToolContent(
 }
 
 function rendererKind(result: ToolCallResult): keyof typeof registry {
-  if (result.kind === "diff" || result.kind === "terminal" || result.kind === "text") {
+  if (
+    result.kind === "code" ||
+    result.kind === "diff" ||
+    result.kind === "terminal" ||
+    result.kind === "text"
+  ) {
     return result.kind;
   }
   if (result.kind === "json") {
     return "json";
   }
   return typeof result.data === "string" ? "text" : "json";
+}
+
+function renderCode(result: ToolCallResult, options: ToolRenderOptions): string[] {
+  const data = record(result.data);
+  if (!data) {
+    return renderText(result, options);
+  }
+  const content = stringValue(data.content);
+  if (content === undefined) {
+    return renderJson(result, options);
+  }
+  const path = stringValue(data.path);
+  const language = path ? codeFenceInfo(path) : "";
+  const lines = [
+    path ? `path: ${path}` : undefined,
+    fenced(limitLines(content, outputLineLimit(options.verbosity)), language),
+  ];
+  return lines.filter((line): line is string => Boolean(line));
 }
 
 function renderTerminal(result: ToolCallResult, options: ToolRenderOptions): string[] {
@@ -184,4 +208,34 @@ function limitLineArray(lines: string[], limit: number): string[] {
 
 function fenced(text: string, info = ""): string {
   return [`\`\`\`${info}`, text, "```"].join("\n");
+}
+
+function codeFenceInfo(path: string): string {
+  const extension = path
+    .split(/[\\/]/)
+    .pop()
+    ?.match(/\.([^.]+)$/)?.[1]
+    ?.toLowerCase();
+  if (!extension) {
+    return "";
+  }
+  const aliases: Record<string, string> = {
+    cjs: "js",
+    cljs: "clojure",
+    cmd: "bat",
+    cts: "ts",
+    h: "c",
+    hpp: "cpp",
+    htm: "html",
+    jsx: "jsx",
+    mjs: "js",
+    mts: "ts",
+    pyw: "py",
+    rbw: "rb",
+    rs: "rust",
+    sh: "bash",
+    tsx: "tsx",
+    yml: "yaml",
+  };
+  return aliases[extension] ?? extension;
 }

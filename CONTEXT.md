@@ -91,7 +91,7 @@ A turn-scoped Tool contributed by a Plugin and run inside the agent loop, not ba
 _Avoid_: "local controls"; "runtime-local tool" is an acceptable longer alias.
 
 **Result kind**:
-A semantic label on an Affordance's metadata (`resultKind`) declaring how a UI should render that Affordance's result — e.g. `diff`, `terminal`. An open string: a UI keeps a closed set of renderers it implements and falls back gracefully for any kind it does not know. Carried back on the `tool_result` activity record so the UI can render a tool call's result without knowing the tool.
+A semantic label on an Affordance's metadata (`resultKind`) declaring how a UI should render that Affordance's result — e.g. `diff`, `terminal`, `code`. An open string: a UI keeps a closed set of renderers it implements and falls back gracefully for any kind it does not know. Carried back on the `tool_result` activity record so the UI can render a tool call's result without knowing the tool.
 _Avoid_: "content kind" — the concept is the kind of an Affordance *result*.
 
 ### Runtime

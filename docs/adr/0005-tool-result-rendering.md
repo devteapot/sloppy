@@ -6,6 +6,7 @@ The session runtime carries bounded structured affordance results into `/activit
 
 - `terminal` for shell command transcripts.
 - `diff` for filesystem edit results.
+- `code` for filesystem read results.
 
 The session provider keeps `/transcript` conversation-focused and publishes tool execution details through `/activity`. Transcript messages and activity items both carry a monotonic session-local `seq`, so UIs can compose a chat stream without relying on wall-clock timestamps.
 

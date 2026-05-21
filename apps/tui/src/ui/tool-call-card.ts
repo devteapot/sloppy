@@ -22,7 +22,7 @@ export function renderToolCallCard(
   const label = `${item.provider ?? "provider"}:${item.action ?? "action"}`;
   const suffix = [item.path, duration(pair.call, pair.result)].filter(Boolean).join(" ");
   const header = `**Tool** ${status} ${label}${suffix ? ` ${suffix}` : ""}`;
-  const summary = item.summary && item.summary !== label ? item.summary : undefined;
+  const summary = isDuplicateSummary(item.summary, label, item.path) ? undefined : item.summary;
 
   if (options.verbosity === "compact" && item.status !== "error") {
     return [header, summary].filter(Boolean).join("\n");
@@ -33,6 +33,21 @@ export function renderToolCallCard(
       ? renderErrorBody(item, options)
       : renderToolContent(item.result, options);
   return [header, summary, ...body].filter(Boolean).join("\n");
+}
+
+function isDuplicateSummary(
+  summary: string | undefined,
+  label: string,
+  path: string | undefined,
+): boolean {
+  if (!summary) {
+    return true;
+  }
+  const normalized = summary.trim();
+  if (normalized === label) {
+    return true;
+  }
+  return path ? normalized === `${label} ${path}` : false;
 }
 
 function renderErrorBody(
