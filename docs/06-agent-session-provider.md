@@ -117,6 +117,9 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
     [item] native-notes (name="Native Notes", transport="unix:/tmp/slop/native-notes.sock", status="connected", last_error=null)
 ```
 
+The `/plugins/persistent-goal` and `/goal` nodes shown above are present only
+when the opt-in `persistent-goal` session plugin is enabled.
+
 ---
 
 ## Node Contracts
@@ -331,11 +334,11 @@ Manifest fields are intentionally data-only:
 
 Node type: `control`
 
-`/goal` is the stable public projection for persistent objectives. It is
-contributed by the first-party `persistent-goal` session plugin. Its source of
-truth is the generic extension record at `/extensions/goal`, owned by the
-bundled `persistent-goal` skill. Consumers should keep using `/goal` unless they
-need generic extension inspection or cleanup.
+When the opt-in `persistent-goal` session plugin is enabled, `/goal` is the
+stable public projection for persistent objectives. Its source of truth is the
+generic extension record at `/extensions/goal`, owned by the bundled
+`persistent-goal` skill. Consumers should keep using `/goal` unless they need
+generic extension inspection or cleanup.
 
 Required props:
 

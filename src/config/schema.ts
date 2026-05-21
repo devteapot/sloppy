@@ -104,10 +104,10 @@ const a2aAgentConfigSchema = z
 
 const persistentGoalPluginConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().default(false),
   })
   .default({
-    enabled: true,
+    enabled: false,
   });
 
 const terminalPluginConfigSchema = z
@@ -147,13 +147,13 @@ const filesystemPluginConfigSchema = z
 
 const memoryPluginConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().default(false),
     maxMemories: z.number().int().min(1).default(500),
     defaultWeight: z.number().min(0).max(1).default(0.5),
     compactThreshold: z.number().min(0).max(1).default(0.2),
   })
   .default({
-    enabled: true,
+    enabled: false,
     maxMemories: 500,
     defaultWeight: 0.5,
     compactThreshold: 0.2,
@@ -161,7 +161,7 @@ const memoryPluginConfigSchema = z
 
 const skillsPluginConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().default(false),
     builtinSkillsDir: z.string().default("skills"),
     skillsDir: z.string().default("~/.sloppy/skills"),
     externalDirs: z.array(z.string()).default([]),
@@ -169,7 +169,7 @@ const skillsPluginConfigSchema = z
     viewMaxBytes: z.number().int().min(1024).default(65536),
   })
   .default({
-    enabled: true,
+    enabled: false,
     builtinSkillsDir: "skills",
     skillsDir: "~/.sloppy/skills",
     externalDirs: [],

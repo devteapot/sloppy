@@ -61,7 +61,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {
     id: "persistent-goal",
     version: "1.0.0",
-    defaultEnabled: true,
+    defaultEnabled: false,
     description: "Persistent long-running session objective controls.",
     extensionNamespaces: ["goal"],
     createSessionPlugin: () => createPersistentGoalPlugin(),
@@ -125,7 +125,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {
     id: "memory",
     version: "1.0.0",
-    defaultEnabled: true,
+    defaultEnabled: false,
     description: "Session memory provider.",
     providerIds: ["memory"],
     createProviders: (config) => {
@@ -150,7 +150,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {
     id: "skills",
     version: "1.0.0",
-    defaultEnabled: true,
+    defaultEnabled: false,
     description: "Hermes-style skill discovery and management provider.",
     providerIds: ["skills"],
     createProviders: (config) => {

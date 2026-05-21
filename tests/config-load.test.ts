@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import YAML from "yaml";
 
-import { loadConfig, loadConfigFromLayerPaths, loadScopedConfig } from "../src/config/load";
+import {
+  createDefaultConfig,
+  loadConfig,
+  loadConfigFromLayerPaths,
+  loadScopedConfig,
+} from "../src/config/load";
+import { activeFirstPartyPlugins } from "../src/plugins/first-party/catalog";
 
 const tempPaths: string[] = [];
 const originalCwd = process.cwd();
@@ -90,6 +96,17 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
+  test("default runtime enables only terminal and filesystem plugins", () => {
+    const config = createDefaultConfig(originalCwd);
+    expect(activeFirstPartyPlugins(config).map((plugin) => plugin.id)).toEqual([
+      "terminal",
+      "filesystem",
+    ]);
+    expect(config.plugins["persistent-goal"].enabled).toBe(false);
+    expect(config.plugins.memory.enabled).toBe(false);
+    expect(config.plugins.skills.enabled).toBe(false);
+  });
+
   test("checked-in config example is loadable", async () => {
     const home = await createTempDir("sloppy-home-");
     process.env.HOME = home;
@@ -118,7 +135,7 @@ describe("loadConfig", () => {
 
   test("README plugin config example parses without duplicate keys", async () => {
     const readme = await readFile(resolve(originalCwd, "README.md"), "utf8");
-    const sectionStart = readme.indexOf("First-party plugins default to a lean set");
+    const sectionStart = readme.indexOf("First-party plugins default to the lean core");
     const blockStart = readme.indexOf("```yaml", sectionStart);
     const blockEnd = readme.indexOf("```", blockStart + "```yaml".length);
     const block = readme.slice(blockStart + "```yaml".length, blockEnd).trim();

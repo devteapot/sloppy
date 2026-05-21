@@ -110,12 +110,12 @@ describe("SessionSupervisorProvider", () => {
     expect(appSession.socketPath).toContain("app-session");
     expect(appSession).toMatchObject({
       turnState: "idle",
-      goalStatus: "none",
       goalTotalTokens: 0,
       queuedCount: 0,
       pendingApprovalCount: 0,
       runningTaskCount: 0,
     });
+    expect(appSession.goalStatus).toBeUndefined();
     await expect(supervisor.createSession({ sessionId: "app-session" })).rejects.toThrow(
       "Session already exists",
     );
@@ -142,7 +142,7 @@ describe("SessionSupervisorProvider", () => {
       expect.objectContaining({
         id: "workspace-session",
         turnState: "idle",
-        goalStatus: "none",
+        goalStatus: undefined,
         queuedCount: 0,
       }),
     );

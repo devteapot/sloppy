@@ -511,10 +511,14 @@ llm:
 Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
 `high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
 
-First-party plugins default to a lean set: `persistent-goal`, `terminal`, `filesystem`, `memory`, and `skills`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Heavier provider plugins (`web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `terminal` and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:
+  persistent-goal:
+    enabled: true
+  memory:
+    enabled: true
   web:
     enabled: true
   browser:
@@ -532,6 +536,7 @@ plugins:
   workspaces:
     enabled: true
   skills:
+    enabled: true
     builtinSkillsDir: skills
     skillsDir: ~/.sloppy/skills
     externalDirs: []

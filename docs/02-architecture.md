@@ -19,8 +19,7 @@ The default runtime includes:
 - provider discovery
 - approval queue and generic dangerous-action policy
 - first-party plugin catalog and runtime plugin manager
-- default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
-  `memory`, and `skills`
+- default first-party plugins: `terminal` and `filesystem`
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
@@ -43,9 +42,9 @@ Everything visible to the agent is a provider state tree with affordances:
 
 Built-in capabilities ship as plugins, not privileged runtime branches. A plugin
 is the first-party package and catalog unit; each plugin contributes one or more
-providers and/or a session plugin. Optional plugins include `web`, `browser`,
-`cron`, `messaging`, `vision`, `delegation`, `spec`, `mcp`, `workspaces`, `a2a`,
-and `meta-runtime`.
+providers and/or a session plugin. Optional plugins include `persistent-goal`,
+`memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`,
+`delegation`, `spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
 
 ## MCP Compatibility
 
@@ -271,7 +270,7 @@ provider, TUI, or doctor core. TUI palette entries invoke public session
 affordances declared by plugin manifests and are filtered by the live actions
 available at their SLOP path. Runtime-local tools are stamped with their owning
 plugin id so future policy, dispatch, and telemetry can keep plugin boundaries
-visible. `/goal` is now a stable projection contributed by the bundled
+visible. When enabled, `/goal` is a stable projection contributed by the bundled
 `persistent-goal` plugin over the `goal` extension record owned by the bundled
 `persistent-goal` skill; the plugin owns stale-turn goal recovery, while the
 runtime provides the generic durable snapshot envelope. The skill defines the

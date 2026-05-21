@@ -14,10 +14,10 @@ Checked in now:
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `slop_query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order
-- default first-party plugins: `persistent-goal`, `terminal`, `filesystem`,
-  `memory`, `skills`
-- optional first-party plugin providers: `web`, `browser`, `cron`, `messaging`, `delegation`,
-  `spec`, `vision`, `mcp`, `workspaces`, `a2a`, `meta-runtime`
+- default first-party plugins: `terminal`, `filesystem`
+- optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
+  `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
+  `a2a`, `meta-runtime`
 - session provider and headless session server
 - public session supervisor for scoped session creation, active-session
   switching, and stopping while keeping each session on its own provider socket
@@ -26,8 +26,8 @@ Checked in now:
   tools, queued or automatic plugin turns, snapshot migration/recovery hooks,
   lifecycle hooks, policy rules, audit metadata, supervisor summary fields, and
   declarative TUI manifests
-- generic public session extension metadata, with `/goal` projected from the
-  extension-backed `persistent-goal` skill state by the `persistent-goal`
+- generic public session extension metadata, with opt-in `/goal` projected from
+  the extension-backed `persistent-goal` skill state by the `persistent-goal`
   session plugin for persistent objective controls, usage accounting, cleanup
   retention, and automatic continuation while active
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public

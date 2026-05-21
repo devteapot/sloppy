@@ -39,6 +39,10 @@ const TEST_CONFIG = createTestConfig({
       },
     ],
   },
+  plugins: {
+    "persistent-goal": { enabled: true },
+    skills: { enabled: true },
+  },
 });
 
 function persistentGoalStoreOptions() {
