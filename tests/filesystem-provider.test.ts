@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
@@ -480,6 +480,52 @@ describe("FilesystemProvider", () => {
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
       expect((after.data as { content: string }).content).toBe("alpha\nBETA\nGAMMA\ndelta");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("edit_range preserves CRLF line endings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-edit-crlf-"));
+    tempPaths.push(root);
+    const filePath = join(root, "crlf.txt");
+    await writeFile(filePath, "alpha\r\nbeta\r\ngamma\r\ndelta\r\n", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", {
+        path: "crlf.txt",
+        start_line: 2,
+        end_line: 2,
+      });
+      expect((read.data as { content: string }).content).toBe("beta");
+      const sourceVersion = (read.data as { source_version: number }).source_version;
+
+      const result = await consumer.invoke("/workspace", "edit_range", {
+        path: "crlf.txt",
+        source_version: sourceVersion,
+        edits: [
+          {
+            start_line: 2,
+            end_line: 2,
+            new_text: "BETA",
+          },
+        ],
+      });
+
+      expect(result.status).toBe("ok");
+      expect(await readFile(filePath, "utf8")).toBe("alpha\r\nBETA\r\ngamma\r\ndelta\r\n");
     } finally {
       provider.stop();
     }

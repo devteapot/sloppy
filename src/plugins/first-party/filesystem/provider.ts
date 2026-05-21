@@ -100,6 +100,19 @@ function truncateText(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 16)}\n...[truncated]`;
 }
 
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  const crlfCount = text.match(/\r\n/g)?.length ?? 0;
+  if (crlfCount === 0) {
+    return "\n";
+  }
+  const lfCount = (text.match(/\n/g)?.length ?? 0) - crlfCount;
+  return crlfCount >= lfCount ? "\r\n" : "\n";
+}
+
+function splitTextLines(text: string): string[] {
+  return text.split(/\r?\n/);
+}
+
 function isProbablyBinary(content: Uint8Array): boolean {
   const sample = content.subarray(0, 1024);
   return sample.includes(0);
@@ -572,7 +585,8 @@ export class FilesystemProvider {
 
     if (hasRange) {
       const fullText = TEXT_DECODER.decode(bytes);
-      const lines = fullText.split("\n");
+      const lineEnding = detectLineEnding(fullText);
+      const lines = splitTextLines(fullText);
       const totalLines = lines.length;
       const startLine = Math.max(1, range?.startLine ?? 1);
       const endLine = Math.min(totalLines, range?.endLine ?? totalLines);
@@ -581,7 +595,7 @@ export class FilesystemProvider {
         throw new Error(`Invalid range: start_line (${startLine}) is after end_line (${endLine}).`);
       }
 
-      const sliced = lines.slice(startLine - 1, endLine).join("\n");
+      const sliced = lines.slice(startLine - 1, endLine).join(lineEnding);
       const truncated = sliced.length > this.readMaxBytes;
       const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
       if (!truncated) {
@@ -606,7 +620,7 @@ export class FilesystemProvider {
     // No explicit range: decide whether to return full content or a preview+ref.
     if (bytes.byteLength > this.contentRefThresholdBytes) {
       const previewText = TEXT_DECODER.decode(bytes.subarray(0, this.previewBytes));
-      const totalLines = TEXT_DECODER.decode(bytes).split("\n").length;
+      const totalLines = splitTextLines(TEXT_DECODER.decode(bytes)).length;
       this.recordRecent("read", relPath, "preview+ref");
 
       return {
@@ -632,7 +646,7 @@ export class FilesystemProvider {
     const truncated = bytes.byteLength > this.readMaxBytes;
     const text = TEXT_DECODER.decode(bytes.subarray(0, this.readMaxBytes));
     if (!truncated) {
-      const lines = text.split("\n");
+      const lines = splitTextLines(text);
       this.rememberSourceLines(relPath, version, lines, 1, lines.length);
     }
     this.recordRecent("read", relPath);
@@ -889,7 +903,8 @@ export class FilesystemProvider {
 
       const originalBytes = await Bun.file(fullPath).bytes();
       const original = TEXT_DECODER.decode(originalBytes);
-      const currentLines = original.split("\n");
+      const lineEnding = detectLineEnding(original);
+      const currentLines = splitTextLines(original);
 
       const sorted = [...edits].sort((left, right) => left.startLine - right.startLine);
       for (let index = 0; index < sorted.length; index += 1) {
@@ -957,7 +972,8 @@ export class FilesystemProvider {
           }
         }
 
-        if (oldLines.join("\n") === edit.newText) {
+        const replacementLines = edit.newText.length === 0 ? [] : splitTextLines(edit.newText);
+        if (oldLines.join("\n") === replacementLines.join("\n")) {
           return {
             error: "identical_text" as const,
             path: relPath,
@@ -973,7 +989,7 @@ export class FilesystemProvider {
         if (!edit) {
           continue;
         }
-        const replacementLines = edit.newText.length === 0 ? [] : edit.newText.split("\n");
+        const replacementLines = edit.newText.length === 0 ? [] : splitTextLines(edit.newText);
         nextLines.splice(
           edit.startLine - 1,
           edit.endLine - edit.startLine + 1,
@@ -981,7 +997,7 @@ export class FilesystemProvider {
         );
       }
 
-      const next = nextLines.join("\n");
+      const next = nextLines.join(lineEnding);
       await Bun.write(fullPath, next);
       const postStat = await Bun.file(fullPath)
         .stat()
