@@ -35,10 +35,12 @@ function renderApps(snapshot: SessionViewSnapshot): string {
 
 function renderSetup(snapshot: SessionViewSnapshot): string {
   const profiles = snapshot.llm.profiles
-    .map(
-      (profile) =>
-        `${profile.id}${profile.isDefault ? " *" : ""} ${profile.provider}/${profile.model} ${profile.ready ? "ready" : "not ready"}`,
-    )
+    .map((profile) => {
+      const thinking = profile.thinkingEffectiveReason
+        ? ` thinking=${profile.thinkingEffectiveEnabled ? "on" : "off"}/${profile.thinkingDisplay ?? "visible"}/${profile.thinkingEffort ?? "-"}`
+        : "";
+      return `${profile.id}${profile.isDefault ? " *" : ""} ${profile.provider}/${profile.model} ${profile.ready ? "ready" : "not ready"}${thinking}`;
+    })
     .join("\n");
   return [
     `LLM: ${snapshot.llm.status}`,
@@ -87,6 +89,7 @@ function renderHelp(snapshot: SessionViewSnapshot): string {
   return [
     "Keys",
     "  Ctrl+K  command palette",
+    "  Ctrl+O  expand/collapse Thinking output",
     "  Esc     close overlay or cancel active turn",
     "  Ctrl+C  exit",
     "",

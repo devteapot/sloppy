@@ -357,11 +357,14 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(userMessage.state).toBe("complete");
     expect(userMessage.turnId).toBe(turnId);
     expect(userMessage.author).toBe("user");
-    expect(
-      userMessage.content[0]?.type === "text"
-        ? userMessage.content[0]?.text
-        : (userMessage.content[0]?.summary ?? ""),
-    ).toBe("Hello there");
+    const userBlock = userMessage.content[0];
+    const userText =
+      userBlock?.type === "text"
+        ? userBlock.text
+        : userBlock?.type === "media"
+          ? (userBlock.summary ?? "")
+          : "";
+    expect(userText).toBe("Hello there");
     expect(userMessage.content[0]?.mime).toBe("text/plain");
 
     expect(snapshot.turn.turnId).toBe(turnId);
@@ -426,6 +429,59 @@ describe("SessionStore — transcript & turn lifecycle", () => {
 
     expect(snapshot.turn.phase).toBe("model");
     expect(snapshot.turn.waitingOn).toBe("model");
+  });
+
+  test("appendAssistantThinking keeps thinking separate from assistant text", () => {
+    const store = createStore();
+    const turnId = store.beginTurn("hi");
+    const startedAt = "2026-05-21T10:00:00.000Z";
+    const completedAt = "2026-05-21T10:00:02.000Z";
+
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "raw",
+      display: "hidden",
+      delta: "checking",
+      startedAt,
+      tokenCount: 12,
+      tokenCountSource: "reported",
+    });
+    store.appendAssistantText(turnId, "partial");
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "raw",
+      display: "hidden",
+      delta: " state",
+      completedAt,
+      elapsedMs: 2000,
+      tokenCount: 12,
+      tokenCountSource: "reported",
+      done: true,
+    });
+    store.completeTurn(turnId, "final text");
+
+    const assistant = store.getSnapshot().transcript[1];
+    expect(assistant?.content.map((block) => block.type)).toEqual(["thinking", "text"]);
+    const thinking = assistant?.content[0];
+    expect(thinking).toMatchObject({
+      type: "thinking",
+      id: "thinking-1",
+      text: "checking state",
+      display: "hidden",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt,
+      completedAt,
+      elapsedMs: 2000,
+      tokenCount: 12,
+      tokenCountSource: "reported",
+    });
+    const text = assistant?.content[1];
+    expect(text).toMatchObject({ type: "text", text: "final text" });
   });
 
   test("appendAssistantText with empty string is a no-op", () => {
@@ -1108,8 +1164,10 @@ describe("SessionStore — usage accounting", () => {
       turnId: "turn-1",
       inputTokens: 3,
       outputTokens: 2,
+      thinkingTokens: 7,
       inputTokenSource: "reported",
       outputTokenSource: "reported",
+      thinkingTokenSource: "reported",
       stateContextTokens: 1300,
       stateContextTokenSource: "provider",
     });
@@ -1120,9 +1178,13 @@ describe("SessionStore — usage accounting", () => {
     expect(snapshot.usage.lastModelCallOutputTokens).toBe(2);
     expect(snapshot.usage.currentTurnInputTokens).toBe(45);
     expect(snapshot.usage.currentTurnOutputTokens).toBe(2);
+    expect(snapshot.usage.currentTurnThinkingTokens).toBe(7);
     expect(snapshot.usage.currentTurnModelCalls).toBe(2);
     expect(snapshot.usage.totalInputTokens).toBe(45);
     expect(snapshot.usage.totalOutputTokens).toBe(2);
+    expect(snapshot.usage.totalThinkingTokens).toBe(7);
+    expect(snapshot.usage.lastModelCallThinkingTokens).toBe(7);
+    expect(snapshot.usage.lastModelCallThinkingSource).toBe("reported");
     expect(snapshot.usage.lastStateContextTokens).toBe(1300);
     expect(snapshot.usage.lastStateContextTokenSource).toBe("provider");
     expect("usage" in snapshot.llm).toBe(false);

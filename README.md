@@ -496,8 +496,18 @@ llm:
       model: gpt-5.4
 ```
 
-Profiles can include `reasoningEffort` (`none`, `minimal`, `low`, `medium`,
-`high`, or `xhigh`) for providers that expose OpenAI-style reasoning controls.
+Thinking output is configured under `llm.thinking` and may be overridden per
+profile with `llm.profiles[].thinking`. `thinking.enabled` controls whether the
+runtime requests provider thinking/reasoning, but some models cannot disable
+thinking; adapters report that effective behavior instead of failing the
+profile. `thinking.display` is either `visible` or `hidden`; hidden Thinking
+output is still captured as public transcript state for later UI toggles, but
+it is not rendered by default and is never replayed into later model calls.
+
+Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
+`medium`, `high`, or `xhigh`) as a compatibility alias for providers that expose
+OpenAI-style reasoning controls. Prefer provider-specific `thinking` blocks for
+new config.
 
 First-party plugins default to the lean core: `terminal` and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 

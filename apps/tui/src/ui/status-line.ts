@@ -16,7 +16,9 @@ export class StatusLine extends Text {
       .map((indicator) => indicator.text)
       .filter(Boolean);
     this.setText(
-      [workspace, model || "model unset", turn, `mode ${mode}`, ...indicators].join(" | "),
+      [workspace, model || "model unset", turn, `mode ${mode}`, ...indicators]
+        .filter(Boolean)
+        .join(" | "),
     );
   }
 }

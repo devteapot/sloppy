@@ -84,9 +84,16 @@ export function completeTurn(
 ): void {
   const time = now();
   const message = getOrCreateAssistantMessage(turnId, time);
-  const [firstBlock] = message.content;
-  if (firstBlock && firstBlock.type === "text") {
-    firstBlock.text = finalText;
+  const textBlock = message.content.find((block) => block.type === "text");
+  if (textBlock) {
+    textBlock.text = finalText;
+  } else if (finalText.length > 0) {
+    message.content.push({
+      id: buildId("block"),
+      type: "text",
+      mime: "text/plain",
+      text: finalText,
+    });
   }
   message.state = "complete";
   message.error = undefined;

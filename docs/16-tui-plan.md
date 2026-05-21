@@ -102,6 +102,13 @@ execution, overlays, mode, notices, and session/supervisor updates.
 
 - The TUI remains a consumer of public SLOP state and affordances.
 - First-party UI behavior must not inspect runtime internals.
+- Thinking-output visibility toggles are local TUI presentation state; they do
+  not invoke a shared session affordance or mutate the public session provider.
+- Toggling Thinking-output visibility re-renders both historical transcript
+  blocks and future streamed turns already available through `/transcript`.
+- `thinking.display=visible` expands Thinking-output blocks by default;
+  `thinking.display=hidden` still shows collapsed Thinking-output blocks by
+  default rather than omitting them.
 - Provider/plugin surfaces should be contributed through v2 `plugin.ui` where
   possible.
 - Inline UI should preserve terminal scrollback and avoid alternate-screen

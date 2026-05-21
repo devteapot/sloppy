@@ -12,7 +12,7 @@ import { createDefaultConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
-import type { ToolResultContentBlock } from "../llm/types";
+import type { ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
 import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/catalog";
 import {
   discoverProviderDescriptors,
@@ -59,6 +59,7 @@ export type AgentRunResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     }
   | {
@@ -67,6 +68,7 @@ export type AgentRunResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     };
 
@@ -82,14 +84,17 @@ export type ResolvedApprovalToolResult = {
 
 export interface AgentCallbacks {
   onText?: (chunk: string) => void;
+  onThinking?: (delta: ThinkingOutputDelta) => void;
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onTurnUsage?: (usage: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: "reported" | "unavailable";
     outputTokenSource: "reported" | "unavailable";
+    thinkingTokenSource?: "reported" | "unavailable";
     stateContextTokens?: number;
     stateContextTokenSource: "provider" | "local" | "unavailable";
   }) => void;
@@ -147,6 +152,7 @@ export class Agent {
     const userOnToolEvent = options?.onToolEvent;
     this.callbacks = {
       onText: options?.onText,
+      onThinking: options?.onThinking,
       onToolCall: options?.onToolCall,
       onToolResult: options?.onToolResult,
       onToolEvent: (event) => {
@@ -312,6 +318,7 @@ export class Agent {
           llm,
           signal,
           onText: this.callbacks.onText,
+          onThinking: this.callbacks.onThinking,
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
@@ -363,6 +370,7 @@ export class Agent {
           llm,
           signal,
           onText: this.callbacks.onText,
+          onThinking: this.callbacks.onThinking,
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,

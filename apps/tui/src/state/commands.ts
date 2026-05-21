@@ -52,6 +52,8 @@ export type LocalCommand =
       provider: string;
       model?: string;
       reasoningEffort?: string;
+      thinkingEnabled?: boolean;
+      thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
       baseUrl?: string;
       makeDefault: boolean;
@@ -63,6 +65,8 @@ export type LocalCommand =
       provider: string;
       model?: string;
       reasoningEffort?: string;
+      thinkingEnabled?: boolean;
+      thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
       baseUrl?: string;
       makeDefault: boolean;
@@ -231,6 +235,8 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
+      thinkingEnabled: parseThinkingEnabled(parsed),
+      thinkingDisplay: parseThinkingDisplay(parsed),
       adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
       baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
       makeDefault: !parsed.flags.has("no-default"),
@@ -252,6 +258,8 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
+      thinkingEnabled: parseThinkingEnabled(parsed),
+      thinkingDisplay: parseThinkingDisplay(parsed),
       adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
       baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
       makeDefault: !parsed.flags.has("no-default"),
@@ -454,6 +462,42 @@ function parsePositiveInteger(raw: string | undefined): number | undefined {
   }
 
   return value;
+}
+
+function parseThinkingEnabled(parsed: {
+  values: Record<string, string>;
+  flags: Set<string>;
+}): boolean | undefined {
+  if (parsed.flags.has("thinking")) {
+    return true;
+  }
+  if (parsed.flags.has("no-thinking")) {
+    return false;
+  }
+  const raw = parsed.values.thinking ?? parsed.values["thinking-enabled"];
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "true" || raw === "on" || raw === "enabled") {
+    return true;
+  }
+  if (raw === "false" || raw === "off" || raw === "disabled") {
+    return false;
+  }
+  throw new Error("thinking must be true/false, on/off, or enabled/disabled.");
+}
+
+function parseThinkingDisplay(parsed: {
+  values: Record<string, string>;
+}): "visible" | "hidden" | undefined {
+  const raw = parsed.values["thinking-display"] ?? parsed.values.display;
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "visible" || raw === "hidden") {
+    return raw;
+  }
+  throw new Error("thinking display must be visible or hidden.");
 }
 
 function parseParams(json: string): Record<string, unknown> | undefined {

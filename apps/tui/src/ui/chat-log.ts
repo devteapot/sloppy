@@ -2,18 +2,22 @@ import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tu
 
 import type { ActivityItem, SessionViewSnapshot } from "../backend/slop-types";
 import type { Verbosity } from "../state/commands";
-import { assembleTranscript } from "../state/stream-assembler";
+import { assembleTranscript, type ThinkingRenderMode } from "../state/stream-assembler";
 import { markdownTheme } from "./theme";
 import { renderToolCallCard, type ToolActivityPair } from "./tool-call-card";
 
 export class ChatLog extends Container {
   private readonly renderedEntries = new Map<string, RenderedEntry>();
 
-  update(snapshot: SessionViewSnapshot, options?: { verbosity?: Verbosity }): void {
+  update(
+    snapshot: SessionViewSnapshot,
+    options?: { verbosity?: Verbosity; thinking?: ThinkingRenderMode },
+  ): void {
     const verbosity = options?.verbosity ?? "normal";
     const timeline = buildChatLogEntries(snapshot, {
       verbosity,
       width: process.stdout.columns || 100,
+      thinking: options?.thinking ?? "default",
     });
 
     const activeKeys = new Set(timeline.map((item) => item.key));
@@ -75,9 +79,11 @@ type RenderedEntry = {
 
 export function buildChatLogEntries(
   snapshot: SessionViewSnapshot,
-  options: { verbosity: Verbosity; width: number },
+  options: { verbosity: Verbosity; width: number; thinking?: ThinkingRenderMode },
 ): ChatLogEntry[] {
-  const messages = assembleTranscript(snapshot.transcript).map((message) => {
+  const messages = assembleTranscript(snapshot.transcript, {
+    thinking: options.thinking ?? "default",
+  }).map((message) => {
     const label = message.role === "assistant" ? "assistant" : message.role;
     const mode = messageRenderMode(message.role, message.state);
     const body = message.text || message.state;

@@ -251,6 +251,8 @@ export class SessionClient {
       provider: input.provider,
       ...(input.model && { model: input.model }),
       ...(input.reasoningEffort && { reasoning_effort: input.reasoningEffort }),
+      ...(input.thinkingEnabled !== undefined && { thinking_enabled: input.thinkingEnabled }),
+      ...(input.thinkingDisplay && { thinking_display: input.thinkingDisplay }),
       ...(input.adapterId && { adapter_id: input.adapterId }),
       ...(input.baseUrl && { base_url: input.baseUrl }),
       ...(input.apiKey && { api_key: input.apiKey }),

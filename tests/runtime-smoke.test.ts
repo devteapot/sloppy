@@ -45,6 +45,14 @@ const READY_LLM_STATE: LlmStateSnapshot = {
       origin: "managed" as const,
       canDeleteProfile: false,
       canDeleteApiKey: false,
+      thinking: {
+        enabled: true,
+        display: "visible",
+        effort: "medium",
+        effectiveEnabled: true,
+        effectiveReason: "configured",
+        effectiveEffort: "medium",
+      },
     },
   ],
 };

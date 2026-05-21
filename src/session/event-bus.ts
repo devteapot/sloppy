@@ -325,6 +325,7 @@ export function createAgentEventBus(options: {
 export function mergeCallbacks(a: AgentCallbacks, b: AgentCallbacks): AgentCallbacks {
   return {
     onText: chain(a.onText, b.onText),
+    onThinking: chain(a.onThinking, b.onThinking),
     onToolCall: chain(a.onToolCall, b.onToolCall),
     onToolResult: chain(a.onToolResult, b.onToolResult),
     onToolEvent: chain(a.onToolEvent, b.onToolEvent),

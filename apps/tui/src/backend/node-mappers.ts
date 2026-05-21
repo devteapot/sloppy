@@ -39,6 +39,7 @@ const EMPTY_GOAL: GoalState = {
   status: "none",
   inputTokens: 0,
   outputTokens: 0,
+  thinkingTokens: 0,
   totalTokens: 0,
   elapsedMs: 0,
   continuationCount: 0,
@@ -53,6 +54,7 @@ const EMPTY_GOAL: GoalState = {
 const EMPTY_USAGE: UsageState = {
   lastModelCallInputSource: "unavailable",
   lastModelCallOutputSource: "unavailable",
+  lastModelCallThinkingSource: "unavailable",
   currentTurnModelCalls: 0,
   lastStateContextTokenSource: "unavailable",
 };
@@ -247,6 +249,7 @@ export function mapGoalNode(node: SlopNode | null | undefined): GoalState {
     tokenBudget: progressProp(p, "token_budget"),
     inputTokens: numberProp(p, "input_tokens"),
     outputTokens: numberProp(p, "output_tokens"),
+    thinkingTokens: numberProp(p, "thinking_tokens"),
     totalTokens: numberProp(p, "total_tokens"),
     elapsedMs: numberProp(p, "elapsed_ms"),
     continuationCount: numberProp(p, "continuation_count"),
@@ -285,13 +288,17 @@ export function mapUsageNode(node: SlopNode | null | undefined): UsageState {
     lastTurnId: optionalStringProp(p, "last_turn_id"),
     lastModelCallInputTokens: progressProp(p, "last_model_call_input_tokens"),
     lastModelCallOutputTokens: progressProp(p, "last_model_call_output_tokens"),
+    lastModelCallThinkingTokens: progressProp(p, "last_model_call_thinking_tokens"),
     lastModelCallInputSource: stringProp(p, "last_model_call_input_source", "unavailable"),
     lastModelCallOutputSource: stringProp(p, "last_model_call_output_source", "unavailable"),
+    lastModelCallThinkingSource: stringProp(p, "last_model_call_thinking_source", "unavailable"),
     currentTurnInputTokens: progressProp(p, "current_turn_input_tokens"),
     currentTurnOutputTokens: progressProp(p, "current_turn_output_tokens"),
+    currentTurnThinkingTokens: progressProp(p, "current_turn_thinking_tokens"),
     currentTurnModelCalls: numberProp(p, "current_turn_model_calls"),
     totalInputTokens: progressProp(p, "total_input_tokens"),
     totalOutputTokens: progressProp(p, "total_output_tokens"),
+    totalThinkingTokens: progressProp(p, "total_thinking_tokens"),
     totalTokens: progressProp(p, "total_tokens"),
     lastStateContextTokens: progressProp(p, "last_state_context_tokens"),
     lastStateContextTokenSource: stringProp(p, "last_state_context_token_source", "unavailable"),
@@ -308,6 +315,12 @@ function mapLlmProfileNode(node: SlopNode): LlmProfile {
     label: optionalStringProp(p, "label"),
     provider: stringProp(p, "provider", "unknown"),
     model: stringProp(p, "model", "unknown"),
+    reasoningEffort: optionalStringProp(p, "reasoning_effort"),
+    thinkingEnabled: booleanProp(p, "thinking_enabled"),
+    thinkingDisplay: stringProp(p, "thinking_display") === "hidden" ? "hidden" : "visible",
+    thinkingEffectiveEnabled: booleanProp(p, "thinking_effective_enabled"),
+    thinkingEffectiveReason: optionalStringProp(p, "thinking_effective_reason"),
+    thinkingEffort: optionalStringProp(p, "thinking_effort"),
     adapterId: optionalStringProp(p, "adapter_id"),
     origin: stringProp(p, "origin", "unknown"),
     isDefault: booleanProp(p, "is_default"),
@@ -379,6 +392,24 @@ function mapTranscriptBlockNode(node: SlopNode): TranscriptBlock {
       uri: optionalStringProp(p, "uri"),
       summary: optionalStringProp(p, "summary"),
       preview: optionalStringProp(p, "preview"),
+    };
+  }
+
+  if (stringProp(p, "kind") === "thinking_output") {
+    return {
+      id: node.id,
+      type: "thinking",
+      mime: optionalStringProp(p, "mime"),
+      text: stringProp(p, "text"),
+      format: stringProp(p, "format") === "raw" ? "raw" : "summary",
+      display: stringProp(p, "display") === "hidden" ? "hidden" : "visible",
+      provider: optionalStringProp(p, "provider"),
+      model: optionalStringProp(p, "model"),
+      startedAt: optionalStringProp(p, "started_at"),
+      completedAt: optionalStringProp(p, "completed_at"),
+      elapsedMs: progressProp(p, "elapsed_ms"),
+      tokenCount: progressProp(p, "token_count"),
+      tokenCountSource: optionalStringProp(p, "token_count_source"),
     };
   }
 

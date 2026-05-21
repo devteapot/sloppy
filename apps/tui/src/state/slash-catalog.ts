@@ -43,7 +43,7 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
 
   {
     name: "profile",
-    signature: "<provider> <model> [--reasoning-effort high]",
+    signature: "<provider> <model> [--reasoning-effort high] [--thinking-display hidden]",
     description: "Save an LLM profile (env-keyed)",
   },
   {

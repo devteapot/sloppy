@@ -41,6 +41,37 @@ function message(input: {
   };
 }
 
+function thinkingMessage(input: {
+  id: string;
+  seq: number;
+  display: "visible" | "hidden";
+}): TranscriptMessage {
+  return {
+    id: input.id,
+    seq: input.seq,
+    role: "assistant",
+    state: "complete",
+    turnId: null,
+    blocks: [
+      {
+        id: `${input.id}-thinking`,
+        type: "thinking",
+        text: "private calculation",
+        format: "raw",
+        display: input.display,
+        elapsedMs: 1500,
+        tokenCount: 12,
+        tokenCountSource: "reported",
+      },
+      {
+        id: `${input.id}-text`,
+        type: "text",
+        text: "final answer",
+      },
+    ],
+  };
+}
+
 function activity(
   input: Partial<ActivityItem> & Pick<ActivityItem, "id" | "kind" | "seq">,
 ): ActivityItem {
@@ -182,6 +213,41 @@ describe("ChatLog", () => {
     expect(complete?.key).toBe("msg:assistant-1");
     expect(streaming?.mode).toBe("plain");
     expect(complete?.mode).toBe("markdown");
+  });
+
+  test("renders thinking output collapsed or expanded without dropping transcript state", () => {
+    const snapshot = snapshotWith({
+      transcript: [thinkingMessage({ id: "assistant-thinking", seq: 1, display: "hidden" })],
+    });
+
+    const defaultEntry = buildChatLogEntries(snapshot, {
+      verbosity: "normal",
+      width: 80,
+    })[0];
+    expect(defaultEntry?.content).toContain("[thinking · raw · 1.5s · 12 tokens]");
+    expect(defaultEntry?.content).not.toContain("private calculation");
+    expect(defaultEntry?.content).toContain("final answer");
+
+    const expandedEntry = buildChatLogEntries(snapshot, {
+      verbosity: "normal",
+      width: 80,
+      thinking: "expanded",
+    })[0];
+    expect(expandedEntry?.content).toContain("private calculation");
+
+    const collapsedVisibleEntry = buildChatLogEntries(
+      snapshotWith({
+        transcript: [
+          thinkingMessage({ id: "assistant-thinking-visible", seq: 1, display: "visible" }),
+        ],
+      }),
+      {
+        verbosity: "normal",
+        width: 80,
+        thinking: "collapsed",
+      },
+    )[0];
+    expect(collapsedVisibleEntry?.content).not.toContain("private calculation");
   });
 
   test("reuses stable components and swaps only when render mode changes", () => {

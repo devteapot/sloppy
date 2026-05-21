@@ -25,7 +25,26 @@ export type TranscriptMediaBlock = {
   preview?: string;
 };
 
-export type TranscriptContentBlock = TranscriptTextBlock | TranscriptMediaBlock;
+export type TranscriptThinkingBlock = {
+  id: string;
+  type: "thinking";
+  mime: "text/plain";
+  text: string;
+  format: "raw" | "summary";
+  display: "visible" | "hidden";
+  provider?: string;
+  model?: string;
+  startedAt?: string;
+  completedAt?: string;
+  elapsedMs?: number;
+  tokenCount?: number;
+  tokenCountSource?: "reported" | "unavailable";
+};
+
+export type TranscriptContentBlock =
+  | TranscriptTextBlock
+  | TranscriptMediaBlock
+  | TranscriptThinkingBlock;
 
 export type TranscriptMessage = {
   id: string;
@@ -65,6 +84,7 @@ export type SessionGoalSnapshot = {
   tokenBudget?: number;
   inputTokens: number;
   outputTokens: number;
+  thinkingTokens?: number;
   totalTokens: number;
   elapsedMs: number;
   continuationCount: number;
@@ -207,6 +227,11 @@ export type LlmProfileSnapshot = {
   provider: string;
   model: string;
   reasoningEffort?: string;
+  thinkingEnabled?: boolean;
+  thinkingDisplay?: "visible" | "hidden";
+  thinkingEffectiveEnabled?: boolean;
+  thinkingEffectiveReason?: string;
+  thinkingEffort?: string;
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
@@ -227,13 +252,17 @@ export type SessionUsageSnapshot = {
   lastTurnId?: string;
   lastModelCallInputTokens?: number;
   lastModelCallOutputTokens?: number;
+  lastModelCallThinkingTokens?: number;
   lastModelCallInputSource: TokenAccountingSource;
   lastModelCallOutputSource: TokenAccountingSource;
+  lastModelCallThinkingSource: TokenAccountingSource;
   currentTurnInputTokens?: number;
   currentTurnOutputTokens?: number;
+  currentTurnThinkingTokens?: number;
   currentTurnModelCalls: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
+  totalThinkingTokens?: number;
   lastStateContextTokens?: number;
   lastStateContextTokenSource: TokenAccountingSource;
   modelContextWindowTokens?: number;

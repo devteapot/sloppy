@@ -51,7 +51,12 @@ export function goalFromExtension(
     updatedAt,
     inputTokens: numberValue(state.inputTokens) ?? 0,
     outputTokens: numberValue(state.outputTokens) ?? 0,
-    totalTokens: numberValue(state.totalTokens) ?? 0,
+    thinkingTokens: numberValue(state.thinkingTokens) ?? 0,
+    totalTokens:
+      numberValue(state.totalTokens) ??
+      (numberValue(state.inputTokens) ?? 0) +
+        (numberValue(state.outputTokens) ?? 0) +
+        (numberValue(state.thinkingTokens) ?? 0),
     elapsedMs: numberValue(state.elapsedMs) ?? 0,
     continuationCount: numberValue(state.continuationCount) ?? 0,
   };
@@ -83,6 +88,7 @@ export function goalSnapshotToExtension(goal: SessionGoalSnapshot): SessionExten
     updatedAt,
     inputTokens: goal.inputTokens,
     outputTokens: goal.outputTokens,
+    thinkingTokens: goal.thinkingTokens ?? 0,
     totalTokens: goal.totalTokens,
     elapsedMs: goal.elapsedMs,
     continuationCount: goal.continuationCount,

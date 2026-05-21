@@ -4,6 +4,7 @@ import { FinishReason } from "@google/genai";
 import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import { GeminiAdapter, toGeminiContents } from "../src/llm/gemini";
+import type { EffectiveThinkingConfig } from "../src/llm/thinking";
 import type { ConversationMessage } from "../src/llm/types";
 
 const READ_TOOL: LlmTool = {
@@ -38,6 +39,25 @@ function createTextChunk(text: string): GenerateContentResponse {
   } as GenerateContentResponse;
 }
 
+function createThinkingResponse(): GenerateContentResponse {
+  return {
+    candidates: [
+      {
+        content: {
+          role: "model",
+          parts: [{ thought: true, text: "checked options" }, { text: "The answer." }],
+        },
+        finishReason: FinishReason.STOP,
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: 9,
+      candidatesTokenCount: 2,
+      thoughtsTokenCount: 6,
+    },
+  } as unknown as GenerateContentResponse;
+}
+
 function createToolChunk(): GenerateContentResponse {
   return {
     candidates: [
@@ -63,6 +83,15 @@ function createToolChunk(): GenerateContentResponse {
     },
   } as unknown as GenerateContentResponse;
 }
+
+const THINKING_CONFIG = {
+  enabled: true,
+  display: "hidden",
+  effort: "medium",
+  effectiveEnabled: true,
+  effectiveReason: "configured",
+  effectiveEffort: "medium",
+} satisfies EffectiveThinkingConfig;
 
 describe("GeminiAdapter", () => {
   test("converts tool calls and tool results into Gemini contents", () => {
@@ -168,6 +197,64 @@ describe("GeminiAdapter", () => {
       usage: {
         inputTokens: 9,
         outputTokens: 4,
+      },
+    });
+  });
+
+  test("requests and surfaces Gemini thinking output", async () => {
+    let receivedParameters: Record<string, unknown> | undefined;
+    const client = {
+      models: {
+        generateContent: async (parameters: Record<string, unknown>) => {
+          receivedParameters = parameters;
+          return createThinkingResponse();
+        },
+        generateContentStream: async () => createStream(),
+      },
+    };
+
+    async function* createStream(): AsyncGenerator<GenerateContentResponse> {
+      yield createThinkingResponse();
+    }
+
+    const thinkingDeltas: string[] = [];
+    const adapter = new GeminiAdapter({
+      apiKey: "test-key",
+      model: "gemini-2.5-pro",
+      thinking: THINKING_CONFIG,
+      client,
+    });
+
+    const response = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Answer." }] }],
+      maxTokens: 256,
+      onThinking: (delta) => thinkingDeltas.push(delta.delta),
+    });
+
+    const config = receivedParameters?.config as Record<string, unknown> | undefined;
+    expect(config?.thinkingConfig).toMatchObject({
+      includeThoughts: true,
+      thinkingBudget: -1,
+    });
+    expect(thinkingDeltas).toEqual(["checked options"]);
+    expect(response).toMatchObject({
+      content: [{ type: "text", text: "The answer." }],
+      thinking: [
+        {
+          type: "thinking",
+          provider: "gemini",
+          model: "gemini-2.5-pro",
+          display: "hidden",
+          text: "checked options",
+          tokenCount: 6,
+          tokenCountSource: "reported",
+        },
+      ],
+      usage: {
+        inputTokens: 9,
+        outputTokens: 2,
+        thinkingTokens: 6,
       },
     });
   });

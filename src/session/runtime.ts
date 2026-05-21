@@ -3,7 +3,12 @@ import { join, resolve } from "node:path";
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
-import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
+import {
+  llmProviderSchema,
+  llmReasoningEffortSchema,
+  llmThinkingDisplaySchema,
+  type SloppyConfig,
+} from "../config/schema";
 import type {
   AgentCallbacks,
   AgentRunResult,
@@ -437,6 +442,25 @@ export class SessionRuntime {
         }
         this.store.appendAssistantText(this.currentTurnId, chunk);
       },
+      onThinking: (delta) => {
+        if (!this.currentTurnId) {
+          return;
+        }
+        this.store.appendAssistantThinking(this.currentTurnId, {
+          blockId: delta.id,
+          provider: delta.provider,
+          model: delta.model,
+          format: delta.format,
+          display: delta.display,
+          delta: delta.delta,
+          startedAt: delta.startedAt,
+          completedAt: delta.completedAt,
+          elapsedMs: delta.elapsedMs,
+          tokenCount: delta.tokenCount,
+          tokenCountSource: delta.tokenCountSource,
+          done: delta.done,
+        });
+      },
       onToolEvent: (event) => {
         if (!this.currentTurnId) {
           return;
@@ -708,6 +732,18 @@ export class SessionRuntime {
         : typeof params.reasoningEffort === "string"
           ? llmReasoningEffortSchema.parse(params.reasoningEffort)
           : undefined;
+    const thinkingEnabled =
+      typeof params.thinking_enabled === "boolean"
+        ? params.thinking_enabled
+        : typeof params.thinkingEnabled === "boolean"
+          ? params.thinkingEnabled
+          : undefined;
+    const thinkingDisplay =
+      typeof params.thinking_display === "string"
+        ? llmThinkingDisplaySchema.parse(params.thinking_display)
+        : typeof params.thinkingDisplay === "string"
+          ? llmThinkingDisplaySchema.parse(params.thinkingDisplay)
+          : undefined;
     const adapterId =
       typeof params.adapter_id === "string"
         ? params.adapter_id
@@ -724,6 +760,8 @@ export class SessionRuntime {
       provider,
       model,
       reasoningEffort,
+      thinkingEnabled,
+      thinkingDisplay,
       adapterId,
       baseUrl,
       apiKey,
@@ -1229,6 +1267,7 @@ export class SessionRuntime {
       continuation: pluginTurn?.continuation ?? false,
       inputTokens: result.usage?.inputTokens,
       outputTokens: result.usage?.outputTokens,
+      thinkingTokens: result.usage?.thinkingTokens,
     });
     this.startNextQueuedTurn();
   }

@@ -50,6 +50,28 @@ function buildContentChildren(content: TranscriptContentBlock[]): Record<string,
           } satisfies NodeDescriptor,
         ];
       }
+      if (block.type === "thinking") {
+        return [
+          block.id,
+          {
+            type: "document",
+            props: {
+              kind: "thinking_output",
+              mime: block.mime,
+              text: block.text,
+              format: block.format,
+              display: block.display,
+              provider: block.provider,
+              model: block.model,
+              started_at: block.startedAt,
+              completed_at: block.completedAt,
+              elapsed_ms: block.elapsedMs,
+              token_count: block.tokenCount,
+              token_count_source: block.tokenCountSource,
+            },
+          } satisfies NodeDescriptor,
+        ];
+      }
       return [
         block.id,
         {
@@ -129,6 +151,11 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       provider: profile.provider,
       model: profile.model,
       reasoning_effort: profile.reasoningEffort,
+      thinking_enabled: profile.thinkingEnabled,
+      thinking_display: profile.thinkingDisplay,
+      thinking_effective_enabled: profile.thinkingEffectiveEnabled,
+      thinking_effective_reason: profile.thinkingEffectiveReason,
+      thinking_effort: profile.thinkingEffort,
       adapter_id: profile.adapterId,
       api_key_env: profile.apiKeyEnv,
       base_url: profile.baseUrl,
@@ -379,6 +406,14 @@ export class AgentSessionProvider {
               type: "string",
               description: "Optional reasoning effort for providers that expose it.",
             },
+            thinking_enabled: {
+              type: "boolean",
+              description: "Request provider thinking/reasoning for this profile.",
+            },
+            thinking_display: {
+              type: "string",
+              description: "Default Thinking-output display mode: visible or hidden.",
+            },
             adapter_id: {
               type: "string",
               description: "Optional ACP adapter id for external-agent profiles.",
@@ -452,17 +487,25 @@ export class AgentSessionProvider {
         last_turn_id: usage.lastTurnId,
         last_model_call_input_tokens: usage.lastModelCallInputTokens,
         last_model_call_output_tokens: usage.lastModelCallOutputTokens,
+        last_model_call_thinking_tokens: usage.lastModelCallThinkingTokens,
         last_model_call_input_source: usage.lastModelCallInputSource,
         last_model_call_output_source: usage.lastModelCallOutputSource,
+        last_model_call_thinking_source: usage.lastModelCallThinkingSource,
         current_turn_input_tokens: usage.currentTurnInputTokens,
         current_turn_output_tokens: usage.currentTurnOutputTokens,
+        current_turn_thinking_tokens: usage.currentTurnThinkingTokens,
         current_turn_model_calls: usage.currentTurnModelCalls,
         total_input_tokens: usage.totalInputTokens,
         total_output_tokens: usage.totalOutputTokens,
+        total_thinking_tokens: usage.totalThinkingTokens,
         total_tokens:
-          usage.totalInputTokens === undefined && usage.totalOutputTokens === undefined
+          usage.totalInputTokens === undefined &&
+          usage.totalOutputTokens === undefined &&
+          usage.totalThinkingTokens === undefined
             ? undefined
-            : (usage.totalInputTokens ?? 0) + (usage.totalOutputTokens ?? 0),
+            : (usage.totalInputTokens ?? 0) +
+              (usage.totalOutputTokens ?? 0) +
+              (usage.totalThinkingTokens ?? 0),
         last_state_context_tokens: usage.lastStateContextTokens,
         last_state_context_token_source: usage.lastStateContextTokenSource,
         model_context_window_tokens: usage.modelContextWindowTokens,

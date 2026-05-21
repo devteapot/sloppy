@@ -32,13 +32,16 @@ export class AppUi {
   private readonly chatLog = new ChatLog();
   private readonly statusLine = new StatusLine();
   private readonly notice = new Text("");
-  private readonly footer = new Text("Enter sends | Ctrl+C exits | Esc cancels turn");
+  private readonly footer = new Text(
+    "Enter sends | Ctrl+O thinking | Ctrl+C exits | Esc cancels turn",
+  );
   private readonly editor: CustomEditor;
   private snapshot: SessionViewSnapshot | null = null;
   private supervisorSnapshot: SupervisorSnapshot | null = null;
   private route: TuiRoute = "chat";
   private mode: InteractionMode = "default";
   private verbosity: Verbosity = "normal";
+  private thinkingExpandedOverride: boolean | null = null;
   private notificationValues = new Map<string, string | undefined>();
   private routeOverlay: OverlayHandle | null = null;
   private routeOverlayComponent: RouteOverlay | null = null;
@@ -80,6 +83,10 @@ export class AppUi {
         this.cycleMode();
         return { consume: true };
       }
+      if (matchesKey(data, "ctrl+o")) {
+        this.toggleThinkingOutput();
+        return { consume: true };
+      }
       if (matchesKey(data, "escape")) {
         if (this.paletteOverlay) {
           this.hidePalette();
@@ -104,7 +111,10 @@ export class AppUi {
   update(snapshot: SessionViewSnapshot): void {
     this.snapshot = snapshot;
     this.header.setText(this.headerText(snapshot));
-    this.chatLog.update(snapshot, { verbosity: this.verbosity });
+    this.chatLog.update(snapshot, {
+      verbosity: this.verbosity,
+      thinking: this.thinkingRenderMode(),
+    });
     this.statusLine.update(snapshot, this.mode);
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
@@ -358,9 +368,40 @@ export class AppUi {
         : mode;
     this.verbosity = next;
     if (this.snapshot) {
-      this.chatLog.update(this.snapshot, { verbosity: this.verbosity });
+      this.chatLog.update(this.snapshot, {
+        verbosity: this.verbosity,
+        thinking: this.thinkingRenderMode(),
+      });
     }
     this.setNotice(`Verbosity: ${this.verbosity}`);
+  }
+
+  private toggleThinkingOutput(): void {
+    const current = this.thinkingExpandedOverride ?? this.defaultThinkingExpanded();
+    this.thinkingExpandedOverride = !current;
+    if (this.snapshot) {
+      this.chatLog.update(this.snapshot, {
+        verbosity: this.verbosity,
+        thinking: this.thinkingRenderMode(),
+      });
+    }
+    this.setNotice(
+      this.thinkingExpandedOverride ? "Thinking output expanded." : "Thinking output collapsed.",
+    );
+  }
+
+  private thinkingRenderMode(): "default" | "expanded" | "collapsed" {
+    if (this.thinkingExpandedOverride === true) return "expanded";
+    if (this.thinkingExpandedOverride === false) return "collapsed";
+    return "default";
+  }
+
+  private defaultThinkingExpanded(): boolean {
+    return (
+      this.snapshot?.transcript.some((message) =>
+        message.blocks.some((block) => block.type === "thinking" && block.display !== "hidden"),
+      ) ?? false
+    );
   }
 
   private refreshRouteOverlay(): void {

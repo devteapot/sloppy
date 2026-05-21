@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import { OpenAICodexAdapter } from "../src/llm/openai-codex";
+import type { EffectiveThinkingConfig } from "../src/llm/thinking";
 import type { ConversationMessage } from "../src/llm/types";
 
 const originalCodexAuthPath = process.env.SLOPPY_CODEX_AUTH_PATH;
@@ -24,6 +25,15 @@ const READ_TOOL: LlmTool = {
     },
   },
 };
+
+const THINKING_CONFIG = {
+  enabled: true,
+  display: "hidden",
+  effort: "medium",
+  effectiveEnabled: true,
+  effectiveReason: "configured",
+  effectiveEffort: "medium",
+} satisfies EffectiveThinkingConfig;
 
 afterEach(() => {
   if (originalCodexAuthPath == null) {
@@ -218,6 +228,63 @@ describe("OpenAICodexAdapter", () => {
           outputTokens: 2,
         },
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("requests and surfaces Codex thinking summaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-codex-thinking-"));
+    try {
+      const authPath = await writeAuthFile(root);
+      let capturedBody: Record<string, unknown> | undefined;
+      const fetchFn = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          [
+            'data: {"type":"response.reasoning_summary_text.delta","delta":"checked"}',
+            "",
+            'data: {"type":"response.output_text.delta","delta":"done"}',
+            "",
+            'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":5}}}}',
+            "",
+          ].join("\n"),
+          { status: 200 },
+        );
+      };
+      const thinkingDeltas: string[] = [];
+      const adapter = new OpenAICodexAdapter({
+        model: "gpt-5.5",
+        authPath,
+        thinking: THINKING_CONFIG,
+        fetchFn,
+      });
+
+      const response = await adapter.chat({
+        system: "system prompt",
+        messages: [{ role: "user", content: [{ type: "text", text: "Say hello." }] }],
+        maxTokens: 256,
+        onThinking: (delta) => {
+          if (delta.delta) thinkingDeltas.push(delta.delta);
+        },
+      });
+
+      expect(capturedBody?.reasoning).toEqual({ effort: "medium", summary: "auto" });
+      expect(thinkingDeltas).toEqual(["checked"]);
+      expect(response.thinking).toMatchObject([
+        {
+          type: "thinking",
+          id: "openai-codex-thinking-0",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          format: "summary",
+          display: "hidden",
+          text: "checked",
+          tokenCount: 5,
+          tokenCountSource: "reported",
+        },
+      ]);
+      expect(response.usage.thinkingTokens).toBe(5);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -28,7 +28,7 @@ Explicit non-goals for v1:
 - no proxied `filesystem`, `terminal`, or external app subtrees
 - no local UI state such as drafts, cursor position, pane focus, scroll offsets, or layout
 - no multi-session listing or session creation flow
-- no hidden chain-of-thought or private prompt-internal reasoning state
+- no hidden chain-of-thought, private prompt-internal reasoning state, or public opaque provider continuity metadata
 - no requirement that UIs understand the runtime's internal implementation details
 
 If richer inspection is needed later, it should be added as an explicit extension rather than by turning the session provider into a mirror of all downstream providers.
@@ -224,13 +224,18 @@ Optional profile item props:
 
 - `label`: display label
 - `reasoning_effort`: optional OpenAI-style reasoning effort for providers that expose it
+- `thinking_enabled`: requested Thinking-output policy from effective config
+- `thinking_display`: requested default display mode, `visible | hidden`
+- `thinking_effective_enabled`: whether the selected provider/model will actually use thinking
+- `thinking_effective_reason`: `configured | model_forces_thinking | provider_unsupported | unknown`
+- `thinking_effort`: compact provider-neutral effort label when applicable
 - `adapter_id`: ACP adapter id when the profile runs through an external session agent
 - `api_key_env`: environment variable name that can satisfy the profile for this process
 - `base_url`: provider base URL override
 
 Affordances:
 
-- `save_profile(profile_id?, label?, provider, model?, reasoning_effort?, adapter_id?, base_url?, api_key?, make_default?)`
+- `save_profile(profile_id?, label?, provider, model?, reasoning_effort?, thinking_enabled?, thinking_display?, adapter_id?, base_url?, api_key?, make_default?)`
 - `set_default_profile(profile_id)`
 - `delete_profile(profile_id)`
 - `delete_api_key(profile_id)`
@@ -239,6 +244,8 @@ Rules:
 
 - secret values must never be exposed in state, transcript, activity, or logs
 - `api_key` is write-only input for secure persistence
+- `save_profile` accepts compact Thinking-output controls only; advanced
+  provider-specific thinking blocks belong in YAML config
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
 - `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
 - ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice
@@ -268,13 +275,19 @@ Optional props:
   provider usage is unavailable
 - `last_model_call_output_tokens`: latest model-call output tokens, omitted
   when provider usage is unavailable
+- `last_model_call_thinking_tokens`: latest model-call Thinking-output or
+  provider reasoning tokens, omitted when unavailable
 - `current_turn_input_tokens`: aggregate reported input tokens for the current
   or most recent turn, omitted until reported by the provider
 - `current_turn_output_tokens`: aggregate reported output tokens for the current
   or most recent turn, omitted until reported by the provider
+- `current_turn_thinking_tokens`: aggregate reported thinking tokens for the
+  current or most recent turn, omitted until reported by the provider
 - `total_input_tokens`: session aggregate reported input tokens
 - `total_output_tokens`: session aggregate reported output tokens
-- `total_tokens`: input plus output aggregate when either aggregate is reported
+- `total_thinking_tokens`: session aggregate reported thinking tokens
+- `total_tokens`: input plus output plus separately reported thinking aggregate
+  when any aggregate is reported
 - `last_state_context_tokens`: token size of the last generated
   `<slop-state>` tail, omitted when no tokenizer is available for the active
   adapter/model
@@ -291,6 +304,9 @@ Rules:
   and omitted when unavailable
 - model usage should not be guessed; when provider usage is absent, omit the
   token value and set the relevant `*_source` prop to `unavailable`
+- thinking tokens count toward session and goal token totals when reported
+  separately by the provider; provider inclusion semantics must be documented by
+  the adapter to avoid double-counting
 - `/usage` is the only public token-accounting surface; `/llm` is reserved for
   profile and credential state
 
@@ -354,7 +370,8 @@ When `exists=true`, additional props:
 - `token_budget`: optional total token budget
 - `input_tokens`: accounted model input tokens
 - `output_tokens`: accounted model output tokens
-- `total_tokens`: input plus output tokens
+- `thinking_tokens`: accounted provider-reported thinking tokens
+- `total_tokens`: input plus output plus separately reported thinking tokens
 - `elapsed_ms`: accounted wall-clock time across goal turns
 - `continuation_count`: number of automatic continuation turns
 - `last_turn_id`: latest turn accounted to the goal
@@ -589,6 +606,10 @@ Recommended content block patterns:
 - short text blocks: inline `props.text`
 - large text or binary content: use a SLOP content reference
 - previews and summaries: expose in node props or `summary`
+- Thinking output: expose as a `document` block with
+  `kind="thinking_output"`, `format="raw | summary"`,
+  `display="visible | hidden"`, provider/model metadata, observed timing
+  fields, and token counts only when provider-reported
 
 Example text block:
 
@@ -624,6 +645,15 @@ Example binary block:
 Rules:
 
 - `transcript` contains human-visible conversation state only
+- provider-returned Thinking output may appear as assistant transcript content when it is intended to be user-visible
+- Thinking output is display state; it must not be replayed into later model calls as conversation history
+- Thinking output must not be summarized back into tool results, activity
+  summaries, state tails, goal evidence, or continuation prompts
+- a hidden Thinking-output display preference means hidden from default UI rendering, not private session state; captured Thinking output in `/transcript` remains public to attached consumers
+- opaque provider continuity metadata is not Thinking output and must not be exposed in `/transcript`
+- Thinking-output `elapsed_ms` is observed wall-clock time from first thinking
+  delta to completion or answer start; `token_count` is set only when the
+  provider reports reliable raw-thinking token counts for that block or phase
 - tool calls and tool results should not be stored as transcript messages unless they are intentionally user-visible assistant output
 - assistant streaming should patch the newest assistant message in place until it becomes `complete`
 
@@ -662,6 +692,7 @@ Rules:
 
 - this is an operational timeline, not a hidden debug trace
 - private prompt internals and chain-of-thought do not belong here
+- Thinking output text belongs in `/transcript`, not `/activity`
 - the collection should be append-oriented so multiple UIs can follow progress via patches
 
 ### `/approvals`
@@ -861,6 +892,11 @@ state-first rather than a hidden replay engine:
 
 This keeps restarts explicit and inspectable without adding a privileged task
 orchestration layer to the session provider.
+
+Provider-specific reasoning continuity metadata may be persisted alongside the
+snapshot as internal adapter state when Thinking output is enabled. It is keyed
+to the originating turn, profile, provider, and model, is dropped on provider or
+model switches, and is never exposed through public session nodes or logs.
 
 On disk, new snapshots are written as a versioned envelope:
 

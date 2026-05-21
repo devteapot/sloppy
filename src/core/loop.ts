@@ -3,6 +3,7 @@ import { formatTree, type LlmTool } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type {
   LlmAdapter,
+  LlmChatOptions,
   LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
@@ -149,6 +150,7 @@ export type RunLoopResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     }
   | {
@@ -157,6 +159,7 @@ export type RunLoopResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     };
 
@@ -859,14 +862,17 @@ export async function runLoop(options: {
   llm: LlmAdapter;
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
+  onThinking?: LlmChatOptions["onThinking"];
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onTurnUsage?: (usage: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: "reported" | "unavailable";
     outputTokenSource: "reported" | "unavailable";
+    thinkingTokenSource?: "reported" | "unavailable";
     stateContextTokens?: number;
     stateContextTokenSource: "provider" | "local" | "unavailable";
   }) => void;
@@ -889,6 +895,7 @@ export async function runLoop(options: {
   const usage = {
     inputTokens: 0,
     outputTokens: 0,
+    thinkingTokens: 0,
   };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
@@ -950,19 +957,25 @@ export async function runLoop(options: {
       tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
       maxTokens: options.config.llm.maxTokens,
       onText: options.onText,
+      onThinking: options.onThinking,
       signal: options.signal,
     });
     const reportedInput = response.usage.inputTokens;
     const reportedOutput = response.usage.outputTokens;
+    const reportedThinking = response.usage.thinkingTokens;
     const inputTokenSource = reportedInput === undefined ? "unavailable" : "reported";
     const outputTokenSource = reportedOutput === undefined ? "unavailable" : "reported";
+    const thinkingTokenSource = reportedThinking === undefined ? "unavailable" : "reported";
     usage.inputTokens += reportedInput ?? 0;
     usage.outputTokens += reportedOutput ?? 0;
+    usage.thinkingTokens += reportedThinking ?? 0;
     options.onTurnUsage?.({
       inputTokens: reportedInput,
       outputTokens: reportedOutput,
+      thinkingTokens: reportedThinking,
       inputTokenSource,
       outputTokenSource,
+      thinkingTokenSource,
       stateContextTokens: stateContextTokenCount.tokens,
       stateContextTokenSource: stateContextTokenCount.source,
     });

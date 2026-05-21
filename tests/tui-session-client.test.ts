@@ -196,7 +196,9 @@ describe("TUI v2 manifest mapping", () => {
     ).toBe(true);
     const statusLine = new StatusLine();
     statusLine.update(withGoal, "default");
-    expect(statusLine.render(120).join("\n")).toContain("goal active 1,200");
+    const statusText = statusLine.render(120).join("\n");
+    expect(statusText).toContain("goal active 1,200");
+    expect(statusText).not.toContain("thinking");
     expect(routeOverlayText("help", withGoal, null)).toContain("/help");
   });
 

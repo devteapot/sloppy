@@ -36,6 +36,10 @@ _Avoid_: "TUI manifest" — the manifest is not TUI-specific.
 A namespaced, schema-versioned session state record under `/extensions` (code type `SessionExtensionRecord`), authored and owned by a Skill via `skill_manage`. A Session plugin may project an Extension record into a friendly dedicated node — e.g. the `persistent-goal` Session plugin projects the `goal` Extension record into `/goal`.
 _Avoid_: bare "extension", "plugin metadata".
 
+**Thinking output**:
+Provider-returned, user-visible reasoning text or summary that may appear in assistant conversation state. It is not hidden chain-of-thought, private prompt internals, or opaque provider continuity metadata.
+_Avoid_: raw thinking, chain-of-thought, private reasoning state.
+
 ### Agents
 
 **Agent**:
@@ -166,3 +170,6 @@ One cycle of the Agent loop: build the context with the live state tail, call th
 
 > **Dev:** The Agent called `slop_query_state` mid-turn. Is that an affordance?
 > **Expert:** No. That's an Observation tool — a fixed Tool with no Provider behind it. An Affordance tool is the only kind of Tool projected from a Provider's Affordance. The third kind, a Local tool like `slop_wait_for_delegation_event`, can park the Turn.
+
+> **Dev:** Can the UI show the model's thinking?
+> **Expert:** Only Thinking output: provider-returned text or summaries intended to be visible. Hidden chain-of-thought and opaque provider continuity metadata are not public Session state.

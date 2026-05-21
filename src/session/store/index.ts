@@ -185,8 +185,10 @@ export class SessionStore {
     turnId?: string;
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: TokenAccountingSource;
     outputTokenSource: TokenAccountingSource;
+    thinkingTokenSource?: TokenAccountingSource;
     stateContextTokens?: number;
     stateContextTokenSource?: TokenAccountingSource;
     modelContextWindowTokens?: number;
@@ -292,6 +294,29 @@ export class SessionStore {
 
   appendAssistantText(turnId: string, chunk: string): void {
     if (transcript.appendAssistantText(this.state, turnId, chunk)) {
+      this.emit();
+    }
+  }
+
+  appendAssistantThinking(
+    turnId: string,
+    options: {
+      blockId?: string;
+      provider?: string;
+      model?: string;
+      format: "raw" | "summary";
+      display: "visible" | "hidden";
+      delta?: string;
+      text?: string;
+      startedAt?: string;
+      completedAt?: string;
+      elapsedMs?: number;
+      tokenCount?: number;
+      tokenCountSource?: "reported" | "unavailable";
+      done?: boolean;
+    },
+  ): void {
+    if (transcript.appendAssistantThinking(this.state, turnId, options)) {
       this.emit();
     }
   }
