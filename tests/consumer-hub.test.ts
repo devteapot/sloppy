@@ -74,11 +74,11 @@ describe("ConsumerHub", () => {
 
       const queryTool = hub
         .getRuntimeToolSet()
-        .tools.find((tool) => tool.function.name === "slop_query_state");
+        .tools.find((tool) => tool.function.name === "query_state");
       const providerSchema = (queryTool?.function.parameters as QueryToolProviderSchema | undefined)
         ?.properties?.provider;
 
-      expect(queryTool?.function.name).toBe("slop_query_state");
+      expect(queryTool?.function.name).toBe("query_state");
       expect(providerSchema?.enum).toContain("demo");
 
       hub.removeProvider("demo");
@@ -87,7 +87,7 @@ describe("ConsumerHub", () => {
 
       const queryToolAfterRemoval = hub
         .getRuntimeToolSet()
-        .tools.find((tool) => tool.function.name === "slop_query_state");
+        .tools.find((tool) => tool.function.name === "query_state");
       const providerSchemaAfterRemoval = (
         queryToolAfterRemoval?.function.parameters as QueryToolProviderSchema | undefined
       )?.properties?.provider;

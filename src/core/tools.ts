@@ -9,7 +9,7 @@ const TOOL_NAME_LIMIT = 64;
 export type RuntimeToolResolution =
   | {
       kind: "observation";
-      action: "query_state" | "focus_state";
+      action: "query_state" | "focus_state" | "unfocus_state";
     }
   | {
       kind: "affordance";
@@ -131,7 +131,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
     {
       type: "function",
       function: {
-        name: "slop_query_state",
+        name: "query_state",
         description:
           "Query provider state without changing subscriptions. Use this to inspect a path more deeply or request a different window.",
         parameters: {
@@ -150,14 +150,6 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
               type: "number",
               description: "How many levels deep to resolve. Use 0-4 for targeted reads.",
             },
-            max_nodes: {
-              type: "number",
-              description: "Optional node budget for the snapshot.",
-            },
-            min_salience: {
-              type: "number",
-              description: "Optional salience filter from 0 to 1.",
-            },
             window_offset: {
               type: "number",
               description: "Optional collection window offset.",
@@ -175,9 +167,9 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
     {
       type: "function",
       function: {
-        name: "slop_focus_state",
+        name: "focus_state",
         description:
-          "Change the consumer's detailed subscription to a path so future turns include that subtree in the visible state context.",
+          "Add or update one focused provider path so future turns include that subtree in the visible state context.",
         parameters: {
           type: "object",
           properties: {
@@ -194,9 +186,29 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
               type: "number",
               description: "Optional detail subscription depth.",
             },
-            max_nodes: {
-              type: "number",
-              description: "Optional node budget for the focused subscription.",
+          },
+          required: ["provider", "path"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "unfocus_state",
+        description:
+          "Remove one focused provider path from future state context. This only changes Hub focus; it does not invoke provider cleanup affordances.",
+        parameters: {
+          type: "object",
+          properties: {
+            provider: {
+              type: "string",
+              enum: providerEnum,
+              description: "Provider id to unfocus.",
+            },
+            path: {
+              type: "string",
+              description: "Exact absolute SLOP path to remove from the focus set.",
             },
           },
           required: ["provider", "path"],
@@ -301,7 +313,7 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
     tools.push(observationTool);
     resolutions.set(observationTool.function.name, {
       kind: "observation",
-      action: observationTool.function.name === "slop_focus_state" ? "focus_state" : "query_state",
+      action: observationTool.function.name as "query_state" | "focus_state" | "unfocus_state",
     });
   }
 

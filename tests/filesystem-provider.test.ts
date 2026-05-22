@@ -2,12 +2,37 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SlopConsumer } from "@slop-ai/consumer/browser";
+import { SlopConsumer, type SlopNode } from "@slop-ai/consumer/browser";
 
 import { FilesystemProvider } from "../src/plugins/first-party/filesystem/provider";
 import { InProcessTransport } from "../src/providers/in-process";
 
 const tempPaths: string[] = [];
+
+async function loadedFileView(
+  consumer: SlopConsumer,
+  result: { data?: unknown },
+): Promise<SlopNode> {
+  const data = result.data as { view_path?: string };
+  if (typeof data.view_path !== "string") {
+    throw new Error(
+      `Expected read result to include view_path, got ${JSON.stringify(result.data)}`,
+    );
+  }
+  return consumer.query(data.view_path, 1);
+}
+
+async function loadedFileContent(
+  consumer: SlopConsumer,
+  result: { data?: unknown },
+): Promise<string> {
+  const data = result.data as { content?: string };
+  if (typeof data.content === "string") {
+    return data.content;
+  }
+  const view = await loadedFileView(consumer, result);
+  return String(view.properties?.content ?? "");
+}
 
 afterEach(async () => {
   while (tempPaths.length > 0) {
@@ -68,7 +93,7 @@ describe("FilesystemProvider", () => {
 
     const readResult = await consumer.invoke("/workspace/entries/hello.txt", "read", {});
     expect(readResult.status).toBe("ok");
-    expect((readResult.data as { content: string }).content).toBe("Hello World");
+    expect(await loadedFileContent(consumer, readResult)).toBe("Hello World");
   });
 
   test("normalizes paths that include the workspace directory name", async () => {
@@ -103,7 +128,7 @@ describe("FilesystemProvider", () => {
       expect((absoluteRead.data as { path: string; content: string }).path).toBe(
         "todo-app/README.md",
       );
-      expect((absoluteRead.data as { content: string }).content).toBe("hello");
+      expect(await loadedFileContent(consumer, absoluteRead)).toBe("hello");
     } finally {
       provider.stop();
     }
@@ -163,8 +188,8 @@ describe("FilesystemProvider", () => {
       const v1 = firstData.version;
 
       const readResult = await consumer.invoke("/workspace", "read", { path: "notes.md" });
-      const readData = readResult.data as { content: string; version: number };
-      expect(readData.content).toBe("v1");
+      const readData = readResult.data as { version: number };
+      expect(await loadedFileContent(consumer, readResult)).toBe("v1");
       expect(readData.version).toBe(v1);
 
       const goodWrite = await consumer.invoke("/workspace", "write", {
@@ -190,7 +215,7 @@ describe("FilesystemProvider", () => {
       expect(staleData.currentVersion).toBe(v2);
 
       const confirm = await consumer.invoke("/workspace", "read", { path: "notes.md" });
-      expect((confirm.data as { content: string }).content).toBe("v2");
+      expect(await loadedFileContent(consumer, confirm)).toBe("v2");
     } finally {
       provider.stop();
     }
@@ -245,7 +270,7 @@ describe("FilesystemProvider", () => {
     }
   });
 
-  test("returns preview + content ref when file exceeds threshold", async () => {
+  test("loads a preview File view when file exceeds threshold", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-ref-"));
     tempPaths.push(root);
     // 20KB body, 1000 lines
@@ -269,27 +294,24 @@ describe("FilesystemProvider", () => {
 
       const noRange = await consumer.invoke("/workspace", "read", { path: "big.log" });
       const data = noRange.data as {
-        content: string;
         truncated: boolean;
         preview_only?: boolean;
         total_bytes?: number;
         totalLines?: number;
-        ref?: {
-          kind: string;
-          path: string;
-          version: number;
-          total_bytes: number;
-          total_lines: number;
-        };
+        view_path?: string;
+        coverage?: string;
       };
       expect(data.preview_only).toBe(true);
       expect(data.truncated).toBe(true);
-      expect(data.content.length).toBeLessThanOrEqual(512);
+      expect(data.coverage).toBe("preview");
+      expect(data).not.toHaveProperty("content");
       expect(data.total_bytes).toBe(Buffer.byteLength(body, "utf8"));
-      expect(data.ref).toBeDefined();
-      expect(data.ref?.path).toBe("big.log");
-      expect(data.ref?.kind).toBe("fs");
-      expect(data.ref?.total_lines).toBe(1000);
+      expect(data.view_path).toMatch(/^\/views\//);
+      const previewView = await loadedFileView(consumer, noRange);
+      expect(previewView.properties?.path).toBe("big.log");
+      expect(previewView.properties?.coverage).toBe("preview");
+      expect(String(previewView.properties?.content).length).toBeLessThanOrEqual(512);
+      expect(previewView.properties?.total_lines).toBe(1000);
 
       // Dereferencing via a range returns the exact slice, not the preview.
       const slice = await consumer.invoke("/workspace", "read", {
@@ -297,16 +319,18 @@ describe("FilesystemProvider", () => {
         start_line: 50,
         end_line: 52,
       });
-      const sliceData = slice.data as { content: string; preview_only?: boolean };
+      const sliceData = slice.data as { preview_only?: boolean; coverage?: string };
       expect(sliceData.preview_only).toBeUndefined();
-      expect(sliceData.content.split("\n")).toHaveLength(3);
-      expect(sliceData.content).toContain("line-50");
+      expect(sliceData.coverage).toBe("range");
+      const sliceContent = await loadedFileContent(consumer, slice);
+      expect(sliceContent.split("\n")).toHaveLength(3);
+      expect(sliceContent).toContain("line-50");
     } finally {
       provider.stop();
     }
   });
 
-  test("returns full content when file is under threshold", async () => {
+  test("loads a full File view when file is under threshold", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-fs-small-"));
     tempPaths.push(root);
     await writeFile(join(root, "small.txt"), "hello world", "utf8");
@@ -327,13 +351,15 @@ describe("FilesystemProvider", () => {
 
       const result = await consumer.invoke("/workspace", "read", { path: "small.txt" });
       const data = result.data as {
-        content: string;
         preview_only?: boolean;
-        ref?: unknown;
+        coverage?: string;
+        view_path?: string;
       };
-      expect(data.content).toBe("hello world");
+      expect(data).not.toHaveProperty("content");
+      expect(data.coverage).toBe("full");
+      expect(data.view_path).toMatch(/^\/views\//);
+      expect(await loadedFileContent(consumer, result)).toBe("hello world");
       expect(data.preview_only).toBeUndefined();
-      expect(data.ref).toBeUndefined();
     } finally {
       provider.stop();
     }
@@ -376,7 +402,7 @@ describe("FilesystemProvider", () => {
         },
       ]);
       expect(data.content).toContain("file\tsrc/App.jsx");
-      expect(data.hint).toContain("Use set_focus or slop_query_state");
+      expect(data.hint).toContain("Use set_focus or query_state");
     } finally {
       provider.stop();
     }
@@ -408,18 +434,20 @@ describe("FilesystemProvider", () => {
       });
       expect(slice.status).toBe("ok");
       const data = slice.data as {
-        content: string;
+        coverage: string;
         startLine: number;
         endLine: number;
         totalLines: number;
       };
-      expect(data.content).toBe("line-5\nline-6\nline-7");
+      expect(data.coverage).toBe("range");
+      expect(await loadedFileContent(consumer, slice)).toBe("line-5\nline-6\nline-7");
       expect(data.startLine).toBe(5);
       expect(data.endLine).toBe(7);
       expect(data.totalLines).toBe(20);
 
       const full = await consumer.invoke("/workspace", "read", { path: "big.txt" });
-      expect((full.data as { content: string }).content).toBe(body);
+      expect((full.data as { coverage: string }).coverage).toBe("full");
+      expect(await loadedFileContent(consumer, full)).toBe(body);
       expect((full.data as { startLine?: number }).startLine).toBeUndefined();
 
       const rejected = await consumer.invoke("/workspace", "read", {
@@ -429,6 +457,100 @@ describe("FilesystemProvider", () => {
       });
       expect(rejected.status).toBe("error");
       expect(rejected.error?.message).toContain("Invalid range");
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("full File views supersede same-version range views", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-supersede-"));
+    tempPaths.push(root);
+    const body = Array.from({ length: 5 }, (_, i) => `line-${i + 1}`).join("\n");
+    await writeFile(join(root, "notes.txt"), body, "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+      contentRefThresholdBytes: 4096,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const range = await consumer.invoke("/workspace", "read", {
+        path: "notes.txt",
+        start_line: 2,
+        end_line: 3,
+      });
+      expect((range.data as { coverage: string }).coverage).toBe("range");
+
+      const rangeViews = await consumer.query("/views", 2);
+      expect(rangeViews.children?.map((child) => child.properties?.coverage)).toEqual(["range"]);
+
+      const full = await consumer.invoke("/workspace", "read", { path: "notes.txt" });
+      const fullData = full.data as { coverage: string; view_id: string };
+      expect(fullData.coverage).toBe("full");
+
+      const viewsAfterFull = await consumer.query("/views", 2);
+      expect(viewsAfterFull.children?.map((child) => child.id)).toEqual([fullData.view_id]);
+      expect(viewsAfterFull.children?.map((child) => child.properties?.coverage)).toEqual(["full"]);
+
+      const redundantRange = await consumer.invoke("/workspace", "read", {
+        path: "notes.txt",
+        start_line: 4,
+        end_line: 4,
+      });
+      const redundantData = redundantRange.data as {
+        already_loaded?: boolean;
+        coverage: string;
+        view_id: string;
+      };
+      expect(redundantData.already_loaded).toBe(true);
+      expect(redundantData.coverage).toBe("full");
+      expect(redundantData.view_id).toBe(fullData.view_id);
+
+      const finalViews = await consumer.query("/views", 2);
+      expect(finalViews.children).toHaveLength(1);
+    } finally {
+      provider.stop();
+    }
+  });
+
+  test("marks loaded File views stale after the backing file changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-fs-view-stale-"));
+    tempPaths.push(root);
+    await writeFile(join(root, "state.txt"), "before", "utf8");
+
+    const provider = new FilesystemProvider({
+      root,
+      focus: root,
+      recentLimit: 10,
+      searchLimit: 20,
+      readMaxBytes: 65536,
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+      await consumer.subscribe("/", 3);
+
+      const read = await consumer.invoke("/workspace", "read", { path: "state.txt" });
+      const readData = read.data as { version: number; view_path: string };
+      expect(await loadedFileContent(consumer, read)).toBe("before");
+
+      await Bun.sleep(20);
+      await consumer.invoke("/workspace", "write", { path: "state.txt", content: "after" });
+
+      const staleView = await consumer.query(readData.view_path, 1);
+      expect(staleView.properties?.content).toBe("before");
+      expect(staleView.properties?.stale).toBe(true);
+      expect(staleView.properties?.version).toBe(readData.version);
+      expect(Number(staleView.properties?.current_version)).toBeGreaterThan(readData.version);
     } finally {
       provider.stop();
     }
@@ -479,7 +601,7 @@ describe("FilesystemProvider", () => {
       expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("alpha\nBETA\nGAMMA\ndelta");
+      expect(await loadedFileContent(consumer, after)).toBe("alpha\nBETA\nGAMMA\ndelta");
     } finally {
       provider.stop();
     }
@@ -509,7 +631,7 @@ describe("FilesystemProvider", () => {
         start_line: 2,
         end_line: 2,
       });
-      expect((read.data as { content: string }).content).toBe("beta");
+      expect(await loadedFileContent(consumer, read)).toBe("beta");
       const sourceVersion = (read.data as { source_version: number }).source_version;
 
       const result = await consumer.invoke("/workspace", "edit_range", {
@@ -573,7 +695,7 @@ describe("FilesystemProvider", () => {
 
       expect(result.status).toBe("ok");
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("alpha\nBETA\nGAMMA\ndelta!");
+      expect(await loadedFileContent(consumer, after)).toBe("alpha\nBETA\nGAMMA\ndelta!");
     } finally {
       provider.stop();
     }
@@ -623,7 +745,7 @@ describe("FilesystemProvider", () => {
       expect((result.data as { error?: string; line?: number }).error).toBe("range_conflict");
       expect((result.data as { line?: number }).line).toBe(2);
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe(moved);
+      expect(await loadedFileContent(consumer, after)).toBe(moved);
     } finally {
       provider.stop();
     }
@@ -761,7 +883,7 @@ describe("FilesystemProvider", () => {
 
       expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
       const after = await consumer.invoke("/workspace", "read", { path: "per-entry.txt" });
-      expect((after.data as { content: string }).content).toBe("alpha\nBETA");
+      expect(await loadedFileContent(consumer, after)).toBe("alpha\nBETA");
     } finally {
       provider.stop();
     }
@@ -793,8 +915,8 @@ describe("FilesystemProvider", () => {
       await writeFile(filePath, "edited-externally", "utf8");
 
       const second = await consumer.invoke("/workspace", "read", { path: "external.txt" });
-      const v2 = (second.data as { version: number; content: string }).version;
-      expect((second.data as { content: string }).content).toBe("edited-externally");
+      const v2 = (second.data as { version: number }).version;
+      expect(await loadedFileContent(consumer, second)).toBe("edited-externally");
       expect(v2).toBeGreaterThan(v1);
     } finally {
       provider.stop();
@@ -852,7 +974,7 @@ describe("FilesystemProvider", () => {
       expect(editAffordance?.resultKind).toBe("diff");
 
       const after = await consumer.invoke("/workspace", "read", { path: "src.ts" });
-      expect((after.data as { content: string }).content).toBe("hello there");
+      expect(await loadedFileContent(consumer, after)).toBe("hello there");
     } finally {
       provider.stop();
     }
@@ -891,7 +1013,7 @@ describe("FilesystemProvider", () => {
       expect(data.edits_applied).toBe(3);
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("ALPHA\nbeta\nGAMMA\nDELTA\n");
+      expect(await loadedFileContent(consumer, after)).toBe("ALPHA\nbeta\nGAMMA\nDELTA\n");
     } finally {
       provider.stop();
     }
@@ -928,7 +1050,7 @@ describe("FilesystemProvider", () => {
 
       // File is unchanged.
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("hello");
+      expect(await loadedFileContent(consumer, after)).toBe("hello");
     } finally {
       provider.stop();
     }
@@ -960,7 +1082,7 @@ describe("FilesystemProvider", () => {
       expect(data.edit_index).toBe(0);
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("foo foo");
+      expect(await loadedFileContent(consumer, after)).toBe("foo foo");
     } finally {
       provider.stop();
     }
@@ -994,7 +1116,7 @@ describe("FilesystemProvider", () => {
       expect(data.error).toBe("overlap");
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("abcdef");
+      expect(await loadedFileContent(consumer, after)).toBe("abcdef");
     } finally {
       provider.stop();
     }
@@ -1032,7 +1154,7 @@ describe("FilesystemProvider", () => {
       expect(data.currentVersion).toBeGreaterThan(v1);
 
       const after = await consumer.invoke("/workspace", "read", { path: "f.txt" });
-      expect((after.data as { content: string }).content).toBe("goodbye");
+      expect(await loadedFileContent(consumer, after)).toBe("goodbye");
     } finally {
       provider.stop();
     }
@@ -1062,7 +1184,7 @@ describe("FilesystemProvider", () => {
       expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
 
       const after = await consumer.invoke("/workspace", "read", { path: "per-entry.txt" });
-      expect((after.data as { content: string }).content).toBe("kept me");
+      expect(await loadedFileContent(consumer, after)).toBe("kept me");
     } finally {
       provider.stop();
     }
@@ -1098,7 +1220,7 @@ describe("FilesystemProvider", () => {
       expect((result.data as { edits_applied: number }).edits_applied).toBe(1);
 
       const after = await consumer.invoke("/workspace", "read", { path: "postcss.config.js" });
-      expect((after.data as { content: string }).content).toBe("'@tailwindcss/postcss': {},\n");
+      expect(await loadedFileContent(consumer, after)).toBe("'@tailwindcss/postcss': {},\n");
     } finally {
       provider.stop();
     }

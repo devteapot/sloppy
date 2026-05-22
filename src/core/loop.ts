@@ -1,4 +1,4 @@
-import { formatTree, type LlmTool } from "@slop-ai/consumer/browser";
+import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type {
@@ -25,6 +25,7 @@ import {
 import { stringifyResult, truncateToolResult } from "./loop/result-format";
 import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
+import { formatStateTree } from "./tree-format";
 
 const PARALLEL_SAFE_TOOL_CONCURRENCY = 4;
 
@@ -447,10 +448,6 @@ async function executeToolCall(
 
       if (resolution.action === "query_state") {
         const depth = typeof toolUse.input.depth === "number" ? toolUse.input.depth : 2;
-        const maxNodes =
-          typeof toolUse.input.max_nodes === "number" ? toolUse.input.max_nodes : undefined;
-        const minSalience =
-          typeof toolUse.input.min_salience === "number" ? toolUse.input.min_salience : undefined;
         const windowOffset =
           typeof toolUse.input.window_offset === "number" ? toolUse.input.window_offset : undefined;
         const windowCount =
@@ -459,8 +456,6 @@ async function executeToolCall(
           providerId,
           path,
           depth,
-          maxNodes,
-          minSalience,
           window:
             windowOffset != null && windowCount != null ? [windowOffset, windowCount] : undefined,
         });
@@ -472,7 +467,28 @@ async function executeToolCall(
             block: {
               type: "tool_result",
               toolUseId: toolUse.id,
-              content: `Queried ${providerId}${path}\n\n${formatTree(tree)}`,
+              content: `Queried ${providerId}${path}\n\n${formatStateTree(tree)}`,
+            },
+            summary,
+          },
+          status: "ok",
+        };
+      }
+
+      if (resolution.action === "unfocus_state") {
+        const result = await hub.unfocusState({
+          providerId,
+          path,
+        });
+
+        return {
+          kind: "completed",
+          invocation,
+          result: {
+            block: {
+              type: "tool_result",
+              toolUseId: toolUse.id,
+              content: `Unfocused ${providerId}${path} (removed=${result.removed})`,
             },
             summary,
           },
@@ -482,15 +498,10 @@ async function executeToolCall(
 
       const depth =
         typeof toolUse.input.depth === "number" ? toolUse.input.depth : config.agent.detailDepth;
-      const maxNodes =
-        typeof toolUse.input.max_nodes === "number"
-          ? toolUse.input.max_nodes
-          : config.agent.detailMaxNodes;
       const tree = await hub.focusState({
         providerId,
         path,
         depth,
-        maxNodes,
       });
 
       return {
@@ -500,7 +511,7 @@ async function executeToolCall(
           block: {
             type: "tool_result",
             toolUseId: toolUse.id,
-            content: `Focused ${providerId}${path}\n\n${formatTree(tree)}`,
+            content: `Focused ${providerId}${path}\n\n${formatStateTree(tree)}`,
           },
           summary,
         },
@@ -570,7 +581,6 @@ async function executeToolCall(
           providerId: resolution.providerId,
           path: "/tasks",
           depth: 2,
-          maxNodes: config.agent.detailMaxNodes,
         })
         .catch(() => undefined);
     }

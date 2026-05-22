@@ -32,13 +32,20 @@ Everything visible to the agent is a provider state tree with affordances:
 - affordances are secondary
 - subscriptions and patches are preferred over repeated polling
 - provider-native affordances are converted into model-native tool definitions
-- fixed observation tools (`slop_query_state`, `slop_focus_state`) are consumer
-  controls, not provider capabilities
+- fixed observation tools (`query_state`, `focus_state`, and `unfocus_state`)
+  are Hub-owned model tools, not provider capabilities
 - same-turn tool execution is conservative: the loop can run contiguous
-  `slop_query_state` calls and explicitly idempotent, non-dangerous affordance
+  `query_state` calls and explicitly idempotent, non-dangerous affordance
   calls concurrently, but preserves result order and treats focus changes,
   local controls, approvals, malformed calls, unknown tools, and unmarked
   mutating affordances as sequential barriers
+
+The Hub owns the Agent-facing State projection. Providers own their Default
+projection and how their own trees resolve, summarize, window, expose lazy
+detail, and retain provider-owned working state. Sloppy's Agent-facing runtime
+does not rely on salience filtering or node-count compaction for scaling; the
+Agent drives detail explicitly through State focus and Provider affordances.
+Omitted `max_nodes` means no node-count compaction request.
 
 Built-in capabilities ship as plugins, not privileged runtime branches. A plugin
 is the first-party package and catalog unit; each plugin contributes one or more
@@ -140,12 +147,31 @@ route tasks, mutate provider wiring, or become a privileged orchestrator.
 
 The model sees current provider state as an ephemeral `<slop-state>` tail,
 rebuilt on every model request and never persisted into conversation history.
-The tail uses the canonical text tree projection with salience/view filtering,
-preserves provider boundaries, and escapes forged SLOP context tags inside
-provider-controlled text. This follows the SLOP integration pattern in
+The tail is the Hub-owned State projection: provider Default projections plus
+explicit Agent-managed State focuses and small runtime/session status. The
+projection preserves provider boundaries and escapes forged SLOP context tags
+inside provider-controlled text. Sloppy ignores salience metadata by default and
+does not apply node-count compaction to the Agent-facing state tail. This
+follows the SLOP integration pattern in
 `~/dev/slop-slop-slop/spec/integrations/llm-context.md`: stable conversation
 history remains before the volatile state tail so prompt-cache prefixes stay
 usable while the model still reasons over fresh state.
+
+## Filesystem File Views
+
+Filesystem text reads create provider-owned File views under `/views` instead
+of returning file bodies in Tool-result history. A text `read` returns a compact
+reference and metadata such as `view_path`, `source_version`, coverage, and
+line range. Loaded File views inline their loaded text in the filesystem
+Default projection as working memory, so the next model request can observe the
+content through the state tail. The Agent removes stale or no-longer-needed
+views with an explicit filesystem `close_view` affordance.
+
+Multiple Range views may exist for the same file and source version. A Full-file
+view supersedes same-version Range views, and later partial reads are redundant
+while the Full-file view is present. When the backing file version changes, File
+views preserve the observed text and are marked stale rather than silently
+refreshing.
 
 ## Delegation
 

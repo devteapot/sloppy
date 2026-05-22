@@ -5,7 +5,6 @@
 // providers".
 
 import {
-  formatTree,
   type HelloMessage,
   type ResultMessage,
   SlopConsumer,
@@ -27,15 +26,22 @@ import {
 } from "./policy";
 import type { ProviderTreeView } from "./subscriptions";
 import { buildRuntimeToolSet, type RuntimeToolSet } from "./tools";
+import { formatStateTree } from "./tree-format";
 
 type ConnectedProvider = RegisteredProvider & {
   consumer: SlopConsumer;
   hello: HelloMessage;
   overviewSubscriptionId: string;
   overviewTree: SlopNode;
-  detailSubscriptionId?: string;
-  detailPath?: string;
-  detailTree?: SlopNode;
+  focusSubscriptions: Map<
+    string,
+    {
+      path: string;
+      subscriptionId: string;
+      tree: SlopNode;
+      depth: number;
+    }
+  >;
   patchListener: (subscriptionId: string) => void;
   disconnectListener: () => void;
   unsubscribeEvent: (() => void) | null;
@@ -203,10 +209,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
     try {
       const consumer = new SlopConsumer(registeredProvider.transport);
       const hello = await consumer.connect();
-      const overview = await consumer.subscribe("/", this.config.agent.overviewDepth, {
-        max_nodes: this.config.agent.overviewMaxNodes,
-        filter: { min_salience: this.config.agent.minSalience },
-      });
+      const overview = await consumer.subscribe("/", this.config.agent.overviewDepth);
 
       const patchListener = (subscriptionId: string) => {
         const tree = consumer.getTree(subscriptionId);
@@ -226,9 +229,12 @@ export class ConsumerHub implements ProviderRuntimeHub {
           return;
         }
 
-        if (subscriptionId === connectedProvider.detailSubscriptionId) {
-          connectedProvider.detailTree = tree;
-          this.recordDangerousAffordances(connectedProvider.id, tree, connectedProvider.detailPath);
+        for (const focus of connectedProvider.focusSubscriptions.values()) {
+          if (subscriptionId !== focus.subscriptionId) {
+            continue;
+          }
+          focus.tree = tree;
+          this.recordDangerousAffordances(connectedProvider.id, tree, focus.path);
           this.bumpStateRevision();
           return;
         }
@@ -268,6 +274,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
         hello,
         overviewSubscriptionId: overview.id,
         overviewTree: overview.snapshot,
+        focusSubscriptions: new Map(),
         patchListener,
         disconnectListener,
         unsubscribeEvent,
@@ -280,7 +287,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
       this.providers.set(provider.id, provider);
       this.recordDangerousAffordances(provider.id, provider.overviewTree);
       // One-shot deep, unfiltered query so the dangerous-affordance registry
-      // also covers nodes that the depth-bounded, salience-filtered overview
+      // also covers nodes that the depth-bounded overview
       // subscription doesn't surface. Best-effort: a failure here must not
       // break provider attach (the per-subscription walk above remains the
       // baseline). Nodes added at runtime under subscribed subtrees are
@@ -378,13 +385,14 @@ export class ConsumerHub implements ProviderRuntimeHub {
     }
     provider.watchedSubscriptions.clear();
 
-    if (options.connectionAlive && provider.detailSubscriptionId) {
+    for (const focus of provider.focusSubscriptions.values()) {
       try {
-        provider.consumer.unsubscribe(provider.detailSubscriptionId);
+        provider.consumer.unsubscribe(focus.subscriptionId);
       } catch {
         // The provider may have dropped between the decision to remove it and the unsubscribe call.
       }
     }
+    provider.focusSubscriptions.clear();
 
     if (options.connectionAlive) {
       try {
@@ -457,8 +465,12 @@ export class ConsumerHub implements ProviderRuntimeHub {
       providerName: provider.name,
       kind: provider.kind,
       overviewTree: provider.overviewTree,
-      detailPath: provider.detailPath,
-      detailTree: provider.detailTree,
+      focuses: [...provider.focusSubscriptions.values()]
+        .map((focus) => ({
+          path: focus.path,
+          tree: focus.tree,
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path)),
     }));
   }
 
@@ -527,13 +539,11 @@ export class ConsumerHub implements ProviderRuntimeHub {
     path: string;
     depth?: number;
     maxNodes?: number;
-    minSalience?: number;
     window?: [number, number];
   }): Promise<SlopNode> {
     const provider = this.requireProvider(options.providerId);
     const tree = await provider.consumer.query(options.path, options.depth ?? 2, {
       max_nodes: options.maxNodes,
-      filter: options.minSalience != null ? { min_salience: options.minSalience } : undefined,
       window: options.window,
     });
     if (this.recordDangerousAffordances(provider.id, tree, options.path)) {
@@ -546,27 +556,22 @@ export class ConsumerHub implements ProviderRuntimeHub {
     providerId: string;
     path: string;
     depth?: number;
-    maxNodes?: number;
   }): Promise<SlopNode> {
     const provider = this.requireProvider(options.providerId);
-
-    if (provider.detailSubscriptionId) {
-      provider.consumer.unsubscribe(provider.detailSubscriptionId);
-      provider.detailSubscriptionId = undefined;
-      provider.detailPath = undefined;
-      provider.detailTree = undefined;
+    const existing = provider.focusSubscriptions.get(options.path);
+    if (existing) {
+      provider.consumer.unsubscribe(existing.subscriptionId);
+      provider.focusSubscriptions.delete(options.path);
     }
 
-    const detail = await provider.consumer.subscribe(
-      options.path,
-      options.depth ?? this.config.agent.detailDepth,
-      {
-        max_nodes: options.maxNodes ?? this.config.agent.detailMaxNodes,
-      },
-    );
-    provider.detailSubscriptionId = detail.id;
-    provider.detailPath = options.path;
-    provider.detailTree = detail.snapshot;
+    const depth = options.depth ?? this.config.agent.detailDepth;
+    const detail = await provider.consumer.subscribe(options.path, depth);
+    provider.focusSubscriptions.set(options.path, {
+      path: options.path,
+      subscriptionId: detail.id,
+      tree: detail.snapshot,
+      depth,
+    });
     // Walk the focus snapshot for dangerous affordances now, the same way the
     // patch listener does on detail-tree updates. Without this, an affordance
     // newly visible in the focused subtree but absent from earlier overview /
@@ -575,6 +580,22 @@ export class ConsumerHub implements ProviderRuntimeHub {
     this.recordDangerousAffordances(provider.id, detail.snapshot, options.path);
     this.bumpStateRevision();
     return detail.snapshot;
+  }
+
+  async unfocusState(options: { providerId: string; path: string }): Promise<{ removed: boolean }> {
+    const provider = this.requireProvider(options.providerId);
+    const existing = provider.focusSubscriptions.get(options.path);
+    if (!existing) {
+      return { removed: false };
+    }
+    provider.focusSubscriptions.delete(options.path);
+    try {
+      provider.consumer.unsubscribe(existing.subscriptionId);
+    } catch {
+      // Best-effort cleanup when the provider disconnected before unsubscribe.
+    }
+    this.bumpStateRevision();
+    return { removed: true };
   }
 
   async invoke(
@@ -718,7 +739,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
   }
 
   formatSnapshot(tree: SlopNode): string {
-    return formatTree(tree);
+    return formatStateTree(tree);
   }
 
   private requireProvider(providerId: string): ConnectedProvider {

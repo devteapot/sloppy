@@ -52,6 +52,45 @@ type SourceSnapshot = {
   lines: Map<number, string>;
 };
 
+type FileViewCoverage = "full" | "range" | "preview";
+
+type FileView = {
+  id: string;
+  path: string;
+  absolutePath: string;
+  coverage: FileViewCoverage;
+  content: string;
+  version: number;
+  sourceVersion?: number;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
+  totalBytes?: number;
+  truncated: boolean;
+  previewOnly?: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type FileViewResult = {
+  path: string;
+  view_path: string;
+  view_id: string;
+  coverage: FileViewCoverage;
+  truncated: boolean;
+  version: number;
+  exists: true;
+  kind: "file";
+  already_loaded?: boolean;
+  stale?: boolean;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
+  total_bytes?: number;
+  preview_only?: boolean;
+  source_version?: number;
+};
+
 const WORKSPACE_FILE_PATH_DESCRIPTION =
   "File path relative to the filesystem workspace root, e.g. 'todo-app/src/App.jsx'. Put this path at the top level of the tool arguments, not inside edits[]. Required.";
 
@@ -140,11 +179,27 @@ function relativePath(root: string, target: string): string {
 }
 
 function entryIdForPath(path: string): string {
-  return path.replaceAll("/", "__");
+  return path.replace(/[^a-zA-Z0-9_.-]+/g, "__") || "root";
 }
 
 function displayNameForPath(path: string): string {
   return path.split("/").at(-1) ?? path;
+}
+
+function viewIdForPath(
+  path: string,
+  version: number,
+  coverage: FileViewCoverage,
+  range?: { startLine?: number; endLine?: number },
+): string {
+  const base = entryIdForPath(path);
+  if (coverage === "full") {
+    return `${base}__v${version}`;
+  }
+  if (coverage === "preview") {
+    return `${base}__v${version}__preview`;
+  }
+  return `${base}__v${version}__L${range?.startLine ?? 1}-L${range?.endLine ?? "end"}`;
 }
 
 function invalidInput(message: string): Error {
@@ -268,6 +323,7 @@ export class FilesystemProvider {
   private cachedMtimes = new Map<string, number>();
   private writeLocks = new Map<string, Promise<unknown>>();
   private sourceSnapshots = new Map<string, SourceSnapshot>();
+  private fileViews = new Map<string, FileView>();
 
   constructor(options: {
     root: string;
@@ -306,6 +362,7 @@ export class FilesystemProvider {
     });
 
     this.server.register("workspace", () => this.buildWorkspaceDescriptor());
+    this.server.register("views", () => this.buildViewsDescriptor());
     this.server.register("search", () => this.buildSearchDescriptor());
     this.server.register("recent", () => this.buildRecentDescriptor());
   }
@@ -497,6 +554,90 @@ export class FilesystemProvider {
     }
   }
 
+  private viewPath(viewId: string): string {
+    return `/views/${viewId}`;
+  }
+
+  private fullViewFor(path: string, version: number): FileView | undefined {
+    return [...this.fileViews.values()].find(
+      (view) => view.path === path && view.version === version && view.coverage === "full",
+    );
+  }
+
+  private upsertFileView(input: Omit<FileView, "createdAt" | "updatedAt">): FileView {
+    const existing = this.fileViews.get(input.id);
+    const now = new Date().toISOString();
+    const view: FileView = {
+      ...input,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.fileViews.set(view.id, view);
+
+    if (view.coverage === "full") {
+      for (const [id, candidate] of this.fileViews) {
+        if (
+          id !== view.id &&
+          candidate.path === view.path &&
+          candidate.version === view.version &&
+          candidate.coverage === "range"
+        ) {
+          this.fileViews.delete(id);
+        }
+      }
+    }
+
+    return view;
+  }
+
+  private fileViewResult(
+    view: FileView,
+    options: { alreadyLoaded?: boolean; stale?: boolean } = {},
+  ): FileViewResult {
+    return {
+      path: view.path,
+      view_path: this.viewPath(view.id),
+      view_id: view.id,
+      coverage: view.coverage,
+      truncated: view.truncated,
+      version: view.version,
+      exists: true,
+      kind: "file",
+      ...(options.alreadyLoaded ? { already_loaded: true } : {}),
+      ...(options.stale ? { stale: true } : {}),
+      ...(view.startLine !== undefined ? { startLine: view.startLine } : {}),
+      ...(view.endLine !== undefined ? { endLine: view.endLine } : {}),
+      ...(view.totalLines !== undefined ? { totalLines: view.totalLines } : {}),
+      ...(view.totalBytes !== undefined ? { total_bytes: view.totalBytes } : {}),
+      ...(view.previewOnly ? { preview_only: true } : {}),
+      ...(view.sourceVersion !== undefined ? { source_version: view.sourceVersion } : {}),
+    };
+  }
+
+  private closeFileView(viewId: string): { view_id: string; removed: boolean } {
+    const removed = this.fileViews.delete(viewId);
+    this.recordRecent("close_view", viewId, removed ? "removed" : "not found");
+    this.server.refresh();
+    return { view_id: viewId, removed };
+  }
+
+  private closeAllFileViews(): { removed: number } {
+    const removed = this.fileViews.size;
+    this.fileViews.clear();
+    this.recordRecent("close_views", ".", `${removed} removed`);
+    this.server.refresh();
+    return { removed };
+  }
+
+  private currentVersionForView(view: FileView): number {
+    try {
+      const stat = statSync(view.absolutePath);
+      return this.observeVersion(view.absolutePath, stat.mtimeMs);
+    } catch {
+      return this.observeVersion(view.absolutePath, null);
+    }
+  }
+
   private async setFocus(inputPath: string): Promise<{ path: string }> {
     const nextPath = this.ensureWithinRoot(inputPath);
     const info = await Bun.file(nextPath)
@@ -515,23 +656,32 @@ export class FilesystemProvider {
   private async readTextFile(
     inputPath: string,
     range?: { startLine?: number; endLine?: number },
-  ): Promise<{
-    path: string;
-    content: string;
-    truncated: boolean;
-    version: number;
-    exists: boolean;
-    startLine?: number;
-    endLine?: number;
-    totalLines?: number;
-    preview_only?: boolean;
-    total_bytes?: number;
-    ref?: { kind: "fs"; path: string; version: number; total_bytes: number; total_lines: number };
-    source_version?: number;
-    kind?: "file" | "directory";
-    entries?: Array<{ name: string; path: string; kind: "file" | "directory"; size: number }>;
-    hint?: string;
-  }> {
+  ): Promise<
+    | {
+        path: string;
+        content?: string;
+        truncated: boolean;
+        version: number;
+        exists: boolean;
+        startLine?: number;
+        endLine?: number;
+        totalLines?: number;
+        preview_only?: boolean;
+        total_bytes?: number;
+        ref?: {
+          kind: "fs";
+          path: string;
+          version: number;
+          total_bytes: number;
+          total_lines: number;
+        };
+        source_version?: number;
+        kind?: "file" | "directory";
+        entries?: Array<{ name: string; path: string; kind: "file" | "directory"; size: number }>;
+        hint?: string;
+      }
+    | FileViewResult
+  > {
     const fullPath = this.ensureWithinRoot(inputPath);
     const stat = await Bun.file(fullPath)
       .stat()
@@ -579,7 +729,7 @@ export class FilesystemProvider {
         exists: true,
         kind: "directory",
         entries,
-        hint: "This path is a directory. Use set_focus or slop_query_state for richer directory state, or read a specific file path for file contents.",
+        hint: "This path is a directory. Use set_focus or query_state for richer directory state, or read a specific file path for file contents.",
       };
     }
 
@@ -614,23 +764,35 @@ export class FilesystemProvider {
       const sliced = lines.slice(startLine - 1, endLine).join(lineEnding);
       const truncated = sliced.length > this.readMaxBytes;
       const text = truncated ? truncateText(sliced, this.readMaxBytes) : sliced;
+      const existingFullView = this.fullViewFor(relPath, version);
+      if (existingFullView) {
+        this.recordRecent(
+          "read",
+          relPath,
+          `already loaded fully at ${this.viewPath(existingFullView.id)}`,
+        );
+        return this.fileViewResult(existingFullView, { alreadyLoaded: true });
+      }
       if (!truncated) {
         this.rememberSourceLines(relPath, version, lines, startLine, endLine);
       }
       this.recordRecent("read", relPath, `lines ${startLine}-${endLine}`);
-
-      return {
+      const view = this.upsertFileView({
+        id: viewIdForPath(relPath, version, "range", { startLine, endLine }),
         path: relPath,
+        absolutePath: fullPath,
+        coverage: "range",
         content: text,
-        truncated,
         version,
-        exists: true,
-        kind: "file",
+        sourceVersion: truncated ? undefined : version,
         startLine,
         endLine,
         totalLines,
-        source_version: truncated ? undefined : version,
-      };
+        totalBytes: bytes.byteLength,
+        truncated,
+      });
+
+      return this.fileViewResult(view);
     }
 
     // No explicit range: decide whether to return full content or a preview+ref.
@@ -638,44 +800,46 @@ export class FilesystemProvider {
       const previewText = TEXT_DECODER.decode(bytes.subarray(0, this.previewBytes));
       const totalLines = splitTextLines(TEXT_DECODER.decode(bytes)).length;
       this.recordRecent("read", relPath, "preview+ref");
-
-      return {
+      const view = this.upsertFileView({
+        id: viewIdForPath(relPath, version, "preview"),
         path: relPath,
+        absolutePath: fullPath,
+        coverage: "preview",
         content: truncateText(previewText, this.previewBytes),
-        truncated: true,
         version,
-        exists: true,
-        kind: "file",
-        preview_only: true,
-        total_bytes: bytes.byteLength,
         totalLines,
-        ref: {
-          kind: "fs",
-          path: relPath,
-          version,
-          total_bytes: bytes.byteLength,
-          total_lines: totalLines,
-        },
-      };
+        totalBytes: bytes.byteLength,
+        truncated: true,
+        previewOnly: true,
+      });
+
+      return this.fileViewResult(view);
     }
 
     const truncated = bytes.byteLength > this.readMaxBytes;
     const text = TEXT_DECODER.decode(bytes.subarray(0, this.readMaxBytes));
+    const coverage = truncated ? "preview" : "full";
     if (!truncated) {
       const lines = splitTextLines(text);
       this.rememberSourceLines(relPath, version, lines, 1, lines.length);
     }
     this.recordRecent("read", relPath);
-
-    return {
+    const totalLines = splitTextLines(text).length;
+    const view = this.upsertFileView({
+      id: viewIdForPath(relPath, version, coverage),
       path: relPath,
+      absolutePath: fullPath,
+      coverage,
       content: truncated ? truncateText(text, this.readMaxBytes) : text,
-      truncated,
       version,
-      exists: true,
-      kind: "file",
-      source_version: truncated ? undefined : version,
-    };
+      sourceVersion: truncated ? undefined : version,
+      totalLines,
+      totalBytes: bytes.byteLength,
+      truncated,
+      previewOnly: truncated,
+    });
+
+    return this.fileViewResult(view);
   }
 
   private async writeTextFile(
@@ -1223,7 +1387,7 @@ export class FilesystemProvider {
                 {
                   label: "Read File",
                   description:
-                    "Read this file as text. Returns { content, version, source_version, exists, ... }. Pass start_line/end_line to read just a slice. Use source_version with edit_range for line-range edits against this observed view.",
+                    "Load this file as a provider-owned File view under /views and return a compact reference. Pass start_line/end_line to load a slice. Use source_version with edit_range for line-range edits against this observed view.",
                   idempotent: true,
                   estimate: "fast",
                   resultKind: "code",
@@ -1324,7 +1488,7 @@ export class FilesystemProvider {
                   path: relativeToRoot,
                   relativeToFocus,
                 },
-                summary: `Use the read affordance on ${entry.name} to fetch the contents.`,
+                summary: `Use the read affordance on ${entry.name} to load a File view under /views.`,
               },
             },
       });
@@ -1386,7 +1550,7 @@ export class FilesystemProvider {
           {
             label: "Read By Path",
             description:
-              "Read a path relative to the workspace root. For files, returns { content, version, source_version, exists, kind: 'file', ... }. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to read just a slice of an existing file. Use source_version with edit_range for line-range edits against the observed view.",
+              "Read a path relative to the workspace root. For text files, loads a provider-owned File view under /views and returns { view_path, version, source_version, exists, kind: 'file', ... } without file content in the result. For directories, returns { kind: 'directory', entries, content } as a compact listing. For a nonexistent file returns { content: '', version: 0, exists: false } so callers can use a uniform read->write(expected_version) loop. Pass start_line/end_line to load a slice of an existing file. Use source_version with edit_range for line-range edits against the observed view.",
             idempotent: true,
             estimate: "fast",
             resultKind: "code",
@@ -1546,6 +1710,89 @@ export class FilesystemProvider {
         focus: true,
         salience: 1,
       },
+    };
+  }
+
+  private buildViewsDescriptor() {
+    const views = [...this.fileViews.values()].sort((left, right) => {
+      const pathComparison = left.path.localeCompare(right.path);
+      if (pathComparison !== 0) return pathComparison;
+      const coverageComparison = left.coverage.localeCompare(right.coverage);
+      if (coverageComparison !== 0) return coverageComparison;
+      return left.id.localeCompare(right.id);
+    });
+    const items = views.map((view) => {
+      const currentVersion = this.currentVersionForView(view);
+      const stale = currentVersion !== view.version;
+      return {
+        id: view.id,
+        props: {
+          path: view.path,
+          coverage: view.coverage,
+          content: view.content,
+          version: view.version,
+          current_version: currentVersion,
+          stale,
+          truncated: view.truncated,
+          preview_only: view.previewOnly ?? false,
+          source_version: view.sourceVersion,
+          start_line: view.startLine,
+          end_line: view.endLine,
+          total_lines: view.totalLines,
+          total_bytes: view.totalBytes,
+          created_at: view.createdAt,
+          updated_at: view.updatedAt,
+        },
+        summary: stale
+          ? `${view.path} ${view.coverage} view is stale (source v${view.version}, current v${currentVersion})`
+          : `${view.path} ${view.coverage} view`,
+        actions: {
+          close_view: action(async () => this.closeFileView(view.id), {
+            label: "Close File View",
+            description:
+              "Remove this loaded file view from filesystem provider state and future default projections.",
+            idempotent: true,
+            estimate: "instant",
+          }),
+        },
+      } satisfies ItemDescriptor;
+    });
+    const staleCount = items.filter((item) => item.props.stale === true).length;
+
+    return {
+      type: "collection",
+      props: {
+        count: items.length,
+        stale_count: staleCount,
+      },
+      summary:
+        items.length === 0
+          ? "No loaded file views."
+          : `${items.length} loaded file view${items.length === 1 ? "" : "s"}${staleCount > 0 ? `, ${staleCount} stale` : ""}.`,
+      actions: {
+        close_view: action(
+          {
+            view_id: {
+              type: "string",
+              description: "Loaded file view id to remove.",
+            },
+          },
+          async ({ view_id }) => this.closeFileView(requireString(view_id, "view_id")),
+          {
+            label: "Close File View",
+            description: "Remove one loaded file view by id.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
+        close_all: action(async () => this.closeAllFileViews(), {
+          label: "Close All File Views",
+          description: "Remove all loaded file views from filesystem provider state.",
+          idempotent: true,
+          estimate: "instant",
+        }),
+      },
+      items,
     };
   }
 

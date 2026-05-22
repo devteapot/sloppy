@@ -51,10 +51,11 @@ Current checked-in implementation includes:
   - `workspaces`
   - `a2a`
 - fixed observation tools:
-  - `slop_query_state`
-  - `slop_focus_state`
+  - `query_state`
+  - `focus_state`
+  - `unfocus_state`
 - dynamic affordance tools generated from visible SLOP state
-- bounded same-turn parallel execution for `slop_query_state` and explicitly
+- bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance tools, with tool results returned to the
   model in original call order
 - CLI single-shot mode and interactive REPL
@@ -191,6 +192,12 @@ observed line text. `edit_range` can then replace whole line ranges by
 `start_line`/`end_line` without echoing old text or line hashes. Before writing,
 the provider checks that the current file still matches the remembered source
 view at those lines; stale ranges fail instead of editing the wrong location.
+
+Text `read` creates provider-owned File views under `/views` and returns a
+compact reference instead of putting file bodies into permanent Tool-result
+history. Loaded File views are included in the filesystem Default projection
+until the Agent explicitly closes them; changed backing files preserve the
+observed content and mark the view stale.
 
 ### Terminal provider
 
@@ -709,7 +716,7 @@ The agent loop defaults to 32 model/tool iterations. For longer runs, set
 run.
 
 Within a model turn, the loop may execute a contiguous run of parallel-safe tool
-calls concurrently. Parallel-safe means `slop_query_state` or a SLOP affordance
+calls concurrently. Parallel-safe means `query_state` or a SLOP affordance
 that is explicitly `idempotent: true` and not `dangerous`; focus changes, local
 session controls, malformed calls, unknown tools, approvals, and unmarked or
 mutating affordances remain sequential barriers. Results are still appended to

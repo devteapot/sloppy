@@ -75,8 +75,9 @@ describe("buildRuntimeToolSet", () => {
     ]);
 
     const toolNames = toolSet.tools.map((tool) => tool.function.name);
-    expect(toolNames).toContain("slop_query_state");
-    expect(toolNames).toContain("slop_focus_state");
+    expect(toolNames).toContain("query_state");
+    expect(toolNames).toContain("focus_state");
+    expect(toolNames).toContain("unfocus_state");
     expect(toolNames).toContain("filesystem__workspace__search");
     expect(
       toolNames.some(

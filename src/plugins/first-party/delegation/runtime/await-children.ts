@@ -35,8 +35,8 @@ function hasPendingChildApproval(view: ProviderTreeView): boolean {
       found = true;
     }
   });
-  if (view.detailTree) {
-    walkTree(view.detailTree, (node) => {
+  for (const focus of view.focuses ?? []) {
+    walkTree(focus.tree, (node) => {
       const properties = getNodeProperties(node);
       if (properties.state === "waiting_approval") {
         found = true;

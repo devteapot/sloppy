@@ -27,15 +27,10 @@ export interface ProviderRuntimeHub {
     path: string;
     depth?: number;
     maxNodes?: number;
-    minSalience?: number;
     window?: [number, number];
   }): Promise<SlopNode>;
-  focusState(options: {
-    providerId: string;
-    path: string;
-    depth?: number;
-    maxNodes?: number;
-  }): Promise<SlopNode>;
+  focusState(options: { providerId: string; path: string; depth?: number }): Promise<SlopNode>;
+  unfocusState(options: { providerId: string; path: string }): Promise<{ removed: boolean }>;
   watchPath(
     providerId: string,
     path: string,

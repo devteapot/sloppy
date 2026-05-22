@@ -12,7 +12,7 @@ Checked in now:
 - native Anthropic, Gemini, OpenAI-compatible, and OpenAI Codex subscription
   adapters
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
-- bounded same-turn parallel execution for `slop_query_state` and explicitly
+- bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order
 - default first-party plugins: `terminal`, `filesystem`
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
@@ -50,6 +50,9 @@ Checked in now:
 - filesystem snapshot-backed `edit_range`, where reads cache provider-owned
   source views and line-range edits validate against the remembered old text
   before writing
+- filesystem File views, where text reads load provider-owned `/views`
+  state and return compact references instead of file bodies in Tool-result
+  history
 - runtime doctor (`bun run runtime:doctor`) with core checks plus first-party
   plugin contributions for live OpenAI-compatible routers, configured ACP
   adapters, startup subprocess commands, persistence, audit, socket, and
@@ -71,9 +74,19 @@ providers, skills, routes, and agent-to-agent channels.
 2. Make state the contract.
    - Providers expose observable state first.
    - Affordances mutate provider-owned state.
+   - Providers own their Default projection; after that, the Agent drives
+     detail explicitly with Observation tools and Provider affordances.
+   - The Hub owns State projection for the Agent-facing state tail. Sloppy does
+     not use salience filtering or node-count compaction in that projection.
+   - Observation tools use unbranded verb-first names: `query_state`,
+     `focus_state`, and `unfocus_state`.
    - The filesystem provider keeps source-view validation local to the
      provider; the model can reference lines and source versions without
      carrying hashes or old text through the prompt.
+   - Filesystem text reads create provider-owned File views under
+     `/views` and return compact references. Loaded File views are included in
+     the filesystem Default projection until explicitly closed; stale views are
+     marked instead of silently refreshed.
    - UIs consume the same provider/session boundary as agents.
    - Parallel model-emitted tool calls are a scheduling optimization only:
      read-only state queries and explicit idempotent affordances can overlap,

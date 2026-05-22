@@ -32,27 +32,54 @@ A future shared-anchor system may still make sense for durable cross-tool or
 cross-provider references, but source-view edits should be tried first because
 they fit the current SLOP provider boundary with less machinery.
 
-## State-Loaded Reads
+## Implemented: State-Loaded Reads
 
-A possible next step is to make `read` load a bounded source view into
-filesystem provider state instead of returning the full file content as a tool
-result. The immediate tool result could be only a compact reference: path,
-version, `source_version`, line range, byte count, and truncation status. The
-next model turn would observe the loaded view through the ephemeral
-`<slop-state>` tail.
+Text `read` now loads a File view into filesystem Provider state instead of
+returning the file content as a Tool result. The immediate Tool result is only
+a compact reference: `view_path`, path, version,
+`source_version`, coverage, line range, byte count, and truncation status. The
+next model turn observes the loaded view through the ephemeral `<slop-state>`
+tail because loaded File views are included in the filesystem Default
+projection.
 
 This may be more efficient than carrying file contents in tool-result history:
 tool results are cumulative conversation history, while provider state can be
-focused, windowed, replaced, or evicted. The state tail must stay aggressively
-scoped, otherwise loading large or stale views into every model call would erase
+focused, windowed, or explicitly closed. The state tail must stay scoped by the
+Agent, otherwise loading large or stale views into every model call would erase
 the benefit.
 
 Useful constraints for this direction:
 
-- keep source views bounded by byte, line, and count limits;
-- include only focused, recent, or explicitly referenced views in state;
+- loaded File views live under top-level `/views`, not under directory entries;
+- inline the loaded text content in `/views` by default;
 - return compact refs from `read`, not duplicate content in history and state;
 - keep large files on preview plus explicit range reads;
 - let `edit_range` consume `source_version` from these provider-owned views;
+- allow multiple Range views for distant regions of the same file;
+- let a Full-file view supersede same-version Range views for that file;
+- mark views stale when the backing file version changes instead of silently
+  refreshing them;
+- remove views only through explicit Provider cleanup such as `close_view`;
 - keep audit logs recording read/edit events without preserving full file bodies
   in conversation history.
+
+## Future: Optimistic View Updates
+
+The current implementation stale-marks loaded file views when the backing file
+version changes. That preserves the exact text the Agent observed and keeps
+`source_version` validation simple.
+
+A later optimization may update affected File views optimistically after a
+successful provider-owned edit or write when the Provider can prove the next
+view content deterministically:
+
+- `edit_range` could update the lines covered by the edited source view and mark
+  unaffected same-file views stale or refreshed depending on overlap;
+- strict string `edit` could update a Full-file view when the Provider has the
+  complete observed content and the edit applied cleanly;
+- writes could replace a Full-file view when the write content is the complete
+  new file text.
+
+This should remain a Provider-local optimization. The safety key stays
+`source_version`: optimistic updates must not weaken stale-view detection or make
+the Agent believe unobserved text was observed.
