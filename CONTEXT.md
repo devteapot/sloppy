@@ -69,8 +69,52 @@ The runtime instance hosting exactly one Agent — its transcript, turn state, a
 The per-Session public SLOP Provider exposing one Session's surface (`/session`, `/turn`, `/transcript`, `/goal`, `/approvals`, `/activity`, `/tasks`, …). The boundary first-party UIs and external clients consume.
 
 **Session supervisor**:
-A separate public SLOP Provider that manages many Sessions — `/sessions`, `/scopes`, `create_session`, `set_active`. Owns lifecycle bookkeeping only; it does not schedule or route work.
+A separate public SLOP Provider that manages many Sessions — `/sessions`, `/scopes`, `create_session`, `select_session`, `stop_session`. Owns lifecycle bookkeeping only; it does not schedule or route work.
 _Avoid_: calling it an orchestrator.
+
+**Managed supervisor**:
+A Session supervisor process started by a launcher and discoverable by later clients using that launcher's scope key. It is still only a Session supervisor; auto-close, process spawning, and scope-key choice are launcher mechanics, not orchestration.
+_Avoid_: daemon, background orchestrator, TUI supervisor.
+
+**Launch scope**:
+The launcher-owned identity for grouping managed supervisor discovery and Session registry history. For `sloppy`, the Launch scope is `realpath(process.cwd())`, not the configured Workspace or filesystem Provider root.
+_Avoid_: workspace when referring to cwd-scoped launcher identity.
+
+**Launch-scope resume Session**:
+The Session id a Launch scope records as the default target for `sloppy --continue`. It changes on fresh `sloppy` launch and intentional UI session switch, not on UI close or background Session activity.
+_Avoid_: last active session, last closed session.
+
+**Session registry**:
+The supervisor-owned durable index of a Launch scope's Sessions. It records Session ids, lifecycle/history metadata, and the Launch-scope resume Session; individual Session snapshots remain owned by each Session runtime.
+_Avoid_: transcript store, socket registry.
+
+**Auto-close blocker**:
+A reason a live Session should keep a managed supervisor running after all Supervisor client leases are gone. Core blockers come from generic Turn state; Plugin-specific blockers must be declared by Session plugins, not hardcoded in the supervisor.
+_Avoid_: supervisor policy hook, goal special case.
+
+**Supervisor client lease**:
+The supervisor-side record that one connected client has selected a Session on a managed supervisor. It is bound to the client's supervisor connection, drives supervisor auto-close, and protects Stop Session from disrupting another client.
+_Avoid_: raw socket connection count, heartbeat, polling.
+
+**New Session**:
+Create a fresh Session and switch the current UI to it. This is the normal way to move on from current work while keeping previous Session history restorable.
+_Avoid_: stop, restart.
+
+**Stop Session**:
+End a live Session process while keeping its snapshot and registry entry restorable. It never creates a replacement Session; use New Session for that.
+_Avoid_: close, delete, archive.
+
+**Restore Session**:
+Start a stopped Session from its durable snapshot so a UI can select it again. Restore uses stale-turn recovery for interrupted Turns rather than pretending in-flight work continued.
+_Avoid_: resume when specifically discussing process restart mechanics.
+
+**Archive Session**:
+Remove a Session from normal resume and switch lists while retaining its snapshot for history or later recovery. Archive is distinct from Stop Session and from Delete Session.
+_Avoid_: stop, delete.
+
+**Delete Session**:
+Permanently remove a Session's registry entry and durable snapshot. It is a destructive history operation, not the normal way to stop a live process.
+_Avoid_: stop, archive.
 
 **Child session**:
 The Session a Child agent runs in. Exposes the standard Session provider surface, so a parent observes its child through SLOP like any other Session.

@@ -99,7 +99,7 @@ export function buildCommandPaletteCommands(
   }
 
   for (const session of supervisor?.sessions ?? []) {
-    if (!session.selected && session.canSwitch) {
+    if (session.canSwitch) {
       commands.push({
         id: `session:${session.id}:switch`,
         label: `Switch session ${session.title ?? session.id}`,
@@ -107,7 +107,7 @@ export function buildCommandPaletteCommands(
         command: { type: "session_switch", sessionId: session.id },
       });
     }
-    if (session.canStop) {
+    if (session.canStop && snapshot.session.sessionId !== session.id) {
       commands.push({
         id: `session:${session.id}:stop`,
         label: `Stop session ${session.title ?? session.id}`,

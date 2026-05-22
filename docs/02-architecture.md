@@ -108,20 +108,30 @@ special runtime branches.
 The session supervisor is a public SLOP provider for managing multiple ordinary
 agent sessions. It is separate from the per-session provider:
 
-- `/session` reports the active session id/socket and exposes `create_session`
-  and `set_active_session`.
-- `/sessions` lists running session-provider sockets and exposes per-session
-  `set_active` and `stop` affordances.
+- `/session` reports launch-scope metadata, the launch-scope resume session,
+  client lease counts, and exposes `create_session` and `select_session`.
+- `/sessions` lists live and dormant session records and exposes per-session
+  `select_session` and, when live, `stop_session` affordances.
 - `/scopes` lists configured workspace/project scopes that can launch new
   scoped sessions.
 
-Managed TUI mode starts a supervisor first, then attaches to the active
-session's public provider socket. Switching sessions changes the TUI's socket;
-it does not collapse multiple sessions into one provider tree. Each child
-session still loads config through the normal scoped launcher and still exposes
-the standard `/session`, `/llm`, `/turn`, `/goal`, `/extensions`, `/composer`,
-`/queue`, `/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps`
-surface.
+The supervisor intentionally has no global active session. A connected UI
+registers a supervisor client lease and selects a session for that connection.
+The launch-scope resume session is only the default target for `sloppy
+--continue` and later managed launches that ask to continue. Multiple clients
+can select different sessions concurrently.
+
+Managed TUI launch is implemented above this agnostic supervisor. The launcher
+resolves the real current working directory into a launch scope, starts or
+reuses that scope's managed supervisor, creates a fresh session by default, and
+attaches to the selected session's public provider socket. Switching sessions
+changes the TUI's socket; it does not collapse multiple sessions into one
+provider tree. Stopping a session ends its live process while keeping its
+snapshot and registry record restorable. Selecting a dormant session restores it
+through the normal session snapshot recovery path. Each supervised session still
+loads config through the normal scoped launcher and still exposes the standard
+`/session`, `/llm`, `/turn`, `/goal`, `/extensions`, `/composer`, `/queue`,
+`/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps` surface.
 
 The supervisor owns lifecycle bookkeeping only. It does not schedule work,
 route tasks, mutate provider wiring, or become a privileged orchestrator.

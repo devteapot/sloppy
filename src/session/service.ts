@@ -33,6 +33,10 @@ export class SessionService {
     socketPath?: string;
     llmProfileManager?: LlmProfileManager;
     sessionPersistencePath?: string | false;
+    launchScope?: {
+      key: string;
+      root: string;
+    };
   }) {
     const sessionId = options?.sessionId ?? crypto.randomUUID();
     const providerId = options?.providerId ?? `sloppy-session-${sessionId}`;
@@ -44,6 +48,7 @@ export class SessionService {
       ignoredProviderIds: [providerId],
       llmProfileManager: options?.llmProfileManager,
       sessionPersistencePath: options?.sessionPersistencePath,
+      launchScope: options?.launchScope,
     });
 
     this.providerId = providerId;

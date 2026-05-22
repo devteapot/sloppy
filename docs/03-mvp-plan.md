@@ -19,8 +19,9 @@ Checked in now:
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
 - session provider and headless session server
-- public session supervisor for scoped session creation, active-session
-  switching, and stopping while keeping each session on its own provider socket
+- public session supervisor for scoped session creation, per-client session
+  selection, launch-scope resume metadata, stopping/restoring sessions, and
+  keeping each session on its own provider socket
 - first-party session runtime plugin manager, surfaced through `/plugins`, for
   contributed session nodes, extension event projections, runtime-local turn
   tools, queued or automatic plugin turns, snapshot migration/recovery hooks,
@@ -31,7 +32,8 @@ Checked in now:
   session plugin for persistent objective controls, usage accounting, cleanup
   retention, and automatic continuation while active
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
-  agent-session provider socket, can attach through the session supervisor, and
+  agent-session provider socket, starts or reuses a launch-scope managed
+  supervisor by default, can attach through an explicit session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert
 - ACP-backed delegated child sessions behind the same session-provider boundary,
   with explicit `slop_wait_for_delegation_event` joins plus child follow-up,
@@ -154,8 +156,9 @@ providers, skills, routes, and agent-to-agent channels.
      is launched.
    - Load scoped session config layers for `session:serve` and managed TUI
      launches, pinning terminal/filesystem roots to the selected scope.
-   - Expose a public session supervisor for scoped session creation/switching
-     without adding scheduling or provider rewiring to core.
+   - Expose a public session supervisor for scoped session creation, per-client
+     selection, launch-scope resume metadata, and stop/restore without adding
+     scheduling or provider rewiring to core.
 
 ## Remaining Non-MVP Work
 

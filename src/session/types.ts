@@ -288,6 +288,11 @@ export type ConnectedClient = {
   connectedAt: string;
 };
 
+export type LaunchScopeSnapshot = {
+  key: string;
+  root: string;
+};
+
 export type SessionMetadata = {
   sessionId: string;
   status: AgentSessionStatus;
@@ -302,6 +307,7 @@ export type SessionMetadata = {
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
+  launchScope?: LaunchScopeSnapshot;
   lastError?: string;
   configRequiresRestart?: boolean;
   configRestartReason?: string;

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { loadScopedConfig } from "../config/load";
+import { resolveLaunchScope } from "./launch-scope";
 import { SessionService } from "./service";
 import { startSessionSupervisor } from "./supervisor";
 
@@ -22,6 +23,10 @@ const projectId = readOption("--project-id");
 const title = readOption("--title");
 const noRegister = Bun.argv.includes("--no-register");
 const supervisor = Bun.argv.includes("--supervisor");
+const managed = Bun.argv.includes("--managed");
+const noInitialSession = Bun.argv.includes("--no-initial-session");
+const autoCloseEnabled = Bun.argv.includes("--auto-close-enabled");
+const idleTimeoutMs = Number(readOption("--idle-timeout-ms") ?? 5000);
 
 if (supervisor) {
   if (!socketPath) {
@@ -30,15 +35,28 @@ if (supervisor) {
   const running = await startSessionSupervisor({
     socketPath,
     register: !noRegister,
-    initial: {
-      workspace_id: workspaceId,
-      project_id: projectId,
-      title,
-      session_id: sessionId,
-    },
+    cwd: process.cwd(),
+    launchScope: managed ? resolveLaunchScope(process.cwd()) : undefined,
+    initial: noInitialSession
+      ? false
+      : {
+          workspace_id: workspaceId,
+          project_id: projectId,
+          title,
+          session_id: sessionId,
+        },
+    autoClose: autoCloseEnabled
+      ? {
+          enabled: true,
+          idleTimeoutMs: Number.isFinite(idleTimeoutMs) ? idleTimeoutMs : 5000,
+          onClose: () => process.exit(0),
+        }
+      : undefined,
   });
   stdout.write(
-    `[sloppy] session supervisor listening on ${socketPath}; active session ${running.initialSession.socketPath}\n`,
+    `[sloppy] session supervisor listening on ${socketPath}${
+      running.initialSession ? `; initial session ${running.initialSession.socketPath}` : ""
+    }\n`,
   );
   await stdout.flush();
 

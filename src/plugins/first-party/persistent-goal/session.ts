@@ -909,6 +909,12 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
         summary: `goal=${goal?.status ?? "none"}`,
       };
     },
+    autoCloseBlockers: (ctx) => {
+      const goal = ctx.snapshot().goal;
+      return goal?.status === "active"
+        ? [{ id: `goal:${goal.goalId}`, label: "Persistent goal active" }]
+        : [];
+    },
     ui: {
       subscriptions: [{ path: "/goal", depth: 1 }],
       actions: [

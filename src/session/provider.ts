@@ -308,6 +308,8 @@ export class AgentSessionProvider {
         workspace_root: snapshot.session.workspaceRoot,
         workspace_id: snapshot.session.workspaceId,
         project_id: snapshot.session.projectId,
+        launch_scope_key: snapshot.session.launchScope?.key,
+        launch_root: snapshot.session.launchScope?.root,
         last_error: snapshot.session.lastError,
         config_requires_restart: snapshot.session.configRequiresRestart === true,
         config_restart_reason: snapshot.session.configRestartReason,

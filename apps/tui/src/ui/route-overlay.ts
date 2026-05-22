@@ -61,7 +61,7 @@ function renderRuntime(
   const sessions = (supervisor?.sessions ?? [])
     .map(
       (session) =>
-        `${session.selected ? "*" : " "} ${session.id} ${session.turnState ?? "-"} ${session.title ?? ""}`,
+        `${session.isResumeSession ? "*" : " "} ${session.id} ${session.runtimeStatus} ${session.title ?? ""}`,
     )
     .join("\n");
   return [
