@@ -834,6 +834,10 @@ describe("AgentSessionProvider", () => {
       expect(llm.properties?.status).toBe("needs_credentials");
       expect(llm.properties?.active_profile_id).toBe("test-openai");
       expect(llm.children?.[0]?.properties?.ready).toBe(false);
+      expect(llm.children?.[0]?.properties?.thinking_enabled).toBe(true);
+      expect(llm.children?.[0]?.properties?.thinking_display).toBe("visible");
+      expect(llm.children?.[0]?.properties?.thinking_effective_enabled).toBe(true);
+      expect(llm.children?.[0]?.properties?.thinking_effort).toBe("medium");
 
       const usage = await consumer.query("/usage", 1);
       expect(usage.properties?.current_turn_model_calls).toBe(0);
@@ -867,11 +871,25 @@ describe("AgentSessionProvider", () => {
     llmProfileManager.createAdapter = async () =>
       ({
         chat: async (options: LlmChatOptions) => {
+          options.onThinking?.({
+            id: "thinking-usage",
+            provider: "openai",
+            model: "gpt-5.4",
+            format: "raw",
+            display: "hidden",
+            delta: "checking state",
+            startedAt: "2026-05-21T10:00:00.000Z",
+            completedAt: "2026-05-21T10:00:01.500Z",
+            elapsedMs: 1500,
+            tokenCount: 5,
+            tokenCountSource: "reported",
+            done: true,
+          });
           options.onText?.("usage tracked");
           return {
             content: [{ type: "text", text: "usage tracked" }],
             stopReason: "end_turn",
-            usage: { inputTokens: 42, outputTokens: 9 },
+            usage: { inputTokens: 42, outputTokens: 9, thinkingTokens: 5 },
           } satisfies LlmResponse;
         },
         countTextTokens: async () => ({ tokens: 12, source: "provider" }),
@@ -899,17 +917,40 @@ describe("AgentSessionProvider", () => {
       const usage = await consumer.query("/usage", 1);
       expect(usage.properties?.last_model_call_input_tokens).toBe(42);
       expect(usage.properties?.last_model_call_output_tokens).toBe(9);
+      expect(usage.properties?.last_model_call_thinking_tokens).toBe(5);
       expect(usage.properties?.last_model_call_input_source).toBe("reported");
       expect(usage.properties?.last_model_call_output_source).toBe("reported");
+      expect(usage.properties?.last_model_call_thinking_source).toBe("reported");
       expect(usage.properties?.current_turn_input_tokens).toBe(42);
       expect(usage.properties?.current_turn_output_tokens).toBe(9);
+      expect(usage.properties?.current_turn_thinking_tokens).toBe(5);
       expect(usage.properties?.current_turn_model_calls).toBe(1);
       expect(usage.properties?.total_input_tokens).toBe(42);
       expect(usage.properties?.total_output_tokens).toBe(9);
+      expect(usage.properties?.total_thinking_tokens).toBe(5);
       expect(usage.properties?.last_state_context_tokens).toBe(12);
       expect(usage.properties?.last_state_context_token_source).toBe("provider");
       expect(usage.properties?.model_context_window_tokens).toBe(123_456);
       expect(usage.properties?.available_context_tokens).toBe(123_414);
+
+      const transcript = await consumer.query("/transcript", 5);
+      const assistant = transcript.children?.find(
+        (child) => child.properties?.role === "assistant",
+      );
+      const thinking = assistant?.children?.[0]?.children?.find(
+        (child) => child.properties?.kind === "thinking_output",
+      );
+      expect(thinking?.properties).toMatchObject({
+        kind: "thinking_output",
+        text: "checking state",
+        display: "hidden",
+        format: "raw",
+        provider: "openai",
+        model: "gpt-5.4",
+        elapsed_ms: 1500,
+        token_count: 5,
+        token_count_source: "reported",
+      });
 
       const llm = await consumer.query("/llm", 1);
       expect(llm.properties?.last_input_tokens).toBeUndefined();
@@ -990,27 +1031,27 @@ describe("AgentSessionProvider", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       expect(plugins.properties?.count).toBeGreaterThanOrEqual(1);
-      expect(plugins.properties?.ui_manifest_version).toBe(1);
+      expect(plugins.properties?.ui_manifest_version).toBe(2);
 
       const goalPlugin = plugins.children?.find((item) => item.id === "persistent-goal");
       expect(goalPlugin?.properties?.status).toBe("active");
       expect(goalPlugin?.properties?.session_paths).toContain("/goal");
 
-      const tui = goalPlugin?.properties?.tui as
+      const ui = goalPlugin?.properties?.ui as
         | {
-            commands?: Array<Record<string, unknown>>;
+            actions?: Array<Record<string, unknown>>;
             subscriptions?: Array<Record<string, unknown>>;
           }
         | undefined;
-      expect(tui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
-      expect(tui?.commands?.some((command) => command.name === "goal")).toBe(true);
+      expect(ui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
+      expect(ui?.actions?.some((action) => action.id === "goal:create")).toBe(true);
 
       const manifest = await consumer.invoke("/plugins/persistent-goal", "inspect_manifest", {});
       expect(manifest.status).toBe("ok");
       const manifestData = manifest.data as {
-        manifest?: { commands?: Array<{ name?: string }> };
+        manifest?: { actions?: Array<{ id?: string }> };
       };
-      expect(manifestData.manifest?.commands?.[0]?.name).toBe("goal");
+      expect(manifestData.manifest?.actions?.[0]?.id).toBe("goal:create");
 
       const goal = await consumer.query("/goal", 1);
       expect(goal.properties?.status).toBe("none");
@@ -2040,12 +2081,7 @@ describe("AgentSessionProvider", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       const metaPlugin = plugins.children?.find((item) => item.id === "meta-runtime");
-      const metaTui = metaPlugin?.properties?.tui as
-        | { commands?: Array<{ name?: string; signature?: string }> }
-        | undefined;
-      const runtimeCommand = metaTui?.commands?.find((command) => command.name === "runtime");
-      expect(runtimeCommand?.signature).toContain("refresh");
-      expect(runtimeCommand?.signature).toContain("revert <proposal-id>");
+      expect(metaPlugin?.properties?.ui).toEqual({});
 
       const apps = await consumer.query("/apps", 1);
       expect(apps.affordances?.some((affordance) => affordance.action === "query_provider")).toBe(

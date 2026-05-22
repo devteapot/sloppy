@@ -1,13 +1,16 @@
-import type { CliRenderer } from "@opentui/core";
-
 export type CopyResult = "copied" | "unsupported" | "error";
 
-export function copyToClipboard(renderer: CliRenderer, text: string): CopyResult {
+export function copyToClipboard(
+  text: string,
+  output: NodeJS.WriteStream = process.stdout,
+): CopyResult {
   try {
-    if (!renderer.isOsc52Supported()) {
+    if (!output.isTTY) {
       return "unsupported";
     }
-    return renderer.copyToClipboardOSC52(text) ? "copied" : "error";
+    const encoded = Buffer.from(text, "utf8").toString("base64");
+    output.write(`\u001b]52;c;${encoded}\u0007`);
+    return "copied";
   } catch {
     return "error";
   }

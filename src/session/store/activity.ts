@@ -1,7 +1,8 @@
-import type { ActivityStatus, SessionTask } from "../types";
+import type { ActivityStatus, SessionTask, ToolCallResult } from "../types";
 import {
   buildId,
   buildMirroredItemId,
+  nextSeq,
   now,
   updateActivity,
   updateTurn,
@@ -19,6 +20,7 @@ export function recordToolStart(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     paramsPreview?: string;
   },
 ): void {
@@ -26,6 +28,7 @@ export function recordToolStart(
   const activityId = buildId("activity");
   state.snapshot.activity.push({
     id: activityId,
+    seq: nextSeq(state),
     kind: "tool_call",
     status: "running",
     summary: options.summary,
@@ -35,6 +38,7 @@ export function recordToolStart(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     toolUseId: options.toolUseId,
     paramsPreview: options.paramsPreview,
   });
@@ -54,8 +58,10 @@ export function recordToolCompletion(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     taskId?: string;
     errorMessage?: string;
+    result?: ToolCallResult;
   },
 ): void {
   const time = now();
@@ -71,6 +77,7 @@ export function recordToolCompletion(
 
   state.snapshot.activity.push({
     id: buildId("activity"),
+    seq: nextSeq(state),
     kind: "tool_result",
     status: options.status,
     summary: options.summary,
@@ -81,8 +88,11 @@ export function recordToolCompletion(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     taskId: options.taskId,
     toolUseId: options.toolUseId,
+    errorMessage: options.errorMessage,
+    result: options.result,
   });
 
   if (options.status === "accepted" && options.provider && options.taskId) {
@@ -121,6 +131,7 @@ export function recordApprovalRequested(
     provider?: string;
     path?: string;
     action?: string;
+    label?: string;
     reason: string;
   },
 ): void {
@@ -128,6 +139,7 @@ export function recordApprovalRequested(
   const activityId = buildId("activity");
   state.snapshot.activity.push({
     id: activityId,
+    seq: nextSeq(state),
     kind: "approval",
     status: "running",
     summary: options.reason,
@@ -137,6 +149,7 @@ export function recordApprovalRequested(
     provider: options.provider,
     path: options.path,
     action: options.action,
+    label: options.label,
     toolUseId: options.toolUseId,
   });
   state.activeApprovalActivityId = activityId;

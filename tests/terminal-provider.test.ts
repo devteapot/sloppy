@@ -73,6 +73,12 @@ describe("TerminalProvider", () => {
     expect(result.status).toBe("ok");
     expect((result.data as { stdout: string }).stdout).toBe("hello");
 
+    const session = await consumer.query("/session", 1);
+    const executeAffordance = session.affordances?.find((item) => item.action === "execute") as
+      | { resultKind?: string }
+      | undefined;
+    expect(executeAffordance?.resultKind).toBe("terminal");
+
     const history = await consumer.query("/history", 2);
     expect(history.children?.length).toBeGreaterThan(0);
   });

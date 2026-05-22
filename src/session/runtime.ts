@@ -3,7 +3,12 @@ import { join, resolve } from "node:path";
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
-import { llmProviderSchema, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
+import {
+  llmProviderSchema,
+  llmReasoningEffortSchema,
+  llmThinkingDisplaySchema,
+  type SloppyConfig,
+} from "../config/schema";
 import type {
   AgentCallbacks,
   AgentRunResult,
@@ -12,6 +17,7 @@ import type {
   ResolvedApprovalToolResult,
   RoleProfile,
 } from "../core/agent";
+import { renderEditDiff } from "../core/diff";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
@@ -46,7 +52,7 @@ import {
 } from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
-import type { ApprovalItem, SessionStoreEventType } from "./types";
+import type { ApprovalItem, JsonValue, SessionStoreEventType, ToolCallResult } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 
@@ -115,6 +121,10 @@ function buildToolResultBlock(toolUseId: string, result: ResultMessage): ToolRes
 
 const PARAMS_PREVIEW_BYTE_LIMIT = 1500;
 const PARAMS_PREVIEW_LINE_LIMIT = 24;
+const TOOL_RESULT_BYTE_LIMIT = 12000;
+const TOOL_RESULT_STRING_BYTE_LIMIT = 4000;
+const TOOL_RESULT_ARRAY_ITEM_LIMIT = 100;
+const TOOL_RESULT_OBJECT_ENTRY_LIMIT = 100;
 
 // Compact a tool's params into a multi-line preview for the activity feed.
 // Edit-shaped actions (write/edit/patch) put the new content/hunks first so
@@ -145,56 +155,6 @@ function previewToolParams(action: string, params: Record<string, unknown>): str
   return clampPreview(json);
 }
 
-// Render `{oldText, newText}` / `{old_string, new_string}` pairs (single
-// or arrayed under `edits`) as a unified-style diff so the TUI's diff
-// colorizer (lines starting with `+` / `-`) lights up.
-function renderEditDiff(params: Record<string, unknown>): string | undefined {
-  const pairs = collectEditPairs(params);
-  if (pairs.length === 0) return undefined;
-  const blocks: string[] = [];
-  pairs.forEach((pair, index) => {
-    if (index > 0) blocks.push("@@");
-    for (const line of pair.oldText.split(/\r?\n/)) blocks.push(`-${line}`);
-    for (const line of pair.newText.split(/\r?\n/)) blocks.push(`+${line}`);
-  });
-  return blocks.join("\n");
-}
-
-function collectEditPairs(
-  params: Record<string, unknown>,
-): Array<{ oldText: string; newText: string }> {
-  const pairs: Array<{ oldText: string; newText: string }> = [];
-  const single = readEditPair(params);
-  if (single) pairs.push(single);
-  const list = params.edits;
-  if (Array.isArray(list)) {
-    for (const entry of list) {
-      if (entry && typeof entry === "object") {
-        const pair = readEditPair(entry as Record<string, unknown>);
-        if (pair) pairs.push(pair);
-      }
-    }
-  }
-  return pairs;
-}
-
-function readEditPair(
-  source: Record<string, unknown>,
-): { oldText: string; newText: string } | null {
-  const oldText = pickString(source, ["oldText", "old_string", "old", "search"]);
-  const newText = pickString(source, ["newText", "new_string", "new", "replace"]);
-  if (oldText === null || newText === null) return null;
-  return { oldText, newText };
-}
-
-function pickString(source: Record<string, unknown>, keys: readonly string[]): string | null {
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === "string") return value;
-  }
-  return null;
-}
-
 function clampPreview(value: string): string {
   const lines = value.split(/\r?\n/);
   let truncatedLines = lines;
@@ -209,6 +169,104 @@ function clampPreview(value: string): string {
     return out;
   }
   return `${out.slice(0, PARAMS_PREVIEW_BYTE_LIMIT)}…`;
+}
+
+export function boundToolResult(
+  input: { kind?: string; data?: unknown } | undefined,
+): ToolCallResult | undefined {
+  if (!input) {
+    return undefined;
+  }
+  const kind =
+    typeof input.kind === "string" && input.kind.trim().length > 0 ? input.kind.trim() : undefined;
+  const budget = { remaining: TOOL_RESULT_BYTE_LIMIT, truncated: false };
+  const data =
+    Object.hasOwn(input, "data") && input.data !== undefined
+      ? boundJsonValue(input.data, budget, new WeakSet<object>())
+      : undefined;
+  if (!kind && data === undefined) {
+    return undefined;
+  }
+  return {
+    ...(kind ? { kind } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(budget.truncated ? { truncated: true } : {}),
+  };
+}
+
+function boundJsonValue(
+  value: unknown,
+  budget: { remaining: number; truncated: boolean },
+  seen: WeakSet<object>,
+): JsonValue {
+  if (budget.remaining <= 0) {
+    budget.truncated = true;
+    return "[truncated]";
+  }
+  if (value === null || typeof value === "boolean") {
+    budget.remaining -= 4;
+    return value;
+  }
+  if (typeof value === "number") {
+    budget.remaining -= 16;
+    return Number.isFinite(value) ? value : String(value);
+  }
+  if (typeof value === "string") {
+    const limit = Math.min(TOOL_RESULT_STRING_BYTE_LIMIT, Math.max(0, budget.remaining));
+    if (value.length > limit) {
+      budget.truncated = true;
+      budget.remaining = 0;
+      return `${value.slice(0, Math.max(0, limit - 16))}\n...[truncated]`;
+    }
+    budget.remaining -= value.length;
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const out = value.toString();
+    budget.remaining -= out.length;
+    return out;
+  }
+  if (typeof value !== "object") {
+    const out = String(value);
+    budget.remaining -= out.length;
+    return out;
+  }
+  if (seen.has(value)) {
+    budget.truncated = true;
+    return "[circular]";
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const out: JsonValue[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (index >= TOOL_RESULT_ARRAY_ITEM_LIMIT || budget.remaining <= 0) {
+          budget.truncated = true;
+          break;
+        }
+        out.push(boundJsonValue(value[index], budget, seen));
+      }
+      return out;
+    }
+
+    const out: Record<string, JsonValue> = {};
+    const entries = Object.entries(value as Record<string, unknown>);
+    for (let index = 0; index < entries.length; index += 1) {
+      if (index >= TOOL_RESULT_OBJECT_ENTRY_LIMIT || budget.remaining <= 0) {
+        budget.truncated = true;
+        break;
+      }
+      const [key, entryValue] = entries[index] ?? ["", undefined];
+      if (!key || entryValue === undefined || typeof entryValue === "function") {
+        continue;
+      }
+      budget.remaining -= key.length;
+      out[key] = boundJsonValue(entryValue, budget, seen);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 export interface SessionAgent {
@@ -383,6 +441,25 @@ export class SessionRuntime {
           return;
         }
         this.store.appendAssistantText(this.currentTurnId, chunk);
+      },
+      onThinking: (delta) => {
+        if (!this.currentTurnId) {
+          return;
+        }
+        this.store.appendAssistantThinking(this.currentTurnId, {
+          blockId: delta.id,
+          provider: delta.provider,
+          model: delta.model,
+          format: delta.format,
+          display: delta.display,
+          delta: delta.delta,
+          startedAt: delta.startedAt,
+          completedAt: delta.completedAt,
+          elapsedMs: delta.elapsedMs,
+          tokenCount: delta.tokenCount,
+          tokenCountSource: delta.tokenCountSource,
+          done: delta.done,
+        });
       },
       onToolEvent: (event) => {
         if (!this.currentTurnId) {
@@ -655,6 +732,18 @@ export class SessionRuntime {
         : typeof params.reasoningEffort === "string"
           ? llmReasoningEffortSchema.parse(params.reasoningEffort)
           : undefined;
+    const thinkingEnabled =
+      typeof params.thinking_enabled === "boolean"
+        ? params.thinking_enabled
+        : typeof params.thinkingEnabled === "boolean"
+          ? params.thinkingEnabled
+          : undefined;
+    const thinkingDisplay =
+      typeof params.thinking_display === "string"
+        ? llmThinkingDisplaySchema.parse(params.thinking_display)
+        : typeof params.thinkingDisplay === "string"
+          ? llmThinkingDisplaySchema.parse(params.thinkingDisplay)
+          : undefined;
     const adapterId =
       typeof params.adapter_id === "string"
         ? params.adapter_id
@@ -671,6 +760,8 @@ export class SessionRuntime {
       provider,
       model,
       reasoningEffort,
+      thinkingEnabled,
+      thinkingDisplay,
       adapterId,
       baseUrl,
       apiKey,
@@ -753,6 +844,7 @@ export class SessionRuntime {
       : await this.agent.invokeProvider(approval.provider, approval.sourcePath, "approve");
     if (this.shouldResumePendingApproval(approval)) {
       const toolUseId = this.pendingToolUseId(approval);
+      const resultKind = this.pendingApproval?.invocation.resultKind;
       this.pendingApproval = null;
       this.activeTurnPromise = this.resumeTurn(approval.turnId ?? this.currentTurnId ?? "", {
         block: buildToolResultBlock(toolUseId, result),
@@ -768,6 +860,10 @@ export class SessionRuntime {
             : undefined,
         errorCode: result.error?.code,
         errorMessage: result.error?.message,
+        result: {
+          kind: resultKind,
+          data: result.data,
+        },
       });
     }
 
@@ -1021,6 +1117,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           paramsPreview: previewToolParams(event.invocation.action, event.invocation.params),
         });
         break;
@@ -1033,8 +1130,10 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           taskId: event.taskId,
           errorMessage: event.errorMessage,
+          result: boundToolResult(event.result),
         });
         break;
       }
@@ -1058,6 +1157,7 @@ export class SessionRuntime {
           provider: event.invocation.providerId,
           path: event.invocation.path,
           action: event.invocation.action,
+          label: event.invocation.label,
           reason: event.errorMessage,
         });
         break;
@@ -1170,6 +1270,7 @@ export class SessionRuntime {
       continuation: pluginTurn?.continuation ?? false,
       inputTokens: result.usage?.inputTokens,
       outputTokens: result.usage?.outputTokens,
+      thinkingTokens: result.usage?.thinkingTokens,
     });
     this.startNextQueuedTurn();
   }

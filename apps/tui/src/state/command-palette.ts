@@ -1,154 +1,127 @@
-import type { SupervisorSnapshot } from "../slop/supervisor-client";
-import type { PluginItem, PluginPaletteContribution, SessionViewSnapshot } from "../slop/types";
+import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
+import type { SupervisorSnapshot } from "../backend/supervisor-client";
 import type { LocalCommand } from "./commands";
-import { NAVIGATION_ITEMS } from "./navigation";
+import { projectPluginActions } from "./manifest-projection";
 
 export type PaletteCommand = {
   id: string;
   label: string;
-  description: string;
-  shortcut?: string;
+  description?: string;
   command: LocalCommand;
 };
 
-function isPluginPaletteEntryAvailable(
-  snapshot: SessionViewSnapshot,
-  entry: PluginPaletteContribution,
-): boolean {
-  if (!entry.whenActionAvailable) {
-    return true;
-  }
-  return snapshot.actionsByPath[entry.path]?.includes(entry.whenActionAvailable) ?? false;
-}
-
-function buildPluginPaletteCommands(
-  snapshot: SessionViewSnapshot,
-  plugin: PluginItem,
-): PaletteCommand[] {
-  return (plugin.tui.palette ?? [])
-    .filter((entry) => isPluginPaletteEntryAvailable(snapshot, entry))
-    .map(
-      (entry): PaletteCommand => ({
-        id: `plugin:${plugin.id}:${entry.id}`,
-        label: entry.label,
-        description: entry.description,
-        shortcut: entry.shortcut,
-        command: {
-          type: "plugin_action",
-          pluginId: plugin.id,
-          actionId: entry.id,
-          label: entry.label,
-          path: entry.path,
-          action: entry.action,
-          params: entry.params,
-        },
-      }),
-    );
-}
+const ROUTES: TuiRoute[] = ["chat", "setup", "approvals", "tasks", "apps", "inspect", "runtime"];
 
 export function buildCommandPaletteCommands(
   snapshot: SessionViewSnapshot,
-  mouseEnabled: boolean,
-  supervisor?: SupervisorSnapshot,
+  supervisor?: SupervisorSnapshot | null,
 ): PaletteCommand[] {
-  const commands: PaletteCommand[] = [
-    ...NAVIGATION_ITEMS.map(
-      (item): PaletteCommand => ({
-        id: `route:${item.route}`,
-        label: `Open ${item.label}`,
-        description: `Switch to the ${item.label.toLowerCase()} route`,
-        shortcut: item.shortcut,
-        command: { type: "route", route: item.route },
-      }),
-    ),
-    {
-      id: "inspect:open",
-      label: "Open Inspector",
-      description: "Browse SLOP state trees",
-      shortcut: "/inspect",
-      command: { type: "inspect_open" },
-    },
-    {
-      id: "help",
-      label: "Open Help",
-      description: "Show hotkeys and slash commands",
-      shortcut: "/help",
-      command: { type: "help" },
-    },
-    {
-      id: "verbosity:cycle",
-      label: "Cycle Verbosity",
-      description: "compact ↔ normal ↔ verbose",
-      shortcut: "/verbosity",
-      command: { type: "verbosity", mode: "cycle" },
-    },
-    {
-      id: "verbosity:compact",
-      label: "Verbosity: Compact",
-      description: "Hide tool calls; show only messages",
-      command: { type: "verbosity", mode: "compact" },
-    },
-    {
-      id: "verbosity:normal",
-      label: "Verbosity: Normal",
-      description: "Active turn tools inline; past turns collapsed",
-      command: { type: "verbosity", mode: "normal" },
-    },
-    {
-      id: "verbosity:verbose",
-      label: "Verbosity: Verbose",
-      description: "All tool calls expanded with previews",
-      command: { type: "verbosity", mode: "verbose" },
-    },
-    {
-      id: "mouse:toggle",
-      label: mouseEnabled ? "Disable Mouse Mode" : "Enable Mouse Mode",
-      description: mouseEnabled
-        ? "Restore terminal text selection behavior"
-        : "Enable mouse reporting inside the TUI",
-      shortcut: "/mouse",
-      command: { type: "mouse", mode: mouseEnabled ? "off" : "on" },
-    },
-    ...snapshot.plugins.flatMap((plugin) => buildPluginPaletteCommands(snapshot, plugin)),
-  ];
+  const commands: PaletteCommand[] = ROUTES.map((route) => ({
+    id: `route:${route}`,
+    label: `Open ${route}`,
+    command: route === "inspect" ? { type: "inspect_open" } : { type: "route", route },
+  }));
 
   for (const item of snapshot.queue) {
-    if (!item.canCancel) {
+    if (item.canCancel) {
+      commands.push({
+        id: `queue:${item.id}`,
+        label: `Cancel queued #${item.position}`,
+        description: item.summary,
+        command: { type: "queue_cancel", target: item.id },
+      });
+    }
+  }
+
+  for (const approval of snapshot.approvals) {
+    if (approval.canApprove) {
+      commands.push({
+        id: `approval:${approval.id}:approve`,
+        label: `Approve ${approval.provider}.${approval.action}`,
+        description: approval.reason,
+        command: {
+          type: "invoke",
+          targetId: "session",
+          path: `/approvals/${approval.id}`,
+          action: "approve",
+        },
+      });
+    }
+    if (approval.canReject) {
+      commands.push({
+        id: `approval:${approval.id}:reject`,
+        label: `Reject ${approval.provider}.${approval.action}`,
+        description: approval.reason,
+        command: {
+          type: "invoke",
+          targetId: "session",
+          path: `/approvals/${approval.id}`,
+          action: "reject",
+        },
+      });
+    }
+  }
+
+  for (const task of snapshot.tasks) {
+    if (task.canCancel) {
+      commands.push({
+        id: `task:${task.id}:cancel`,
+        label: `Cancel task ${task.providerTaskId}`,
+        description: task.message,
+        command: {
+          type: "invoke",
+          targetId: "session",
+          path: `/tasks/${task.id}`,
+          action: "cancel",
+        },
+      });
+    }
+  }
+
+  for (const projected of projectPluginActions(snapshot)) {
+    if (!projected.available || projected.action.argument) {
       continue;
     }
     commands.push({
-      id: `queue:${item.id}`,
-      label: `Cancel Queue #${item.position}`,
-      description: item.summary,
-      command: { type: "queue_cancel", target: item.id },
-    });
-  }
-
-  for (const app of snapshot.apps) {
-    commands.push({
-      id: `app:${app.id}:inspect`,
-      label: `Inspect ${app.name}`,
-      description: `${app.transport} provider state`,
+      id: `plugin:${projected.pluginId}:${projected.action.id}`,
+      label: projected.action.label,
+      description: projected.action.description,
       command: {
-        type: "query",
-        path: "/",
-        depth: 2,
-        targetId: app.id,
+        type: "plugin_action",
+        pluginId: projected.pluginId,
+        actionId: projected.action.id,
+        label: projected.action.label,
+        path: projected.action.invoke.path,
+        action: projected.action.invoke.action,
+        params: projected.action.invoke.params,
       },
     });
   }
 
-  if (supervisor?.connection.status === "connected") {
-    for (const scope of supervisor.scopes) {
-      if (!scope.canCreate) {
-        continue;
-      }
+  for (const session of supervisor?.sessions ?? []) {
+    if (!session.selected && session.canSwitch) {
       commands.push({
-        id: `session:new:${scope.id}`,
-        label: `New Session: ${scope.name}`,
-        description: scope.projectId
-          ? `${scope.workspaceId}/${scope.projectId} at ${scope.root}`
-          : `${scope.workspaceId} at ${scope.root}`,
+        id: `session:${session.id}:switch`,
+        label: `Switch session ${session.title ?? session.id}`,
+        description: session.goalObjective ?? session.turnMessage,
+        command: { type: "session_switch", sessionId: session.id },
+      });
+    }
+    if (session.canStop) {
+      commands.push({
+        id: `session:${session.id}:stop`,
+        label: `Stop session ${session.title ?? session.id}`,
+        command: { type: "session_stop", sessionId: session.id },
+      });
+    }
+  }
+
+  for (const scope of supervisor?.scopes ?? []) {
+    if (scope.canCreate) {
+      commands.push({
+        id: `scope:${scope.id}:new`,
+        label: `New session in ${scope.name}`,
+        description: scope.root,
         command: {
           type: "session_new",
           workspaceId: scope.workspaceId,
@@ -156,28 +129,6 @@ export function buildCommandPaletteCommands(
           title: scope.name,
         },
       });
-    }
-
-    for (const session of supervisor.sessions) {
-      const sessionScope = session.projectId
-        ? `${session.workspaceId}/${session.projectId}`
-        : (session.workspaceId ?? session.socketPath);
-      if (session.canSwitch && !session.selected) {
-        commands.push({
-          id: `session:switch:${session.id}`,
-          label: `Switch Session: ${session.title ?? session.id}`,
-          description: `${sessionScope} · turn=${session.turnState ?? "unknown"} goal=${session.goalStatus ?? "none"}`,
-          command: { type: "session_switch", sessionId: session.id },
-        });
-      }
-      if (session.canStop) {
-        commands.push({
-          id: `session:stop:${session.id}`,
-          label: `Stop Session: ${session.title ?? session.id}`,
-          description: session.socketPath,
-          command: { type: "session_stop", sessionId: session.id },
-        });
-      }
     }
   }
 

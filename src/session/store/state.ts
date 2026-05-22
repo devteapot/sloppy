@@ -5,6 +5,7 @@ import { emptyUsage, normalizeUsage } from "./usage";
 
 export interface SessionStoreState {
   snapshot: AgentSessionSnapshot;
+  nextSeq: number;
   activeAssistantMessageId: string | null;
   activeModelActivityId: string | null;
   activeApprovalActivityId: string | null;
@@ -83,6 +84,7 @@ export function createInitialState(options: {
       tasks: [],
       apps: [],
     },
+    nextSeq: 1,
     activeAssistantMessageId: null,
     activeModelActivityId: null,
     activeApprovalActivityId: null,
@@ -129,8 +131,11 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
 }
 
 export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): SessionStoreState {
+  const restored = cloneSnapshot(snapshot);
+  const nextSeq = normalizeSnapshotSeqs(restored);
   return {
-    snapshot: cloneSnapshot(snapshot),
+    snapshot: restored,
+    nextSeq,
     activeAssistantMessageId: null,
     activeModelActivityId: null,
     activeApprovalActivityId: null,
@@ -148,4 +153,51 @@ export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): Session
     usageChanged: false,
     sessionChanged: false,
   };
+}
+
+function normalizeSnapshotSeqs(snapshot: AgentSessionSnapshot): number {
+  let maxSeq = 0;
+  for (const message of snapshot.transcript) {
+    if (Number.isInteger(message.seq) && message.seq > 0) {
+      maxSeq = Math.max(maxSeq, message.seq);
+    }
+  }
+  for (const item of snapshot.activity) {
+    if (Number.isInteger(item.seq) && item.seq > 0) {
+      maxSeq = Math.max(maxSeq, item.seq);
+    }
+  }
+
+  const missing = [
+    ...snapshot.transcript
+      .filter((message) => !Number.isInteger(message.seq) || message.seq <= 0)
+      .map((message, index) => ({
+        kind: "transcript" as const,
+        time: message.createdAt,
+        index,
+        value: message,
+      })),
+    ...snapshot.activity
+      .filter((item) => !Number.isInteger(item.seq) || item.seq <= 0)
+      .map((item, index) => ({
+        kind: "activity" as const,
+        time: item.startedAt,
+        index,
+        value: item,
+      })),
+  ].sort((left, right) => {
+    const timeDiff = Date.parse(left.time) - Date.parse(right.time);
+    if (Number.isFinite(timeDiff) && timeDiff !== 0) {
+      return timeDiff;
+    }
+    const priorityDiff =
+      (left.kind === "transcript" ? 0 : 1) - (right.kind === "transcript" ? 0 : 1);
+    return priorityDiff || left.index - right.index;
+  });
+
+  for (const entry of missing) {
+    maxSeq += 1;
+    entry.value.seq = maxSeq;
+  }
+  return maxSeq + 1;
 }

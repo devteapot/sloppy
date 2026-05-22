@@ -3,6 +3,7 @@ import type { LlmTool } from "@slop-ai/consumer/browser";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 
 import { OpenAICompatibleAdapter, toOpenAIMessages } from "../src/llm/openai-compatible";
+import type { EffectiveThinkingConfig } from "../src/llm/thinking";
 import type { ConversationMessage } from "../src/llm/types";
 
 const READ_TOOL: LlmTool = {
@@ -19,6 +20,10 @@ const READ_TOOL: LlmTool = {
     },
   },
 };
+
+type StreamListener =
+  | ((delta: string, snapshot: string) => void)
+  | ((chunk: unknown, snapshot: unknown) => void);
 
 function createCompletion(): ChatCompletion {
   return {
@@ -54,6 +59,15 @@ function createCompletion(): ChatCompletion {
     },
   } as ChatCompletion;
 }
+
+const THINKING_CONFIG = {
+  enabled: true,
+  display: "hidden",
+  effort: "medium",
+  effectiveEnabled: true,
+  effectiveReason: "configured",
+  effectiveEffort: "medium",
+} satisfies EffectiveThinkingConfig;
 
 describe("OpenAICompatibleAdapter", () => {
   test("converts tool results into OpenAI tool messages", () => {
@@ -126,8 +140,13 @@ describe("OpenAICompatibleAdapter", () => {
         completions: {
           create: async () => completion,
           stream: () => ({
-            on: (_event: "content", listener: (delta: string, snapshot: string) => void) => {
-              listener("Reading the file now.", "Reading the file now.");
+            on: (event: "content" | "chunk", listener: StreamListener) => {
+              if (event === "content") {
+                (listener as (delta: string, snapshot: string) => void)(
+                  "Reading the file now.",
+                  "Reading the file now.",
+                );
+              }
             },
             finalChatCompletion: async () => completion,
           }),
@@ -169,6 +188,142 @@ describe("OpenAICompatibleAdapter", () => {
         outputTokens: 5,
       },
     });
+  });
+
+  test("requests and surfaces OpenAI-compatible thinking output", async () => {
+    let receivedParameters: Record<string, unknown> | undefined;
+    const completion = createCompletion() as ChatCompletion & {
+      usage: NonNullable<ChatCompletion["usage"]> & {
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
+    };
+    (completion.choices[0]!.message as unknown as Record<string, unknown>).reasoning_content =
+      "checked the plan";
+    completion.usage.completion_tokens_details = { reasoning_tokens: 8 };
+    const client = {
+      chat: {
+        completions: {
+          create: async (parameters: Record<string, unknown>) => {
+            receivedParameters = parameters;
+            return completion;
+          },
+          stream: () => {
+            throw new Error("stream should not be called");
+          },
+        },
+      },
+    };
+    const thinkingDeltas: string[] = [];
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "gpt-5.4",
+      provider: "openai",
+      thinking: THINKING_CONFIG,
+      client,
+    });
+
+    const response = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+      onThinking: (delta) => thinkingDeltas.push(delta.delta),
+    });
+
+    expect(receivedParameters?.reasoning_effort).toBe("medium");
+    expect(thinkingDeltas).toEqual(["checked the plan"]);
+    expect(response.thinking).toEqual([
+      {
+        type: "thinking",
+        id: "openai-thinking-0",
+        provider: "openai",
+        model: "gpt-5.4",
+        format: "raw",
+        display: "hidden",
+        text: "checked the plan",
+        tokenCount: 8,
+        tokenCountSource: "reported",
+      },
+    ]);
+    expect(response.usage.thinkingTokens).toBe(8);
+  });
+
+  test("streams OpenAI-compatible thinking deltas from chunks", async () => {
+    const completion = createCompletion() as ChatCompletion & {
+      usage: NonNullable<ChatCompletion["usage"]> & {
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
+    };
+    completion.usage.completion_tokens_details = { reasoning_tokens: 3 };
+    const client = {
+      chat: {
+        completions: {
+          create: async () => completion,
+          stream: () => ({
+            on: (event: "content" | "chunk", listener: StreamListener) => {
+              if (event === "chunk") {
+                (listener as (chunk: unknown, snapshot: unknown) => void)(
+                  {
+                    choices: [
+                      {
+                        delta: {
+                          reasoning_content: "streamed reasoning",
+                        },
+                      },
+                    ],
+                  },
+                  {},
+                );
+              }
+              if (event === "content") {
+                (listener as (delta: string, snapshot: string) => void)(
+                  "Reading the file now.",
+                  "Reading the file now.",
+                );
+              }
+            },
+            finalChatCompletion: async () => completion,
+          }),
+        },
+      },
+    };
+    const thinkingDeltas: string[] = [];
+
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "open-model",
+      provider: "openrouter",
+      thinking: THINKING_CONFIG,
+      client,
+    });
+
+    const response = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+      onText: () => undefined,
+      onThinking: (delta) => {
+        if (delta.delta) thinkingDeltas.push(delta.delta);
+      },
+    });
+
+    expect(thinkingDeltas).toEqual(["streamed reasoning"]);
+    expect(response.thinking).toMatchObject([
+      {
+        type: "thinking",
+        id: "openrouter-thinking-0",
+        provider: "openrouter",
+        model: "open-model",
+        format: "raw",
+        display: "hidden",
+        text: "streamed reasoning",
+        tokenCount: 3,
+        tokenCountSource: "reported",
+      },
+    ]);
+    expect(response.usage.thinkingTokens).toBe(3);
   });
 
   test("counts text tokens with the OpenAI input token endpoint", async () => {

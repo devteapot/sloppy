@@ -560,6 +560,7 @@ export class AcpSessionAgent implements SessionAgent {
       providerId: this.providerId,
       path: `/tools/${toolCall.toolCallId}`,
       action,
+      label: title,
       params: {
         title,
         rawInput,

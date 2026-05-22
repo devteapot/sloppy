@@ -125,6 +125,11 @@ transitions, topology proposals, and route dispatch. Treat the log as an audit
 trail, not as the source of truth for live UI state; current state remains in
 the public session provider.
 
+Thinking output is public transcript state, but audit logs should not retain
+the Thinking-output text by default. Log that Thinking output occurred, plus
+provider, block id, token count, and text length when useful; redact or omit the
+text itself unless an explicit operator debug mode is added.
+
 ## Restart Recovery
 
 Session snapshots are persisted as versioned envelopes when

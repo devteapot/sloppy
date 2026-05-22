@@ -20,7 +20,9 @@ export class SessionPluginManager {
   constructor(
     private readonly plugins: SessionRuntimePlugin[],
     private readonly ctx: PluginRuntimeContext,
-  ) {}
+  ) {
+    validateSessionPluginIds(plugins);
+  }
 
   list(): SessionRuntimePlugin[] {
     return [...this.plugins];
@@ -74,13 +76,13 @@ export class SessionPluginManager {
           provider_ids: plugin.providerIds ?? [],
           extension_namespaces: plugin.extensionNamespaces ?? [],
           session_paths: sessionPaths,
-          tui: plugin.tui ?? {},
+          ui: plugin.ui ?? {},
         },
         summary: plugin.description ?? plugin.id,
         actions: {
-          inspect_manifest: action(async () => ({ status: "ok", manifest: plugin.tui ?? {} }), {
+          inspect_manifest: action(async () => ({ status: "ok", manifest: plugin.ui ?? {} }), {
             label: "Inspect UI Manifest",
-            description: "Return this session plugin's declarative TUI contribution manifest.",
+            description: "Return this session plugin's declarative UI contribution manifest.",
             estimate: "instant",
             idempotent: true,
           }),
@@ -93,7 +95,7 @@ export class SessionPluginManager {
       props: {
         count: items.length,
         ids: items.map((item) => item.id),
-        ui_manifest_version: 1,
+        ui_manifest_version: 2,
       },
       summary: "Active first-party session runtime plugins.",
       items,
@@ -151,5 +153,20 @@ export class SessionPluginManager {
   onTurnFailure(event: PluginTurnFailureEvent): void {
     const plugin = this.plugins.find((candidate) => candidate.id === event.pluginTurn.pluginId);
     plugin?.onTurnFailure?.(event, this.ctx);
+  }
+}
+
+function validateSessionPluginIds(plugins: SessionRuntimePlugin[]): void {
+  const seen = new Set<string>();
+  for (const plugin of plugins) {
+    if (!plugin.id || /[\s:]/.test(plugin.id)) {
+      throw new Error(
+        `Invalid session plugin id '${plugin.id}'. Plugin ids must be non-empty and cannot contain whitespace or ':'.`,
+      );
+    }
+    if (seen.has(plugin.id)) {
+      throw new Error(`Duplicate session plugin id '${plugin.id}'. Plugin ids must be unique.`);
+    }
+    seen.add(plugin.id);
   }
 }

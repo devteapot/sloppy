@@ -19,12 +19,73 @@ export const llmReasoningEffortSchema = z.enum([
   "xhigh",
 ]);
 
+export const llmThinkingDisplaySchema = z.enum(["visible", "hidden"]);
+
+const providerOptionsSchema = z.record(z.string(), z.unknown()).default({});
+
+const openAiThinkingSchema = z
+  .object({
+    effort: llmReasoningEffortSchema.optional(),
+    summary: z.enum(["auto", "concise", "detailed", "none"]).optional(),
+    options: providerOptionsSchema.optional(),
+  })
+  .strict();
+
+const anthropicThinkingSchema = z
+  .object({
+    type: z.enum(["adaptive", "enabled", "disabled"]).optional(),
+    effort: llmReasoningEffortSchema.optional(),
+    budgetTokens: z.number().int().min(1024).optional(),
+    output: z.enum(["summarized", "omitted"]).optional(),
+    options: providerOptionsSchema.optional(),
+  })
+  .strict();
+
+const geminiThinkingSchema = z
+  .object({
+    includeThoughts: z.boolean().optional(),
+    thinkingBudget: z.number().int().optional(),
+    thinkingLevel: z.enum(["low", "medium", "high"]).optional(),
+    options: providerOptionsSchema.optional(),
+  })
+  .strict();
+
+const openRouterThinkingSchema = z
+  .object({
+    effort: llmReasoningEffortSchema.optional(),
+    exclude: z.boolean().optional(),
+    options: providerOptionsSchema.optional(),
+  })
+  .strict();
+
+const ollamaThinkingSchema = z
+  .object({
+    think: z.union([z.boolean(), z.enum(["low", "medium", "high"])]).optional(),
+    options: providerOptionsSchema.optional(),
+  })
+  .strict();
+
+export const llmThinkingConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    display: llmThinkingDisplaySchema.optional(),
+    effort: llmReasoningEffortSchema.optional(),
+    openai: openAiThinkingSchema.optional(),
+    openaiCodex: openAiThinkingSchema.optional(),
+    anthropic: anthropicThinkingSchema.optional(),
+    gemini: geminiThinkingSchema.optional(),
+    openrouter: openRouterThinkingSchema.optional(),
+    ollama: ollamaThinkingSchema.optional(),
+  })
+  .strict();
+
 export const llmProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().trim().min(1).optional(),
   provider: llmProviderSchema,
   model: z.string().optional(),
   reasoningEffort: llmReasoningEffortSchema.optional(),
+  thinking: llmThinkingConfigSchema.optional(),
   adapterId: z.string().optional(),
   apiKeyEnv: z.string().optional(),
   baseUrl: z.string().optional(),
@@ -350,6 +411,7 @@ export const sloppyConfigSchema = z.object({
       provider: llmProviderSchema.default("anthropic"),
       model: z.string().optional(),
       reasoningEffort: llmReasoningEffortSchema.optional(),
+      thinking: llmThinkingConfigSchema.default({}),
       adapterId: z.string().optional(),
       apiKeyEnv: z.string().optional(),
       baseUrl: z.string().optional(),
@@ -360,6 +422,7 @@ export const sloppyConfigSchema = z.object({
     })
     .default({
       provider: "anthropic",
+      thinking: {},
       profiles: [],
       maxTokens: 4096,
     }),
@@ -422,6 +485,20 @@ type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
 export type LlmProvider = z.infer<typeof llmProviderSchema>;
 export type LlmReasoningEffort = z.infer<typeof llmReasoningEffortSchema>;
+export type LlmThinkingDisplay = z.infer<typeof llmThinkingDisplaySchema>;
+export type LlmThinkingConfigInput = z.infer<typeof llmThinkingConfigSchema>;
+
+export type LlmThinkingEffectiveReason =
+  | "configured"
+  | "model_forces_thinking"
+  | "provider_unsupported"
+  | "unknown";
+
+export type LlmThinkingConfig = LlmThinkingConfigInput & {
+  enabled: boolean;
+  display: LlmThinkingDisplay;
+  effort: LlmReasoningEffort;
+};
 
 export type LlmProfileConfig = {
   id: string;
@@ -429,6 +506,7 @@ export type LlmProfileConfig = {
   provider: LlmProvider;
   model: string;
   reasoningEffort?: LlmReasoningEffort;
+  thinking?: LlmThinkingConfigInput;
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
@@ -439,6 +517,7 @@ export interface LlmConfig {
   provider: LlmProvider;
   model: string;
   reasoningEffort?: LlmReasoningEffort;
+  thinking?: LlmThinkingConfig;
   adapterId?: string;
   apiKeyEnv?: string;
   baseUrl?: string;

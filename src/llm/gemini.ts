@@ -8,6 +8,7 @@ import {
   GoogleGenAI,
 } from "@google/genai";
 import type { LlmTool } from "@slop-ai/consumer/browser";
+import type { EffectiveThinkingConfig } from "./thinking";
 import type {
   AssistantContentBlock,
   ConversationMessage,
@@ -15,6 +16,7 @@ import type {
   LlmChatOptions,
   LlmResponse,
   LlmTokenCount,
+  ThinkingOutputBlock,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
@@ -32,10 +34,14 @@ interface GeminiClient {
 
 export interface GeminiStreamState {
   text: string;
+  thinkingText: string;
+  thinkingStartedAt?: string;
+  thinkingStartedMs?: number;
   functionCalls: FunctionCall[];
   finishReason?: FinishReason;
   inputTokens?: number;
   outputTokens?: number;
+  thinkingTokens?: number;
 }
 
 function parseToolResultValue(content: string): unknown {
@@ -139,6 +145,13 @@ function extractGeminiText(response: GenerateContentResponse): string {
     .join("");
 }
 
+function extractGeminiThinkingText(response: GenerateContentResponse): string {
+  return (response.candidates?.[0]?.content?.parts ?? [])
+    .filter((part) => typeof part.text === "string" && part.thought === true)
+    .map((part) => part.text ?? "")
+    .join("");
+}
+
 function extractGeminiFunctionCalls(response: GenerateContentResponse): FunctionCall[] {
   return (response.candidates?.[0]?.content?.parts ?? []).flatMap((part) =>
     part.functionCall ? [part.functionCall] : [],
@@ -181,17 +194,42 @@ function normalizeFinishReason(
   return "end_turn";
 }
 
-function normalizeGeminiResponse(response: GenerateContentResponse): LlmResponse {
+function normalizeGeminiResponse(
+  response: GenerateContentResponse,
+  thinking?: EffectiveThinkingConfig,
+  model?: string,
+): LlmResponse {
   const text = extractGeminiText(response);
+  const thinkingText = extractGeminiThinkingText(response);
   const functionCalls = extractGeminiFunctionCalls(response);
   const finishReason = response.candidates?.[0]?.finishReason;
 
   return {
     content: buildAssistantContent(text, functionCalls),
+    thinking:
+      thinkingText.length > 0
+        ? [
+            {
+              type: "thinking",
+              id: "gemini-thinking-0",
+              provider: "gemini",
+              model,
+              format: "raw",
+              display: thinking?.display ?? "visible",
+              text: thinkingText,
+              tokenCount: response.usageMetadata?.thoughtsTokenCount,
+              tokenCountSource:
+                response.usageMetadata?.thoughtsTokenCount === undefined
+                  ? "unavailable"
+                  : "reported",
+            },
+          ]
+        : undefined,
     stopReason: normalizeFinishReason(finishReason, functionCalls),
     usage: {
       inputTokens: response.usageMetadata?.promptTokenCount,
       outputTokens: response.usageMetadata?.candidatesTokenCount,
+      thinkingTokens: response.usageMetadata?.thoughtsTokenCount,
     },
   } satisfies LlmResponse;
 }
@@ -199,6 +237,7 @@ function normalizeGeminiResponse(response: GenerateContentResponse): LlmResponse
 function createGeminiStreamState(): GeminiStreamState {
   return {
     text: "",
+    thinkingText: "",
     functionCalls: [],
   };
 }
@@ -218,6 +257,14 @@ function accumulateGeminiStreamChunk(
   const text = extractGeminiText(chunk);
   if (text.length > 0) {
     state.text += text;
+  }
+  const thinkingText = extractGeminiThinkingText(chunk);
+  if (thinkingText.length > 0) {
+    if (!state.thinkingStartedAt) {
+      state.thinkingStartedAt = new Date().toISOString();
+      state.thinkingStartedMs = Date.now();
+    }
+    state.thinkingText += thinkingText;
   }
 
   const existingByKey = new Map(
@@ -245,23 +292,77 @@ function accumulateGeminiStreamChunk(
   if (chunk.usageMetadata?.candidatesTokenCount != null) {
     state.outputTokens = chunk.usageMetadata.candidatesTokenCount;
   }
+  if (chunk.usageMetadata?.thoughtsTokenCount != null) {
+    state.thinkingTokens = chunk.usageMetadata.thoughtsTokenCount;
+  }
 
   return state;
 }
 
-function streamStateToLlmResponse(state: GeminiStreamState): LlmResponse {
+function streamStateToLlmResponse(
+  state: GeminiStreamState,
+  thinking?: EffectiveThinkingConfig,
+  model?: string,
+): LlmResponse {
   return {
     content: buildAssistantContent(state.text, state.functionCalls),
+    thinking:
+      state.thinkingText.length > 0
+        ? [
+            {
+              type: "thinking",
+              id: "gemini-thinking-0",
+              provider: "gemini",
+              model,
+              format: "raw",
+              display: thinking?.display ?? "visible",
+              text: state.thinkingText,
+              startedAt: state.thinkingStartedAt,
+              completedAt: new Date().toISOString(),
+              elapsedMs: state.thinkingStartedMs ? Date.now() - state.thinkingStartedMs : undefined,
+              tokenCount: state.thinkingTokens,
+              tokenCountSource: state.thinkingTokens === undefined ? "unavailable" : "reported",
+            },
+          ]
+        : undefined,
     stopReason: normalizeFinishReason(state.finishReason, state.functionCalls),
     usage: {
       inputTokens: state.inputTokens,
       outputTokens: state.outputTokens,
+      thinkingTokens: state.thinkingTokens,
     },
   } satisfies LlmResponse;
 }
 
-function buildGeminiRequest(options: LlmChatOptions, model: string): Record<string, unknown> {
+function geminiThinkingConfig(
+  thinking: EffectiveThinkingConfig | undefined,
+  model: string,
+): Record<string, unknown> | undefined {
+  if (!thinking) {
+    return undefined;
+  }
+  if (!thinking.effectiveEnabled) {
+    return { thinkingBudget: 0 };
+  }
+  const provider = thinking.gemini;
+  const useThinkingLevel = model.toLowerCase().startsWith("gemini-3");
+  return {
+    includeThoughts: provider?.includeThoughts ?? true,
+    thinkingBudget: useThinkingLevel ? provider?.thinkingBudget : (provider?.thinkingBudget ?? -1),
+    thinkingLevel: useThinkingLevel
+      ? (provider?.thinkingLevel ?? "medium")
+      : provider?.thinkingLevel,
+    ...(provider?.options ?? {}),
+  };
+}
+
+function buildGeminiRequest(
+  options: LlmChatOptions,
+  model: string,
+  thinking?: EffectiveThinkingConfig,
+): Record<string, unknown> {
   const tools = options.tools?.length ? toGeminiTools(options.tools) : undefined;
+  const thinkingConfig = geminiThinkingConfig(thinking, model);
 
   return {
     model,
@@ -270,6 +371,7 @@ function buildGeminiRequest(options: LlmChatOptions, model: string): Record<stri
       abortSignal: options.signal,
       systemInstruction: options.system,
       maxOutputTokens: options.maxTokens,
+      thinkingConfig,
       tools,
       toolConfig: tools
         ? {
@@ -288,11 +390,13 @@ function buildGeminiRequest(options: LlmChatOptions, model: string): Record<stri
 export class GeminiAdapter implements LlmAdapter {
   private client: GeminiClient;
   private model: string;
+  private thinking?: EffectiveThinkingConfig;
 
   constructor(options: {
     apiKey: string;
     model: string;
     baseUrl?: string;
+    thinking?: EffectiveThinkingConfig;
     client?: GeminiClient;
   }) {
     this.client =
@@ -306,6 +410,7 @@ export class GeminiAdapter implements LlmAdapter {
           : undefined,
       }) as unknown as GeminiClient);
     this.model = options.model;
+    this.thinking = options.thinking;
   }
 
   async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
@@ -338,11 +443,20 @@ export class GeminiAdapter implements LlmAdapter {
       throw new LlmAbortError();
     }
 
-    const parameters = buildGeminiRequest(options, this.model);
+    const parameters = buildGeminiRequest(options, this.model, this.thinking);
     try {
       if (!options.onText) {
         const response = await this.client.models.generateContent(parameters);
-        return normalizeGeminiResponse(response);
+        const normalized = normalizeGeminiResponse(response, this.thinking, this.model);
+        if (options.onThinking) {
+          emitGeminiThinkingBlocks(
+            normalized.thinking,
+            options.onThinking,
+            this.thinking,
+            this.model,
+          );
+        }
+        return normalized;
       }
 
       const stream = await this.client.models.generateContentStream(parameters);
@@ -352,13 +466,66 @@ export class GeminiAdapter implements LlmAdapter {
         if (delta.length > 0) {
           options.onText(delta);
         }
+        const thinkingDelta = extractGeminiThinkingText(chunk);
+        if (thinkingDelta.length > 0) {
+          const startedAt = state.thinkingStartedAt ?? new Date().toISOString();
+          options.onThinking?.({
+            id: "gemini-thinking-0",
+            provider: "gemini",
+            model: this.model,
+            format: "raw",
+            display: this.thinking?.display ?? "visible",
+            delta: thinkingDelta,
+            startedAt,
+          });
+        }
         accumulateGeminiStreamChunk(state, chunk);
       }
 
-      return streamStateToLlmResponse(state);
+      const response = streamStateToLlmResponse(state, this.thinking, this.model);
+      const thinking = response.thinking?.[0];
+      if (thinking && options.onThinking) {
+        options.onThinking({
+          id: thinking.id,
+          provider: thinking.provider,
+          model: this.model,
+          format: thinking.format,
+          display: this.thinking?.display ?? "visible",
+          delta: "",
+          startedAt: thinking.startedAt,
+          completedAt: thinking.completedAt,
+          elapsedMs: thinking.elapsedMs,
+          tokenCount: thinking.tokenCount,
+          tokenCountSource: thinking.tokenCountSource,
+          done: true,
+        });
+      }
+      return response;
     } catch (error) {
       throw normalizeLlmAbortError(error, options.signal);
     }
+  }
+}
+
+function emitGeminiThinkingBlocks(
+  blocks: ThinkingOutputBlock[] | undefined,
+  onThinking: NonNullable<LlmChatOptions["onThinking"]>,
+  thinking: EffectiveThinkingConfig | undefined,
+  model: string,
+): void {
+  for (const block of blocks ?? []) {
+    onThinking({
+      id: block.id,
+      provider: block.provider,
+      model,
+      format: block.format,
+      display: thinking?.display ?? block.display,
+      delta: block.text,
+      startedAt: block.startedAt ?? new Date().toISOString(),
+      tokenCount: block.tokenCount,
+      tokenCountSource: block.tokenCountSource,
+      done: true,
+    });
   }
 }
 

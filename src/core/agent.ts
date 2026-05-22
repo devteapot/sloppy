@@ -12,7 +12,7 @@ import { createDefaultConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
-import type { ToolResultContentBlock } from "../llm/types";
+import type { ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
 import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/catalog";
 import {
   discoverProviderDescriptors,
@@ -29,6 +29,7 @@ import { ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
+  type AgentToolResult,
   type LocalRuntimeTool,
   type PendingApprovalContinuation,
   type RunLoopHooks,
@@ -58,6 +59,7 @@ export type AgentRunResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     }
   | {
@@ -66,6 +68,7 @@ export type AgentRunResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     };
 
@@ -76,18 +79,22 @@ export type ResolvedApprovalToolResult = {
   taskId?: string;
   errorCode?: string;
   errorMessage?: string;
+  result?: AgentToolResult;
 };
 
 export interface AgentCallbacks {
   onText?: (chunk: string) => void;
+  onThinking?: (delta: ThinkingOutputDelta) => void;
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onTurnUsage?: (usage: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: "reported" | "unavailable";
     outputTokenSource: "reported" | "unavailable";
+    thinkingTokenSource?: "reported" | "unavailable";
     stateContextTokens?: number;
     stateContextTokenSource: "provider" | "local" | "unavailable";
   }) => void;
@@ -145,6 +152,7 @@ export class Agent {
     const userOnToolEvent = options?.onToolEvent;
     this.callbacks = {
       onText: options?.onText,
+      onThinking: options?.onThinking,
       onToolCall: options?.onToolCall,
       onToolResult: options?.onToolResult,
       onToolEvent: (event) => {
@@ -310,6 +318,7 @@ export class Agent {
           llm,
           signal,
           onText: this.callbacks.onText,
+          onThinking: this.callbacks.onThinking,
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
@@ -345,6 +354,7 @@ export class Agent {
       taskId: result.taskId,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
+      result: result.result,
     });
 
     return this.runLoopWithAbort(async (signal) => {
@@ -360,6 +370,7 @@ export class Agent {
           llm,
           signal,
           onText: this.callbacks.onText,
+          onThinking: this.callbacks.onThinking,
           onToolCall: this.callbacks.onToolCall,
           onToolResult: this.callbacks.onToolResult,
           onToolEvent: this.callbacks.onToolEvent,
@@ -526,6 +537,10 @@ export class Agent {
       summary,
       errorCode: result.error?.code,
       errorMessage: result.error?.message,
+      result: {
+        kind: pending.blockedInvocation.resultKind,
+        data: result.data,
+      },
     });
   }
 

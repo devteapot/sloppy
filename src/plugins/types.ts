@@ -11,7 +11,7 @@ import type {
   RuntimeDoctorSubprocessProbeFactory,
 } from "../runtime/doctor-types";
 import type { ToolEventEnricher } from "../session/event-bus";
-import type { SessionRuntimePlugin, TuiContributionManifest } from "../session/plugins";
+import type { SessionRuntimePlugin, UiContributionManifest } from "../session/plugins";
 
 export type PluginProviderContribution = {
   id: string;
@@ -35,7 +35,7 @@ export type FirstPartyPluginDescriptor = {
   defaultEnabled: boolean;
   providerIds?: string[];
   extensionNamespaces?: string[];
-  tui?: TuiContributionManifest;
+  ui?: UiContributionManifest;
   createProviders?: (config: SloppyConfig) => RegisteredProvider[];
   createSessionPlugin?: (config: SloppyConfig) => SessionRuntimePlugin;
   policyRules?: (config: SloppyConfig) => InvokePolicy[];

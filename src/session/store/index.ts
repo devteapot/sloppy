@@ -11,6 +11,7 @@ import type {
   SessionStoreGranularListener,
   SessionTask,
   TokenAccountingSource,
+  ToolCallResult,
 } from "../types";
 import * as activity from "./activity";
 import * as apps from "./apps";
@@ -184,8 +185,10 @@ export class SessionStore {
     turnId?: string;
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: TokenAccountingSource;
     outputTokenSource: TokenAccountingSource;
+    thinkingTokenSource?: TokenAccountingSource;
     stateContextTokens?: number;
     stateContextTokenSource?: TokenAccountingSource;
     modelContextWindowTokens?: number;
@@ -295,6 +298,29 @@ export class SessionStore {
     }
   }
 
+  appendAssistantThinking(
+    turnId: string,
+    options: {
+      blockId?: string;
+      provider?: string;
+      model?: string;
+      format: "raw" | "summary";
+      display: "visible" | "hidden";
+      delta?: string;
+      text?: string;
+      startedAt?: string;
+      completedAt?: string;
+      elapsedMs?: number;
+      tokenCount?: number;
+      tokenCountSource?: "reported" | "unavailable";
+      done?: boolean;
+    },
+  ): void {
+    if (transcript.appendAssistantThinking(this.state, turnId, options)) {
+      this.emit();
+    }
+  }
+
   appendAssistantMedia(
     turnId: string,
     options: {
@@ -317,6 +343,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       paramsPreview?: string;
     },
   ): void {
@@ -333,8 +360,10 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       taskId?: string;
       errorMessage?: string;
+      result?: ToolCallResult;
     },
   ): void {
     activity.recordToolCompletion(this.state, turnId, options);
@@ -349,6 +378,7 @@ export class SessionStore {
       provider?: string;
       path?: string;
       action?: string;
+      label?: string;
       reason: string;
     },
   ): void {

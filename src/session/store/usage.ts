@@ -6,6 +6,7 @@ export function emptyUsage(): SessionUsageSnapshot {
   return {
     lastModelCallInputSource: "unavailable",
     lastModelCallOutputSource: "unavailable",
+    lastModelCallThinkingSource: "unavailable",
     currentTurnModelCalls: 0,
     lastStateContextTokenSource: "unavailable",
   };
@@ -17,13 +18,17 @@ export function normalizeUsage(usage: SessionUsageSnapshot | undefined): Session
     lastTurnId: base.lastTurnId,
     lastModelCallInputTokens: base.lastModelCallInputTokens,
     lastModelCallOutputTokens: base.lastModelCallOutputTokens,
+    lastModelCallThinkingTokens: base.lastModelCallThinkingTokens,
     lastModelCallInputSource: base.lastModelCallInputSource ?? "unavailable",
     lastModelCallOutputSource: base.lastModelCallOutputSource ?? "unavailable",
+    lastModelCallThinkingSource: base.lastModelCallThinkingSource ?? "unavailable",
     currentTurnInputTokens: base.currentTurnInputTokens,
     currentTurnOutputTokens: base.currentTurnOutputTokens,
+    currentTurnThinkingTokens: base.currentTurnThinkingTokens,
     currentTurnModelCalls: base.currentTurnModelCalls ?? 0,
     totalInputTokens: base.totalInputTokens,
     totalOutputTokens: base.totalOutputTokens,
+    totalThinkingTokens: base.totalThinkingTokens,
     lastStateContextTokens: base.lastStateContextTokens,
     lastStateContextTokenSource: base.lastStateContextTokenSource ?? "unavailable",
     modelContextWindowTokens: base.modelContextWindowTokens,
@@ -38,8 +43,10 @@ export function recordUsage(
     turnId?: string;
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: TokenAccountingSource;
     outputTokenSource: TokenAccountingSource;
+    thinkingTokenSource?: TokenAccountingSource;
     stateContextTokens?: number;
     stateContextTokenSource?: TokenAccountingSource;
     modelContextWindowTokens?: number;
@@ -52,6 +59,7 @@ export function recordUsage(
     options.turnId !== undefined ||
     options.inputTokens !== undefined ||
     options.outputTokens !== undefined ||
+    options.thinkingTokens !== undefined ||
     options.stateContextTokens !== undefined;
   const currentTurnInputTokens =
     options.inputTokens === undefined
@@ -65,6 +73,12 @@ export function recordUsage(
         ? previous.currentTurnOutputTokens
         : undefined
       : (sameTurn ? (previous.currentTurnOutputTokens ?? 0) : 0) + options.outputTokens;
+  const currentTurnThinkingTokens =
+    options.thinkingTokens === undefined
+      ? sameTurn
+        ? previous.currentTurnThinkingTokens
+        : undefined
+      : (sameTurn ? (previous.currentTurnThinkingTokens ?? 0) : 0) + options.thinkingTokens;
   const totalInputTokens =
     options.inputTokens === undefined
       ? previous.totalInputTokens
@@ -73,6 +87,10 @@ export function recordUsage(
     options.outputTokens === undefined
       ? previous.totalOutputTokens
       : (previous.totalOutputTokens ?? 0) + options.outputTokens;
+  const totalThinkingTokens =
+    options.thinkingTokens === undefined
+      ? previous.totalThinkingTokens
+      : (previous.totalThinkingTokens ?? 0) + options.thinkingTokens;
   const modelContextWindowTokens =
     options.modelContextWindowTokens ?? previous.modelContextWindowTokens;
   const availableContextTokens =
@@ -84,14 +102,18 @@ export function recordUsage(
     lastTurnId: options.turnId,
     lastModelCallInputTokens: options.inputTokens,
     lastModelCallOutputTokens: options.outputTokens,
+    lastModelCallThinkingTokens: options.thinkingTokens,
     lastModelCallInputSource: options.inputTokenSource,
     lastModelCallOutputSource: options.outputTokenSource,
+    lastModelCallThinkingSource: options.thinkingTokenSource ?? "unavailable",
     currentTurnInputTokens,
     currentTurnOutputTokens,
+    currentTurnThinkingTokens,
     currentTurnModelCalls:
       (sameTurn ? previous.currentTurnModelCalls : 0) + (countsAsModelCall ? 1 : 0),
     totalInputTokens,
     totalOutputTokens,
+    totalThinkingTokens,
     lastStateContextTokens: options.stateContextTokens,
     lastStateContextTokenSource: options.stateContextTokenSource ?? "unavailable",
     modelContextWindowTokens,

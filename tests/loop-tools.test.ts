@@ -80,6 +80,60 @@ class ToolBatchProbeLlm implements LlmAdapter {
   }
 }
 
+class ThinkingReplayProbeLlm implements LlmAdapter {
+  calls = 0;
+  observedSecondRequest = "";
+
+  async chat(options: LlmChatOptions): Promise<LlmResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      options.onThinking?.({
+        id: "thinking-1",
+        provider: "openai",
+        model: "gpt-5.4",
+        format: "raw",
+        display: "visible",
+        delta: "hidden deliberation",
+        tokenCount: 4,
+        tokenCountSource: "reported",
+      });
+      return {
+        content: [
+          { type: "text", text: "visible assistant text" },
+          {
+            type: "tool_use",
+            id: "call-inspect",
+            name: "demo__workspace__inspect",
+            input: {},
+          },
+        ],
+        thinking: [
+          {
+            type: "thinking",
+            id: "thinking-1",
+            provider: "openai",
+            model: "gpt-5.4",
+            format: "raw",
+            display: "visible",
+            text: "hidden deliberation",
+            tokenCount: 4,
+            tokenCountSource: "reported",
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 2, thinkingTokens: 4 },
+      };
+    }
+
+    this.observedSecondRequest = JSON.stringify(options.messages);
+    return {
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 3, outputTokens: 4 },
+    };
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -179,6 +233,127 @@ describe("runLoop tool execution", () => {
           errorCode: "invalid_tool_arguments",
         }),
       );
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("emits provider result data with affordance result kind", async () => {
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        inspect: action(async () => ({ value: 42 }), {
+          label: "Inspect",
+          description: "Inspect structured data.",
+          estimate: "fast",
+          resultKind: "json",
+        }),
+      },
+    }));
+
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "first-party",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    const llm = new ToolBatchProbeLlm([
+      {
+        type: "tool_use",
+        id: "call-inspect",
+        name: "demo__workspace__inspect",
+        input: {},
+      },
+    ]);
+    const events: AgentToolEvent[] = [];
+    history.addUserText("inspect");
+
+    try {
+      await hub.connect();
+      const result = await runLoop({
+        config: TEST_CONFIG,
+        hub,
+        history,
+        llm,
+        onToolEvent: (event) => events.push(event),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "completed",
+          result: {
+            kind: "json",
+            data: { value: 42 },
+          },
+        }),
+      );
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("does not replay thinking output into the next model call", async () => {
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        inspect: action(async () => ({ value: 42 }), {
+          label: "Inspect",
+          description: "Inspect structured data.",
+          estimate: "fast",
+          resultKind: "json",
+        }),
+      },
+    }));
+
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "first-party",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    const llm = new ThinkingReplayProbeLlm();
+    const thinkingDeltas: string[] = [];
+    history.addUserText("inspect");
+
+    try {
+      await hub.connect();
+      const result = await runLoop({
+        config: TEST_CONFIG,
+        hub,
+        history,
+        llm,
+        onThinking: (delta) => thinkingDeltas.push(delta.delta),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(thinkingDeltas).toEqual(["hidden deliberation"]);
+      expect(llm.observedSecondRequest).toContain("visible assistant text");
+      expect(llm.observedSecondRequest).not.toContain("hidden deliberation");
     } finally {
       hub.shutdown();
     }

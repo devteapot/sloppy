@@ -129,6 +129,29 @@ describe("SessionPluginManager", () => {
     expect(manager.localTools(null)[0]?.pluginId).toBe("alpha");
   });
 
+  test("rejects session plugin ids that cannot be raw slash namespaces", () => {
+    expect(
+      () => new SessionPluginManager([toolPlugin("bad plugin", "bad_tool")], createContext()),
+    ).toThrow(
+      "Invalid session plugin id 'bad plugin'. Plugin ids must be non-empty and cannot contain whitespace or ':'.",
+    );
+    expect(
+      () => new SessionPluginManager([toolPlugin("bad:plugin", "bad_tool")], createContext()),
+    ).toThrow(
+      "Invalid session plugin id 'bad:plugin'. Plugin ids must be non-empty and cannot contain whitespace or ':'.",
+    );
+  });
+
+  test("rejects duplicate session plugin ids", () => {
+    expect(
+      () =>
+        new SessionPluginManager(
+          [toolPlugin("alpha", "alpha_tool"), toolPlugin("alpha", "second_tool")],
+          createContext(),
+        ),
+    ).toThrow("Duplicate session plugin id 'alpha'. Plugin ids must be unique.");
+  });
+
   test("rejects duplicate local runtime tool names across plugins", () => {
     const manager = new SessionPluginManager(
       [toolPlugin("alpha", "shared_tool"), toolPlugin("beta", "shared_tool")],

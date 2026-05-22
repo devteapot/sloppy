@@ -7,6 +7,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
+import type { EffectiveThinkingConfig } from "./thinking";
 import type {
   AssistantContentBlock,
   ConversationMessage,
@@ -14,6 +15,7 @@ import type {
   LlmChatOptions,
   LlmResponse,
   LlmTokenCount,
+  ThinkingOutputBlock,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
@@ -33,6 +35,7 @@ interface OpenAICompatibleClient {
         options?: { signal?: AbortSignal },
       ): {
         on(event: "content", listener: (delta: string, snapshot: string) => void): void;
+        on(event: "chunk", listener: (chunk: unknown, snapshot: unknown) => void): void;
         finalChatCompletion(): Promise<ChatCompletion>;
         abort?(): void;
       };
@@ -256,6 +259,148 @@ function normalizeAssistantContent(completion: ChatCompletion): AssistantContent
   return blocks;
 }
 
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === "string" ? value : "";
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function reasoningTextFromRecord(record: Record<string, unknown>): {
+  text: string;
+  format: "raw" | "summary";
+} {
+  const raw =
+    stringField(record, "reasoning_content") ||
+    stringField(record, "thinking") ||
+    stringField(record, "reasoning");
+  if (raw) {
+    return { text: raw, format: "raw" };
+  }
+
+  const details = record.reasoning_details;
+  if (Array.isArray(details)) {
+    const text = details
+      .map((item) => {
+        const detail = recordFromUnknown(item);
+        return detail ? stringField(detail, "text") || stringField(detail, "summary") : "";
+      })
+      .join("");
+    if (text) {
+      return { text, format: "summary" };
+    }
+  }
+
+  return { text: "", format: "raw" };
+}
+
+function extractReasoningText(completion: ChatCompletion): {
+  text: string;
+  format: "raw" | "summary";
+} {
+  const choice = completion.choices[0];
+  const message = choice?.message as unknown as Record<string, unknown> | undefined;
+  if (!message) {
+    return { text: "", format: "raw" };
+  }
+
+  return reasoningTextFromRecord(message);
+}
+
+function extractReasoningDelta(chunk: unknown): {
+  text: string;
+  format: "raw" | "summary";
+} {
+  const record = recordFromUnknown(chunk);
+  const choices = Array.isArray(record?.choices) ? record.choices : [];
+  const firstChoice = recordFromUnknown(choices[0]);
+  const delta = recordFromUnknown(firstChoice?.delta);
+  return delta ? reasoningTextFromRecord(delta) : { text: "", format: "raw" };
+}
+
+function reasoningTokens(completion: ChatCompletion): number | undefined {
+  const usage = completion.usage as
+    | {
+        completion_tokens_details?: {
+          reasoning_tokens?: number;
+        };
+        output_tokens_details?: {
+          reasoning_tokens?: number;
+        };
+      }
+    | undefined;
+  return (
+    usage?.completion_tokens_details?.reasoning_tokens ??
+    usage?.output_tokens_details?.reasoning_tokens
+  );
+}
+
+function normalizeThinkingContent(
+  completion: ChatCompletion,
+  provider: OpenAICompatibleProvider,
+  model: string,
+  thinking: EffectiveThinkingConfig | undefined,
+): ThinkingOutputBlock[] | undefined {
+  const { text, format } = extractReasoningText(completion);
+  if (!text || !thinking?.effectiveEnabled) {
+    return undefined;
+  }
+  const tokenCount = reasoningTokens(completion);
+  return [
+    {
+      type: "thinking",
+      id: `${provider}-thinking-0`,
+      provider,
+      model,
+      format,
+      display: thinking.display,
+      text,
+      tokenCount,
+      tokenCountSource: tokenCount === undefined ? "unavailable" : "reported",
+    },
+  ];
+}
+
+type StreamedThinkingState = {
+  text: string;
+  format: "raw" | "summary";
+  startedAt?: string;
+  startedMs?: number;
+};
+
+function thinkingBlockFromStream(
+  streamed: StreamedThinkingState | undefined,
+  completion: ChatCompletion,
+  provider: OpenAICompatibleProvider,
+  model: string,
+  thinking: EffectiveThinkingConfig | undefined,
+): ThinkingOutputBlock[] | undefined {
+  if (!streamed?.text || !thinking?.effectiveEnabled) {
+    return undefined;
+  }
+  const tokenCount = reasoningTokens(completion);
+  return [
+    {
+      type: "thinking",
+      id: `${provider}-thinking-0`,
+      provider,
+      model,
+      format: streamed.format,
+      display: thinking.display,
+      text: streamed.text,
+      startedAt: streamed.startedAt,
+      completedAt: new Date().toISOString(),
+      elapsedMs: streamed.startedMs ? Date.now() - streamed.startedMs : undefined,
+      tokenCount,
+      tokenCountSource: tokenCount === undefined ? "unavailable" : "reported",
+    },
+  ];
+}
+
 function normalizeStopReason(completion: ChatCompletion): LlmResponse["stopReason"] {
   const choice = completion.choices[0];
   if (!choice) {
@@ -277,6 +422,7 @@ function buildChatParameters(
   provider: OpenAICompatibleProvider,
   options: LlmChatOptions,
   model: string,
+  thinking?: EffectiveThinkingConfig,
 ): Record<string, unknown> {
   const parameters: Record<string, unknown> = {
     model,
@@ -295,7 +441,43 @@ function buildChatParameters(
     parameters.tool_choice = "auto";
   }
 
+  if (thinking) {
+    applyThinkingParameters(parameters, provider, thinking);
+  }
+
   return parameters;
+}
+
+function applyThinkingParameters(
+  parameters: Record<string, unknown>,
+  provider: OpenAICompatibleProvider,
+  thinking: EffectiveThinkingConfig,
+): void {
+  if (provider === "openai") {
+    if (thinking.effectiveEnabled) {
+      parameters.reasoning_effort = thinking.openai?.effort ?? thinking.effectiveEffort;
+      Object.assign(parameters, thinking.openai?.options ?? {});
+    } else {
+      parameters.reasoning_effort = "minimal";
+    }
+    return;
+  }
+
+  if (provider === "openrouter") {
+    parameters.reasoning = {
+      enabled: thinking.effectiveEnabled,
+      effort: thinking.openrouter?.effort ?? thinking.effectiveEffort,
+      exclude: thinking.openrouter?.exclude ?? false,
+      ...(thinking.openrouter?.options ?? {}),
+    };
+    return;
+  }
+
+  if (provider === "ollama") {
+    parameters.think =
+      thinking.ollama?.think ?? (thinking.effectiveEnabled ? thinking.effectiveEffort : false);
+    Object.assign(parameters, thinking.ollama?.options ?? {});
+  }
 }
 
 export class OpenAICompatibleAdapter implements LlmAdapter {
@@ -303,12 +485,14 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
   private model: string;
   private provider: OpenAICompatibleProvider;
   private baseUrl?: string;
+  private thinking?: EffectiveThinkingConfig;
 
   constructor(options: {
     apiKey: string;
     model: string;
     provider: OpenAICompatibleProvider;
     baseUrl?: string;
+    thinking?: EffectiveThinkingConfig;
     client?: OpenAICompatibleClient;
   }) {
     this.client =
@@ -320,6 +504,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
     this.model = options.model;
     this.provider = options.provider;
     this.baseUrl = options.baseUrl;
+    this.thinking = options.thinking;
   }
 
   async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
@@ -358,20 +543,37 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       throw new LlmAbortError();
     }
 
-    const parameters = buildChatParameters(this.provider, options, this.model);
+    const parameters = buildChatParameters(this.provider, options, this.model, this.thinking);
     try {
-      const completion = options.onText
-        ? await this.streamChat(parameters, options.onText, options.signal)
-        : await this.client.chat.completions.create(parameters, {
-            signal: options.signal,
-          });
+      const streamed = options.onText
+        ? await this.streamChat(parameters, options.onText, options.onThinking, options.signal)
+        : {
+            completion: await this.client.chat.completions.create(parameters, {
+              signal: options.signal,
+            }),
+            thinking: undefined,
+          };
 
+      const thinking =
+        normalizeThinkingContent(streamed.completion, this.provider, this.model, this.thinking) ??
+        thinkingBlockFromStream(
+          streamed.thinking,
+          streamed.completion,
+          this.provider,
+          this.model,
+          this.thinking,
+        );
+      if (!streamed.thinking) {
+        emitThinkingBlocks(thinking, options.onThinking);
+      }
       return {
-        content: normalizeAssistantContent(completion),
-        stopReason: normalizeStopReason(completion),
+        content: normalizeAssistantContent(streamed.completion),
+        thinking,
+        stopReason: normalizeStopReason(streamed.completion),
         usage: {
-          inputTokens: completion.usage?.prompt_tokens,
-          outputTokens: completion.usage?.completion_tokens,
+          inputTokens: streamed.completion.usage?.prompt_tokens,
+          outputTokens: streamed.completion.usage?.completion_tokens,
+          thinkingTokens: reasoningTokens(streamed.completion),
         },
       } satisfies LlmResponse;
     } catch (error) {
@@ -382,8 +584,9 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
   private async streamChat(
     parameters: Record<string, unknown>,
     onText: NonNullable<LlmChatOptions["onText"]>,
+    onThinking: LlmChatOptions["onThinking"],
     signal?: AbortSignal,
-  ): Promise<ChatCompletion> {
+  ): Promise<{ completion: ChatCompletion; thinking?: StreamedThinkingState }> {
     const stream = this.client.chat.completions.stream(parameters, {
       signal,
     });
@@ -396,10 +599,82 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       stream.on("content", (delta) => {
         onText(delta);
       });
-      return await stream.finalChatCompletion();
+      const thinking: StreamedThinkingState = {
+        text: "",
+        format: "raw",
+      };
+      stream.on("chunk", (chunk) => {
+        if (!onThinking) {
+          return;
+        }
+        const { text, format } = extractReasoningDelta(chunk);
+        if (!text) {
+          return;
+        }
+        if (!thinking.startedAt) {
+          thinking.startedAt = new Date().toISOString();
+          thinking.startedMs = Date.now();
+        }
+        thinking.text += text;
+        thinking.format = format;
+        onThinking({
+          id: `${this.provider}-thinking-0`,
+          provider: this.provider,
+          model: this.model,
+          format,
+          display: this.thinking?.display ?? "visible",
+          delta: text,
+          startedAt: thinking.startedAt,
+        });
+      });
+      const completion = await stream.finalChatCompletion();
+      if (thinking.text && onThinking) {
+        const tokenCount = reasoningTokens(completion);
+        onThinking({
+          id: `${this.provider}-thinking-0`,
+          provider: this.provider,
+          model: this.model,
+          format: thinking.format,
+          display: this.thinking?.display ?? "visible",
+          delta: "",
+          startedAt: thinking.startedAt,
+          completedAt: new Date().toISOString(),
+          elapsedMs: thinking.startedMs ? Date.now() - thinking.startedMs : undefined,
+          tokenCount,
+          tokenCountSource: tokenCount === undefined ? "unavailable" : "reported",
+          done: true,
+        });
+      }
+      return {
+        completion,
+        thinking: thinking.text ? thinking : undefined,
+      };
     } finally {
       signal?.removeEventListener("abort", abortStream);
     }
+  }
+}
+
+function emitThinkingBlocks(
+  blocks: ThinkingOutputBlock[] | undefined,
+  onThinking: LlmChatOptions["onThinking"],
+): void {
+  if (!onThinking) {
+    return;
+  }
+  for (const block of blocks ?? []) {
+    onThinking({
+      id: block.id,
+      provider: block.provider,
+      model: block.model,
+      format: block.format,
+      display: block.display,
+      delta: block.text,
+      startedAt: block.startedAt ?? new Date().toISOString(),
+      tokenCount: block.tokenCount,
+      tokenCountSource: block.tokenCountSource,
+      done: true,
+    });
   }
 }
 

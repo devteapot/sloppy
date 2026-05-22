@@ -160,6 +160,7 @@ function createGoalState(
     updatedAt: now(),
     inputTokens: 0,
     outputTokens: 0,
+    thinkingTokens: 0,
     totalTokens: 0,
     elapsedMs: 0,
     continuationCount: 0,
@@ -262,6 +263,7 @@ function accountGoalTurnState(
     turnId: string;
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     elapsedMs: number;
     continuation: boolean;
     usedTools: boolean;
@@ -280,9 +282,11 @@ function accountGoalTurnState(
     const updatedAt = now();
     const inputTokens = goal.inputTokens + (options.inputTokens ?? 0);
     const outputTokens = goal.outputTokens + (options.outputTokens ?? 0);
+    const thinkingTokens = (goal.thinkingTokens ?? 0) + (options.thinkingTokens ?? 0);
     record.state.inputTokens = inputTokens;
     record.state.outputTokens = outputTokens;
-    record.state.totalTokens = inputTokens + outputTokens;
+    record.state.thinkingTokens = thinkingTokens;
+    record.state.totalTokens = inputTokens + outputTokens + thinkingTokens;
     record.state.elapsedMs = goal.elapsedMs + Math.max(0, Math.round(options.elapsedMs));
     record.state.lastTurnId = options.turnId;
     record.state.updatedAt = updatedAt;
@@ -293,7 +297,7 @@ function accountGoalTurnState(
     if (
       goal.status === "active" &&
       goal.tokenBudget &&
-      inputTokens + outputTokens >= goal.tokenBudget
+      inputTokens + outputTokens + thinkingTokens >= goal.tokenBudget
     ) {
       record.state.status = "budget_limited";
       record.state.message = "Goal stopped after reaching its token budget.";
@@ -373,6 +377,7 @@ function buildGoalDescriptor(
       token_budget: goal.tokenBudget,
       input_tokens: goal.inputTokens,
       output_tokens: goal.outputTokens,
+      thinking_tokens: goal.thinkingTokens,
       total_tokens: goal.totalTokens,
       elapsed_ms: goal.elapsedMs,
       continuation_count: goal.continuationCount,
@@ -878,6 +883,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
         turnId: event.turnId,
         inputTokens: event.result.usage?.inputTokens,
         outputTokens: event.result.usage?.outputTokens,
+        thinkingTokens: event.result.usage?.thinkingTokens,
         elapsedMs: event.elapsedMs,
         continuation: event.pluginTurn.continuation,
         usedTools: event.usedTools,
@@ -903,58 +909,86 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
         summary: `goal=${goal?.status ?? "none"}`,
       };
     },
-    tui: {
+    ui: {
       subscriptions: [{ path: "/goal", depth: 1 }],
-      commands: [
+      actions: [
         {
-          id: "goal",
-          name: "goal",
-          signature: "<objective>|pause|resume|complete|clear",
-          description: "Persistent session goal controls",
+          id: "goal:create",
+          label: "Create Goal",
+          description: "Create a persistent session goal",
+          invoke: { path: "/goal", action: "create_goal" },
+          whenAvailable: "create_goal",
+          argument: {
+            name: "objective",
+            description: "Goal objective",
+            required: true,
+            param: "objective",
+          },
+          presentation: {
+            tui: {
+              slash: {
+                name: "goal",
+                signature: "<objective>|pause|resume|complete|clear",
+              },
+            },
+          },
         },
-      ],
-      palette: [
         {
           id: "goal:pause",
           label: "Pause Goal",
           description: "Pause automatic goal continuation",
-          path: "/goal",
-          action: "pause_goal",
-          whenActionAvailable: "pause_goal",
+          invoke: { path: "/goal", action: "pause_goal" },
+          whenAvailable: "pause_goal",
         },
         {
           id: "goal:resume",
           label: "Resume Goal",
           description: "Resume automatic goal continuation",
-          path: "/goal",
-          action: "resume_goal",
-          whenActionAvailable: "resume_goal",
+          invoke: { path: "/goal", action: "resume_goal" },
+          whenAvailable: "resume_goal",
         },
         {
           id: "goal:complete",
           label: "Complete Goal",
           description: "Mark the active goal complete",
-          path: "/goal",
-          action: "complete_goal",
-          whenActionAvailable: "complete_goal",
+          invoke: { path: "/goal", action: "complete_goal" },
+          whenAvailable: "complete_goal",
         },
         {
           id: "goal:clear",
           label: "Clear Goal",
           description: "Clear the active goal state",
-          path: "/goal",
-          action: "clear_goal",
-          whenActionAvailable: "clear_goal",
+          invoke: { path: "/goal", action: "clear_goal" },
+          whenAvailable: "clear_goal",
         },
       ],
-      status: [{ id: "goal", path: "/goal", renderer: "goal-status" }],
+      indicators: [
+        {
+          id: "goal-status",
+          path: "/goal",
+          depth: 1,
+          template: "goal {status} · {total_tokens} tokens",
+          fields: {
+            status: { format: "text" },
+            total_tokens: { format: "number" },
+          },
+          visibleWhen: { prop: "exists", equals: true },
+          severity: {
+            prop: "status",
+            map: {
+              active: "info",
+              paused: "warning",
+              complete: "success",
+            },
+          },
+        },
+      ],
       notifications: [
         {
           id: "goal-complete",
-          path: "/goal",
-          prop: "status",
+          source: { path: "/goal", prop: "status" },
           to: "complete",
-          message: "Goal complete.",
+          message: "Goal complete: {objective}",
         },
       ],
     },

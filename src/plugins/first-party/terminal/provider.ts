@@ -342,6 +342,7 @@ export class TerminalProvider {
             label: "Execute Command",
             description: "Run a shell command in the current working directory.",
             estimate: "slow",
+            resultKind: "terminal",
           },
         ),
         cd: action({ path: "string" }, async ({ path }) => this.changeDirectory(path), {

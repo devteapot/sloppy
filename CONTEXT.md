@@ -15,18 +15,30 @@ A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`)
 _Avoid_: calling a Plugin a Provider; calling the optional capabilities "optional providers" — they are Plugins.
 
 **Session plugin**:
-The session-provider extension a Plugin produces via `createSessionPlugin` (code type `SessionRuntimePlugin`). It registers into the session provider, contributing session nodes, runtime-local turn tools, hooks, policy rules, and declarative TUI manifests. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
+The session-provider extension a Plugin produces via `createSessionPlugin` (code type `SessionRuntimePlugin`). It registers into the session provider, contributing session nodes, runtime-local turn tools, hooks, policy rules, and a declarative UI contribution manifest. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
 _Avoid_: shortening to "plugin" when the package is meant.
 
 **Skill**:
 A `SKILL.md` directory of instructions plus supporting files, loaded by progressive disclosure. A Skill is the runtime's **procedural memory** — a repeatable how-to workflow expressed as instructions over existing affordances. Contrast with the `memory` Provider (facts/episodic memory) and identity memory: those are different memory kinds, not Skills.
 _Avoid_: treating "procedural memory" as a separate artifact — it is the role a Skill plays.
 
+**UI**:
+A client that consumes a Session provider (or Session supervisor) over its socket and renders it for a human. The TUI is a UI; a future web dashboard would be a UI. A UI is not a Provider and not part of the Runtime — UIs live under `apps/`.
+_Avoid_: "frontend", "surface", "client" used loosely — the consumer of a Session that renders it for a human is a UI.
+
+**UI contribution manifest**:
+The declarative, UI-agnostic manifest a Session plugin publishes (code type `UiContributionManifest`, exposed at `/plugins`) describing how it extends a UI: state subscriptions, affordance-bound actions, status indicators, and notifications. UI-specific presentation is an optional, ignorable hint keyed by UI; the manifest itself names no rendering technology.
+_Avoid_: "TUI manifest" — the manifest is not TUI-specific.
+
 ### Session state
 
 **Extension record**:
 A namespaced, schema-versioned session state record under `/extensions` (code type `SessionExtensionRecord`), authored and owned by a Skill via `skill_manage`. A Session plugin may project an Extension record into a friendly dedicated node — e.g. the `persistent-goal` Session plugin projects the `goal` Extension record into `/goal`.
 _Avoid_: bare "extension", "plugin metadata".
+
+**Thinking output**:
+Provider-returned, user-visible reasoning text or summary that may appear in assistant conversation state. It is not hidden chain-of-thought, private prompt internals, or opaque provider continuity metadata.
+_Avoid_: raw thinking, chain-of-thought, private reasoning state.
 
 ### Agents
 
@@ -81,6 +93,18 @@ _Avoid_: "consumer controls".
 **Local tool**:
 A turn-scoped Tool contributed by a Plugin and run inside the agent loop, not backed by any provider — e.g. `slop_wait_for_delegation_event`. Code `kind: "local"`.
 _Avoid_: "local controls"; "runtime-local tool" is an acceptable longer alias.
+
+**Affordance label**:
+The human-readable name on an Affordance (`label`). Sloppy-owned Affordances must provide one; external Providers may omit it, and consumers then fall back to summaries or action names.
+_Avoid_: "tool label" when the source is provider-side Affordance metadata.
+
+**Result kind**:
+A semantic label on an Affordance's metadata (`resultKind`) declaring how a UI should render that Affordance's result — e.g. `diff`, `terminal`, `code`. An open string: a UI keeps a closed set of renderers it implements and falls back gracefully for any kind it does not know. Carried back on the `tool_result` activity record so the UI can render a tool call's result without knowing the tool.
+_Avoid_: "content kind" — the concept is the kind of an Affordance *result*.
+
+**Bounded result data**:
+The size-limited structured result captured for an Affordance invocation and exposed on the matching `tool_result` activity item. The Runtime preserves this data for UIs; it does not pre-render chat receipts or UI-specific views.
+_Avoid_: generic "payload" when discussing Affordance results.
 
 ### Runtime
 
@@ -154,3 +178,6 @@ One cycle of the Agent loop: build the context with the live state tail, call th
 
 > **Dev:** The Agent called `slop_query_state` mid-turn. Is that an affordance?
 > **Expert:** No. That's an Observation tool — a fixed Tool with no Provider behind it. An Affordance tool is the only kind of Tool projected from a Provider's Affordance. The third kind, a Local tool like `slop_wait_for_delegation_event`, can park the Turn.
+
+> **Dev:** Can the UI show the model's thinking?
+> **Expert:** Only Thinking output: provider-returned text or summaries intended to be visible. Hidden chain-of-thought and opaque provider continuity metadata are not public Session state.

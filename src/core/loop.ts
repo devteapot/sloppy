@@ -3,6 +3,7 @@ import { formatTree, type LlmTool } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type {
   LlmAdapter,
+  LlmChatOptions,
   LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
@@ -59,6 +60,11 @@ type ToolResult = {
   summary: string;
 };
 
+export type AgentToolResult = {
+  kind?: string;
+  data?: unknown;
+};
+
 export type LocalRuntimeToolResult = {
   status: "ok" | "error";
   summary: string;
@@ -91,6 +97,8 @@ export type AgentToolInvocation = {
   providerId?: string;
   path?: string;
   action: string;
+  label?: string;
+  resultKind?: string;
   params: Record<string, unknown>;
 };
 
@@ -108,6 +116,7 @@ export type AgentToolEvent =
       taskId?: string;
       errorCode?: string;
       errorMessage?: string;
+      result?: AgentToolResult;
     }
   | {
       kind: "approval_requested";
@@ -142,6 +151,7 @@ export type RunLoopResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     }
   | {
@@ -150,6 +160,7 @@ export type RunLoopResult =
       usage?: {
         inputTokens: number;
         outputTokens: number;
+        thinkingTokens?: number;
       };
     };
 
@@ -162,6 +173,7 @@ type ExecuteToolCallResult =
       taskId?: string;
       errorCode?: string;
       errorMessage?: string;
+      activityResult?: AgentToolResult;
     }
   | {
       kind: "approval_requested";
@@ -250,6 +262,7 @@ function invalidToolArgumentsResult(
     providerId: resolution.kind === "affordance" ? resolution.providerId : undefined,
     path: resolution.kind === "affordance" ? (resolution.path ?? undefined) : undefined,
     action: resolution.action,
+    label: resolution.kind === "affordance" ? resolution.label : undefined,
     params: {
       invalid_tool_arguments: {
         code: error?.code ?? "invalid_json",
@@ -513,6 +526,8 @@ async function executeToolCall(
       providerId: resolution.providerId,
       path,
       action: resolution.action,
+      label: resolution.label,
+      resultKind: resolution.resultKind,
       params: rawInput,
     };
     const summary = `${resolution.providerId}:${resolution.action} ${path}`;
@@ -596,6 +611,10 @@ async function executeToolCall(
       taskId,
       errorCode: result.error?.code,
       errorMessage: result.error?.message,
+      activityResult: {
+        kind: resolution.resultKind,
+        data: result.data,
+      },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -643,6 +662,7 @@ function emitCompletedToolCall(
       taskId: result.taskId,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
+      result: result.activityResult,
     });
   }
 }
@@ -845,14 +865,17 @@ export async function runLoop(options: {
   llm: LlmAdapter;
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
+  onThinking?: LlmChatOptions["onThinking"];
   onToolCall?: (summary: string) => void;
   onToolResult?: (summary: string) => void;
   onToolEvent?: (event: AgentToolEvent) => void;
   onTurnUsage?: (usage: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
     inputTokenSource: "reported" | "unavailable";
     outputTokenSource: "reported" | "unavailable";
+    thinkingTokenSource?: "reported" | "unavailable";
     stateContextTokens?: number;
     stateContextTokenSource: "provider" | "local" | "unavailable";
   }) => void;
@@ -875,6 +898,7 @@ export async function runLoop(options: {
   const usage = {
     inputTokens: 0,
     outputTokens: 0,
+    thinkingTokens: 0,
   };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
@@ -936,19 +960,25 @@ export async function runLoop(options: {
       tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
       maxTokens: options.config.llm.maxTokens,
       onText: options.onText,
+      onThinking: options.onThinking,
       signal: options.signal,
     });
     const reportedInput = response.usage.inputTokens;
     const reportedOutput = response.usage.outputTokens;
+    const reportedThinking = response.usage.thinkingTokens;
     const inputTokenSource = reportedInput === undefined ? "unavailable" : "reported";
     const outputTokenSource = reportedOutput === undefined ? "unavailable" : "reported";
+    const thinkingTokenSource = reportedThinking === undefined ? "unavailable" : "reported";
     usage.inputTokens += reportedInput ?? 0;
     usage.outputTokens += reportedOutput ?? 0;
+    usage.thinkingTokens += reportedThinking ?? 0;
     options.onTurnUsage?.({
       inputTokens: reportedInput,
       outputTokens: reportedOutput,
+      thinkingTokens: reportedThinking,
       inputTokenSource,
       outputTokenSource,
+      thinkingTokenSource,
       stateContextTokens: stateContextTokenCount.tokens,
       stateContextTokenSource: stateContextTokenCount.source,
     });

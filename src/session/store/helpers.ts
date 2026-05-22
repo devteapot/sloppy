@@ -20,6 +20,12 @@ export function buildMirroredItemId(prefix: string, providerId: string, sourceId
   return `${prefix}-${cleanProviderId}-${cleanSourceId}`;
 }
 
+export function nextSeq(state: SessionStoreState): number {
+  const seq = state.nextSeq;
+  state.nextSeq += 1;
+  return seq;
+}
+
 export function deriveTitle(userText: string): string {
   const truncated = userText.slice(0, 60);
   const trimmed = truncated.trim();

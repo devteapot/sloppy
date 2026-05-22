@@ -1,5 +1,5 @@
 import type { TranscriptMessage, TranscriptMessageRole } from "../types";
-import { buildId, deriveTitle, now, updateActivity, updateTurn } from "./helpers";
+import { buildId, deriveTitle, nextSeq, now, updateActivity, updateTurn } from "./helpers";
 import { trimResolvedApprovals, trimResolvedTasks } from "./mirrors";
 import type { SessionStoreState } from "./state";
 
@@ -20,6 +20,7 @@ export function beginTurn(
   const role = options?.role ?? "user";
   const userMessage: TranscriptMessage = {
     id: buildId("msg"),
+    seq: nextSeq(state),
     role,
     state: "complete",
     turnId,
@@ -43,6 +44,7 @@ export function beginTurn(
   state.snapshot.transcript.push(userMessage);
   state.snapshot.activity.push({
     id: modelActivityId,
+    seq: nextSeq(state),
     kind: "model_call",
     status: "running",
     summary: "Running model turn",
@@ -82,9 +84,16 @@ export function completeTurn(
 ): void {
   const time = now();
   const message = getOrCreateAssistantMessage(turnId, time);
-  const [firstBlock] = message.content;
-  if (firstBlock && firstBlock.type === "text") {
-    firstBlock.text = finalText;
+  const textBlock = message.content.find((block) => block.type === "text");
+  if (textBlock) {
+    textBlock.text = finalText;
+  } else if (finalText.length > 0) {
+    message.content.push({
+      id: buildId("block"),
+      type: "text",
+      mime: "text/plain",
+      text: finalText,
+    });
   }
   message.state = "complete";
   message.error = undefined;
@@ -130,6 +139,7 @@ export function failTurn(state: SessionStoreState, turnId: string, message: stri
 
   state.snapshot.activity.push({
     id: buildId("activity"),
+    seq: nextSeq(state),
     kind: "error",
     status: "error",
     summary: message,

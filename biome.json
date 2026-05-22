@@ -23,7 +23,6 @@
       "src/**/*.ts",
       "tests/**/*.ts",
       "apps/tui/**/*.ts",
-      "apps/tui/**/*.tsx",
       "*.json",
       "*.md",
       "!.claude",

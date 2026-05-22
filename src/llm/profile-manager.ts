@@ -5,6 +5,7 @@ import type {
   LlmProfileConfig,
   LlmProvider,
   LlmReasoningEffort,
+  LlmThinkingDisplay,
   SloppyConfig,
 } from "../config/schema";
 import {
@@ -22,6 +23,7 @@ import {
   providerUsesCodexAuth,
   resolveModelContextWindowTokens,
 } from "./provider-defaults";
+import { type EffectiveThinkingConfig, resolveEffectiveThinkingConfig } from "./thinking";
 import type { LlmAdapter } from "./types";
 
 const DEFAULT_CONFIG = createDefaultConfig();
@@ -44,6 +46,7 @@ export type LlmProfileState = LlmProfileConfig & {
   canDeleteProfile: boolean;
   canDeleteApiKey: boolean;
   contextWindowTokens?: number;
+  thinking: EffectiveThinkingConfig;
   invalidReason?: string;
 };
 
@@ -65,6 +68,8 @@ export type SaveProfileInput = {
   provider: LlmProvider;
   model?: string;
   reasoningEffort?: LlmReasoningEffort;
+  thinkingEnabled?: boolean;
+  thinkingDisplay?: LlmThinkingDisplay;
   adapterId?: string;
   baseUrl?: string;
   contextWindowTokens?: number;
@@ -140,6 +145,7 @@ function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
     provider: config.provider,
     model: config.model || defaults.model,
     reasoningEffort: config.reasoningEffort,
+    thinking: config.thinking,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     adapterId: config.adapterId ?? defaults.adapterId,
@@ -231,6 +237,7 @@ function buildNextLlmConfig(
     provider: activeProfile.provider,
     model: activeProfile.model,
     reasoningEffort: activeProfile.reasoningEffort,
+    thinking: previous.thinking,
     adapterId: activeProfile.adapterId,
     apiKeyEnv: activeProfile.apiKeyEnv,
     baseUrl: activeProfile.baseUrl,
@@ -288,6 +295,13 @@ export class LlmProfileManager {
           canDeleteProfile: profile.origin === "managed",
           canDeleteApiKey: profile.origin === "managed" && providerRequiresApiKey(profile.provider),
           contextWindowTokens: resolveProfileContextWindowTokens(profile),
+          thinking: resolveEffectiveThinkingConfig({
+            provider: profile.provider,
+            model: profile.model,
+            global: this.config.llm.thinking,
+            profile: profile.thinking,
+            reasoningEffort: profile.reasoningEffort,
+          }),
         } satisfies LlmProfileState;
       }),
     );
@@ -307,6 +321,12 @@ export class LlmProfileManager {
         contextWindowTokens: resolveProfileContextWindowTokens(
           buildFallbackProfile(this.config.llm),
         ),
+        thinking: resolveEffectiveThinkingConfig({
+          provider: this.config.llm.provider,
+          model: this.config.llm.model,
+          global: this.config.llm.thinking,
+          reasoningEffort: this.config.llm.reasoningEffort,
+        }),
       };
     const profileStates = baseProfileStates.map((profile) => ({
       ...profile,
@@ -355,6 +375,7 @@ export class LlmProfileManager {
       targetProfile.provider,
       model,
       targetProfile.reasoningEffort ?? "",
+      JSON.stringify(targetProfile.thinking),
       targetProfile.adapterId ?? "",
       targetProfile.baseUrl ?? "",
       credential.keySource,
@@ -370,6 +391,13 @@ export class LlmProfileManager {
       provider: targetProfile.provider,
       model,
       reasoningEffort: targetProfile.reasoningEffort,
+      thinking: resolveEffectiveThinkingConfig({
+        provider: targetProfile.provider,
+        model,
+        global: this.config.llm.thinking,
+        profile: targetProfile.thinking,
+        reasoningEffort: targetProfile.reasoningEffort,
+      }),
       apiKey: credential.apiKey,
       apiKeyEnv: targetProfile.apiKeyEnv,
       baseUrl: targetProfile.baseUrl,
@@ -404,6 +432,11 @@ export class LlmProfileManager {
       provider: input.provider,
       model: trimOptional(input.model) ?? existingProfile?.model ?? defaults.model,
       reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
+      thinking: {
+        ...(existingProfile?.thinking ?? {}),
+        ...(input.thinkingEnabled === undefined ? {} : { enabled: input.thinkingEnabled }),
+        ...(input.thinkingDisplay === undefined ? {} : { display: input.thinkingDisplay }),
+      },
       adapterId: trimOptional(input.adapterId) ?? existingProfile?.adapterId ?? defaults.adapterId,
       apiKeyEnv:
         existingProfile && existingProfile.provider === input.provider

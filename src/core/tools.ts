@@ -19,6 +19,8 @@ export type RuntimeToolResolution =
       targets?: string[];
       dangerous: boolean;
       idempotent: boolean;
+      label?: string;
+      resultKind?: string;
     };
 
 export interface RuntimeToolSet {
@@ -239,11 +241,15 @@ function affordanceMetadataForResolution(
   action: string,
   path: string | null,
   targets?: string[],
-): { dangerous: boolean; idempotent: boolean } {
+): { dangerous: boolean; idempotent: boolean; label?: string; resultKind?: string } {
   const targetSet = path == null ? new Set(targets ?? []) : new Set([path]);
   let matched = 0;
   let dangerous = false;
   let idempotent = true;
+  let label: string | undefined;
+  let labelConflict = false;
+  let resultKind: string | undefined;
+  let resultKindConflict = false;
 
   const visit = (candidate: SlopNode, candidatePath: string) => {
     if (targetSet.has(candidatePath)) {
@@ -252,6 +258,24 @@ function affordanceMetadataForResolution(
         matched += 1;
         dangerous ||= affordance.dangerous === true;
         idempotent &&= affordance.idempotent === true;
+        const candidateLabel = affordance.label;
+        if (typeof candidateLabel === "string" && candidateLabel.trim().length > 0) {
+          const normalized = candidateLabel.trim();
+          if (label === undefined) {
+            label = normalized;
+          } else if (label !== normalized) {
+            labelConflict = true;
+          }
+        }
+        const candidate = (affordance as { resultKind?: unknown }).resultKind;
+        if (typeof candidate === "string" && candidate.trim().length > 0) {
+          const normalized = candidate.trim();
+          if (resultKind === undefined) {
+            resultKind = normalized;
+          } else if (resultKind !== normalized) {
+            resultKindConflict = true;
+          }
+        }
       }
     }
 
@@ -264,6 +288,8 @@ function affordanceMetadataForResolution(
   return {
     dangerous,
     idempotent: matched > 0 && idempotent,
+    label: labelConflict ? undefined : label,
+    resultKind: resultKindConflict ? undefined : resultKind,
   };
 }
 
@@ -326,6 +352,8 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         dangerous:
           affordanceMetadata.dangerous || description.includes("[DANGEROUS - confirm first]"),
         idempotent: affordanceMetadata.idempotent,
+        label: affordanceMetadata.label,
+        resultKind: affordanceMetadata.resultKind,
       });
       tools.push({
         ...tool,

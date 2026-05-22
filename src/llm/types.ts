@@ -17,6 +17,40 @@ export interface ToolUseContentBlock {
   };
 }
 
+export type ThinkingOutputFormat = "raw" | "summary";
+export type ThinkingOutputDisplay = "visible" | "hidden";
+export type ThinkingTokenCountSource = "reported" | "unavailable";
+
+export interface ThinkingOutputBlock {
+  type: "thinking";
+  id?: string;
+  provider?: string;
+  model?: string;
+  format: ThinkingOutputFormat;
+  display: ThinkingOutputDisplay;
+  text: string;
+  startedAt?: string;
+  completedAt?: string;
+  elapsedMs?: number;
+  tokenCount?: number;
+  tokenCountSource?: ThinkingTokenCountSource;
+}
+
+export interface ThinkingOutputDelta {
+  id?: string;
+  provider?: string;
+  model?: string;
+  format: ThinkingOutputFormat;
+  display: ThinkingOutputDisplay;
+  delta: string;
+  startedAt?: string;
+  completedAt?: string;
+  elapsedMs?: number;
+  tokenCount?: number;
+  tokenCountSource?: ThinkingTokenCountSource;
+  done?: boolean;
+}
+
 export interface ToolResultContentBlock {
   type: "tool_result";
   toolUseId: string;
@@ -44,10 +78,12 @@ export interface ConversationMessage {
 
 export interface LlmResponse {
   content: AssistantContentBlock[];
+  thinking?: ThinkingOutputBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
   usage: {
     inputTokens?: number;
     outputTokens?: number;
+    thinkingTokens?: number;
   };
 }
 
@@ -64,6 +100,7 @@ export interface LlmChatOptions {
   tools?: LlmTool[];
   maxTokens: number;
   onText?: (chunk: string) => void;
+  onThinking?: (delta: ThinkingOutputDelta) => void;
   signal?: AbortSignal;
 }
 

@@ -4,12 +4,14 @@ import { dirname, resolve } from "node:path";
 import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import type { LlmReasoningEffort } from "../config/schema";
+import type { EffectiveThinkingConfig } from "./thinking";
 import type {
   AssistantContentBlock,
   ConversationMessage,
   LlmAdapter,
   LlmChatOptions,
   LlmResponse,
+  ThinkingOutputBlock,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
@@ -45,6 +47,9 @@ type CodexResponseUsage = {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  output_tokens_details?: {
+    reasoning_tokens?: number;
+  };
 };
 
 export type CodexResponseOutputItem =
@@ -128,6 +133,7 @@ export type CodexRequest = {
   store: false;
   reasoning?: {
     effort: LlmReasoningEffort;
+    summary?: "auto" | "concise" | "detailed";
   };
   tools?: CodexRequestTool[];
   tool_choice?: "auto";
@@ -138,6 +144,7 @@ export type OpenAICodexAdapterOptions = {
   model: string;
   baseUrl?: string;
   reasoningEffort?: LlmReasoningEffort;
+  thinking?: EffectiveThinkingConfig;
   authPath?: string;
   fetchFn?: FetchLike;
 };
@@ -462,6 +469,7 @@ function buildCodexRequest(
   options: LlmChatOptions,
   model: string,
   reasoningEffort?: LlmReasoningEffort,
+  thinking?: EffectiveThinkingConfig,
 ): CodexRequest {
   const request: CodexRequest = {
     model,
@@ -471,8 +479,15 @@ function buildCodexRequest(
     store: false,
   };
 
-  if (reasoningEffort) {
-    request.reasoning = { effort: reasoningEffort };
+  if (thinking?.effectiveEnabled || reasoningEffort) {
+    const summary = thinking
+      ? (thinking.openaiCodex?.summary ?? thinking.openai?.summary ?? "auto")
+      : "none";
+    request.reasoning = {
+      effort:
+        thinking?.openaiCodex?.effort ?? thinking?.openai?.effort ?? reasoningEffort ?? "medium",
+      ...(summary && summary !== "none" ? { summary } : {}),
+    };
   }
 
   if (options.tools?.length) {
@@ -603,7 +618,18 @@ function parseSseEvent(raw: string): CodexStreamEvent | null {
 async function parseStreamingResponse(
   response: Response,
   onText?: LlmChatOptions["onText"],
-): Promise<{ response: CodexResponse; text: string; output: CodexResponseOutputItem[] }> {
+  onThinking?: LlmChatOptions["onThinking"],
+  thinking?: EffectiveThinkingConfig,
+  model?: string,
+): Promise<{
+  response: CodexResponse;
+  text: string;
+  output: CodexResponseOutputItem[];
+  thinkingText: string;
+  thinkingFormat: "raw" | "summary";
+  thinkingStartedAt?: string;
+  thinkingStartedMs?: number;
+}> {
   if (!response.body) {
     throw new Error("OpenAI Codex streaming response did not include a body.");
   }
@@ -612,6 +638,10 @@ async function parseStreamingResponse(
   const decoder = new TextDecoder();
   let buffer = "";
   let streamedText = "";
+  let thinkingText = "";
+  let thinkingFormat: "raw" | "summary" = "raw";
+  let thinkingStartedAt: string | undefined;
+  let thinkingStartedMs: number | undefined;
   let finalResponse: CodexResponse | null = null;
   const output: CodexResponseOutputItem[] = [];
 
@@ -628,6 +658,29 @@ async function parseStreamingResponse(
     if (event.type === "response.output_text.delta" && event.delta) {
       streamedText += event.delta;
       onText?.(event.delta);
+      return;
+    }
+
+    if (
+      (event.type === "response.reasoning_text.delta" ||
+        event.type === "response.reasoning_summary_text.delta") &&
+      event.delta
+    ) {
+      if (!thinkingStartedAt) {
+        thinkingStartedAt = new Date().toISOString();
+        thinkingStartedMs = Date.now();
+      }
+      thinkingFormat = event.type === "response.reasoning_text.delta" ? "raw" : "summary";
+      thinkingText += event.delta;
+      onThinking?.({
+        id: "openai-codex-thinking-0",
+        provider: "openai-codex",
+        model,
+        format: thinkingFormat,
+        display: thinking?.display ?? "visible",
+        delta: event.delta,
+        startedAt: thinkingStartedAt,
+      });
       return;
     }
 
@@ -680,6 +733,10 @@ async function parseStreamingResponse(
     response: finalResponse ?? { status: "completed", output },
     text: streamedText,
     output,
+    thinkingText,
+    thinkingFormat,
+    thinkingStartedAt,
+    thinkingStartedMs,
   };
 }
 
@@ -687,6 +744,7 @@ export class OpenAICodexAdapter implements LlmAdapter {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly reasoningEffort?: LlmReasoningEffort;
+  private readonly thinking?: EffectiveThinkingConfig;
   private readonly authPath?: string;
   private readonly fetchFn: FetchLike;
 
@@ -694,6 +752,7 @@ export class OpenAICodexAdapter implements LlmAdapter {
     this.model = options.model;
     this.baseUrl = options.baseUrl ?? DEFAULT_CODEX_BASE_URL;
     this.reasoningEffort = options.reasoningEffort;
+    this.thinking = options.thinking;
     this.authPath = options.authPath;
     this.fetchFn = options.fetchFn ?? fetch;
   }
@@ -708,7 +767,7 @@ export class OpenAICodexAdapter implements LlmAdapter {
         authPath: this.authPath,
         fetchFn: this.fetchFn,
       });
-      const request = buildCodexRequest(options, this.model, this.reasoningEffort);
+      const request = buildCodexRequest(options, this.model, this.reasoningEffort, this.thinking);
       const response = await this.fetchFn(responseUrl(this.baseUrl), {
         method: "POST",
         headers: requestHeaders(credentials),
@@ -719,24 +778,85 @@ export class OpenAICodexAdapter implements LlmAdapter {
         await throwResponseError(response);
       }
 
-      const codexResponse = await parseStreamingResponse(response, options.onText);
+      const codexResponse = await parseStreamingResponse(
+        response,
+        options.onText,
+        options.onThinking,
+        this.thinking,
+        this.model,
+      );
       const content = normalizeCodexOutput(codexResponse.response, {
         text: codexResponse.text,
         output: codexResponse.output,
       });
+      const thinking = normalizeCodexThinking(
+        codexResponse,
+        this.thinking,
+        this.model,
+        codexResponse.response.usage?.output_tokens_details?.reasoning_tokens,
+      );
+      if (thinking && options.onThinking && codexResponse.thinkingText) {
+        const block = thinking[0];
+        if (block) {
+          options.onThinking({
+            id: block.id,
+            provider: block.provider,
+            model: block.model,
+            format: block.format,
+            display: block.display,
+            delta: "",
+            startedAt: block.startedAt,
+            completedAt: block.completedAt,
+            elapsedMs: block.elapsedMs,
+            tokenCount: block.tokenCount,
+            tokenCountSource: block.tokenCountSource,
+            done: true,
+          });
+        }
+      }
 
       return {
         content,
+        thinking,
         stopReason: normalizeCodexStopReason(codexResponse.response, content),
         usage: {
           inputTokens: codexResponse.response.usage?.input_tokens,
           outputTokens: codexResponse.response.usage?.output_tokens,
+          thinkingTokens: codexResponse.response.usage?.output_tokens_details?.reasoning_tokens,
         },
       };
     } catch (error) {
       throw normalizeLlmAbortError(error, options.signal);
     }
   }
+}
+
+function normalizeCodexThinking(
+  streamed: Awaited<ReturnType<typeof parseStreamingResponse>>,
+  thinking: EffectiveThinkingConfig | undefined,
+  model: string,
+  tokenCount: number | undefined,
+): ThinkingOutputBlock[] | undefined {
+  if (!streamed.thinkingText || !thinking?.effectiveEnabled) {
+    return undefined;
+  }
+  const completedAt = new Date().toISOString();
+  return [
+    {
+      type: "thinking",
+      id: "openai-codex-thinking-0",
+      provider: "openai-codex",
+      model,
+      format: streamed.thinkingFormat,
+      display: thinking.display,
+      text: streamed.thinkingText,
+      startedAt: streamed.thinkingStartedAt,
+      completedAt,
+      elapsedMs: streamed.thinkingStartedMs ? Date.now() - streamed.thinkingStartedMs : undefined,
+      tokenCount,
+      tokenCountSource: tokenCount === undefined ? "unavailable" : "reported",
+    },
+  ];
 }
 
 export {

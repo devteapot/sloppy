@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import YAML from "yaml";
 import { getProviderDefaults } from "../llm/provider-defaults";
+import { normalizeThinkingConfig } from "../llm/thinking";
 import {
   type LlmConfig,
   type LlmProfileConfig,
@@ -142,6 +143,7 @@ function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): 
     provider: profile.provider,
     model: profile.model ?? defaults.model,
     reasoningEffort: profile.reasoningEffort,
+    thinking: profile.thinking,
     adapterId: profile.adapterId ?? defaults.adapterId,
     apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: profile.baseUrl ?? defaults.baseUrl,
@@ -156,6 +158,7 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
     provider: config.provider,
     model: config.model ?? defaults.model,
     reasoningEffort: config.reasoningEffort,
+    thinking: normalizeThinkingConfig(config.thinking),
     adapterId: config.adapterId ?? defaults.adapterId,
     apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
     baseUrl: config.baseUrl ?? defaults.baseUrl,

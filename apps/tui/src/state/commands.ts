@@ -1,5 +1,10 @@
-import type { TuiRoute } from "../slop/types";
-import type { Verbosity } from "./verbosity";
+import type {
+  PluginActionContribution,
+  SessionViewSnapshot,
+  TuiRoute,
+} from "../backend/slop-types";
+
+export type Verbosity = "compact" | "verbose";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }
@@ -7,8 +12,7 @@ export type LocalCommand =
   | { type: "help" }
   | { type: "clear" }
   | { type: "quit" }
-  | { type: "mouse"; mode: "on" | "off" | "toggle" }
-  | { type: "verbosity"; mode: Verbosity | "cycle" }
+  | { type: "verbosity"; mode: Verbosity | "show" }
   | {
       type: "goal";
       action: "show" | "create" | "pause" | "resume" | "complete" | "clear";
@@ -52,6 +56,8 @@ export type LocalCommand =
       provider: string;
       model?: string;
       reasoningEffort?: string;
+      thinkingEnabled?: boolean;
+      thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
       baseUrl?: string;
       makeDefault: boolean;
@@ -63,6 +69,8 @@ export type LocalCommand =
       provider: string;
       model?: string;
       reasoningEffort?: string;
+      thinkingEnabled?: boolean;
+      thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
       baseUrl?: string;
       makeDefault: boolean;
@@ -81,6 +89,75 @@ export type LocalCommand =
   | { type: "unknown"; name: string };
 
 const ROUTE_NAMES = new Set<TuiRoute>(["chat", "setup", "approvals", "tasks", "apps"]);
+
+export function parsePluginSlashCommand(
+  input: string,
+  snapshot: Pick<SessionViewSnapshot, "plugins" | "actionsByPath">,
+): LocalCommand | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+
+  const [rawName = "", ...args] = trimmed.slice(1).split(/\s+/);
+  const parsedName = parsePluginSlashName(rawName);
+  if (!parsedName) {
+    return null;
+  }
+
+  for (const plugin of snapshot.plugins) {
+    if (plugin.id.toLowerCase() !== parsedName.pluginId) {
+      continue;
+    }
+    for (const action of plugin.ui.actions ?? []) {
+      const slash = readActionSlash(action);
+      if (!slash) {
+        continue;
+      }
+
+      const names = [slash.name, ...(slash.aliases ?? [])].map((candidate) =>
+        candidate.toLowerCase(),
+      );
+      if (!names.includes(parsedName.command)) {
+        continue;
+      }
+
+      const requiredAction = action.whenAvailable ?? action.invoke.action;
+      if (!(snapshot.actionsByPath[action.invoke.path] ?? []).includes(requiredAction)) {
+        return {
+          type: "rejected",
+          reason: `/${plugin.id}:${slash.name} is not available right now.`,
+        };
+      }
+
+      const argumentText = args.join(" ").trim();
+      const params = { ...(action.invoke.params ?? {}) };
+      if (action.argument) {
+        if (!argumentText && action.argument.required) {
+          const signature = slash.signature ? ` ${slash.signature}` : "";
+          return { type: "rejected", reason: `Usage: /${plugin.id}:${slash.name}${signature}` };
+        }
+        if (argumentText) {
+          params[action.argument.param ?? action.argument.name] = argumentText;
+        }
+      } else if (argumentText) {
+        return { type: "rejected", reason: `Usage: /${plugin.id}:${slash.name}` };
+      }
+
+      return {
+        type: "plugin_action",
+        pluginId: plugin.id,
+        actionId: action.id,
+        label: action.label,
+        path: action.invoke.path,
+        action: action.invoke.action,
+        params: Object.keys(params).length > 0 ? params : undefined,
+      };
+    }
+  }
+
+  return null;
+}
 
 export function parseLocalCommand(input: string): LocalCommand | null {
   const trimmed = input.trim();
@@ -103,23 +180,15 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     return { type: "clear" };
   }
 
-  if (name === "mouse") {
+  if (name === "verbosity") {
     const mode = args[0]?.toLowerCase();
-    if (mode === "on" || mode === "off" || mode === "toggle" || mode === undefined) {
-      return { type: "mouse", mode: mode ?? "toggle" };
+    if (!mode) {
+      return { type: "verbosity", mode: "show" };
     }
-    return { type: "unknown", name: trimmed };
-  }
-
-  if (name === "verbosity" || name === "verbose" || name === "compact" || name === "normal") {
-    if (name === "verbose") return { type: "verbosity", mode: "verbose" };
-    if (name === "compact") return { type: "verbosity", mode: "compact" };
-    if (name === "normal") return { type: "verbosity", mode: "normal" };
-    const mode = args[0]?.toLowerCase();
-    if (mode === "compact" || mode === "normal" || mode === "verbose") {
+    if (mode === "compact" || mode === "verbose") {
       return { type: "verbosity", mode };
     }
-    return { type: "verbosity", mode: "cycle" };
+    return { type: "rejected", reason: "Usage: /verbosity [compact|verbose]" };
   }
 
   if (name === "inspect" || name === "tree" || name === "inspector") {
@@ -239,6 +308,8 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
+      thinkingEnabled: parseThinkingEnabled(parsed),
+      thinkingDisplay: parseThinkingDisplay(parsed),
       adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
       baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
       makeDefault: !parsed.flags.has("no-default"),
@@ -260,6 +331,8 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
+      thinkingEnabled: parseThinkingEnabled(parsed),
+      thinkingDisplay: parseThinkingDisplay(parsed),
       adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
       baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
       makeDefault: !parsed.flags.has("no-default"),
@@ -464,6 +537,42 @@ function parsePositiveInteger(raw: string | undefined): number | undefined {
   return value;
 }
 
+function parseThinkingEnabled(parsed: {
+  values: Record<string, string>;
+  flags: Set<string>;
+}): boolean | undefined {
+  if (parsed.flags.has("thinking")) {
+    return true;
+  }
+  if (parsed.flags.has("no-thinking")) {
+    return false;
+  }
+  const raw = parsed.values.thinking ?? parsed.values["thinking-enabled"];
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "true" || raw === "on" || raw === "enabled") {
+    return true;
+  }
+  if (raw === "false" || raw === "off" || raw === "disabled") {
+    return false;
+  }
+  throw new Error("thinking must be true/false, on/off, or enabled/disabled.");
+}
+
+function parseThinkingDisplay(parsed: {
+  values: Record<string, string>;
+}): "visible" | "hidden" | undefined {
+  const raw = parsed.values["thinking-display"] ?? parsed.values.display;
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "visible" || raw === "hidden") {
+    return raw;
+  }
+  throw new Error("thinking display must be visible or hidden.");
+}
+
 function parseParams(json: string): Record<string, unknown> | undefined {
   if (!json) {
     return undefined;
@@ -474,4 +583,51 @@ function parseParams(json: string): Record<string, unknown> | undefined {
     throw new Error("Invoke params must be a JSON object.");
   }
   return parsed as Record<string, unknown>;
+}
+
+type ParsedPluginSlashName = {
+  pluginId: string;
+  command: string;
+};
+
+function parsePluginSlashName(rawName: string): ParsedPluginSlashName | null {
+  const separator = rawName.indexOf(":");
+  if (separator <= 0 || separator === rawName.length - 1) {
+    return null;
+  }
+  return {
+    pluginId: rawName.slice(0, separator).toLowerCase(),
+    command: rawName.slice(separator + 1).toLowerCase(),
+  };
+}
+
+type ActionSlashPresentation = {
+  name: string;
+  aliases?: string[];
+  signature?: string;
+};
+
+function readActionSlash(action: PluginActionContribution): ActionSlashPresentation | null {
+  const tui = action.presentation?.tui;
+  const slash =
+    tui && typeof tui === "object" && !Array.isArray(tui)
+      ? (tui as Record<string, unknown>).slash
+      : undefined;
+  if (!slash || typeof slash !== "object" || Array.isArray(slash)) {
+    return null;
+  }
+
+  const slashRecord = slash as Record<string, unknown>;
+  const name = slashRecord.name;
+  if (typeof name !== "string" || name.length === 0) {
+    return null;
+  }
+
+  return {
+    name,
+    aliases: Array.isArray(slashRecord.aliases)
+      ? slashRecord.aliases.filter((alias): alias is string => typeof alias === "string")
+      : undefined,
+    signature: typeof slashRecord.signature === "string" ? slashRecord.signature : undefined,
+  };
 }

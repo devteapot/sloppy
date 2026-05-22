@@ -1,4 +1,4 @@
-import type { PluginNotificationContribution, SessionViewSnapshot } from "../slop/types";
+import type { PluginNotificationContribution, SessionViewSnapshot } from "../backend/slop-types";
 
 export type RuntimePluginNotification = PluginNotificationContribution & {
   pluginId: string;
@@ -24,7 +24,7 @@ export function collectPluginNotifications(
   snapshot: SessionViewSnapshot,
 ): RuntimePluginNotification[] {
   return snapshot.plugins.flatMap((plugin) =>
-    (plugin.tui.notifications ?? []).map((notification) => ({
+    (plugin.ui.notifications ?? []).map((notification) => ({
       ...notification,
       pluginId: plugin.id,
     })),
@@ -62,7 +62,11 @@ export function evaluatePluginNotifications(
   for (const notification of collectPluginNotifications(snapshot)) {
     const key = `${notification.pluginId}:${notification.id}`;
     activeKeys.add(key);
-    const nextValue = readPluginNotificationValue(snapshot, notification.path, notification.prop);
+    const nextValue = readPluginNotificationValue(
+      snapshot,
+      notification.source.path,
+      notification.source.prop,
+    );
     const previousValue = previousValues.get(key);
     if (
       previousValue !== undefined &&
