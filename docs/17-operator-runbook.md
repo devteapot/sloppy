@@ -73,6 +73,42 @@ bun run runtime:smoke -- --mode acp --acp-adapter <adapter-id>
 Provider smoke verifies meta-runtime routing through SLOP providers without a
 live model. Native and ACP modes verify the selected model path.
 
+## Managed TUI Supervisor
+
+The packaged interactive entrypoint is:
+
+```sh
+sloppy
+```
+
+In a source checkout, use:
+
+```sh
+bun run tui
+```
+
+The launcher resolves `realpath(process.cwd())` into a launch scope, starts or
+reuses that scope's managed supervisor, creates a fresh session by default, and
+attaches the TUI to that session's ordinary provider socket. Use `sloppy
+--continue` to select the launch-scope resume session instead. In a clean launch
+scope with no previous session, `--continue` fails at the CLI level.
+
+Supervisor sockets, discovery files, and logs live under the process runtime
+directory: `SLOPPY_RUNTIME_DIR/supervisors`,
+`$XDG_RUNTIME_DIR/sloppy/supervisors`, `$TMPDIR/sloppy/supervisors`, or
+`/tmp/slop/supervisors`. Durable session snapshots and the launch-scope
+registry live in the configured `session.persistenceDir` when
+`session.persistSnapshots=true`; by default that is `.sloppy/sessions` under the
+configured filesystem root.
+
+Multiple TUIs can connect to the same supervisor and select different sessions.
+Each TUI registers a supervisor client lease, so Stop Session is rejected when
+another connected TUI has selected the target session. After all leases
+disconnect, a managed supervisor auto-closes only when no live session has a
+core or plugin-provided auto-close blocker. Core blockers are active turns,
+approval waits, queued messages, pending approvals, and running tasks; plugin
+blockers must be declared by the session plugin.
+
 ## Live Headless E2E
 
 Run the opt-in live headless CLI e2e when you want the real `-p` path, the
@@ -149,6 +185,13 @@ as explicit public state:
 Do not infer hidden continuation after restart. Resume or recreate work through
 the public `/goal`, `/queue`, and `/composer` affordances.
 
+Stopped supervised sessions remain in the session registry as dormant records.
+Selecting a dormant record restores a new live session process from its snapshot
+and then applies the same stale-turn recovery rules above. Archive and Delete
+are intentionally separate future operations: Archive should remove a session
+from normal resume/switch lists while retaining history, and Delete should
+permanently remove both registry entry and snapshot.
+
 ## Live Session Checks
 
 For a running session, inspect public state instead of runtime internals:
@@ -166,6 +209,18 @@ For a running session, inspect public state instead of runtime internals:
 
 The TUI and third-party consumers should use the same public session provider
 boundary.
+
+For a running supervisor, inspect public supervisor state instead of process
+internals:
+
+- `/session`: launch-scope key/root, resume session id/socket, registry path,
+  live/session counts, client lease count, and auto-close status
+- `/sessions`: session records with runtime status, resume marker, scope
+  metadata, live socket when available, and compact turn/goal/queue/task summary
+- `/scopes`: configured workspace/project scopes that can launch new sessions
+
+The supervisor owns lifecycle bookkeeping only. It should not be used as a
+hidden scheduler or provider-rewiring layer.
 
 ## External Providers
 

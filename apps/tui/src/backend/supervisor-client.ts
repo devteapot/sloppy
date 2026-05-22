@@ -9,9 +9,12 @@ export type SupervisorSessionItem = {
   id: string;
   title?: string;
   socketPath: string;
+  runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
+  launchScopeKey?: string;
+  launchRoot?: string;
   turnState?: string;
   turnMessage?: string;
   goalStatus?: string;
@@ -21,7 +24,7 @@ export type SupervisorSessionItem = {
   pendingApprovalCount: number;
   runningTaskCount: number;
   lastActivityAt?: string;
-  selected: boolean;
+  isResumeSession: boolean;
   createdAt?: string;
   canSwitch: boolean;
   canStop: boolean;
@@ -43,8 +46,10 @@ export type SupervisorSnapshot = {
     socketPath: string;
     error?: string;
   };
-  activeSessionId?: string;
-  activeSocketPath?: string;
+  resumeSessionId?: string;
+  resumeSocketPath?: string;
+  autoCloseEnabled: boolean;
+  clientLeaseCount: number;
   sessions: SupervisorSessionItem[];
   scopes: SupervisorScopeItem[];
 };
@@ -99,6 +104,8 @@ function emptySnapshot(socketPath: string): SupervisorSnapshot {
       status: "idle",
       socketPath,
     },
+    autoCloseEnabled: false,
+    clientLeaseCount: 0,
     sessions: [],
     scopes: [],
   };
@@ -109,9 +116,9 @@ function mapSessionItem(node: SlopNode): SupervisorSessionItem {
   const actions = affordanceActions(node);
   return mapSessionRecord(p, {
     id: stringProp(p, "session_id", node.id),
-    selected: booleanProp(p, "selected"),
-    canSwitch: actions.has("set_active"),
-    canStop: actions.has("stop"),
+    isResumeSession: booleanProp(p, "is_resume_session"),
+    canSwitch: actions.has("select_session"),
+    canStop: actions.has("stop_session"),
   });
 }
 
@@ -146,11 +153,18 @@ function mapSessionRecord(
     id: overrides.id,
     title: optionalStringProp(data, "title"),
     socketPath: stringProp(data, "socketPath", stringProp(data, "socket_path")),
+    runtimeStatus:
+      stringProp(data, "runtimeStatus", stringProp(data, "runtime_status")) === "dormant"
+        ? "dormant"
+        : "live",
     workspaceRoot:
       optionalStringProp(data, "workspaceRoot") ?? optionalStringProp(data, "workspace_root"),
     workspaceId:
       optionalStringProp(data, "workspaceId") ?? optionalStringProp(data, "workspace_id"),
     projectId: optionalStringProp(data, "projectId") ?? optionalStringProp(data, "project_id"),
+    launchScopeKey:
+      optionalStringProp(data, "launchScopeKey") ?? optionalStringProp(data, "launch_scope_key"),
+    launchRoot: optionalStringProp(data, "launchRoot") ?? optionalStringProp(data, "launch_root"),
     turnState: optionalStringProp(data, "turnState") ?? optionalStringProp(data, "turn_state"),
     turnMessage:
       optionalStringProp(data, "turnMessage") ?? optionalStringProp(data, "turn_message"),
@@ -167,7 +181,7 @@ function mapSessionRecord(
     runningTaskCount: numberProp(data, "runningTaskCount", numberProp(data, "running_task_count")),
     lastActivityAt:
       optionalStringProp(data, "lastActivityAt") ?? optionalStringProp(data, "last_activity_at"),
-    selected: overrides.selected ?? false,
+    isResumeSession: overrides.isResumeSession ?? booleanProp(data, "is_resume_session"),
     createdAt: optionalStringProp(data, "createdAt") ?? optionalStringProp(data, "created_at"),
     canSwitch: overrides.canSwitch ?? true,
     canStop: overrides.canStop ?? true,
@@ -232,25 +246,48 @@ export class SessionSupervisorClient {
     const data = resultRecord(result);
     return mapSessionRecord(data, {
       id: stringProp(data, "sessionId", stringProp(data, "session_id")),
-      selected: true,
+      isResumeSession: true,
       canSwitch: true,
       canStop: true,
     });
   }
 
   async switchSession(sessionId: string): Promise<SupervisorSessionItem> {
-    const result = await this.invoke(`/sessions/${encodeURIComponent(sessionId)}`, "set_active");
+    const result = await this.invoke(
+      `/sessions/${encodeURIComponent(sessionId)}`,
+      "select_session",
+    );
     const data = resultRecord(result);
     return mapSessionRecord(data, {
       id: stringProp(data, "sessionId", stringProp(data, "session_id", sessionId)),
-      selected: true,
+      isResumeSession: true,
       canSwitch: true,
       canStop: true,
     });
   }
 
   async stopSession(sessionId: string): Promise<ResultMessage> {
-    return this.invoke(`/sessions/${encodeURIComponent(sessionId)}`, "stop");
+    const result = await this.invoke(`/sessions/${encodeURIComponent(sessionId)}`, "stop_session");
+    resultRecord(result);
+    return result;
+  }
+
+  async registerClientLease(selectedSessionId?: string): Promise<ResultMessage> {
+    return this.invoke("/session", "register_client_lease", {
+      label: "tui",
+      ...(selectedSessionId && { selected_session_id: selectedSessionId }),
+    });
+  }
+
+  async updateClientLease(selectedSessionId?: string): Promise<ResultMessage> {
+    return this.invoke("/session", "update_client_lease", {
+      label: "tui",
+      ...(selectedSessionId && { selected_session_id: selectedSessionId }),
+    });
+  }
+
+  async unregisterClientLease(): Promise<ResultMessage> {
+    return this.invoke("/session", "unregister_client_lease");
   }
 
   private async connectInternal(): Promise<SupervisorSnapshot> {
@@ -350,8 +387,10 @@ export class SessionSupervisorClient {
       const p = props(node);
       this.updateSnapshot({
         ...this.snapshot,
-        activeSessionId: optionalStringProp(p, "active_session_id"),
-        activeSocketPath: optionalStringProp(p, "active_socket_path"),
+        resumeSessionId: optionalStringProp(p, "resume_session_id"),
+        resumeSocketPath: optionalStringProp(p, "resume_socket_path"),
+        autoCloseEnabled: booleanProp(p, "auto_close_enabled"),
+        clientLeaseCount: numberProp(p, "client_lease_count"),
       });
       return;
     }

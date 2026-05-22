@@ -48,6 +48,16 @@ export class SessionPluginManager {
     return { props, summaries };
   }
 
+  autoCloseBlockers(): { pluginId: string; id: string; label: string }[] {
+    return this.plugins.flatMap((plugin) =>
+      (plugin.autoCloseBlockers?.(this.ctx) ?? []).map((blocker) => ({
+        pluginId: plugin.id,
+        id: blocker.id,
+        label: blocker.label,
+      })),
+    );
+  }
+
   async onStartup(): Promise<void> {
     for (const plugin of this.plugins) {
       await plugin.onStartup?.(this.ctx);

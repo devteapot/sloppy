@@ -54,6 +54,10 @@ export class SessionStore {
     workspaceRoot?: string;
     workspaceId?: string;
     projectId?: string;
+    launchScope?: {
+      key: string;
+      root: string;
+    };
     persistencePath?: string;
     snapshotMigrators?: readonly SessionSnapshotMigrator[];
     snapshotRecoverers?: readonly SessionSnapshotRecoverer[];

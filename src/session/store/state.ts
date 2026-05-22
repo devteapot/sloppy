@@ -34,6 +34,10 @@ export function createInitialState(options: {
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
+  launchScope?: {
+    key: string;
+    root: string;
+  };
   startedAt: string;
 }): SessionStoreState {
   const { startedAt } = options;
@@ -54,6 +58,7 @@ export function createInitialState(options: {
         workspaceRoot: options.workspaceRoot,
         workspaceId: options.workspaceId,
         projectId: options.projectId,
+        launchScope: options.launchScope,
       },
       llm: {
         status: "needs_credentials",

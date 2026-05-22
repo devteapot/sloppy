@@ -34,13 +34,15 @@ Explicit non-goals for v1:
 If richer inspection is needed later, it should be added as an explicit extension rather than by turning the session provider into a mirror of all downstream providers.
 
 Multi-session lifecycle is handled by a separate public session-supervisor
-provider. The supervisor exposes active session metadata, running
-session-provider sockets, configured workspace/project scopes, and
-create/switch/stop affordances. Its `/sessions` items include compact live
-turn, goal, queue, pending approval, running task, and last-activity summary
-fields so UIs can compare supervised sessions without reading runtime internals.
-Each supervised session still exposes the single-session contract described in
-this document.
+provider. The supervisor exposes launch-scope metadata, a launch-scope resume
+session id for `sloppy --continue`, live and dormant session records, configured
+workspace/project scopes, and create/select/stop affordances. It does not expose
+one global active session; each connected UI keeps its selected session through a
+connection-bound supervisor client lease. Its `/sessions` items include runtime
+status plus compact live turn, goal, queue, pending approval, running task, and
+last-activity summary fields so UIs can compare supervised sessions without
+reading runtime internals. Each supervised session still exposes the
+single-session contract described in this document.
 
 ---
 

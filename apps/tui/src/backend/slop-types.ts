@@ -22,6 +22,8 @@ export type SessionMeta = {
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
+  launchScopeKey?: string;
+  launchRoot?: string;
   modelProvider?: string;
   model?: string;
   startedAt?: string;

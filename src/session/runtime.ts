@@ -377,6 +377,10 @@ export class SessionRuntime {
     actorKind?: string;
     actorName?: string;
     actorId?: string;
+    launchScope?: {
+      key: string;
+      root: string;
+    };
     requiresLlmProfile?: boolean;
     externalAgentState?: ExternalSessionAgentState;
     llmProfileId?: string;
@@ -409,6 +413,7 @@ export class SessionRuntime {
         workspaceRoot: this.config.plugins.filesystem.root,
         workspaceId: this.config.workspaces?.activeWorkspaceId,
         projectId: this.config.workspaces?.activeProjectId,
+        launchScope: options?.launchScope,
         persistencePath: resolveSessionPersistencePath(
           this.config,
           sessionId,
@@ -581,6 +586,35 @@ export class SessionRuntime {
 
   buildPluginSessionSummary(): { props: Record<string, unknown>; summaries: string[] } {
     return this.plugins.sessionSummary();
+  }
+
+  buildAutoCloseBlockers(): { source: string; id: string; label: string }[] {
+    const snapshot = this.store.getSnapshot();
+    const blockers: { source: string; id: string; label: string }[] = [];
+    if (snapshot.turn.state === "running" || snapshot.turn.state === "waiting_approval") {
+      blockers.push({
+        source: "core",
+        id: `turn:${snapshot.turn.state}`,
+        label: snapshot.turn.message,
+      });
+    }
+    if (snapshot.queue.length > 0) {
+      blockers.push({ source: "core", id: "queue", label: "Queued messages" });
+    }
+    if (snapshot.approvals.some((approval) => approval.status === "pending")) {
+      blockers.push({ source: "core", id: "approval", label: "Pending approval" });
+    }
+    if (snapshot.tasks.some((task) => task.status === "running")) {
+      blockers.push({ source: "core", id: "task", label: "Running task" });
+    }
+    for (const blocker of this.plugins.autoCloseBlockers()) {
+      blockers.push({
+        source: blocker.pluginId,
+        id: blocker.id,
+        label: blocker.label,
+      });
+    }
+    return blockers;
   }
 
   async start(): Promise<void> {

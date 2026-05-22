@@ -1,11 +1,27 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
-import { listenUnix } from "@slop-ai/server/unix";
+import {
+  type Action,
+  action,
+  createSlopServer,
+  type ItemDescriptor,
+  type SlopServer,
+} from "@slop-ai/server";
 
 import { getHomeConfigPath, getWorkspaceConfigPath, loadScopedConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
+import type { LaunchScope } from "./launch-scope";
+import {
+  loadSessionRegistry,
+  persistSessionRegistry,
+  recordFromSnapshot,
+  type SessionRegistryRecord,
+  sessionRegistryPath,
+  snapshotPathForSession,
+} from "./registry";
 import { SessionService } from "./service";
-import { closeUnixListener, type UnixListener } from "./socket";
+import type { UnixListener } from "./socket";
+import { listenSessionSupervisor } from "./supervisor-listener";
 
 export type SessionScopeInput = {
   workspace_id?: string;
@@ -18,29 +34,51 @@ export type SessionRecord = {
   sessionId: string;
   providerId: string;
   socketPath: string;
+  runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
+  launchScopeKey?: string;
+  launchRoot?: string;
   title?: string;
   createdAt: string;
-  service: SessionService;
-  unsubscribe: () => void;
+  lastActivityAt: string;
+  snapshotPath?: string;
+  archived?: boolean;
+  service?: SessionService;
+  unsubscribe?: () => void;
 };
 
-type PublicSessionRecord = Omit<SessionRecord, "service" | "unsubscribe"> & {
+type PublicSessionRecord = {
+  sessionId: string;
+  providerId: string;
+  socketPath?: string;
+  runtimeStatus: "live" | "dormant";
+  workspaceRoot?: string;
+  workspaceId?: string;
+  projectId?: string;
+  launchScopeKey?: string;
+  launchRoot?: string;
+  title?: string;
+  createdAt: string;
+  lastActivityAt: string;
   session_id: string;
   provider_id: string;
-  socket_path: string;
+  socket_path?: string;
+  runtime_status: "live" | "dormant";
   workspace_root?: string;
   workspace_id?: string;
   project_id?: string;
+  launch_scope_key?: string;
+  launch_root?: string;
   created_at: string;
-  turn_state: string;
-  turn_message: string;
-  queued_count: number;
-  pending_approval_count: number;
-  running_task_count: number;
   last_activity_at: string;
+  is_resume_session: boolean;
+  turn_state?: string;
+  turn_message?: string;
+  queued_count?: number;
+  pending_approval_count?: number;
+  running_task_count?: number;
   [key: string]: unknown;
 };
 
@@ -52,6 +90,13 @@ type ScopeRecord = {
   root: string;
   configPath: string;
   description?: string;
+};
+
+type ClientLease = {
+  leaseId: string;
+  selectedSessionId?: string;
+  label?: string;
+  connectedAt: string;
 };
 
 function now(): string {
@@ -80,11 +125,56 @@ function defaultTitle(input: {
   return input.workspaceId;
 }
 
+function recordFromRegistry(record: SessionRegistryRecord): SessionRecord {
+  return {
+    sessionId: record.sessionId,
+    providerId: `sloppy-session-${record.sessionId}`,
+    socketPath: "",
+    runtimeStatus: "dormant",
+    title: record.title,
+    workspaceRoot: record.workspaceRoot,
+    workspaceId: record.workspaceId,
+    projectId: record.projectId,
+    launchScopeKey: record.launchScopeKey,
+    launchRoot: record.launchRoot,
+    createdAt: record.createdAt,
+    lastActivityAt: record.lastActivityAt,
+    snapshotPath: record.snapshotPath,
+    archived: record.archived,
+  };
+}
+
+function registryRecordFromSession(record: SessionRecord): SessionRegistryRecord {
+  return {
+    sessionId: record.sessionId,
+    title: record.title,
+    workspaceRoot: record.workspaceRoot,
+    workspaceId: record.workspaceId,
+    projectId: record.projectId,
+    launchScopeKey: record.launchScopeKey,
+    launchRoot: record.launchRoot,
+    createdAt: record.createdAt,
+    lastActivityAt: record.lastActivityAt,
+    snapshotPath: record.snapshotPath,
+    archived: record.archived,
+  };
+}
+
+function stringParam(params: Record<string, unknown>, name: string): string | undefined {
+  const value = params[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 export class SessionSupervisorProvider {
   readonly server: SlopServer;
-  private readonly sessions = new Map<string, SessionRecord>();
-  private activeSessionId: string | null = null;
+  private readonly records = new Map<string, SessionRecord>();
+  private readonly clientLeases = new Map<object, ClientLease>();
+  private readonly lifecycleListeners = new Set<() => void>();
+  private resumeSessionId: string | null = null;
   private cachedConfig: SloppyConfig | null = null;
+  private registryPath: string | null = null;
+  private initialized = false;
+  private initializePromise: Promise<void>;
   private scopeError: string | null = null;
 
   constructor(
@@ -92,6 +182,8 @@ export class SessionSupervisorProvider {
       cwd?: string;
       homeConfigPath?: string;
       workspaceConfigPath?: string;
+      launchScope?: LaunchScope;
+      autoCloseEnabled?: boolean;
     } = {},
   ) {
     this.server = createSlopServer({
@@ -102,29 +194,324 @@ export class SessionSupervisorProvider {
     this.server.register("session", () => this.buildSessionDescriptor());
     this.server.register("sessions", () => this.buildSessionsDescriptor());
     this.server.register("scopes", () => this.buildScopesDescriptor());
-    void this.baseConfig()
-      .then(() => this.server.refresh())
-      .catch(() => this.server.refresh());
+    this.initializePromise = this.initialize();
   }
 
   async startInitialSession(input: SessionScopeInput = {}): Promise<SessionRecord> {
-    if (this.activeSessionId) {
-      const active = this.sessions.get(this.activeSessionId);
-      if (active) {
-        return active;
+    await this.ensureInitialized();
+    if (this.resumeSessionId) {
+      const record = this.records.get(this.resumeSessionId);
+      if (record?.runtimeStatus === "live") {
+        return record;
       }
     }
     return this.createSession(input);
   }
 
+  onLifecycleChange(listener: () => void): () => void {
+    this.lifecycleListeners.add(listener);
+    return () => {
+      this.lifecycleListeners.delete(listener);
+    };
+  }
+
   stop(): void {
-    for (const record of this.sessions.values()) {
-      record.unsubscribe();
-      record.service.stop();
+    for (const record of this.records.values()) {
+      this.stopLiveRecord(record);
     }
-    this.sessions.clear();
-    this.activeSessionId = null;
+    this.records.clear();
+    this.clientLeases.clear();
+    this.resumeSessionId = null;
     this.server.stop();
+    this.notifyLifecycle();
+  }
+
+  canAutoClose(): boolean {
+    if (this.clientLeases.size > 0) {
+      return false;
+    }
+    for (const record of this.records.values()) {
+      if (
+        record.runtimeStatus === "live" &&
+        record.service?.runtime.buildAutoCloseBlockers().length
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  registerClientLease(owner: object, params: Record<string, unknown>): { lease_id: string } {
+    const lease = {
+      leaseId: crypto.randomUUID(),
+      selectedSessionId: stringParam(params, "selected_session_id"),
+      label: stringParam(params, "label"),
+      connectedAt: now(),
+    };
+    this.clientLeases.set(owner, lease);
+    this.server.refresh();
+    this.notifyLifecycle();
+    return { lease_id: lease.leaseId };
+  }
+
+  updateClientLease(owner: object, params: Record<string, unknown>): { lease_id: string } {
+    const existing = this.clientLeases.get(owner);
+    const lease =
+      existing ??
+      ({
+        leaseId: crypto.randomUUID(),
+        connectedAt: now(),
+      } satisfies ClientLease);
+    lease.selectedSessionId = stringParam(params, "selected_session_id");
+    lease.label = stringParam(params, "label") ?? lease.label;
+    this.clientLeases.set(owner, lease);
+    this.server.refresh();
+    this.notifyLifecycle();
+    return { lease_id: lease.leaseId };
+  }
+
+  unregisterClientLease(owner: object): { lease_id?: string } {
+    const leaseId = this.clientLeases.get(owner)?.leaseId;
+    this.clientLeases.delete(owner);
+    this.server.refresh();
+    this.notifyLifecycle();
+    return { lease_id: leaseId };
+  }
+
+  removeConnection(owner: object): void {
+    if (this.clientLeases.delete(owner)) {
+      this.server.refresh();
+      this.notifyLifecycle();
+    }
+  }
+
+  async createSession(input: SessionScopeInput = {}, owner?: object): Promise<SessionRecord> {
+    await this.ensureInitialized();
+    const config = await this.resolveConfig(input);
+    const sessionId = input.session_id ?? crypto.randomUUID();
+    if (this.records.has(sessionId)) {
+      throw new Error(`Session already exists: ${sessionId}`);
+    }
+    const title = defaultTitle({
+      workspaceId: config.workspaces?.activeWorkspaceId,
+      projectId: config.workspaces?.activeProjectId,
+      fallback: input.title,
+    });
+    const service = new SessionService({
+      config,
+      sessionId,
+      title,
+      socketPath: sessionSocketPath(sessionId),
+      launchScope: this.options.launchScope,
+    });
+    await service.start();
+    const record = this.attachService(service, {
+      createdAt: now(),
+      snapshotPath: service.runtime.store.getSnapshot().session.persistencePath,
+    });
+    this.resumeSessionId = sessionId;
+    if (owner) {
+      this.updateClientLease(owner, { selected_session_id: sessionId });
+    }
+    this.persistRegistry();
+    this.server.refresh();
+    this.notifyLifecycle();
+    return record;
+  }
+
+  async selectSession(sessionId: string, owner?: object): Promise<SessionRecord> {
+    await this.ensureInitialized();
+    let record = this.records.get(sessionId);
+    if (!record) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
+    if (record.runtimeStatus === "dormant") {
+      record = await this.restoreSession(record);
+    }
+    this.resumeSessionId = sessionId;
+    if (owner) {
+      this.updateClientLease(owner, { selected_session_id: sessionId });
+    }
+    this.persistRegistry();
+    this.server.refresh();
+    this.notifyLifecycle();
+    return record;
+  }
+
+  async stopSession(
+    sessionId: string,
+    owner?: object,
+  ): Promise<{ stopped: true; session_id: string }> {
+    await this.ensureInitialized();
+    const record = this.records.get(sessionId);
+    if (!record) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
+    if (record.runtimeStatus !== "live") {
+      return { stopped: true, session_id: sessionId };
+    }
+    const ownerLease = owner ? this.clientLeases.get(owner) : undefined;
+    if (ownerLease?.selectedSessionId === sessionId) {
+      throw new Error("Use New Session or switch away before stopping the selected session.");
+    }
+    const otherClientCount = [...this.clientLeases.entries()].filter(
+      ([leaseOwner, lease]) => leaseOwner !== owner && lease.selectedSessionId === sessionId,
+    ).length;
+    if (otherClientCount > 0) {
+      throw new Error(`Cannot stop session: selected by ${otherClientCount} other clients.`);
+    }
+
+    this.stopLiveRecord(record);
+    record.runtimeStatus = "dormant";
+    record.socketPath = "";
+    record.service = undefined;
+    record.unsubscribe = undefined;
+    this.persistRegistry();
+    this.server.refresh();
+    this.notifyLifecycle();
+    return { stopped: true, session_id: sessionId };
+  }
+
+  publicSessionRecord(record: SessionRecord): PublicSessionRecord {
+    if (record.runtimeStatus === "live" && record.service) {
+      this.syncRecordFromService(record);
+      const snapshot = record.service.runtime.store.getSnapshot();
+      const pluginSummary = record.service.runtime.buildPluginSessionSummary();
+      const pendingApprovalCount = snapshot.approvals.filter(
+        (approval) => approval.status === "pending",
+      ).length;
+      const runningTaskCount = snapshot.tasks.filter((task) => task.status === "running").length;
+      return {
+        sessionId: record.sessionId,
+        providerId: record.providerId,
+        socketPath: record.socketPath,
+        runtimeStatus: "live",
+        workspaceRoot: snapshot.session.workspaceRoot,
+        workspaceId: snapshot.session.workspaceId,
+        projectId: snapshot.session.projectId,
+        launchScopeKey: snapshot.session.launchScope?.key,
+        launchRoot: snapshot.session.launchScope?.root,
+        title: snapshot.session.title,
+        createdAt: record.createdAt,
+        lastActivityAt: snapshot.session.lastActivityAt,
+        session_id: record.sessionId,
+        provider_id: record.providerId,
+        socket_path: record.socketPath,
+        runtime_status: "live",
+        workspace_root: snapshot.session.workspaceRoot,
+        workspace_id: snapshot.session.workspaceId,
+        project_id: snapshot.session.projectId,
+        launch_scope_key: snapshot.session.launchScope?.key,
+        launch_root: snapshot.session.launchScope?.root,
+        created_at: record.createdAt,
+        last_activity_at: snapshot.session.lastActivityAt,
+        is_resume_session: record.sessionId === this.resumeSessionId,
+        turn_state: snapshot.turn.state,
+        turn_message: snapshot.turn.message,
+        queued_count: snapshot.queue.length,
+        pending_approval_count: pendingApprovalCount,
+        running_task_count: runningTaskCount,
+        ...pluginSummary.props,
+      };
+    }
+
+    return {
+      sessionId: record.sessionId,
+      providerId: record.providerId,
+      runtimeStatus: "dormant",
+      workspaceRoot: record.workspaceRoot,
+      workspaceId: record.workspaceId,
+      projectId: record.projectId,
+      launchScopeKey: record.launchScopeKey,
+      launchRoot: record.launchRoot,
+      title: record.title,
+      createdAt: record.createdAt,
+      lastActivityAt: record.lastActivityAt,
+      session_id: record.sessionId,
+      provider_id: record.providerId,
+      runtime_status: "dormant",
+      workspace_root: record.workspaceRoot,
+      workspace_id: record.workspaceId,
+      project_id: record.projectId,
+      launch_scope_key: record.launchScopeKey,
+      launch_root: record.launchRoot,
+      created_at: record.createdAt,
+      last_activity_at: record.lastActivityAt,
+      is_resume_session: record.sessionId === this.resumeSessionId,
+    };
+  }
+
+  async handleConnectionInvoke(
+    owner: object,
+    path: string,
+    actionName: string,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown> | null> {
+    if (path === "/session") {
+      if (actionName === "create_session") {
+        return this.publicSessionRecord(await this.createSession(params, owner));
+      }
+      if (actionName === "select_session") {
+        const sessionId = stringParam(params, "session_id");
+        if (!sessionId) {
+          throw new Error("session_id is required.");
+        }
+        return this.publicSessionRecord(await this.selectSession(sessionId, owner));
+      }
+      if (actionName === "register_client_lease") {
+        return this.registerClientLease(owner, params);
+      }
+      if (actionName === "update_client_lease") {
+        return this.updateClientLease(owner, params);
+      }
+      if (actionName === "unregister_client_lease") {
+        return this.unregisterClientLease(owner);
+      }
+    }
+    const sessionMatch = path.match(/^\/sessions\/(.+)$/);
+    if (sessionMatch) {
+      const sessionId = decodeURIComponent(sessionMatch[1] ?? "");
+      if (actionName === "select_session") {
+        return this.publicSessionRecord(await this.selectSession(sessionId, owner));
+      }
+      if (actionName === "stop_session") {
+        return this.stopSession(sessionId, owner);
+      }
+    }
+    return null;
+  }
+
+  private async initialize(): Promise<void> {
+    try {
+      const config = await this.baseConfig();
+      if (this.options.launchScope) {
+        const loaded = loadSessionRegistry({
+          config,
+          launchScopeKey: this.options.launchScope.key,
+          launchRoot: this.options.launchScope.root,
+        });
+        if (loaded) {
+          this.registryPath = loaded.path;
+          this.resumeSessionId = loaded.registry.resumeSessionId ?? null;
+          for (const record of loaded.registry.sessions) {
+            if (!record.archived) {
+              this.records.set(record.sessionId, recordFromRegistry(record));
+            }
+          }
+          this.persistRegistry();
+        }
+      }
+      this.initialized = true;
+    } finally {
+      this.server.refresh();
+      this.notifyLifecycle();
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initializePromise;
+    }
   }
 
   private async baseConfig(): Promise<SloppyConfig> {
@@ -135,6 +522,9 @@ export class SessionSupervisorProvider {
           homeConfigPath: this.options.homeConfigPath,
           workspaceConfigPath: this.options.workspaceConfigPath,
         });
+        if (this.options.launchScope) {
+          this.registryPath = sessionRegistryPath(this.cachedConfig, this.options.launchScope.key);
+        }
         this.scopeError = null;
       } catch (error) {
         this.scopeError = error instanceof Error ? error.message : String(error);
@@ -154,25 +544,65 @@ export class SessionSupervisorProvider {
     });
   }
 
-  private async createSession(input: SessionScopeInput): Promise<SessionRecord> {
-    const config = await this.resolveConfig(input);
-    const sessionId = input.session_id ?? crypto.randomUUID();
-    if (this.sessions.has(sessionId)) {
-      throw new Error(`Session already exists: ${sessionId}`);
-    }
-    const title = defaultTitle({
-      workspaceId: config.workspaces?.activeWorkspaceId,
-      projectId: config.workspaces?.activeProjectId,
-      fallback: input.title,
+  private async restoreSession(record: SessionRecord): Promise<SessionRecord> {
+    const config = await this.resolveConfig({
+      workspace_id: record.workspaceId,
+      project_id: record.projectId,
     });
+    const snapshotPath = record.snapshotPath ?? snapshotPathForSession(config, record.sessionId);
+    if (!snapshotPath || !existsSync(snapshotPath)) {
+      throw new Error(
+        `Previous session could not be restored: missing snapshot for ${record.sessionId}.`,
+      );
+    }
     const service = new SessionService({
       config,
-      sessionId,
-      title,
-      socketPath: sessionSocketPath(sessionId),
+      sessionId: record.sessionId,
+      title: record.title,
+      socketPath: sessionSocketPath(record.sessionId),
+      sessionPersistencePath: snapshotPath,
+      launchScope: this.options.launchScope,
     });
     await service.start();
-    const refresh = () => this.server.refresh();
+    return this.attachService(service, {
+      record,
+      createdAt: record.createdAt,
+      snapshotPath,
+    });
+  }
+
+  private attachService(
+    service: SessionService,
+    options: {
+      record?: SessionRecord;
+      createdAt: string;
+      snapshotPath?: string;
+    },
+  ): SessionRecord {
+    const snapshot = service.runtime.store.getSnapshot();
+    const record =
+      options.record ??
+      ({
+        sessionId: snapshot.session.sessionId,
+        providerId: service.providerId,
+        socketPath: service.socketPath,
+        runtimeStatus: "live",
+        createdAt: options.createdAt,
+        lastActivityAt: snapshot.session.lastActivityAt,
+      } satisfies SessionRecord);
+    record.providerId = service.providerId;
+    record.socketPath = service.socketPath;
+    record.runtimeStatus = "live";
+    record.service = service;
+    record.snapshotPath =
+      options.snapshotPath ?? snapshot.session.persistencePath ?? record.snapshotPath;
+    this.syncRecordFromService(record);
+    const refresh = () => {
+      this.syncRecordFromService(record);
+      this.persistRegistry();
+      this.server.refresh();
+      this.notifyLifecycle();
+    };
     const unsubscribers = [
       service.runtime.store.onSessionChange(refresh),
       service.runtime.store.onTurnChange(refresh),
@@ -181,86 +611,58 @@ export class SessionSupervisorProvider {
       service.runtime.store.onApprovalsChange(refresh),
       service.runtime.store.onTasksChange(refresh),
     ];
-
-    const snapshot = service.runtime.store.getSnapshot();
-    const record: SessionRecord = {
-      sessionId,
-      providerId: service.providerId,
-      socketPath: service.socketPath,
-      workspaceRoot: snapshot.session.workspaceRoot,
-      workspaceId: snapshot.session.workspaceId,
-      projectId: snapshot.session.projectId,
-      title: snapshot.session.title,
-      createdAt: now(),
-      service,
-      unsubscribe: () => {
-        for (const unsubscribe of unsubscribers) {
-          unsubscribe();
-        }
-      },
+    record.unsubscribe = () => {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
     };
-    this.sessions.set(sessionId, record);
-    this.activeSessionId = sessionId;
-    this.server.refresh();
+    this.records.set(record.sessionId, record);
     return record;
   }
 
-  private setActiveSession(sessionId: string): SessionRecord {
-    const record = this.sessions.get(sessionId);
-    if (!record) {
-      throw new Error(`Unknown session: ${sessionId}`);
+  private syncRecordFromService(record: SessionRecord): void {
+    if (!record.service) {
+      return;
     }
-    this.activeSessionId = sessionId;
-    this.server.refresh();
-    return record;
-  }
-
-  private publicSessionRecord(record: SessionRecord): PublicSessionRecord {
     const snapshot = record.service.runtime.store.getSnapshot();
-    const pluginSummary = record.service.runtime.buildPluginSessionSummary();
-    const pendingApprovalCount = snapshot.approvals.filter(
-      (approval) => approval.status === "pending",
-    ).length;
-    const runningTaskCount = snapshot.tasks.filter((task) => task.status === "running").length;
-    return {
-      sessionId: record.sessionId,
-      providerId: record.providerId,
-      socketPath: record.socketPath,
-      workspaceRoot: snapshot.session.workspaceRoot,
-      workspaceId: snapshot.session.workspaceId,
-      projectId: snapshot.session.projectId,
-      title: snapshot.session.title,
-      createdAt: record.createdAt,
-      session_id: record.sessionId,
-      provider_id: record.providerId,
-      socket_path: record.socketPath,
-      workspace_root: snapshot.session.workspaceRoot,
-      workspace_id: snapshot.session.workspaceId,
-      project_id: snapshot.session.projectId,
-      created_at: record.createdAt,
-      turn_state: snapshot.turn.state,
-      turn_message: snapshot.turn.message,
-      queued_count: snapshot.queue.length,
-      pending_approval_count: pendingApprovalCount,
-      running_task_count: runningTaskCount,
-      last_activity_at: snapshot.session.lastActivityAt,
-      ...pluginSummary.props,
-    };
+    const registryRecord = recordFromSnapshot(snapshot, record.snapshotPath);
+    record.title = registryRecord.title;
+    record.workspaceRoot = registryRecord.workspaceRoot;
+    record.workspaceId = registryRecord.workspaceId;
+    record.projectId = registryRecord.projectId;
+    record.launchScopeKey = registryRecord.launchScopeKey;
+    record.launchRoot = registryRecord.launchRoot;
+    record.lastActivityAt = registryRecord.lastActivityAt;
+    record.snapshotPath = registryRecord.snapshotPath;
   }
 
-  private stopSession(sessionId: string): { stopped: true; session_id: string } {
-    const record = this.sessions.get(sessionId);
-    if (!record) {
-      throw new Error(`Unknown session: ${sessionId}`);
+  private stopLiveRecord(record: SessionRecord): void {
+    record.unsubscribe?.();
+    record.unsubscribe = undefined;
+    record.service?.stop();
+    record.service = undefined;
+  }
+
+  private persistRegistry(): void {
+    if (!this.registryPath || !this.options.launchScope) {
+      return;
     }
-    record.unsubscribe();
-    record.service.stop();
-    this.sessions.delete(sessionId);
-    if (this.activeSessionId === sessionId) {
-      this.activeSessionId = [...this.sessions.keys()].sort()[0] ?? null;
+    persistSessionRegistry(this.registryPath, {
+      kind: "sloppy.session.registry",
+      schemaVersion: 1,
+      launchScopeKey: this.options.launchScope.key,
+      launchRoot: this.options.launchScope.root,
+      resumeSessionId: this.resumeSessionId ?? undefined,
+      sessions: [...this.records.values()]
+        .filter((record) => !record.archived)
+        .map(registryRecordFromSession),
+    });
+  }
+
+  private notifyLifecycle(): void {
+    for (const listener of this.lifecycleListeners) {
+      listener();
     }
-    this.server.refresh();
-    return { stopped: true, session_id: sessionId };
   }
 
   private scopesFromConfig(config: SloppyConfig): ScopeRecord[] {
@@ -295,13 +697,21 @@ export class SessionSupervisorProvider {
   }
 
   private buildSessionDescriptor() {
-    const active = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+    const resume = this.resumeSessionId ? this.records.get(this.resumeSessionId) : undefined;
     return {
       type: "context",
       props: {
-        session_count: this.sessions.size,
-        active_session_id: active?.sessionId ?? null,
-        active_socket_path: active?.socketPath ?? null,
+        session_count: this.records.size,
+        live_session_count: [...this.records.values()].filter(
+          (record) => record.runtimeStatus === "live",
+        ).length,
+        resume_session_id: resume?.sessionId ?? null,
+        resume_socket_path: resume?.runtimeStatus === "live" ? resume.socketPath : null,
+        client_lease_count: this.clientLeases.size,
+        auto_close_enabled: this.options.autoCloseEnabled === true,
+        launch_scope_key: this.options.launchScope?.key,
+        launch_root: this.options.launchScope?.root,
+        registry_path: this.registryPath,
         home_config_path: this.options.homeConfigPath ?? getHomeConfigPath(),
         workspace_config_path:
           this.options.workspaceConfigPath ??
@@ -318,20 +728,56 @@ export class SessionSupervisorProvider {
           },
           async (input) => this.publicSessionRecord(await this.createSession(input)),
           {
-            label: "Create Session",
-            description: "Start a new scoped session provider and make it active.",
+            label: "New Session",
+            description: "Start a new scoped session provider and select it.",
             estimate: "slow",
           },
         ),
-        set_active_session: action(
+        select_session: action(
+          { session_id: "string" },
+          async ({ session_id }) => this.publicSessionRecord(await this.selectSession(session_id)),
           {
-            session_id: "string",
-          },
-          async ({ session_id }) => this.publicSessionRecord(this.setActiveSession(session_id)),
-          {
-            label: "Set Active Session",
-            description: "Mark an existing session as active for supervisor-aware clients.",
+            label: "Select Session",
+            description: "Select or restore a session.",
             idempotent: true,
+            estimate: "instant",
+          },
+        ),
+        register_client_lease: action(
+          {
+            selected_session_id: { type: "string", optional: true },
+            label: { type: "string", optional: true },
+          },
+          async () => {
+            throw new Error("Client leases require the tracked supervisor listener.");
+          },
+          {
+            label: "Register Client Lease",
+            description: "Register this supervisor client connection.",
+            estimate: "instant",
+          },
+        ),
+        update_client_lease: action(
+          {
+            selected_session_id: { type: "string", optional: true },
+            label: { type: "string", optional: true },
+          },
+          async () => {
+            throw new Error("Client leases require the tracked supervisor listener.");
+          },
+          {
+            label: "Update Client Lease",
+            description: "Update this supervisor client connection lease.",
+            estimate: "instant",
+          },
+        ),
+        unregister_client_lease: action(
+          async () => {
+            throw new Error("Client leases require the tracked supervisor listener.");
+          },
+          {
+            label: "Unregister Client Lease",
+            description: "Clear this supervisor client connection lease.",
             estimate: "instant",
           },
         ),
@@ -344,70 +790,76 @@ export class SessionSupervisorProvider {
   }
 
   private buildSessionsDescriptor() {
-    const items: ItemDescriptor[] = [...this.sessions.values()]
+    const items: ItemDescriptor[] = [...this.records.values()]
+      .filter((record) => !record.archived)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
       .map((record) => this.buildSessionItem(record));
     return {
       type: "collection",
       props: {
         count: items.length,
-        active_session_id: this.activeSessionId,
+        resume_session_id: this.resumeSessionId,
       },
-      summary: "Running Sloppy sessions managed by this supervisor.",
+      summary: "Sloppy sessions managed by this supervisor.",
       items,
     };
   }
 
   private buildSessionItem(record: SessionRecord): ItemDescriptor {
-    const selected = record.sessionId === this.activeSessionId;
     const publicRecord = this.publicSessionRecord(record);
-    const pluginSummary = record.service.runtime.buildPluginSessionSummary();
     const summaryParts = [
-      `turn=${publicRecord.turn_state}`,
-      ...pluginSummary.summaries,
-      `queued=${publicRecord.queued_count}`,
+      `status=${publicRecord.runtime_status}`,
+      ...(publicRecord.turn_state ? [`turn=${publicRecord.turn_state}`] : []),
+      ...(typeof publicRecord.queued_count === "number"
+        ? [`queued=${publicRecord.queued_count}`]
+        : []),
     ];
+    const actions: Record<string, Action> = {
+      select_session: action(
+        async () => this.publicSessionRecord(await this.selectSession(record.sessionId)),
+        {
+          label: "Select",
+          description: "Select or restore this session.",
+          idempotent: true,
+          estimate: record.runtimeStatus === "live" ? "instant" : "slow",
+        },
+      ),
+    };
+    if (record.runtimeStatus === "live") {
+      actions.stop_session = action(async () => this.stopSession(record.sessionId), {
+        label: "Stop Session",
+        description: "Stop this live session process while keeping its history restorable.",
+        dangerous: true,
+        idempotent: true,
+        estimate: "fast",
+      });
+    }
     return {
       id: encodeURIComponent(record.sessionId),
       props: {
         session_id: record.sessionId,
         provider_id: record.providerId,
-        socket_path: record.socketPath,
+        socket_path: publicRecord.socket_path ?? null,
+        runtime_status: publicRecord.runtime_status,
         workspace_root: publicRecord.workspace_root ?? null,
         workspace_id: publicRecord.workspace_id ?? null,
         project_id: publicRecord.project_id ?? null,
+        launch_scope_key: publicRecord.launch_scope_key ?? null,
+        launch_root: publicRecord.launch_root ?? null,
         title: publicRecord.title ?? null,
-        created_at: record.createdAt,
-        turn_state: publicRecord.turn_state,
-        turn_message: publicRecord.turn_message,
-        queued_count: publicRecord.queued_count,
-        pending_approval_count: publicRecord.pending_approval_count,
-        running_task_count: publicRecord.running_task_count,
+        created_at: publicRecord.created_at,
         last_activity_at: publicRecord.last_activity_at,
-        selected,
-        ...pluginSummary.props,
+        is_resume_session: publicRecord.is_resume_session,
+        turn_state: publicRecord.turn_state ?? null,
+        turn_message: publicRecord.turn_message ?? null,
+        queued_count: publicRecord.queued_count ?? null,
+        pending_approval_count: publicRecord.pending_approval_count ?? null,
+        running_task_count: publicRecord.running_task_count ?? null,
       },
       summary: `${publicRecord.title ?? record.sessionId}: ${summaryParts.join(" ")}`,
-      actions: {
-        set_active: action(
-          async () => this.publicSessionRecord(this.setActiveSession(record.sessionId)),
-          {
-            label: "Switch",
-            description: "Make this session active.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
-        stop: action(async () => this.stopSession(record.sessionId), {
-          label: "Stop",
-          description: "Stop this session provider.",
-          dangerous: true,
-          idempotent: true,
-          estimate: "fast",
-        }),
-      },
+      actions,
       meta: {
-        salience: selected ? 0.85 : 0.55,
+        salience: publicRecord.is_resume_session ? 0.85 : 0.55,
       },
     };
   }
@@ -497,31 +949,72 @@ export class SessionSupervisorProvider {
 
 export async function startSessionSupervisor(options: {
   socketPath: string;
-  initial?: SessionScopeInput;
+  initial?: SessionScopeInput | false;
   cwd?: string;
+  launchScope?: LaunchScope;
   register?: boolean;
+  autoClose?: {
+    enabled: boolean;
+    idleTimeoutMs?: number;
+    onClose?: () => void;
+  };
 }): Promise<{
   provider: SessionSupervisorProvider;
   listener: UnixListener;
-  initialSession: SessionRecord;
+  initialSession?: SessionRecord;
 }> {
   const provider = new SessionSupervisorProvider({
     cwd: options.cwd,
+    launchScope: options.launchScope,
+    autoCloseEnabled: options.autoClose?.enabled === true,
   });
-  let initialSession: SessionRecord;
+  let autoCloseTimer: Timer | null = null;
+  const clearAutoCloseTimer = () => {
+    if (autoCloseTimer) {
+      clearTimeout(autoCloseTimer);
+      autoCloseTimer = null;
+    }
+  };
+  const closeForIdle = () => {
+    clearAutoCloseTimer();
+    listener.close();
+    provider.stop();
+    options.autoClose?.onClose?.();
+  };
+  const scheduleAutoClose = () => {
+    if (options.autoClose?.enabled !== true) {
+      return;
+    }
+    if (!provider.canAutoClose()) {
+      clearAutoCloseTimer();
+      return;
+    }
+    if (!autoCloseTimer) {
+      autoCloseTimer = setTimeout(closeForIdle, options.autoClose.idleTimeoutMs ?? 5000);
+    }
+  };
+  provider.onLifecycleChange(scheduleAutoClose);
+
+  let initialSession: SessionRecord | undefined;
   try {
-    initialSession = await provider.startInitialSession(options.initial ?? {});
+    if (options.initial !== false) {
+      initialSession = await provider.startInitialSession(options.initial ?? {});
+    }
   } catch (error) {
     provider.stop();
     throw error;
   }
-  const listener = listenUnix(provider.server, options.socketPath, {
+  const listener = listenSessionSupervisor(provider, options.socketPath, {
     register: options.register ?? true,
   });
+  scheduleAutoClose();
   return {
     provider,
     listener: {
-      close: () => closeUnixListener(listener, options.socketPath),
+      close: () => {
+        clearAutoCloseTimer();
+        listener.close();
+      },
     },
     initialSession,
   };

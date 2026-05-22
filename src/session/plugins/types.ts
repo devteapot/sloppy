@@ -81,6 +81,11 @@ export type SessionSummaryContribution = {
   summary?: string;
 };
 
+export type AutoCloseBlocker = {
+  id: string;
+  label: string;
+};
+
 export type SessionRuntimePlugin = {
   id: string;
   version: string;
@@ -106,5 +111,6 @@ export type SessionRuntimePlugin = {
   onTurnComplete?: (event: PluginTurnCompleteEvent, ctx: PluginRuntimeContext) => void;
   onTurnFailure?: (event: PluginTurnFailureEvent, ctx: PluginRuntimeContext) => void;
   sessionSummary?: (ctx: PluginRuntimeContext) => SessionSummaryContribution | null;
+  autoCloseBlockers?: (ctx: PluginRuntimeContext) => AutoCloseBlocker[];
   ui?: UiContributionManifest;
 };

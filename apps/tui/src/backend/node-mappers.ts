@@ -227,6 +227,8 @@ export function mapSessionNode(node: SlopNode | null | undefined): SessionMeta {
     workspaceRoot: optionalStringProp(p, "workspace_root"),
     workspaceId: optionalStringProp(p, "workspace_id"),
     projectId: optionalStringProp(p, "project_id"),
+    launchScopeKey: optionalStringProp(p, "launch_scope_key"),
+    launchRoot: optionalStringProp(p, "launch_root"),
     modelProvider: optionalStringProp(p, "model_provider"),
     model: optionalStringProp(p, "model"),
     startedAt: optionalStringProp(p, "started_at"),

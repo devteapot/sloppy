@@ -84,7 +84,7 @@ Current checked-in implementation includes:
 - session-provider restart-required state when provider or agent config changes after startup
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
 - session-provider `/apps` attachment state for external provider visibility and debugging
-- TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with managed session-supervisor startup, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
+- TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with launch-scope managed supervisor startup, `sloppy --continue` resume selection, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all first-party plugin providers
@@ -279,6 +279,12 @@ export ANTHROPIC_API_KEY=...
 bun run src/cli.ts -p "list the files in the current workspace"
 ```
 
+The packaged equivalent is:
+
+```sh
+sloppy -p "list the files in the current workspace"
+```
+
 Single-shot mode runs an ephemeral in-process session provider and drives it
 through the public session surface. It does not open a Unix socket or persist a
 session snapshot, but it uses the same turn, usage, activity, task, approval, and
@@ -318,14 +324,42 @@ each managed session still has its own ordinary session-provider socket:
 bun run session:serve -- --supervisor --socket /tmp/slop/sloppy-supervisor.sock
 ```
 
-Run the TypeScript/OpenTUI TUI:
+For the packaged CLI, the equivalent operator command is:
+
+```sh
+sloppy session supervisor --socket /tmp/slop/sloppy-supervisor.sock
+```
+
+Add `--managed --no-initial-session --auto-close-enabled` when you want the
+same launch-scope supervisor shape used by the TUI launcher.
+
+Run the TypeScript/OpenTUI TUI from the source checkout:
 
 ```sh
 bun run tui
 ```
 
-By default this starts a managed session supervisor, creates the initial
-session, and attaches to that session's public provider socket. To attach to an
+For the published package, the same behavior is the bare CLI:
+
+```sh
+sloppy
+```
+
+By default `sloppy` resolves the real current working directory into a launch
+scope, starts or reuses that scope's managed supervisor, creates a fresh
+session, and attaches to that session's public provider socket. Later `sloppy`
+runs from the same directory reuse the same supervisor but still start a fresh
+session.
+
+Use `--continue` to attach to the launch-scope resume session instead of
+creating a fresh session:
+
+```sh
+sloppy --continue
+```
+
+If there is no previous session for that launch scope, `sloppy --continue`
+fails at the CLI level and tells you to run `sloppy` first. To attach to an
 existing session provider socket directly, use:
 
 ```sh
@@ -340,10 +374,15 @@ bun run tui -- --supervisor-socket /tmp/slop/sloppy-supervisor.sock
 
 Managed TUI sessions accept the same workspace/project scope flags. The command
 palette and slash commands can create, switch, and stop additional scoped
-sessions through the supervisor. The supervisor `/sessions` state also exposes
-per-session turn state, goal status, queue pressure, pending approvals, and
-running task counts so the TUI can compare sessions through `/inspector
-sessions` without reading runtime internals:
+sessions through the supervisor. Switching selects a session for the current
+TUI's supervisor client lease; it does not change a global active session for
+other connected TUIs. Stop ends a live session process while keeping its
+snapshot and registry entry restorable; it is blocked when another connected TUI
+has selected that session. The supervisor `/sessions` state also exposes
+per-session runtime status, resume-session marker, turn state, goal status,
+queue pressure, pending approvals, and running task counts so the TUI can
+compare sessions through `/inspector sessions` without reading runtime
+internals:
 
 ```sh
 bun run tui -- --workspace-id sloppy --project-id runtime --title "Runtime"
@@ -591,8 +630,9 @@ the active scope and returns the config layer order (`global`, `workspace`,
 session supervisor, and managed TUI sessions load those scoped layers and pin
 terminal/filesystem roots to the selected workspace or project folder. The
 supervisor exposes `/session`, `/sessions`, and `/scopes` for creation,
-switching, and stopping, but it does not add privileged scheduling or provider
-rewiring to core.
+per-client selection, stopping, dormant-session restore, and launch-scope resume
+metadata, but it does not add privileged scheduling or provider rewiring to
+core.
 
 The A2A provider is an external interoperability bridge, not Sloppy's internal
 agent-to-agent architecture. It fetches configured Agent Cards, selects a
@@ -701,7 +741,7 @@ Useful TUI slash commands:
 - `/query /extensions 2` inspects generic session extension metadata, including the backing `/extensions/goal` record.
 - `/session-new [--workspace-id id] [--project-id id] [--title text]` creates and switches to a supervised session.
 - `/session-switch <session-id>` switches the TUI to another supervised session.
-- `/session-stop <session-id>` stops a supervised session.
+- `/session-stop <session-id>` stops a live supervised session while keeping it restorable.
 - `/inspector sessions` shows supervised sessions with turn, goal, queue, approval, and task state.
 - `/runtime refresh`, `/runtime export`, `/runtime inspect [proposal-id]`, `/runtime apply <proposal-id>`, and `/runtime revert <proposal-id>` review meta-runtime state, export a portable runtime bundle, and act on topology proposals.
 - `/query /llm 2` inspects the session provider; `/query <app-id>:/ 2` inspects a connected external provider listed under `/apps`.

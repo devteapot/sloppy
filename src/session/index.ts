@@ -1,3 +1,5 @@
+export type { LaunchScope } from "./launch-scope";
+export { resolveLaunchScope, supervisorRuntimePaths } from "./launch-scope";
 export { AgentSessionProvider } from "./provider";
 export { SessionRuntime } from "./runtime";
 export { SessionService } from "./service";
