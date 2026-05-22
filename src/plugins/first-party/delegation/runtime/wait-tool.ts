@@ -122,7 +122,6 @@ async function readAgentSnapshots(
     providerId: "delegation",
     path: "/agents",
     depth: 2,
-    maxNodes: Math.max(50, agentIds.length + 10),
   });
   const wanted = new Set(agentIds);
   const snapshots = new Map<string, DelegationAgentSnapshot>();

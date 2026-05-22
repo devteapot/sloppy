@@ -205,7 +205,7 @@ For a running session, inspect public state instead of runtime internals:
 - `/approvals`: pending and resolved approval state
 - `/tasks`: downstream async task state
 - `/apps`: external and first-party plugin provider attachment visibility, including
-  explicit `reconnect_provider`, `query_provider`, and `invoke_provider`
+  explicit `load_provider`, `reload_provider`, `query_provider`, and `invoke_provider`
 
 The TUI and third-party consumers should use the same public session provider
 boundary.
@@ -225,7 +225,8 @@ hidden scheduler or provider-rewiring layer.
 ## External Providers
 
 Disconnected external providers should stay visible in `/apps` with status and
-last error. Use `/apps.reconnect_provider` to retry deliberately. Avoid adding
+last error. Use `/apps.load_provider` to retry deliberately, or `/apps.reload_provider`
+to refresh a connected app. Avoid adding
 background reconnect loops to core unless a provider can expose that behavior as
 ordinary SLOP state.
 

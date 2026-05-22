@@ -377,10 +377,6 @@ export class CronProvider {
           estimate: "instant",
         }),
       },
-      meta: {
-        focus: true,
-        salience: errored > 0 ? 1 : 0.7,
-      },
     };
   }
 
@@ -417,7 +413,6 @@ export class CronProvider {
         }),
       },
       meta: {
-        salience: job.status === "errored" ? 1 : job.status === "running" ? 0.9 : 0.6,
         urgency: job.status === "errored" ? "high" : job.status === "running" ? "medium" : "low",
       },
     }));

@@ -87,10 +87,9 @@ export class ProviderDiscoveryCoordinator {
   async applyUpdate(args: {
     hub: ProviderRuntimeHub;
     update: ProviderDiscoveryUpdate;
-    registerMirrors: (providerId: string) => Promise<void>;
     unregisterMirrors: (providerId: string) => void;
   }): Promise<void> {
-    const { hub, update, registerMirrors, unregisterMirrors } = args;
+    const { hub, update, unregisterMirrors } = args;
 
     const dropExternal = (descriptor: ProviderDescriptor) => {
       if (this.firstPartyProviderIds.has(descriptor.id)) {
@@ -117,10 +116,7 @@ export class ProviderDiscoveryCoordinator {
       const provider = this.resolveDescriptor(descriptor);
       if (!provider) continue;
 
-      const added = await hub.addProvider(provider);
-      if (added) {
-        await registerMirrors(provider.id);
-      }
+      hub.registerProvider(provider);
     }
   }
 }

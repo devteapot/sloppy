@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ResultMessage } from "@slop-ai/consumer/browser";
+import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../src/config/schema";
@@ -748,7 +748,9 @@ function createTaskMirrorHarnessFactory() {
 
 function createAppMirrorHarnessFactory() {
   let callbacks: AgentCallbacks | null = null;
-  const retries: string[] = [];
+  const loads: string[] = [];
+  const reloads: string[] = [];
+  const unloads: string[] = [];
 
   const factory: SessionAgentFactory = (agentCallbacks): SessionAgent => {
     callbacks = agentCallbacks;
@@ -760,14 +762,37 @@ function createAppMirrorHarnessFactory() {
       }),
       resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
       invokeProvider: async () => ({ type: "result", id: "inv-apps", status: "ok" }),
-      retryProvider: async (providerId) => {
-        retries.push(providerId);
+      loadProvider: async (providerId) => {
+        loads.push(providerId);
         callbacks?.onExternalProviderStates?.([
           {
             id: providerId,
             name: "Native Demo",
             transport: "unix:/tmp/native-demo.sock",
             status: "connected",
+          },
+        ]);
+        return false;
+      },
+      reloadProvider: async (providerId) => {
+        reloads.push(providerId);
+        callbacks?.onExternalProviderStates?.([
+          {
+            id: providerId,
+            name: "Native Demo",
+            transport: "unix:/tmp/native-demo.sock",
+            status: "connected",
+          },
+        ]);
+      },
+      unloadProvider: (providerId) => {
+        unloads.push(providerId);
+        callbacks?.onExternalProviderStates?.([
+          {
+            id: providerId,
+            name: "Native Demo",
+            transport: "unix:/tmp/native-demo.sock",
+            status: "unloaded",
           },
         ]);
         return true;
@@ -782,7 +807,9 @@ function createAppMirrorHarnessFactory() {
 
   return {
     factory,
-    retries,
+    loads,
+    reloads,
+    unloads,
     emitApps(states: ExternalProviderState[]) {
       callbacks?.onExternalProviderStates?.(states);
     },
@@ -2214,7 +2241,7 @@ describe("AgentSessionProvider", () => {
     }
   });
 
-  test("session apps surface retries for disconnected external providers", async () => {
+  test("session apps surface loads for disconnected external providers", async () => {
     const harness = createAppMirrorHarnessFactory();
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
@@ -2245,17 +2272,96 @@ describe("AgentSessionProvider", () => {
       const apps = await consumer.query("/apps", 2);
       expect(
         apps.affordances?.some((affordance) => affordance.action === "reconnect_provider"),
+      ).toBe(false);
+      expect(
+        ["load_provider", "unload_provider", "reload_provider"].every((actionName) =>
+          apps.affordances?.some((affordance) => affordance.action === actionName),
+        ),
       ).toBe(true);
 
-      const retry = await consumer.invoke("/apps", "reconnect_provider", {
+      const load = await consumer.invoke("/apps", "load_provider", {
         provider_id: "native-demo",
       });
-      expect(retry.status).toBe("ok");
-      expect(retry.data).toEqual({ providerId: "native-demo", connected: true });
-      expect(harness.retries).toEqual(["native-demo"]);
+      expect(load.status).toBe("ok");
+      expect(load.data).toEqual({
+        provider_id: "native-demo",
+        status: "connected",
+        was_connected: false,
+      });
+      expect(harness.loads).toEqual(["native-demo"]);
 
-      const appsAfterRetry = await consumer.query("/apps", 2);
-      expect(appsAfterRetry.children?.[0]?.properties?.status).toBe("connected");
+      const appsAfterLoad = await consumer.query("/apps", 2);
+      expect(appsAfterLoad.children?.[0]?.properties?.status).toBe("connected");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session apps can unload and reload external providers", async () => {
+    const harness = createAppMirrorHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-app-unload",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-app-unload",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      harness.emitApps([
+        {
+          id: "native-demo",
+          name: "Native Demo",
+          transport: "unix:/tmp/native-demo.sock",
+          status: "connected",
+        },
+      ]);
+
+      const unload = await consumer.invoke("/apps", "unload_provider", {
+        provider_id: "native-demo",
+      });
+      expect(unload.status).toBe("ok");
+      expect(unload.data).toEqual({
+        provider_id: "native-demo",
+        status: "unloaded",
+        was_connected: true,
+      });
+      expect(harness.unloads).toEqual(["native-demo"]);
+
+      const appsAfterUnload = await consumer.query("/apps", 2);
+      expect(appsAfterUnload.children?.[0]?.properties?.status).toBe("unloaded");
+
+      const load = await consumer.invoke("/apps", "load_provider", {
+        provider_id: "native-demo",
+      });
+      expect(load.status).toBe("ok");
+      expect(load.data).toEqual({
+        provider_id: "native-demo",
+        status: "connected",
+        was_connected: false,
+      });
+      expect(harness.loads).toEqual(["native-demo"]);
+
+      const appsAfterLoad = await consumer.query("/apps", 2);
+      expect(appsAfterLoad.children?.[0]?.properties?.status).toBe("connected");
+
+      const reload = await consumer.invoke("/apps", "reload_provider", {
+        provider_id: "native-demo",
+      });
+      expect(reload.status).toBe("ok");
+      expect(reload.data).toEqual({
+        provider_id: "native-demo",
+        status: "connected",
+      });
+      expect(harness.reloads).toEqual(["native-demo"]);
     } finally {
       provider.stop();
       runtime.shutdown();
@@ -2311,6 +2417,73 @@ describe("AgentSessionProvider", () => {
       provider.stop();
       runtime.shutdown();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("session app provider queries preserve provider-owned metadata", async () => {
+    const queried: Array<{ providerId: string; path: string }> = [];
+    const node: SlopNode = {
+      id: "root",
+      type: "root",
+      properties: { label: "Debuggable Provider" },
+      meta: { summary: "Root summary", salience: 1, focus: true },
+      children: [
+        {
+          id: "child",
+          type: "item",
+          properties: { value: 1 },
+          meta: { summary: "Child summary", salience: 0.4 },
+        },
+      ],
+    };
+    const factory: SessionAgentFactory = (): SessionAgent => ({
+      start: async () => undefined,
+      chat: async () => ({ status: "completed", response: "ok" }),
+      resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+      invokeProvider: async () => ({ type: "result", id: "inv-debug", status: "ok" }),
+      queryProvider: async (providerId, path) => {
+        queried.push({ providerId, path });
+        return node;
+      },
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv-debug", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-app-query-sanitize",
+      agentFactory: factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-app-query-sanitize",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await consumer.connect();
+
+      const result = await consumer.invoke("/apps", "query_provider", {
+        provider_id: "debug-provider",
+        path: "/",
+      });
+      expect(result.status).toBe("ok");
+      expect((result.data as SlopNode).meta).toMatchObject({
+        summary: "Root summary",
+        salience: 1,
+        focus: true,
+      });
+      expect((result.data as SlopNode).children?.[0]?.meta).toMatchObject({
+        summary: "Child summary",
+        salience: 0.4,
+      });
+
+      expect(queried).toEqual([{ providerId: "debug-provider", path: "/" }]);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
     }
   });
 

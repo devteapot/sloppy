@@ -10,6 +10,14 @@ The SLOP-native agent runtime: the kernel, the agent loop, the provider/consumer
 A SLOP capability exposed as a state tree plus affordances. Everything the agent can observe or act on is a provider. Providers are not privileged runtime branches.
 _Avoid_: using interchangeably with Plugin.
 
+**App**:
+A descriptor-backed external Provider discovered by the Runtime. Apps are listed before they are connected, and are loaded into or unloaded from one Session's Hub explicitly.
+_Avoid_: using for first-party Providers such as `terminal` or `filesystem`.
+
+**Apps provider**:
+The first-party Provider that exposes discovered external Apps to the Agent under `/available` and lets the Agent load or unload them. It projects Hub registration state; it does not own discovery, app processes, or provider internals.
+_Avoid_: confusing it with the Session provider's public `/apps` mirror for UIs and external clients; using it to manage first-party Plugins or Providers.
+
 **Plugin**:
 A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`). A Plugin may contribute one or more Providers (`createProviders`) and at most one Session plugin (`createSessionPlugin`); some do only one. It is the packaging/catalog unit, not a capability itself. A name shared between a Plugin and the Provider it creates (e.g. `skills`, `terminal`) refers to two distinct objects.
 _Avoid_: calling a Plugin a Provider; calling the optional capabilities "optional providers" — they are Plugins.
@@ -126,12 +134,13 @@ A provider-native action attached to provider state — the provider-side term (
 
 **Tool**:
 The model-native definition the LLM actually calls — the model-side term. Every Tool has one of three kinds (code: `kind: "observation" | "affordance" | "local"`):
+Runtime-owned Tool names are unbranded, verb-first names; protocol branding belongs in docs and descriptions, not in the Tool name. Projected Affordance tools keep provider-derived prefixes for disambiguation.
 
 **Affordance tool**:
 A Tool projected from a provider's Affordance. The bridge between the provider side and the model side.
 
 **Observation tool**:
-A fixed, consumer-side Tool not backed by any provider — `slop_query_state` and `slop_focus_state`. Lets the Agent read or focus state on demand.
+A fixed, Hub-owned Tool not backed by any Provider — `query_state`, `focus_state`, and `unfocus_state`. Lets the Agent read or manage State focus on demand.
 _Avoid_: "consumer controls".
 
 **Local tool**:
@@ -161,6 +170,91 @@ _Avoid_: using interchangeably with Runtime.
 
 **Hub**:
 The consumer-side substrate the Kernel owns for state subscriptions, query, invoke, and policy checks across all Providers.
+
+**Provider lifecycle event**:
+A Hub-owned notification that a Provider's connection state changed inside one Session. Runtime projections such as provider mirrors follow these events; unloading a Provider clears its live mirrors, and the caller that requested load or unload does not own those side effects.
+_Avoid_: making the Agent-visible App controls and public Session `/apps` controls separate lifecycle paths.
+
+**Provider lifecycle control**:
+An Affordance or public Session control that changes whether a registered Provider is connected to one Session's Hub. Lifecycle controls may be logically repeatable, but they are not idempotent for agent-loop scheduling because they change the provider graph, tool surface, and future State projection.
+Lifecycle controls are not approval-gated by default; dangerous-action policy applies when invoking Provider Affordances after an App is loaded.
+_Avoid_: marking load/unload controls `idempotent: true` just because repeated calls are harmless.
+
+**Load App**:
+Connect a registered App Provider that is currently unloaded, disconnected, or errored into one Session's Hub. Loading an already connected App is a no-op, and loading does not add State focus; the loaded Provider appears through its Default projection until the Agent explicitly focuses more detail.
+_Avoid_: reconnect when the App may never have been connected.
+
+**Loaded App**:
+An App Provider currently connected to one live Session's Hub. A Loaded App participates in normal State projection and dynamic Affordance tool projection; loaded state is not a durable preference and is not automatically restored in a new Session.
+_Avoid_: treating previous attachment as startup policy.
+
+**Reload App**:
+Disconnect a connected App Provider from one Session's Hub and then connect it again. Reload is an explicit refresh operation for a currently connected App; use Load App for unloaded, disconnected, or errored Apps.
+_Avoid_: reconnect, retry.
+
+**App lifecycle status**:
+The public attachment state for an App card: `connected`, `disconnected`, `error`, or `unloaded`. Reload does not introduce a separate transitional status; the affordance call itself carries in-flight progress.
+_Avoid_: loading, reloading.
+
+**Unloaded App**:
+A discovered App that is registered in one Session's Hub but intentionally disconnected from that Hub. It remains visible as a clean app card for later loading, drops any existing State focus for that Provider, and does not carry `last_error`; failed Apps use `status=error` instead.
+_Avoid_: treating unloaded as a failure or stopped external process.
+
+**App card**:
+The lightweight catalog entry for an App under the Apps provider's `/available` collection or the Session provider's `/apps` mirror. It is identified by stable `provider_id`; descriptor updates replace the card in place for the same id, but it is not a proxy for the App's downstream state tree or Affordance catalog.
+_Avoid_: expanding unloaded Apps into shadow provider trees.
+
+**Descriptor removal**:
+Removal of an App descriptor from discovery. If the App is loaded, descriptor removal disconnects it from the Session Hub, clears live attachment metadata, and removes its App card.
+_Avoid_: leaving orphaned connected Apps after their descriptor is gone.
+
+**Connected affordance registry**:
+The Hub-owned metadata learned from a Provider's currently connected state trees, including dangerous Affordance markers. It belongs to the current Provider attachment and is cleared on unload or reload before being rebuilt from the freshly connected Provider state.
+_Avoid_: keeping stale Affordance metadata alive because an App card still exists.
+
+**App process owner**:
+The system that starts, stops, or supervises an external App process. A Session may connect to or unload the App's Provider, but it is not the App process owner unless a separate provider explicitly says so.
+_Avoid_: making `unload_provider` terminate descriptor-backed external Apps.
+
+**State focus**:
+Hub-owned consumer attention over one or more Provider paths. Focused paths are kept in future ephemeral state-tail projections until explicitly removed. State focus is not Provider state, not UI expand/collapse state, and not the user's visual focus inside a UI.
+`focus_state` adds or updates one focused path; it does not replace all focuses for that Provider. Removing focused paths is a separate Observation tool operation.
+The Hub does not automatically evict State focuses. The Agent owns State projection hygiene by explicitly removing stale focuses; the Runtime may expose diagnostics or warnings but must not silently mutate the focus set.
+`unfocus_state` removes only the exact Hub State focus for a provider/path and is idempotent. It does not invoke Provider Affordances or delete Provider-owned loaded state; Provider cleanup remains an explicit Provider Affordance such as a file-view `close_view`.
+_Avoid_: expand/collapse when discussing the Runtime or Hub; use expand/collapse only for UI presentation metaphors.
+
+**State projection**:
+The Hub-owned construction of the Agent's model-facing state view from Provider overview subscriptions, State focuses, and small Runtime/Session status. It is the single Agent-side stitching point for the ephemeral state tail; Providers still own how their own trees resolve, summarize, window, and expose lazy detail.
+_Avoid_: treating the TUI's Session view snapshot as the Agent's State projection.
+
+**Default projection**:
+The Provider-owned state shape returned for a shallow root subscription before the Agent expresses extra State focus. It is provider-specific: small Providers may inline all useful state, while large Providers should expose summaries, stubs, windows, or lazy nodes. The Default projection must be navigable enough for the Agent to decide what to inspect next, but detail after that is Agent-driven through Observation tools.
+_Avoid_: assuming every Provider must be summary-only by default.
+
+**Node-count compaction**:
+Provider/SDK support for `max_nodes`-bounded output. Sloppy's Agent-facing Runtime does not use node-count compaction for State projection; it relies on Provider Default projections and Agent-driven State focus instead. The protocol/SDK may still support `max_nodes` for compatibility with other Consumers.
+_Avoid_: using `max_nodes: -1` as an unlimited sentinel; omitted `max_nodes` is the unlimited request shape.
+
+**Salience metadata**:
+Optional Provider-owned metadata that Consumers may use for attention hints. Sloppy's Agent-facing Runtime does not use salience for filtering or scaling, but it preserves Provider-owned metadata when querying external App trees; Agent attention is expressed through State focus instead.
+Sloppy-owned first-party Providers should not emit legacy salience/focus hints as a substitute for explicit State focus.
+_Avoid_: treating salience as the primary Runtime scaling mechanism; stripping metadata from external App trees.
+
+**File view**:
+Provider-owned loaded text state for a filesystem file. A File view lets file content live in Provider state and State projection instead of permanent Tool-result history.
+File views live under the filesystem Provider's top-level `/views` collection, not under directory entry nodes. File entry nodes may expose lightweight loaded-view counts or view-list affordances, but loaded content remains in `/views` so it stays stable when directory focus changes. Loaded File views are included in the filesystem Default projection as Provider-owned working memory; cleanup is an explicit filesystem Affordance such as `close_view`, not Hub `unfocus_state`.
+Loaded File views inline their loaded text content in the filesystem Default projection. A Range view inlines only its loaded line window; a Full-file view inlines the whole loaded file content.
+When the backing file version changes, the File view preserves the observed text and is marked stale with the current file version. The Provider does not silently refresh stale views; the Agent refreshes by reading again or removes the stale view with explicit cleanup.
+Filesystem text `read` Affordance results should return compact File view references and metadata, not the text content itself. Text content belongs in File view state so it can leave the permanent Tool-result history and be removed later with explicit Provider cleanup.
+
+**Full-file view**:
+A File view covering the whole file for a specific source version. A full-file view supersedes same-version Range views for that file.
+
+**Range view**:
+A File view covering a specific line window for a file and source version. Multiple Range views may exist for distant regions of the same file until a Full-file view exists for the same source version.
+
+**View supersession**:
+Filesystem rule that a successful Full-file view removes redundant same-version Range views for that file. If a same-version Full-file view already exists, later partial reads are redundant and should return the existing Full-file view reference instead of creating new Range views.
 
 ### Workspaces and config
 
@@ -220,8 +314,8 @@ One cycle of the Agent loop: build the context with the live state tail, call th
 > **Dev:** A Route fired and an agent picked up the work. Which agent?
 > **Expert:** The Route matched a Message envelope and dispatched it to an `agent:<id>` target — that's an Agent node, the topology declaration. Dispatch then spawned it as a Child agent: a real running Agent in its own Child session. The Agent node isn't running; the Child agent is.
 
-> **Dev:** The Agent called `slop_query_state` mid-turn. Is that an affordance?
-> **Expert:** No. That's an Observation tool — a fixed Tool with no Provider behind it. An Affordance tool is the only kind of Tool projected from a Provider's Affordance. The third kind, a Local tool like `slop_wait_for_delegation_event`, can park the Turn.
+> **Dev:** The Agent called `query_state` mid-turn. Is that an affordance?
+> **Expert:** No. That's an Observation tool — a fixed Tool with no Provider behind it. An Affordance tool is the only kind of Tool projected from a Provider's Affordance. The third kind, a Local tool, can park the Turn.
 
 > **Dev:** Can the UI show the model's thinking?
 > **Expert:** Only Thinking output: provider-returned text or summaries intended to be visible. Hidden chain-of-thought and opaque provider continuity metadata are not public Session state.

@@ -913,10 +913,6 @@ export class SkillsProvider {
           },
         ),
       },
-      meta: {
-        focus: true,
-        salience: 0.7,
-      },
     };
   }
 
@@ -964,7 +960,7 @@ export class SkillsProvider {
           },
         ),
       },
-      ...(skill.dangerous ? { meta: { salience: 0.9, urgency: "high" as const } } : {}),
+      ...(skill.dangerous ? { meta: { urgency: "high" as const } } : {}),
     }));
 
     return {

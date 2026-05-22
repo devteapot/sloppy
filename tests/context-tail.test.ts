@@ -7,9 +7,7 @@ import type { ProviderTreeView } from "../src/core/subscriptions";
 
 const TEST_CONFIG = {
   agent: {
-    minSalience: 0.2,
     detailDepth: 4,
-    detailMaxNodes: 200,
   },
 } as SloppyConfig;
 

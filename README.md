@@ -35,6 +35,7 @@ Current checked-in implementation includes:
   - native Gemini support
 - consumer hub for first-party plugin and live-discovered SLOP providers
 - first-party in-process plugin providers:
+  - `apps`
   - `terminal`
   - `filesystem`
   - `memory`
@@ -51,10 +52,11 @@ Current checked-in implementation includes:
   - `workspaces`
   - `a2a`
 - fixed observation tools:
-  - `slop_query_state`
-  - `slop_focus_state`
+  - `query_state`
+  - `focus_state`
+  - `unfocus_state`
 - dynamic affordance tools generated from visible SLOP state
-- bounded same-turn parallel execution for `slop_query_state` and explicitly
+- bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance tools, with tool results returned to the
   model in original call order
 - CLI single-shot mode and interactive REPL
@@ -83,7 +85,8 @@ Current checked-in implementation includes:
   with evidence.
 - session-provider restart-required state when provider or agent config changes after startup
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
-- session-provider `/apps` attachment state for external provider visibility and debugging
+- first-party `apps` provider for agent-visible external app discovery plus explicit load/unload controls
+- session-provider `/apps` attachment state for UI/API external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with launch-scope managed supervisor startup, `sloppy --continue` resume selection, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
@@ -191,6 +194,12 @@ observed line text. `edit_range` can then replace whole line ranges by
 `start_line`/`end_line` without echoing old text or line hashes. Before writing,
 the provider checks that the current file still matches the remembered source
 view at those lines; stale ranges fail instead of editing the wrong location.
+
+Text `read` creates provider-owned File views under `/views` and returns a
+compact reference instead of putting file bodies into permanent Tool-result
+history. Loaded File views are included in the filesystem Default projection
+until the Agent explicitly closes them; changed backing files preserve the
+observed content and mark the view stale.
 
 ### Terminal provider
 
@@ -548,7 +557,7 @@ Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
 OpenAI-style reasoning controls. Prefer provider-specific `thinking` blocks for
 new config.
 
-First-party plugins default to the lean core: `terminal` and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:
@@ -709,7 +718,7 @@ The agent loop defaults to 32 model/tool iterations. For longer runs, set
 run.
 
 Within a model turn, the loop may execute a contiguous run of parallel-safe tool
-calls concurrently. Parallel-safe means `slop_query_state` or a SLOP affordance
+calls concurrently. Parallel-safe means `query_state` or a SLOP affordance
 that is explicitly `idempotent: true` and not `dangerous`; focus changes, local
 session controls, malformed calls, unknown tools, approvals, and unmarked or
 mutating affordances remain sequential barriers. Results are still appended to
@@ -728,7 +737,8 @@ API keys are not written to YAML:
 The current TUI uses the session provider's `/llm` state to onboard and manage
 profiles, its `/apps` state to surface external provider attachment status, and
 the connected `meta-runtime` app's `/proposals` state for runtime proposal
-review.
+review. The Agent sees the same external app catalog through the first-party
+`apps` provider and controls app load/unload from `/available`.
 
 Useful TUI slash commands:
 

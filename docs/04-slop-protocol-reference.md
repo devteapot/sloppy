@@ -33,9 +33,7 @@ root
 - `children` — ordered array of child nodes
 - `affordances` — available actions on this node
 - `summary` — natural language description (critical for stubs)
-- `salience` — 0-1 relevance score
 - `changed` — recently modified flag
-- `focus` — user is interacting with this
 - `urgency` — none/low/medium/high/critical
 
 ### Affordances
@@ -204,12 +202,12 @@ For large applications, providers should:
 
 1. **View-scope the tree** — active view in detail, others as stubs with summaries
 2. **Use windowed collections** — show visible window + metadata about full set
-3. **Set salience scores** — let the consumer filter by relevance
+3. **Expose explicit views** — load large or expensive data only when the agent asks
 4. **Write good summaries** — stubs with summaries let the agent understand collapsed nodes
 5. **Support multiple subscriptions** — overview (shallow) + detail (deep) pattern
 
 For the agent, this means:
 - Subscribe with appropriate depth (don't request unlimited on large apps)
-- Use `min_salience` to filter noise
+- Use provider affordances to open and close explicit views for large data
 - Trust summaries for nodes outside current focus
 - Deepen subscriptions selectively when investigating specific areas

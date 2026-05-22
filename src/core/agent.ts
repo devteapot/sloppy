@@ -23,7 +23,7 @@ import { createFirstPartyProviders } from "../providers/registry";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
-import { ConsumerHub, type ExternalProviderState } from "./consumer";
+import { ConsumerHub, type ExternalProviderState, type ProviderLifecycleEvent } from "./consumer";
 import { buildSystemPrompt } from "./context";
 import { ConversationHistory } from "./history";
 import {
@@ -119,6 +119,7 @@ export class Agent {
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
+  private unsubscribeProviderLifecycleEvents: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
   private pendingApprovalSourceId: string | null = null;
   private activeRunAbortController: AbortController | null = null;
@@ -208,14 +209,19 @@ export class Agent {
       const provider = this.discovery.resolveDescriptor(descriptor);
       return provider ? [provider] : [];
     });
-    const providers = [...firstPartyProviders, ...discoveredProviders];
-    const hub = new ConsumerHub(providers, this.config);
+    const hub = new ConsumerHub(firstPartyProviders, this.config);
+    this.hub = hub;
     this.unsubscribeExternalProviderStateChanges = hub.onExternalProviderStateChange((states) => {
       this.emitExternalProviderStates(states);
     });
+    this.unsubscribeProviderLifecycleEvents = hub.onProviderLifecycleEvent((event) =>
+      this.handleProviderLifecycleEvent(event),
+    );
     this.emitExternalProviderStates();
     await hub.connect();
-    this.hub = hub;
+    for (const provider of discoveredProviders) {
+      hub.registerProvider(provider);
+    }
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     const runtimeCtx: RuntimeContext = {
@@ -226,7 +232,7 @@ export class Agent {
       llmProfileManager: this.llmProfileManager,
     };
 
-    for (const provider of providers) {
+    for (const provider of firstPartyProviders) {
       const runtimeStop = provider.attachRuntime?.(hub, this.config, runtimeCtx);
       if (runtimeStop) {
         this.runtimeStops.push(runtimeStop);
@@ -435,18 +441,33 @@ export class Agent {
     });
   }
 
-  async retryProvider(providerId: string): Promise<boolean> {
+  async loadProvider(providerId: string): Promise<boolean> {
     if (!this.hub) {
       throw new Error("Agent has not been started.");
     }
 
-    this.unregisterProviderMirrors(providerId);
-    const connected = await this.hub.retryProvider(providerId);
-    if (connected) {
-      await this.registerProviderMirrors(providerId);
-    }
+    const wasConnected = await this.hub.loadProvider(providerId);
     this.emitExternalProviderStates(this.hub.getExternalProviderStates());
-    return connected;
+    return wasConnected;
+  }
+
+  async reloadProvider(providerId: string): Promise<void> {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+
+    await this.hub.reloadProvider(providerId);
+    this.emitExternalProviderStates(this.hub.getExternalProviderStates());
+  }
+
+  unloadProvider(providerId: string): boolean {
+    if (!this.hub) {
+      throw new Error("Agent has not been started.");
+    }
+
+    const wasConnected = this.hub.unloadProvider(providerId);
+    this.emitExternalProviderStates(this.hub.getExternalProviderStates());
+    return wasConnected;
   }
 
   /**
@@ -609,6 +630,8 @@ export class Agent {
     this.discoveryStop = null;
     this.unsubscribeExternalProviderStateChanges?.();
     this.unsubscribeExternalProviderStateChanges = null;
+    this.unsubscribeProviderLifecycleEvents?.();
+    this.unsubscribeProviderLifecycleEvents = null;
 
     for (const [providerId, stops] of this.providerWatchStops) {
       for (const stop of stops) {
@@ -685,13 +708,20 @@ export class Agent {
     });
   }
 
+  private async handleProviderLifecycleEvent(event: ProviderLifecycleEvent): Promise<void> {
+    if (event.kind === "detached") {
+      this.unregisterProviderMirrors(event.providerId);
+      return;
+    }
+    await this.registerProviderMirrors(event.providerId);
+  }
+
   private async applyDiscoveryUpdate(update: ProviderDiscoveryUpdate): Promise<void> {
     const hub = this.hub;
     if (!hub) return;
     await this.discovery.applyUpdate({
       hub,
       update,
-      registerMirrors: (providerId) => this.registerProviderMirrors(providerId),
       unregisterMirrors: (providerId) => this.unregisterProviderMirrors(providerId),
     });
   }

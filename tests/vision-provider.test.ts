@@ -52,8 +52,8 @@ describe("VisionProvider", () => {
         "generate_image",
         "analyze_image",
       ]);
-      expect(session.meta?.focus).toBe(true);
-      expect(session.meta?.salience).toBe(1);
+      expect(session.meta?.focus).toBeUndefined();
+      expect(session.meta?.salience).toBeUndefined();
 
       const images = await consumer.query("/images", 2);
       expect(images.type).toBe("collection");

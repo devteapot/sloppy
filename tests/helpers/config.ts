@@ -27,11 +27,8 @@ export function createTestConfig(
     },
     agent: {
       maxIterations: 12,
-      minSalience: 0.2,
       overviewDepth: 2,
-      overviewMaxNodes: 200,
       detailDepth: 4,
-      detailMaxNodes: 200,
       historyTurns: 8,
       toolResultMaxChars: 16000,
       ...overrides.agent,

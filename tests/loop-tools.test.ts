@@ -152,7 +152,7 @@ describe("truncateToolResult", () => {
     expect(output.length).toBeLessThanOrEqual(4096);
     expect(output).toContain("truncated");
     expect(output).toContain("chars removed");
-    expect(output).toContain("slop_query_state");
+    expect(output).toContain("query_state");
     expect(output).toContain("full details]");
   });
 

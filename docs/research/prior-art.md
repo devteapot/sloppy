@@ -248,7 +248,7 @@ Likely next steps:
 ## What Both Projects Get Right
 
 1. **Optional MCP** — Neither treats MCP as load-bearing. It's a plugin layer for external tool discovery. This validates our approach of replacing it entirely.
-2. **Tool profiles/presets** — Both filter available tools by context. SLOP does this natively via salience and contextual affordances.
+2. **Tool profiles/presets** — Both filter available tools by context. Sloppy does this with provider-owned default projections, explicit state focus, and contextual affordances.
 3. **Conversation compaction** — Both handle context window overflow by compressing history. Essential for any agent.
 4. **Provider abstraction** — Both work with any OpenAI-compatible API. We should too.
 5. **Graceful degradation** — Both continue operating when optional capabilities are unavailable.

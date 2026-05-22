@@ -5,7 +5,6 @@ import {
   type NodeDescriptor,
   type SlopServer,
 } from "@slop-ai/server";
-
 import type { SessionRuntime } from "./runtime";
 import type {
   ActivityItem,
@@ -322,10 +321,6 @@ export class AgentSessionProvider {
         queued_count: snapshot.queue.length,
       },
       summary: "Shared state for one running Sloppy agent session.",
-      meta: {
-        salience: 1,
-        focus: true,
-      },
     };
   }
 
@@ -520,9 +515,6 @@ export class AgentSessionProvider {
       },
       summary:
         "Session-owned token accounting. State-context values describe the SLOP state tail, not the model context window.",
-      meta: {
-        salience: 0.9,
-      },
     };
   }
 
@@ -758,7 +750,7 @@ export class AgentSessionProvider {
           {
             label: "Query Provider",
             description:
-              "Query state from a provider attached to this session, including in-process first-party plugin providers.",
+              "Query state from a provider attached to this session, including in-process first-party plugin providers. Returns provider-owned SLOP nodes as-is.",
             idempotent: true,
             estimate: "fast",
           },
@@ -788,15 +780,38 @@ export class AgentSessionProvider {
             estimate: "slow",
           },
         ),
-        reconnect_provider: action(
+        load_provider: action(
           {
             provider_id: "string",
           },
-          async ({ provider_id }) => this.runtime.retryProvider(String(provider_id)),
+          async ({ provider_id }) => this.runtime.loadProvider(String(provider_id)),
           {
-            label: "Reconnect Provider",
-            description: "Retry connection to a disconnected or errored external provider.",
-            idempotent: true,
+            label: "Load Provider",
+            description:
+              "Connect an unloaded, disconnected, or errored external provider so its state and affordances become available again.",
+            estimate: "fast",
+          },
+        ),
+        unload_provider: action(
+          {
+            provider_id: "string",
+          },
+          async ({ provider_id }) => this.runtime.unloadProvider(String(provider_id)),
+          {
+            label: "Unload Provider",
+            description:
+              "Disconnect an external provider from the agent Hub while keeping its app card visible for later loading. Use this to reduce state/tool context for providers that are not relevant to the current task.",
+            estimate: "fast",
+          },
+        ),
+        reload_provider: action(
+          {
+            provider_id: "string",
+          },
+          async ({ provider_id }) => this.runtime.reloadProvider(String(provider_id)),
+          {
+            label: "Reload Provider",
+            description: "Disconnect and reconnect a currently connected external provider.",
             estimate: "fast",
           },
         ),

@@ -30,8 +30,7 @@ export function truncateToolResult(result: unknown, maxSize: number): string {
     return content;
   }
 
-  const truncationMessage =
-    "[truncated: $removed chars removed, use slop_query_state for full details]";
+  const truncationMessage = "[truncated: $removed chars removed, use query_state for full details]";
   const reservedForMessage = 100;
   const keep = maxSize - reservedForMessage;
 

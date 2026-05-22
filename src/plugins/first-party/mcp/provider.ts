@@ -628,8 +628,6 @@ export class McpProvider {
         }),
       },
       meta: {
-        focus: errored > 0,
-        salience: servers.length > 0 ? 0.75 : 0.25,
         urgency: errored > 0 ? ("medium" as const) : ("low" as const),
       },
     };
@@ -739,7 +737,6 @@ export class McpProvider {
         prompts: this.buildPromptsDescriptor(server),
       },
       meta: {
-        salience: server.status === "connected" ? 0.75 : 0.55,
         urgency: server.status === "error" ? "medium" : "low",
       },
     };
@@ -786,9 +783,6 @@ export class McpProvider {
           },
         ),
       },
-      meta: {
-        salience: tool.annotations?.readOnlyHint === true ? 0.65 : 0.75,
-      },
     };
   }
 
@@ -823,9 +817,6 @@ export class McpProvider {
           estimate: "fast",
         }),
       },
-      meta: {
-        salience: 0.6,
-      },
     };
   }
 
@@ -846,9 +837,6 @@ export class McpProvider {
           mime_type: template.mimeType ?? null,
         },
         summary: template.description ?? template.title ?? template.name,
-        meta: {
-          salience: 0.45,
-        },
       })),
     };
   }
@@ -890,9 +878,6 @@ export class McpProvider {
             estimate: "fast",
           },
         ),
-      },
-      meta: {
-        salience: 0.6,
       },
     };
   }

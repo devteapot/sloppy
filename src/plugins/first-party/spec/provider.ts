@@ -430,9 +430,6 @@ export class SpecProvider {
       id: requirement.id,
       props: requirement,
       summary: `${requirement.priority}: ${requirement.text}`,
-      meta: {
-        salience: requirement.priority === "must" ? 0.9 : 0.65,
-      },
     }));
   }
 
@@ -441,9 +438,6 @@ export class SpecProvider {
       id: decision.id,
       props: decision,
       summary: decision.summary,
-      meta: {
-        salience: 0.55,
-      },
     }));
   }
 
@@ -501,7 +495,6 @@ export class SpecProvider {
           : {}),
       },
       meta: {
-        salience: change.status === "proposed" ? 0.9 : 0.45,
         urgency: change.status === "proposed" ? "medium" : "low",
       },
     }));
@@ -650,10 +643,6 @@ export class SpecProvider {
           items: this.buildChangeItems(metadata.id),
         },
       },
-      meta: {
-        salience: activeSpecId === metadata.id ? 1 : 0.55,
-        focus: activeSpecId === metadata.id,
-      },
     };
   }
 
@@ -711,10 +700,6 @@ export class SpecProvider {
         ),
       },
       items,
-      meta: {
-        focus: true,
-        salience: active.active_spec_id ? 1 : 0.75,
-      },
     };
   }
 }

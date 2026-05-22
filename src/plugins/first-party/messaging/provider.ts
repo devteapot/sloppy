@@ -162,10 +162,6 @@ export class MessagingProvider {
           },
         ),
       },
-      meta: {
-        focus: unread_count > 0,
-        salience: unread_count > 0 ? 0.9 : 0.5,
-      },
     };
   }
 
@@ -221,7 +217,6 @@ export class MessagingProvider {
           ),
         },
         meta: {
-          salience: channel.unread_count > 0 ? 0.85 : 0.4,
           urgency: channel.unread_count > 0 ? "medium" : "low",
         },
       };

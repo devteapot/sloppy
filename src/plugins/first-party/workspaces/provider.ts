@@ -244,10 +244,6 @@ export class WorkspacesProvider {
           estimate: "instant",
         }),
       },
-      meta: {
-        focus: workspaceCount > 0,
-        salience: workspaceCount > 0 ? 0.7 : 0.25,
-      },
     };
   }
 
@@ -288,9 +284,6 @@ export class WorkspacesProvider {
           description: "Select this workspace as active.",
           estimate: "instant",
         }),
-      },
-      meta: {
-        salience: selected ? 0.85 : 0.55,
       },
     };
   }
@@ -348,9 +341,6 @@ export class WorkspacesProvider {
           },
         ),
       },
-      meta: {
-        salience: selected ? 0.85 : 0.55,
-      },
     };
   }
 
@@ -369,9 +359,6 @@ export class WorkspacesProvider {
           idempotent: true,
           estimate: "instant",
         }),
-      },
-      meta: {
-        salience: 0.55,
       },
     };
   }

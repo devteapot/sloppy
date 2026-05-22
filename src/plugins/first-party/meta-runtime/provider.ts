@@ -1094,7 +1094,6 @@ export class MetaRuntimeProvider {
             : {}),
         },
         meta: {
-          salience: proposal.status === "proposed" ? 0.9 : 0.4,
           urgency: requiresApproval && proposal.status === "proposed" ? "high" : "low",
         },
       };
@@ -1158,9 +1157,6 @@ export class MetaRuntimeProvider {
             estimate: "fast",
           },
         ),
-      },
-      meta: {
-        salience: 0.55,
       },
     }));
 

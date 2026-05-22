@@ -204,10 +204,6 @@ export class MemoryProvider {
           estimate: "fast",
         }),
       },
-      meta: {
-        focus: true,
-        salience: 0.8,
-      },
     };
   }
 

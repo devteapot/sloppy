@@ -13,10 +13,7 @@ import { createTestConfig } from "./helpers/config";
 
 const HUB_CONFIG = createTestConfig({
   agent: {
-    minSalience: 0,
     overviewDepth: 4,
-    overviewMaxNodes: 500,
-    detailMaxNodes: 500,
   },
 });
 
@@ -127,7 +124,8 @@ describe("DelegationProvider", () => {
         max_agents: 3,
       });
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual(["spawn_agent"]);
-      expect(session.meta).toMatchObject({ focus: true, salience: 1 });
+      expect(session.meta?.focus).toBeUndefined();
+      expect(session.meta?.salience).toBeUndefined();
 
       const agents = await consumer.query("/agents", 2);
       expect(agents.type).toBe("collection");

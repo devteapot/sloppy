@@ -209,10 +209,6 @@ export class WebProvider {
           },
         ),
       },
-      meta: {
-        focus: false,
-        salience: 0.6,
-      },
     };
   }
 

@@ -5,47 +5,71 @@ export interface ProviderTreeView {
   providerName: string;
   kind: "first-party" | "external";
   overviewTree: SlopNode;
-  detailPath?: string;
-  detailTree?: SlopNode;
+  focuses?: ProviderFocusView[];
 }
 
-function replaceSubtree(node: SlopNode, segments: string[], subtree: SlopNode): SlopNode | null {
+export interface ProviderFocusView {
+  path: string;
+  tree: SlopNode;
+}
+
+function pathDepth(path: string): number {
+  return path.replace(/^\//, "").split("/").filter(Boolean).length;
+}
+
+function upsertSubtree(node: SlopNode, segments: string[], subtree: SlopNode): SlopNode {
   if (segments.length === 0) {
     return structuredClone(subtree);
   }
 
-  if (!node.children?.length) {
-    return null;
-  }
-
   const [segment, ...rest] = segments;
-  const childIndex = node.children.findIndex((child) => child.id === segment);
-  if (childIndex === -1) {
-    return null;
-  }
-
-  const child = node.children[childIndex];
-  if (!child) {
-    return null;
-  }
-
-  const nextChild = replaceSubtree(child, rest, subtree);
-  if (!nextChild) {
-    return null;
-  }
-
   const clone = structuredClone(node);
   clone.children ??= [];
-  clone.children[childIndex] = nextChild;
+  const childIndex = clone.children.findIndex((child) => child.id === segment);
+
+  if (rest.length === 0) {
+    if (childIndex === -1) {
+      clone.children.push(structuredClone(subtree));
+    } else {
+      clone.children[childIndex] = structuredClone(subtree);
+    }
+    return clone;
+  }
+
+  const child =
+    childIndex === -1
+      ? ({
+          id: segment,
+          type: "group",
+          meta: {
+            summary: "Synthetic ancestor for focused state.",
+          },
+        } satisfies SlopNode)
+      : clone.children[childIndex];
+  const nextChild = upsertSubtree(child, rest, subtree);
+  if (childIndex === -1) {
+    clone.children.push(nextChild);
+  } else {
+    clone.children[childIndex] = nextChild;
+  }
   return clone;
 }
 
 export function buildVisibleTree(view: ProviderTreeView): SlopNode {
-  if (!view.detailTree || !view.detailPath || view.detailPath === "/") {
-    return structuredClone(view.detailTree ?? view.overviewTree);
+  const focuses = [...(view.focuses ?? [])].sort((left, right) => {
+    const depth = pathDepth(left.path) - pathDepth(right.path);
+    return depth === 0 ? left.path.localeCompare(right.path) : depth;
+  });
+  let visibleTree = structuredClone(view.overviewTree);
+
+  for (const focus of focuses) {
+    if (focus.path === "/") {
+      visibleTree = structuredClone(focus.tree);
+      continue;
+    }
+    const segments = focus.path.replace(/^\//, "").split("/").filter(Boolean);
+    visibleTree = upsertSubtree(visibleTree, segments, focus.tree);
   }
 
-  const segments = view.detailPath.replace(/^\//, "").split("/").filter(Boolean);
-  const replaced = replaceSubtree(view.overviewTree, segments, view.detailTree);
-  return replaced ?? structuredClone(view.overviewTree);
+  return visibleTree;
 }

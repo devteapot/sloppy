@@ -53,8 +53,8 @@ describe("MessagingProvider", () => {
         "add_channel",
         "remove_channel",
       ]);
-      expect(session.meta?.focus).toBe(false);
-      expect(session.meta?.salience).toBe(0.5);
+      expect(session.meta?.focus).toBeUndefined();
+      expect(session.meta?.salience).toBeUndefined();
 
       const channels = await consumer.query("/channels", 2);
       expect(channels.type).toBe("collection");

@@ -469,10 +469,12 @@ describe("AcpSessionAgent", () => {
       const resolved = snapshot.approvals.find((item) => item.id === approval.id);
       expect(resolved?.status).toBe("approved");
       const assistant = snapshot.transcript.find((message) => message.role === "assistant");
-      expect(assistant?.content[0]?.type).toBe("text");
-      expect(assistant?.content[0]?.type === "text" ? assistant.content[0].text : "").toContain(
-        "approved",
-      );
+      const assistantText =
+        assistant?.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("") ?? "";
+      expect(assistantText).toContain("approved");
     } finally {
       provider.stop();
       runtime.shutdown();

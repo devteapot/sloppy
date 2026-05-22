@@ -252,10 +252,6 @@ export class BrowserProvider {
           },
         ),
       },
-      meta: {
-        focus: true,
-        salience: 1,
-      },
     };
   }
 
@@ -282,9 +278,6 @@ export class BrowserProvider {
           estimate: "fast",
         }),
       },
-      meta: {
-        salience: tab.active ? 1 : 0.5,
-      },
     }));
 
     return {
@@ -306,9 +299,6 @@ export class BrowserProvider {
         action_type: entry.actionType,
         timestamp: entry.timestamp,
         method: entry.method,
-      },
-      meta: {
-        salience: entry.step === this.historyPosition ? 0.9 : 0.3,
       },
     }));
 
