@@ -41,6 +41,7 @@ function buildContentChildren(content: TranscriptContentBlock[]): Record<string,
           {
             type: "media",
             props: {
+              seq: block.seq,
               mime: block.mime,
               uri: block.uri,
               name: block.name,
@@ -57,6 +58,7 @@ function buildContentChildren(content: TranscriptContentBlock[]): Record<string,
             type: "document",
             props: {
               kind: "thinking_output",
+              seq: block.seq,
               mime: block.mime,
               text: block.text,
               format: block.format,
@@ -77,6 +79,7 @@ function buildContentChildren(content: TranscriptContentBlock[]): Record<string,
         {
           type: "document",
           props: {
+            seq: block.seq,
             mime: block.mime,
             text: block.text,
           },

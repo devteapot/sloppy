@@ -388,6 +388,7 @@ function mapTranscriptBlockNode(node: SlopNode): TranscriptBlock {
   if (node.type === "media") {
     return {
       id: node.id,
+      seq: progressProp(p, "seq"),
       type: "media",
       mime: optionalStringProp(p, "mime"),
       name: optionalStringProp(p, "name"),
@@ -400,6 +401,7 @@ function mapTranscriptBlockNode(node: SlopNode): TranscriptBlock {
   if (stringProp(p, "kind") === "thinking_output") {
     return {
       id: node.id,
+      seq: progressProp(p, "seq"),
       type: "thinking",
       mime: optionalStringProp(p, "mime"),
       text: stringProp(p, "text"),
@@ -417,6 +419,7 @@ function mapTranscriptBlockNode(node: SlopNode): TranscriptBlock {
 
   return {
     id: node.id,
+    seq: progressProp(p, "seq"),
     type: "text",
     mime: optionalStringProp(p, "mime"),
     text: stringProp(p, "text"),

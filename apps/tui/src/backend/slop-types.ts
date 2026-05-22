@@ -143,6 +143,7 @@ export type ComposerState = {
 
 export type TranscriptBlock = {
   id: string;
+  seq?: number;
   type: "text" | "media" | "thinking";
   mime?: string;
   text?: string;

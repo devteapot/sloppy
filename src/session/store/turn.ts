@@ -1,4 +1,4 @@
-import type { TranscriptMessage, TranscriptMessageRole } from "../types";
+import type { TranscriptMessage, TranscriptMessageRole, TranscriptTextBlock } from "../types";
 import { buildId, deriveTitle, nextSeq, now, updateActivity, updateTurn } from "./helpers";
 import { trimResolvedApprovals, trimResolvedTasks } from "./mirrors";
 import type { SessionStoreState } from "./state";
@@ -18,9 +18,10 @@ export function beginTurn(
   const time = now();
   const turnId = buildId("turn");
   const role = options?.role ?? "user";
+  const userMessageSeq = nextSeq(state);
   const userMessage: TranscriptMessage = {
     id: buildId("msg"),
-    seq: nextSeq(state),
+    seq: userMessageSeq,
     role,
     state: "complete",
     turnId,
@@ -29,6 +30,7 @@ export function beginTurn(
     content: [
       {
         id: buildId("block"),
+        seq: userMessageSeq,
         type: "text",
         mime: "text/plain",
         text: userText,
@@ -54,6 +56,7 @@ export function beginTurn(
   });
   state.activeModelActivityId = modelActivityId;
   state.activeAssistantMessageId = null;
+  state.activeThinkingBlockIds.clear();
   updateTurn(state, {
     turnId,
     state: "running",
@@ -84,17 +87,7 @@ export function completeTurn(
 ): void {
   const time = now();
   const message = getOrCreateAssistantMessage(turnId, time);
-  const textBlock = message.content.find((block) => block.type === "text");
-  if (textBlock) {
-    textBlock.text = finalText;
-  } else if (finalText.length > 0) {
-    message.content.push({
-      id: buildId("block"),
-      type: "text",
-      mime: "text/plain",
-      text: finalText,
-    });
-  }
+  reconcileFinalText(state, message, finalText);
   message.state = "complete";
   message.error = undefined;
 
@@ -110,6 +103,7 @@ export function completeTurn(
   state.activeAssistantMessageId = null;
   state.activeModelActivityId = null;
   state.activeApprovalActivityId = null;
+  state.activeThinkingBlockIds.clear();
   updateTurn(state, {
     turnId: null,
     state: "idle",
@@ -124,6 +118,60 @@ export function completeTurn(
   state.activityChanged = true;
   state.turnChanged = true;
   state.transcriptChanged = true;
+}
+
+function textBlocks(message: TranscriptMessage): TranscriptTextBlock[] {
+  return message.content.filter((block): block is TranscriptTextBlock => block.type === "text");
+}
+
+function reconcileFinalText(
+  state: SessionStoreState,
+  message: TranscriptMessage,
+  finalText: string,
+): void {
+  const blocks = textBlocks(message);
+  if (blocks.length === 0) {
+    if (finalText.length > 0) {
+      message.content.push({
+        id: buildId("block"),
+        seq: nextBlockSeq(state, message),
+        type: "text",
+        mime: "text/plain",
+        text: finalText,
+      });
+    }
+    return;
+  }
+
+  const streamedText = blocks.map((block) => block.text).join("");
+  if (streamedText === finalText) {
+    return;
+  }
+
+  const lastBlock = blocks.at(-1);
+  if (lastBlock && finalText.startsWith(streamedText)) {
+    lastBlock.text += finalText.slice(streamedText.length);
+    return;
+  }
+
+  if (blocks.length === 1) {
+    blocks[0].text = finalText;
+    return;
+  }
+
+  const firstTextIndex = message.content.findIndex((block) => block.type === "text");
+  const [firstBlock] = blocks;
+  message.content = message.content.filter((block) => block.type !== "text");
+  if (finalText.length > 0 && firstBlock) {
+    message.content.splice(firstTextIndex, 0, {
+      ...firstBlock,
+      text: finalText,
+    });
+  }
+}
+
+function nextBlockSeq(state: SessionStoreState, message: TranscriptMessage): number {
+  return message.content.length === 0 ? message.seq : nextSeq(state);
 }
 
 export function failTurn(state: SessionStoreState, turnId: string, message: string): void {
@@ -162,6 +210,7 @@ export function failTurn(state: SessionStoreState, turnId: string, message: stri
   state.activeAssistantMessageId = null;
   state.activeModelActivityId = null;
   state.activeApprovalActivityId = null;
+  state.activeThinkingBlockIds.clear();
   updateTurn(state, {
     turnId,
     state: "error",
@@ -246,6 +295,7 @@ export function cancelTurn(
 
   state.activeAssistantMessageId = null;
   state.activeModelActivityId = null;
+  state.activeThinkingBlockIds.clear();
   state.snapshot.session.lastError = undefined;
   updateTurn(state, {
     turnId: null,

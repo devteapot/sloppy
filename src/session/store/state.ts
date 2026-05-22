@@ -9,6 +9,7 @@ export interface SessionStoreState {
   activeAssistantMessageId: string | null;
   activeModelActivityId: string | null;
   activeApprovalActivityId: string | null;
+  activeThinkingBlockIds: Map<string, string>;
   toolActivityIds: Map<string, string>;
   turnChanged: boolean;
   goalChanged: boolean;
@@ -93,6 +94,7 @@ export function createInitialState(options: {
     activeAssistantMessageId: null,
     activeModelActivityId: null,
     activeApprovalActivityId: null,
+    activeThinkingBlockIds: new Map(),
     toolActivityIds: new Map(),
     turnChanged: false,
     goalChanged: false,
@@ -144,6 +146,7 @@ export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): Session
     activeAssistantMessageId: null,
     activeModelActivityId: null,
     activeApprovalActivityId: null,
+    activeThinkingBlockIds: new Map(),
     toolActivityIds: new Map(),
     turnChanged: false,
     goalChanged: false,
@@ -165,6 +168,11 @@ function normalizeSnapshotSeqs(snapshot: AgentSessionSnapshot): number {
   for (const message of snapshot.transcript) {
     if (Number.isInteger(message.seq) && message.seq > 0) {
       maxSeq = Math.max(maxSeq, message.seq);
+    }
+    for (const block of message.content) {
+      if (Number.isInteger(block.seq) && (block.seq ?? 0) > 0) {
+        maxSeq = Math.max(maxSeq, block.seq ?? 0);
+      }
     }
   }
   for (const item of snapshot.activity) {

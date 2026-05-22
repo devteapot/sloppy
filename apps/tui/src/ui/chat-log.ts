@@ -334,22 +334,53 @@ export function buildChatLogEntries(
   snapshot: SessionViewSnapshot,
   options: { verbosity: Verbosity; width: number; thinking?: ThinkingRenderMode },
 ): ChatLogEntry[] {
-  const messages: SequencedChatLogEntry[] = assembleTranscript(snapshot.transcript, {
+  const messages = assembleTranscript(snapshot.transcript, {
     thinking: options.thinking ?? "default",
-  }).map((message) => ({
-    content: renderableMessageText(message),
-    key: `msg:${message.id}`,
-    kind: "message",
-    message,
-    mode: messageRenderMode(message.role, message.state),
-    seq: message.seq,
-    variant: message.role === "user" ? "user" : "default",
-  }));
+  }).flatMap(messageEntries);
   const tools = buildToolEntries(buildToolPairs(snapshot.activity), options);
   return [...messages, ...tools]
     .filter((item) => item.content.length > 0)
     .sort((left, right) => left.seq - right.seq)
     .map(({ seq: _seq, ...entry }) => entry);
+}
+
+function messageEntries(message: RenderableMessage): SequencedChatLogEntry[] {
+  if (message.role === "user") {
+    return [
+      {
+        content: renderableMessageText(message),
+        key: `msg:${message.id}`,
+        kind: "message",
+        message,
+        mode: messageRenderMode(message.role, message.state),
+        seq: message.seq,
+        variant: "user",
+      },
+    ];
+  }
+
+  return message.blocks.map((block) => {
+    const blockMessage: RenderableMessage = {
+      ...message,
+      blocks: [block],
+    };
+    return {
+      content: renderableBlockText(block),
+      key: `msg:${message.id}:block:${block.id}`,
+      kind: "message",
+      message: blockMessage,
+      mode: blockRenderMode(message, block),
+      seq: block.seq,
+      variant: "default",
+    };
+  });
+}
+
+function blockRenderMode(message: RenderableMessage, block: RenderableBlock): ChatLogRenderMode {
+  if (block.type !== "text") {
+    return "plain";
+  }
+  return messageRenderMode(message.role, message.state);
 }
 
 function messageRenderMode(

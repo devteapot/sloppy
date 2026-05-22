@@ -119,7 +119,7 @@ describe("ChatLog", () => {
         content: "# literal\n\na * b",
       },
       {
-        key: "msg:assistant-1",
+        key: "msg:assistant-1:block:assistant-1-text",
         mode: "streaming-markdown",
         variant: "default",
         content: "```ts\nconst half = true;",
@@ -223,8 +223,8 @@ describe("ChatLog", () => {
     );
 
     expect(entries.map(({ key, mode }) => ({ key, mode }))).toEqual([
-      { key: "msg:system-1", mode: "final-markdown" },
-      { key: "msg:assistant-1", mode: "final-markdown" },
+      { key: "msg:system-1:block:system-1-text", mode: "final-markdown" },
+      { key: "msg:assistant-1:block:assistant-1-text", mode: "final-markdown" },
       { key: "tool:tool-1", mode: "plain" },
     ]);
     expect(entries[0]?.content).toBe("## Status");
@@ -331,6 +331,70 @@ describe("ChatLog", () => {
     expect(entries.map((entry) => entry.key)).toEqual(["tool:tool-2", "tool:tool-1"]);
   });
 
+  test("interleaves assistant blocks with tool activity by block sequence", () => {
+    const entries = buildChatLogEntries(
+      snapshotWith({
+        transcript: [
+          {
+            id: "assistant-1",
+            seq: 3,
+            role: "assistant",
+            state: "complete",
+            turnId: "turn-1",
+            blocks: [
+              {
+                id: "thinking-1",
+                seq: 3,
+                type: "thinking",
+                text: "check files",
+                format: "summary",
+                display: "hidden",
+              },
+              {
+                id: "text-1",
+                seq: 6,
+                type: "text",
+                text: "final answer",
+              },
+            ],
+          },
+        ],
+        activity: [
+          activity({
+            id: "call-1",
+            seq: 4,
+            kind: "tool_call",
+            status: "running",
+            summary: "filesystem:read README.md",
+            provider: "filesystem",
+            action: "read",
+            label: "Read File",
+            toolUseId: "tool-1",
+          }),
+          activity({
+            id: "result-1",
+            seq: 5,
+            kind: "tool_result",
+            summary: "filesystem:read README.md",
+            provider: "filesystem",
+            action: "read",
+            label: "Read File",
+            path: "README.md",
+            toolUseId: "tool-1",
+            result: { kind: "text", data: "ok" },
+          }),
+        ],
+      }),
+      { verbosity: "compact", width: 80 },
+    );
+
+    expect(entries.map((entry) => entry.key)).toEqual([
+      "msg:assistant-1:block:thinking-1",
+      "tool:tool-1",
+      "msg:assistant-1:block:text-1",
+    ]);
+  });
+
   test("keeps message keys stable while streaming entries switch mode on completion", () => {
     const streaming = buildChatLogEntries(
       snapshotWith({
@@ -361,8 +425,8 @@ describe("ChatLog", () => {
       { verbosity: "compact", width: 80 },
     )[0];
 
-    expect(streaming?.key).toBe("msg:assistant-1");
-    expect(complete?.key).toBe("msg:assistant-1");
+    expect(streaming?.key).toBe("msg:assistant-1:block:assistant-1-text");
+    expect(complete?.key).toBe("msg:assistant-1:block:assistant-1-text");
     expect(streaming?.mode).toBe("streaming-markdown");
     expect(complete?.mode).toBe("final-markdown");
   });
@@ -372,13 +436,14 @@ describe("ChatLog", () => {
       transcript: [thinkingMessage({ id: "assistant-thinking", seq: 1, display: "hidden" })],
     });
 
-    const defaultEntry = buildChatLogEntries(snapshot, {
+    const defaultEntries = buildChatLogEntries(snapshot, {
       verbosity: "compact",
       width: 80,
-    })[0];
+    });
+    const defaultEntry = defaultEntries[0];
     expect(defaultEntry?.content).toContain("[thinking · raw · 1.5s · 12 tokens]");
     expect(defaultEntry?.content).not.toContain("private calculation");
-    expect(defaultEntry?.content).toContain("final answer");
+    expect(defaultEntries[1]?.content).toContain("final answer");
 
     const expandedEntry = buildChatLogEntries(snapshot, {
       verbosity: "compact",

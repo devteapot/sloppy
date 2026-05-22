@@ -4,6 +4,7 @@ export type ThinkingRenderMode = "default" | "expanded" | "collapsed";
 
 export type RenderableTextBlock = {
   id: string;
+  seq: number;
   text: string;
   type: "text";
 };
@@ -12,12 +13,14 @@ export type RenderableThinkingBlock = {
   expanded: boolean;
   id: string;
   label: string;
+  seq: number;
   text: string;
   type: "thinking";
 };
 
 export type RenderablePlainBlock = {
   id: string;
+  seq: number;
   text: string;
   type: "plain";
 };
@@ -38,7 +41,7 @@ export function assembleTranscript(
 ): RenderableMessage[] {
   return messages.map((message) => ({
     blocks: message.blocks
-      .map((block) => renderBlock(block, options?.thinking ?? "default"))
+      .map((block) => renderBlock(block, options?.thinking ?? "default", message.seq))
       .filter((block) => block.text.length > 0 || block.type === "thinking"),
     id: message.id,
     seq: message.seq,
@@ -50,11 +53,13 @@ export function assembleTranscript(
 function renderBlock(
   block: TranscriptMessage["blocks"][number],
   thinkingMode: ThinkingRenderMode,
+  fallbackSeq: number,
 ): RenderableBlock {
   if (block.type !== "thinking") {
     const text = block.text ?? block.preview ?? block.summary ?? "";
     return {
       id: block.id,
+      seq: block.seq ?? fallbackSeq,
       text,
       type: block.type === "text" ? "text" : "plain",
     };
@@ -76,6 +81,7 @@ function renderBlock(
     expanded,
     id: block.id,
     label,
+    seq: block.seq ?? fallbackSeq,
     text: expanded ? (block.text ?? "") : "",
     type: "thinking",
   };

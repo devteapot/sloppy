@@ -10,6 +10,7 @@ export type TranscriptMessageState = "complete" | "streaming" | "error";
 
 export type TranscriptTextBlock = {
   id: string;
+  seq?: number;
   type: "text";
   mime: string;
   text: string;
@@ -17,6 +18,7 @@ export type TranscriptTextBlock = {
 
 export type TranscriptMediaBlock = {
   id: string;
+  seq?: number;
   type: "media";
   mime: string;
   name?: string;
@@ -27,6 +29,7 @@ export type TranscriptMediaBlock = {
 
 export type TranscriptThinkingBlock = {
   id: string;
+  seq?: number;
   type: "thinking";
   mime: "text/plain";
   text: string;

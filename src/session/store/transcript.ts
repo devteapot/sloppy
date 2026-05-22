@@ -1,6 +1,8 @@
-import type { TranscriptMessage, TranscriptThinkingBlock } from "../types";
+import type { TranscriptMessage, TranscriptTextBlock, TranscriptThinkingBlock } from "../types";
 import { buildId, nextSeq, now, updateTurnPhase } from "./helpers";
 import type { SessionStoreState } from "./state";
+
+const DEFAULT_THINKING_SOURCE_KEY = "__default_thinking_source__";
 
 export function getOrCreateAssistantMessage(
   state: SessionStoreState,
@@ -15,9 +17,10 @@ export function getOrCreateAssistantMessage(
     return existing;
   }
 
+  const messageSeq = nextSeq(state);
   const message: TranscriptMessage = {
     id: buildId("msg"),
-    seq: nextSeq(state),
+    seq: messageSeq,
     role: "assistant",
     state: "streaming",
     turnId,
@@ -26,6 +29,7 @@ export function getOrCreateAssistantMessage(
     content: [
       {
         id: buildId("block"),
+        seq: messageSeq,
         type: "text",
         mime: "text/plain",
         text: "",
@@ -37,8 +41,13 @@ export function getOrCreateAssistantMessage(
   return message;
 }
 
-function findTextBlock(message: TranscriptMessage) {
-  return message.content.find((block) => block.type === "text");
+function trailingTextBlock(message: TranscriptMessage): TranscriptTextBlock | undefined {
+  const block = message.content.at(-1);
+  return block?.type === "text" ? block : undefined;
+}
+
+function nextBlockSeq(state: SessionStoreState, message: TranscriptMessage): number {
+  return message.content.length === 0 ? message.seq : nextSeq(state);
 }
 
 function findThinkingBlock(message: TranscriptMessage, blockId?: string) {
@@ -46,6 +55,62 @@ function findThinkingBlock(message: TranscriptMessage, blockId?: string) {
     (block): block is TranscriptThinkingBlock =>
       block.type === "thinking" && (blockId === undefined || block.id === blockId),
   );
+}
+
+function hasContentAfter(message: TranscriptMessage, blockId: string): boolean {
+  const index = message.content.findIndex((block) => block.id === blockId);
+  return index >= 0 && index < message.content.length - 1;
+}
+
+function hasTimelineEventAfter(
+  state: SessionStoreState,
+  message: TranscriptMessage,
+  block: TranscriptTextBlock | TranscriptThinkingBlock,
+): boolean {
+  if (block.seq === undefined) {
+    return hasContentAfter(message, block.id);
+  }
+  const blockSeq = block.seq;
+  return (
+    hasContentAfter(message, block.id) ||
+    state.snapshot.activity.some((item) => item.seq > blockSeq)
+  );
+}
+
+function hasBlockId(message: TranscriptMessage, blockId: string): boolean {
+  return message.content.some((block) => block.id === blockId);
+}
+
+function thinkingSourceKey(blockId?: string): string {
+  return blockId ?? DEFAULT_THINKING_SOURCE_KEY;
+}
+
+function nextThinkingBlockId(message: TranscriptMessage, sourceBlockId?: string): string {
+  if (sourceBlockId && !hasBlockId(message, sourceBlockId)) {
+    return sourceBlockId;
+  }
+
+  let blockId = buildId("block");
+  while (hasBlockId(message, blockId)) {
+    blockId = buildId("block");
+  }
+  return blockId;
+}
+
+function activeThinkingBlock(
+  state: SessionStoreState,
+  message: TranscriptMessage,
+  sourceKey: string,
+  sourceBlockId?: string,
+): TranscriptThinkingBlock | undefined {
+  const activeId = state.activeThinkingBlockIds.get(sourceKey);
+  if (activeId) {
+    const active = findThinkingBlock(message, activeId);
+    if (active) {
+      return active;
+    }
+  }
+  return sourceBlockId ? findThinkingBlock(message, sourceBlockId) : undefined;
 }
 
 export function appendAssistantText(
@@ -64,9 +129,10 @@ export function appendAssistantText(
       : state.snapshot.transcript.find((entry) => entry.id === state.activeAssistantMessageId);
 
   if (!message) {
+    const messageSeq = nextSeq(state);
     message = {
       id: buildId("msg"),
-      seq: nextSeq(state),
+      seq: messageSeq,
       role: "assistant",
       state: "streaming",
       turnId,
@@ -75,6 +141,7 @@ export function appendAssistantText(
       content: [
         {
           id: buildId("block"),
+          seq: messageSeq,
           type: "text",
           mime: "text/plain",
           text: chunk,
@@ -84,10 +151,11 @@ export function appendAssistantText(
     state.snapshot.transcript.push(message);
     state.activeAssistantMessageId = message.id;
   } else {
-    const textBlock = findTextBlock(message);
-    if (!textBlock) {
+    const textBlock = trailingTextBlock(message);
+    if (!textBlock || hasTimelineEventAfter(state, message, textBlock)) {
       message.content.push({
         id: buildId("block"),
+        seq: nextBlockSeq(state, message),
         type: "text",
         mime: "text/plain",
         text: chunk,
@@ -137,9 +205,10 @@ export function appendAssistantThinking(
       : state.snapshot.transcript.find((entry) => entry.id === state.activeAssistantMessageId);
 
   if (!message) {
+    const messageSeq = nextSeq(state);
     message = {
       id: buildId("msg"),
-      seq: nextSeq(state),
+      seq: messageSeq,
       role: "assistant",
       state: "streaming",
       turnId,
@@ -151,10 +220,16 @@ export function appendAssistantThinking(
     state.activeAssistantMessageId = message.id;
   }
 
-  let block = findThinkingBlock(message, options.blockId);
+  const sourceKey = thinkingSourceKey(options.blockId);
+  let block = activeThinkingBlock(state, message, sourceKey, options.blockId);
+  if (block && !options.done && hasTimelineEventAfter(state, message, block)) {
+    block = undefined;
+  }
+
   if (!block) {
     block = {
-      id: options.blockId ?? buildId("block"),
+      id: nextThinkingBlockId(message, options.blockId),
+      seq: nextBlockSeq(state, message),
       type: "thinking",
       mime: "text/plain",
       text: "",
@@ -165,12 +240,10 @@ export function appendAssistantThinking(
       startedAt: options.startedAt ?? time,
       tokenCountSource: options.tokenCount === undefined ? undefined : "reported",
     };
-    const firstTextIndex = message.content.findIndex((candidate) => candidate.type === "text");
-    if (firstTextIndex === -1) {
-      message.content.push(block);
-    } else {
-      message.content.splice(firstTextIndex, 0, block);
-    }
+    message.content.push(block);
+    state.activeThinkingBlockIds.set(sourceKey, block.id);
+  } else {
+    state.activeThinkingBlockIds.set(sourceKey, block.id);
   }
 
   block.format = options.format;
@@ -216,9 +289,10 @@ export function appendAssistantMedia(
       : state.snapshot.transcript.find((entry) => entry.id === state.activeAssistantMessageId);
 
   if (!message) {
+    const messageSeq = nextSeq(state);
     message = {
       id: buildId("msg"),
-      seq: nextSeq(state),
+      seq: messageSeq,
       role: "assistant",
       state: "complete",
       turnId,
@@ -227,6 +301,7 @@ export function appendAssistantMedia(
       content: [
         {
           id: buildId("block"),
+          seq: messageSeq,
           type: "media",
           mime: options.mime,
           name: options.name,
@@ -241,6 +316,7 @@ export function appendAssistantMedia(
   } else {
     message.content.push({
       id: buildId("block"),
+      seq: nextBlockSeq(state, message),
       type: "media",
       mime: options.mime,
       name: options.name,

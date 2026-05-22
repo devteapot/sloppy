@@ -961,6 +961,217 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("preserves interleaved thinking and text block order in the public transcript", async () => {
+    const llmProfileManager = createTestProfileManager();
+    llmProfileManager.createAdapter = async () =>
+      ({
+        chat: async (options: LlmChatOptions) => {
+          options.onThinking?.({
+            id: "thinking-stream",
+            provider: "openai",
+            model: "gpt-5.4",
+            format: "raw",
+            display: "hidden",
+            delta: "thinking 1",
+            startedAt: "2026-05-21T10:00:00.000Z",
+          });
+          options.onText?.("turn 1");
+          options.onThinking?.({
+            id: "thinking-stream",
+            provider: "openai",
+            model: "gpt-5.4",
+            format: "raw",
+            display: "hidden",
+            delta: "thinking 2",
+            startedAt: "2026-05-21T10:00:01.000Z",
+          });
+          options.onText?.("turn 2");
+          options.onThinking?.({
+            id: "thinking-stream",
+            provider: "openai",
+            model: "gpt-5.4",
+            format: "raw",
+            display: "hidden",
+            delta: "",
+            startedAt: "2026-05-21T10:00:01.000Z",
+            completedAt: "2026-05-21T10:00:03.000Z",
+            elapsedMs: 2000,
+            done: true,
+          });
+          return {
+            content: [{ type: "text", text: "turn 1turn 2" }],
+            stopReason: "end_turn",
+            usage: {},
+          } satisfies LlmResponse;
+        },
+        countTextTokens: async () => ({ source: "unavailable" }),
+      }) satisfies LlmAdapter;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-thinking-interleaved",
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-thinking-interleaved",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/composer", "send_message", {
+        text: "stream thinking between text",
+      });
+      expect(result.status).toBe("ok");
+      await runtime.waitForIdle();
+
+      const transcript = await consumer.query("/transcript", 5);
+      const assistant = transcript.children?.find(
+        (child) => child.properties?.role === "assistant",
+      );
+      const content = assistant?.children?.find((child) => child.id === "content")?.children ?? [];
+
+      expect(
+        content.map((child) =>
+          child.properties?.kind === "thinking_output" ? "thinking" : "text",
+        ),
+      ).toEqual(["thinking", "text", "thinking", "text"]);
+      expect(content.map((child) => child.properties?.text)).toEqual([
+        "thinking 1",
+        "turn 1",
+        "thinking 2",
+        "turn 2",
+      ]);
+      expect(content[0]?.id).toBe("thinking-stream");
+      expect(content[2]?.id).not.toBe("thinking-stream");
+      expect(content[2]?.properties?.elapsed_ms).toBe(2000);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("sequences repeated thinking blocks around tool activity", async () => {
+    const agentFactory: SessionAgentFactory = (callbacks) => ({
+      start: async () => undefined,
+      chat: async () => {
+        callbacks.onThinking?.({
+          id: "thinking-stream",
+          provider: "openai",
+          model: "gpt-5.4",
+          format: "summary",
+          display: "hidden",
+          delta: "thinking before tool",
+          startedAt: "2026-05-21T10:00:00.000Z",
+        });
+        callbacks.onToolEvent?.({
+          kind: "started",
+          invocation: {
+            toolUseId: "tool-1",
+            toolName: "filesystem__read",
+            kind: "affordance",
+            providerId: "filesystem",
+            path: "/workspace",
+            action: "read",
+            params: { path: "README.md" },
+          },
+          summary: "filesystem:read README.md",
+        });
+        callbacks.onToolEvent?.({
+          kind: "completed",
+          invocation: {
+            toolUseId: "tool-1",
+            toolName: "filesystem__read",
+            kind: "affordance",
+            providerId: "filesystem",
+            path: "/workspace",
+            action: "read",
+            params: { path: "README.md" },
+          },
+          summary: "filesystem:read README.md",
+          status: "ok",
+          result: {
+            data: { path: "README.md" },
+            kind: "json",
+          },
+        });
+        callbacks.onThinking?.({
+          id: "thinking-stream",
+          provider: "openai",
+          model: "gpt-5.4",
+          format: "summary",
+          display: "hidden",
+          delta: "thinking after tool",
+          startedAt: "2026-05-21T10:00:01.000Z",
+        });
+        callbacks.onText?.("final answer");
+        return {
+          status: "completed",
+          response: "final answer",
+        };
+      },
+      resumeWithToolResult: async () => ({ status: "completed", response: "resumed" }),
+      invokeProvider: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+      resolveApprovalDirect: async () => ({ type: "result", id: "inv-test", status: "ok" }),
+      rejectApprovalDirect: () => undefined,
+      cancelActiveTurn: () => false,
+      clearPendingApproval: () => undefined,
+      shutdown: () => undefined,
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-thinking-tool-seq",
+      agentFactory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-thinking-tool-seq",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/composer", "send_message", {
+        text: "stream thinking around tools",
+      });
+      expect(result.status).toBe("ok");
+      await runtime.waitForIdle();
+
+      const transcript = await consumer.query("/transcript", 5);
+      const assistant = transcript.children?.find(
+        (child) => child.properties?.role === "assistant",
+      );
+      const content = assistant?.children?.find((child) => child.id === "content")?.children ?? [];
+      const activity = await consumer.query("/activity", 3);
+      const toolCall = activity.children?.find((child) => child.properties?.kind === "tool_call");
+      const toolResult = activity.children?.find(
+        (child) => child.properties?.kind === "tool_result",
+      );
+
+      expect(
+        content.map((child) =>
+          child.properties?.kind === "thinking_output" ? "thinking" : "text",
+        ),
+      ).toEqual(["thinking", "thinking", "text"]);
+      expect(content.map((child) => child.properties?.text)).toEqual([
+        "thinking before tool",
+        "thinking after tool",
+        "final answer",
+      ]);
+      expect(content[0]?.id).toBe("thinking-stream");
+      expect(content[1]?.id).not.toBe("thinking-stream");
+      expect(content[0]?.properties?.seq).toBeLessThan(toolCall?.properties?.seq as number);
+      expect(toolResult?.properties?.seq).toBeLessThan(content[1]?.properties?.seq as number);
+      expect(content[1]?.properties?.seq).toBeLessThan(content[2]?.properties?.seq as number);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("marks model token usage unavailable when the adapter omits usage", async () => {
     const llmProfileManager = createTestProfileManager();
     llmProfileManager.createAdapter = async () =>

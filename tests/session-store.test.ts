@@ -484,6 +484,111 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     expect(text).toMatchObject({ type: "text", text: "final text" });
   });
 
+  test("appendAssistantThinking preserves stream order across repeated thinking phases", () => {
+    const store = createStore();
+    const turnId = store.beginTurn("hi");
+    const completedAt = "2026-05-21T10:00:03.000Z";
+
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "raw",
+      display: "hidden",
+      delta: "thinking 1",
+    });
+    store.appendAssistantText(turnId, "turn 1");
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "raw",
+      display: "hidden",
+      delta: "thinking 2",
+    });
+    store.appendAssistantText(turnId, "turn 2");
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "raw",
+      display: "hidden",
+      completedAt,
+      elapsedMs: 3000,
+      done: true,
+    });
+    store.completeTurn(turnId, "turn 1turn 2");
+
+    const assistant = store.getSnapshot().transcript[1];
+    expect(assistant?.content.map((block) => block.type)).toEqual([
+      "thinking",
+      "text",
+      "thinking",
+      "text",
+    ]);
+    expect(assistant?.content.map((block) => ("text" in block ? block.text : ""))).toEqual([
+      "thinking 1",
+      "turn 1",
+      "thinking 2",
+      "turn 2",
+    ]);
+    expect(assistant?.content[0]?.id).toBe("thinking-1");
+    expect(assistant?.content[2]?.id).not.toBe("thinking-1");
+    expect(assistant?.content[2]).toMatchObject({
+      type: "thinking",
+      completedAt,
+      elapsedMs: 3000,
+    });
+  });
+
+  test("appendAssistantThinking starts a new block after tool activity", () => {
+    const store = createStore();
+    const turnId = store.beginTurn("hi");
+
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "summary",
+      display: "hidden",
+      delta: "before tool",
+    });
+    store.recordToolStart(turnId, {
+      toolUseId: "tu-1",
+      summary: "Reading",
+      provider: "filesystem",
+    });
+    store.recordToolCompletion(turnId, {
+      toolUseId: "tu-1",
+      summary: "Read OK",
+      status: "ok",
+      provider: "filesystem",
+    });
+    store.appendAssistantThinking(turnId, {
+      blockId: "thinking-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      format: "summary",
+      display: "hidden",
+      delta: "after tool",
+    });
+    store.appendAssistantText(turnId, "final");
+
+    const snapshot = store.getSnapshot();
+    const assistant = snapshot.transcript[1];
+    const toolCall = snapshot.activity.find((item) => item.kind === "tool_call");
+    const toolResult = snapshot.activity.find((item) => item.kind === "tool_result");
+    expect(assistant?.content.map((block) => block.type)).toEqual(["thinking", "thinking", "text"]);
+    expect(assistant?.content.map((block) => ("text" in block ? block.text : ""))).toEqual([
+      "before tool",
+      "after tool",
+      "final",
+    ]);
+    expect(assistant?.content[0]?.seq).toBeLessThan(toolCall?.seq as number);
+    expect(toolResult?.seq).toBeLessThan(assistant?.content[1]?.seq as number);
+    expect(assistant?.content[1]?.seq).toBeLessThan(assistant?.content[2]?.seq as number);
+  });
+
   test("appendAssistantText with empty string is a no-op", () => {
     const store = createStore();
     const turnId = store.beginTurn("hi");
