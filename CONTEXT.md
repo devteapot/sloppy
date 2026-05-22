@@ -10,6 +10,14 @@ The SLOP-native agent runtime: the kernel, the agent loop, the provider/consumer
 A SLOP capability exposed as a state tree plus affordances. Everything the agent can observe or act on is a provider. Providers are not privileged runtime branches.
 _Avoid_: using interchangeably with Plugin.
 
+**App**:
+A descriptor-backed external Provider discovered by the Runtime. Apps are listed before they are connected, and are loaded into or unloaded from one Session's Hub explicitly.
+_Avoid_: using for first-party Providers such as `terminal` or `filesystem`.
+
+**Apps provider**:
+The first-party Provider that exposes discovered external Apps to the Agent under `/available` and lets the Agent load or unload them. It projects Hub registration state; it does not own discovery, app processes, or provider internals.
+_Avoid_: confusing it with the Session provider's public `/apps` mirror for UIs and external clients; using it to manage first-party Plugins or Providers.
+
 **Plugin**:
 A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`). A Plugin may contribute one or more Providers (`createProviders`) and at most one Session plugin (`createSessionPlugin`); some do only one. It is the packaging/catalog unit, not a capability itself. A name shared between a Plugin and the Provider it creates (e.g. `skills`, `terminal`) refers to two distinct objects.
 _Avoid_: calling a Plugin a Provider; calling the optional capabilities "optional providers" — they are Plugins.
@@ -163,6 +171,51 @@ _Avoid_: using interchangeably with Runtime.
 **Hub**:
 The consumer-side substrate the Kernel owns for state subscriptions, query, invoke, and policy checks across all Providers.
 
+**Provider lifecycle event**:
+A Hub-owned notification that a Provider's connection state changed inside one Session. Runtime projections such as provider mirrors follow these events; unloading a Provider clears its live mirrors, and the caller that requested load or unload does not own those side effects.
+_Avoid_: making the Agent-visible App controls and public Session `/apps` controls separate lifecycle paths.
+
+**Provider lifecycle control**:
+An Affordance or public Session control that changes whether a registered Provider is connected to one Session's Hub. Lifecycle controls may be logically repeatable, but they are not idempotent for agent-loop scheduling because they change the provider graph, tool surface, and future State projection.
+Lifecycle controls are not approval-gated by default; dangerous-action policy applies when invoking Provider Affordances after an App is loaded.
+_Avoid_: marking load/unload controls `idempotent: true` just because repeated calls are harmless.
+
+**Load App**:
+Connect a registered App Provider that is currently unloaded, disconnected, or errored into one Session's Hub. Loading an already connected App is a no-op, and loading does not add State focus; the loaded Provider appears through its Default projection until the Agent explicitly focuses more detail.
+_Avoid_: reconnect when the App may never have been connected.
+
+**Loaded App**:
+An App Provider currently connected to one live Session's Hub. A Loaded App participates in normal State projection and dynamic Affordance tool projection; loaded state is not a durable preference and is not automatically restored in a new Session.
+_Avoid_: treating previous attachment as startup policy.
+
+**Reload App**:
+Disconnect a connected App Provider from one Session's Hub and then connect it again. Reload is an explicit refresh operation for a currently connected App; use Load App for unloaded, disconnected, or errored Apps.
+_Avoid_: reconnect, retry.
+
+**App lifecycle status**:
+The public attachment state for an App card: `connected`, `disconnected`, `error`, or `unloaded`. Reload does not introduce a separate transitional status; the affordance call itself carries in-flight progress.
+_Avoid_: loading, reloading.
+
+**Unloaded App**:
+A discovered App that is registered in one Session's Hub but intentionally disconnected from that Hub. It remains visible as a clean app card for later loading, drops any existing State focus for that Provider, and does not carry `last_error`; failed Apps use `status=error` instead.
+_Avoid_: treating unloaded as a failure or stopped external process.
+
+**App card**:
+The lightweight catalog entry for an App under the Apps provider's `/available` collection or the Session provider's `/apps` mirror. It is identified by stable `provider_id`; descriptor updates replace the card in place for the same id, but it is not a proxy for the App's downstream state tree or Affordance catalog.
+_Avoid_: expanding unloaded Apps into shadow provider trees.
+
+**Descriptor removal**:
+Removal of an App descriptor from discovery. If the App is loaded, descriptor removal disconnects it from the Session Hub, clears live attachment metadata, and removes its App card.
+_Avoid_: leaving orphaned connected Apps after their descriptor is gone.
+
+**Connected affordance registry**:
+The Hub-owned metadata learned from a Provider's currently connected state trees, including dangerous Affordance markers. It belongs to the current Provider attachment and is cleared on unload or reload before being rebuilt from the freshly connected Provider state.
+_Avoid_: keeping stale Affordance metadata alive because an App card still exists.
+
+**App process owner**:
+The system that starts, stops, or supervises an external App process. A Session may connect to or unload the App's Provider, but it is not the App process owner unless a separate provider explicitly says so.
+_Avoid_: making `unload_provider` terminate descriptor-backed external Apps.
+
 **State focus**:
 Hub-owned consumer attention over one or more Provider paths. Focused paths are kept in future ephemeral state-tail projections until explicitly removed. State focus is not Provider state, not UI expand/collapse state, and not the user's visual focus inside a UI.
 `focus_state` adds or updates one focused path; it does not replace all focuses for that Provider. Removing focused paths is a separate Observation tool operation.
@@ -183,8 +236,9 @@ Provider/SDK support for `max_nodes`-bounded output. Sloppy's Agent-facing Runti
 _Avoid_: using `max_nodes: -1` as an unlimited sentinel; omitted `max_nodes` is the unlimited request shape.
 
 **Salience metadata**:
-Optional Provider metadata that external Consumers may use for attention hints. Sloppy's Agent-facing Runtime ignores salience by default: it does not filter State projection by salience and does not render `salience=` into the model-facing tree. Agent attention is expressed through State focus instead.
-_Avoid_: treating salience as the primary Runtime scaling mechanism.
+Optional Provider-owned metadata that Consumers may use for attention hints. Sloppy's Agent-facing Runtime does not use salience for filtering or scaling, but it preserves Provider-owned metadata when querying external App trees; Agent attention is expressed through State focus instead.
+Sloppy-owned first-party Providers should not emit legacy salience/focus hints as a substitute for explicit State focus.
+_Avoid_: treating salience as the primary Runtime scaling mechanism; stripping metadata from external App trees.
 
 **File view**:
 Provider-owned loaded text state for a filesystem file. A File view lets file content live in Provider state and State projection instead of permanent Tool-result history.

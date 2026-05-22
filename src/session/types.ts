@@ -210,7 +210,7 @@ export type SessionTask = {
   turnId?: string;
 };
 
-export type ExternalAppStatus = "connected" | "disconnected" | "error";
+export type ExternalAppStatus = "connected" | "disconnected" | "error" | "unloaded";
 
 export type ExternalAppSnapshot = {
   id: string;

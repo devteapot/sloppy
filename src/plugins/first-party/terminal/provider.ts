@@ -352,10 +352,6 @@ export class TerminalProvider {
           estimate: "instant",
         }),
       },
-      meta: {
-        focus: true,
-        salience: 1,
-      },
     };
   }
 
@@ -421,7 +417,6 @@ export class TerminalProvider {
         }),
       },
       meta: {
-        salience: task.status === "running" ? 0.9 : task.status === "failed" ? 1 : 0.5,
         urgency: task.status === "failed" ? "high" : task.status === "running" ? "medium" : "low",
       },
     }));

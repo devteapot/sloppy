@@ -13,6 +13,7 @@ import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
+import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
 import { CronProvider } from "./cron/provider";
 import { checkAcpAdapter, checkAcpBoundary, collectAcpSubprocessProbes } from "./delegation/doctor";
@@ -65,6 +66,39 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     description: "Persistent long-running session objective controls.",
     extensionNamespaces: ["goal"],
     createSessionPlugin: () => createPersistentGoalPlugin(),
+  },
+  {
+    id: "apps",
+    version: "1.0.0",
+    defaultEnabled: true,
+    description: "External app discovery and load/unload controls.",
+    providerIds: ["apps"],
+    createProviders: () => {
+      const apps = new AppsProvider();
+      return [
+        registeredProvider({
+          id: "apps",
+          name: "Apps",
+          transport: new InProcessTransport(apps.server),
+          transportLabel: "in-process",
+          stop: () => apps.stop(),
+          attachRuntime: (hub) => {
+            apps.setHub(hub);
+            return {
+              stop() {
+                apps.setHub(null);
+              },
+            };
+          },
+          systemPromptFragment: () =>
+            [
+              "External apps are listed by the apps provider under /available.",
+              "Discovered apps are unloaded by default. Load only apps relevant to the current task, then inspect their provider state with query_state or focus_state.",
+              "Unload external apps when they are no longer relevant so their state and affordances leave the agent context.",
+            ].join("\n"),
+        }),
+      ];
+    },
   },
   {
     id: "terminal",

@@ -14,7 +14,7 @@ Checked in now:
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order
-- default first-party plugins: `terminal`, `filesystem`
+- default first-party plugins: `apps`, `terminal`, `filesystem`
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
@@ -78,6 +78,12 @@ providers, skills, routes, and agent-to-agent channels.
      detail explicitly with Observation tools and Provider affordances.
    - The Hub owns State projection for the Agent-facing state tail. Sloppy does
      not use salience filtering or node-count compaction in that projection.
+   - Session `/apps.query_provider` returns provider-owned SLOP nodes as-is;
+     Sloppy does not strip external App metadata such as `salience` or `focus`.
+   - External app discovery lists descriptor-backed apps as unloaded app cards
+     by default. Agents explicitly load and unload apps from the first-party
+     `apps` provider's `/available` node so they can shrink or restore provider
+     context per task.
    - Observation tools use unbranded verb-first names: `query_state`,
      `focus_state`, and `unfocus_state`.
    - The filesystem provider keeps source-view validation local to the

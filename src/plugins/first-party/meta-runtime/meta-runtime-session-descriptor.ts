@@ -351,9 +351,5 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
         },
       ),
     },
-    meta: {
-      focus: true,
-      salience: 0.85,
-    },
   };
 }

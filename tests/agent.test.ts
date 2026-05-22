@@ -78,10 +78,18 @@ describe("Agent", () => {
           id: "native-demo",
           name: "Native Demo",
           transport: "unix:/tmp/slop/native-demo.sock",
-          status: "error",
-          lastError: expect.stringContaining("Unix socket connection failed:"),
+          status: "unloaded",
         },
       ]);
+      const apps = await agent.queryProvider("apps", "/available", { depth: 2 });
+      expect(apps.properties).toMatchObject({
+        count: 1,
+        unloaded_count: 1,
+      });
+      expect(apps.children?.[0]?.properties).toMatchObject({
+        provider_id: "native-demo",
+        status: "unloaded",
+      });
     } finally {
       agent.shutdown();
     }

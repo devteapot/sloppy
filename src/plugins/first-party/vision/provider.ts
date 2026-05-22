@@ -218,10 +218,6 @@ export class VisionProvider {
           },
         ),
       },
-      meta: {
-        focus: true,
-        salience: 1,
-      },
     };
   }
 
@@ -266,7 +262,6 @@ export class VisionProvider {
         }),
       },
       meta: {
-        salience: image.status === "generating" ? 0.9 : image.status === "error" ? 1 : 0.5,
         urgency:
           image.status === "error" ? "high" : image.status === "generating" ? "medium" : "low",
       },
@@ -315,7 +310,6 @@ export class VisionProvider {
           : {}),
       },
       meta: {
-        salience: analysis.status === "analyzing" ? 0.9 : analysis.status === "error" ? 1 : 0.5,
         urgency:
           analysis.status === "error" ? "high" : analysis.status === "analyzing" ? "medium" : "low",
       },

@@ -171,6 +171,14 @@ const persistentGoalPluginConfigSchema = z
     enabled: false,
   });
 
+const appsPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+  })
+  .default({
+    enabled: true,
+  });
+
 const terminalPluginConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -361,6 +369,7 @@ const pluginsConfigSchema = z.preprocess(
   (value) => value ?? {},
   z.object({
     "persistent-goal": persistentGoalPluginConfigSchema,
+    apps: appsPluginConfigSchema,
     terminal: terminalPluginConfigSchema,
     filesystem: filesystemPluginConfigSchema,
     memory: memoryPluginConfigSchema,
@@ -429,21 +438,15 @@ export const sloppyConfigSchema = z.object({
   agent: z
     .object({
       maxIterations: z.number().int().min(1).default(32),
-      minSalience: z.number().min(0).max(1).default(0.2),
       overviewDepth: z.number().int().min(1).default(2),
-      overviewMaxNodes: z.number().int().min(10).default(200),
       detailDepth: z.number().int().min(1).default(4),
-      detailMaxNodes: z.number().int().min(10).default(200),
       historyTurns: z.number().int().min(1).default(8),
       toolResultMaxChars: z.number().int().min(512).default(16000),
     })
     .default({
       maxIterations: 32,
-      minSalience: 0.2,
       overviewDepth: 2,
-      overviewMaxNodes: 200,
       detailDepth: 4,
-      detailMaxNodes: 200,
       historyTurns: 8,
       toolResultMaxChars: 16000,
     }),

@@ -782,10 +782,6 @@ export class SessionSupervisorProvider {
           },
         ),
       },
-      meta: {
-        focus: true,
-        salience: 0.8,
-      },
     };
   }
 
@@ -858,9 +854,6 @@ export class SessionSupervisorProvider {
       },
       summary: `${publicRecord.title ?? record.sessionId}: ${summaryParts.join(" ")}`,
       actions,
-      meta: {
-        salience: publicRecord.is_resume_session ? 0.85 : 0.55,
-      },
     };
   }
 
@@ -899,9 +892,6 @@ export class SessionSupervisorProvider {
       items: this.cachedConfig
         ? this.scopesFromConfig(this.cachedConfig).map((scope) => this.buildScopeItem(scope))
         : [],
-      meta: {
-        salience: 0.55,
-      },
     };
   }
 
@@ -939,9 +929,6 @@ export class SessionSupervisorProvider {
             estimate: "slow",
           },
         ),
-      },
-      meta: {
-        salience: 0.6,
       },
     };
   }

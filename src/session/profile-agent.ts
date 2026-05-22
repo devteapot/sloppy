@@ -125,12 +125,27 @@ export class ProfileSessionAgent implements SessionAgent {
     return inner.queryProvider(providerId, path, options);
   }
 
-  async retryProvider(providerId: string): Promise<boolean> {
+  async loadProvider(providerId: string): Promise<boolean> {
     const inner = await this.ensureStartupInner();
-    if (!inner.retryProvider) {
-      throw new Error("Provider reconnect is not available for this session agent.");
+    if (!inner.loadProvider) {
+      throw new Error("Provider load is not available for this session agent.");
     }
-    return inner.retryProvider(providerId);
+    return inner.loadProvider(providerId);
+  }
+
+  async reloadProvider(providerId: string): Promise<void> {
+    const inner = await this.ensureStartupInner();
+    if (!inner.reloadProvider) {
+      throw new Error("Provider reload is not available for this session agent.");
+    }
+    await inner.reloadProvider(providerId);
+  }
+
+  unloadProvider(providerId: string): boolean {
+    if (!this.inner?.unloadProvider) {
+      throw new Error("Provider unload is not available for this session agent.");
+    }
+    return this.inner.unloadProvider(providerId);
   }
 
   async resolveApprovalDirect(approvalId: string): Promise<ResultMessage> {

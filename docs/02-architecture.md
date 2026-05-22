@@ -19,7 +19,7 @@ The default runtime includes:
 - provider discovery
 - approval queue and generic dangerous-action policy
 - first-party plugin catalog and runtime plugin manager
-- default first-party plugins: `terminal` and `filesystem`
+- default first-party plugins: `apps`, `terminal`, and `filesystem`
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
@@ -150,12 +150,29 @@ rebuilt on every model request and never persisted into conversation history.
 The tail is the Hub-owned State projection: provider Default projections plus
 explicit Agent-managed State focuses and small runtime/session status. The
 projection preserves provider boundaries and escapes forged SLOP context tags
-inside provider-controlled text. Sloppy ignores salience metadata by default and
-does not apply node-count compaction to the Agent-facing state tail. This
+inside provider-controlled text. Sloppy does not rely on salience metadata for
+runtime scaling and does not apply node-count compaction to the Agent-facing
+state tail. This
 follows the SLOP integration pattern in
 `~/dev/slop-slop-slop/spec/integrations/llm-context.md`: stable conversation
 history remains before the volatile state tail so prompt-cache prefixes stay
 usable while the model still reasons over fresh state.
+
+External app provider discovery registers descriptor-backed apps as lightweight
+`status=unloaded` app cards by default. It does not connect discovered apps into
+the agent Hub until the Agent explicitly loads them through the first-party
+`apps` provider's `/available` controls. The public Session provider mirrors the
+same app catalog and lifecycle controls at `/apps` for UIs and API consumers.
+Unloading disconnects the provider from the agent Hub, removes its state and
+affordances from the model-visible projection, and keeps the lightweight app
+card so the Agent can reload it when a task needs that app again. Discovery
+still owns the descriptor set; app loading only controls whether a registered
+descriptor is currently connected to this Session's Hub.
+
+Session-provider `/apps.query_provider` is the explicit debugging bridge into
+attached providers for external consumers. It returns provider-owned SLOP nodes
+as-is; Sloppy does not strip external App metadata such as `salience` or
+`focus`, because those fields may be part of the App's discovery contract.
 
 ## Filesystem File Views
 

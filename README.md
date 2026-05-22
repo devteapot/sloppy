@@ -35,6 +35,7 @@ Current checked-in implementation includes:
   - native Gemini support
 - consumer hub for first-party plugin and live-discovered SLOP providers
 - first-party in-process plugin providers:
+  - `apps`
   - `terminal`
   - `filesystem`
   - `memory`
@@ -84,7 +85,8 @@ Current checked-in implementation includes:
   with evidence.
 - session-provider restart-required state when provider or agent config changes after startup
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
-- session-provider `/apps` attachment state for external provider visibility and debugging
+- first-party `apps` provider for agent-visible external app discovery plus explicit load/unload controls
+- session-provider `/apps` attachment state for UI/API external provider visibility and debugging
 - TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with launch-scope managed supervisor startup, `sloppy --continue` resume selection, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
@@ -555,7 +557,7 @@ Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
 OpenAI-style reasoning controls. Prefer provider-specific `thinking` blocks for
 new config.
 
-First-party plugins default to the lean core: `terminal` and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:
@@ -735,7 +737,8 @@ API keys are not written to YAML:
 The current TUI uses the session provider's `/llm` state to onboard and manage
 profiles, its `/apps` state to surface external provider attachment status, and
 the connected `meta-runtime` app's `/proposals` state for runtime proposal
-review.
+review. The Agent sees the same external app catalog through the first-party
+`apps` provider and controls app load/unload from `/available`.
 
 Useful TUI slash commands:
 

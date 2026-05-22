@@ -7,7 +7,7 @@
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 import type { RegisteredProvider } from "../providers/registry";
 import type { ApprovalQueue } from "./approvals";
-import type { ExternalProviderState, ProviderEvent } from "./consumer";
+import type { ExternalProviderState, ProviderEvent, ProviderLifecycleEvent } from "./consumer";
 import type { InvocationMetadata, InvokePolicy } from "./policy";
 import type { ProviderTreeView } from "./subscriptions";
 import type { RuntimeToolSet } from "./tools";
@@ -17,8 +17,11 @@ export interface ProviderRuntimeHub {
 
   // Provider lifecycle
   addProvider(registeredProvider: RegisteredProvider): Promise<boolean>;
+  registerProvider(registeredProvider: RegisteredProvider): void;
   removeProvider(providerId: string): void;
-  retryProvider(providerId: string): Promise<boolean>;
+  unloadProvider(providerId: string): boolean;
+  loadProvider(providerId: string): Promise<boolean>;
+  reloadProvider(providerId: string): Promise<void>;
   shutdown(): void;
 
   // State queries / subscriptions
@@ -54,6 +57,9 @@ export interface ProviderRuntimeHub {
   // External provider observability
   getExternalProviderStates(): ExternalProviderState[];
   onExternalProviderStateChange(listener: (states: ExternalProviderState[]) => void): () => void;
+  onProviderLifecycleEvent(
+    listener: (event: ProviderLifecycleEvent) => void | Promise<void>,
+  ): () => void;
   onProviderEvent(listener: (event: ProviderEvent) => void): () => void;
 
   // State revision (used by delegation/await-children)

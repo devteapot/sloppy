@@ -1706,10 +1706,6 @@ export class FilesystemProvider {
           items: this.buildWorkspaceItems(),
         },
       },
-      meta: {
-        focus: true,
-        salience: 1,
-      },
     };
   }
 

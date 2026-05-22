@@ -393,7 +393,7 @@ related_skills: [helper-skill]
       const skills = await consumer.query("/skills", 2);
       const skill = skills.children?.[0];
       expect(skill?.properties?.name).toBe("[DANGEROUS] danger");
-      expect(skill?.meta?.salience).toBe(0.9);
+      expect(skill?.meta?.salience).toBeUndefined();
       expect(skill?.meta?.urgency).toBe("high");
     } finally {
       provider.stop();

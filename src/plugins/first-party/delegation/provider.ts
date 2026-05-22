@@ -594,10 +594,6 @@ export class DelegationProvider {
           },
         ),
       },
-      meta: {
-        focus: true,
-        salience: 1,
-      },
     };
   }
 
@@ -717,14 +713,6 @@ export class DelegationProvider {
           : {}),
       },
       meta: {
-        salience:
-          agent.status === "running"
-            ? 0.9
-            : agent.status === "failed" || agent.status === "cancelled"
-              ? 0.8
-              : agent.status === "pending"
-                ? 0.7
-                : 0.4,
         urgency:
           agent.status === "failed"
             ? "high"

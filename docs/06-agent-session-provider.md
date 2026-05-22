@@ -546,7 +546,7 @@ Required item props:
 - `provider_id`: external provider id
 - `name`: human-readable provider name
 - `transport`: transport summary such as `unix:/tmp/demo.sock` or `ws:wss://example.test/slop`
-- `status`: `connected | disconnected | error`
+- `status`: `connected | disconnected | error | unloaded`
 
 Optional item props:
 
@@ -556,14 +556,29 @@ Affordances:
 
 - `query_provider(provider_id, path, depth?, max_nodes?, window?)`
 - `invoke_provider(provider_id, path, action, params?)`
-- `reconnect_provider(provider_id)`
+- `unload_provider(provider_id)`
+- `load_provider(provider_id)`
+- `reload_provider(provider_id)`
 
 Rules:
 
 - this path is a shallow attachment/debugging summary, not a proxied subtree of downstream provider state
+- the agent-visible source of truth for app lifecycle is the first-party `apps` provider under `/available`; this public Session path mirrors the same catalog and controls for UIs and API consumers
+- app lifecycle controls apply only to descriptor-backed external Apps, not first-party Plugins or Providers
 - item ids should match the external provider ids used by the runtime consumer hub
+- descriptor discovery lists apps as `unloaded` by default; it does not connect them to the agent Hub until `load_provider` is invoked
+- loaded state is live Session attachment state, not a durable preference restored into new Sessions
 - disconnected or failed attachments may remain visible with `last_error` while their descriptor is still present
-- `reconnect_provider` explicitly retries a disconnected or errored attachment and updates `/apps`; it does not add background orchestration or hidden restart policy
+- unloaded attachments stay visible as lightweight app cards so an agent can reload them later without rediscovering the descriptor
+- unloaded app cards identify the app and lifecycle status only; they must not proxy downstream provider state or affordance catalogs
+- connected-provider affordance metadata, including dangerous-action markers, is cleared on unload or reload and rebuilt from the freshly connected provider state
+- `unload_provider` disconnects the provider from the agent Hub, drops its state/tools, clears live provider mirrors such as `/approvals` and `/tasks`, removes any Hub State focus for that provider from the agent-facing projection, and does not stop the external process
+- `load_provider` connects a registered unloaded, disconnected, or errored app and restores its state/tools; loading an already connected app is a no-op
+- `load_provider` does not query or focus the app after connection; the loaded provider appears through its Default projection until the Agent explicitly focuses more detail
+- `reload_provider` disconnects a connected app and then connects it again; it rejects unloaded, disconnected, or errored apps instead of acting as `load_provider`
+- lifecycle affordance results use snake_case SLOP-facing JSON: `load_provider` returns `{ provider_id, status: "connected", was_connected }`, `unload_provider` returns `{ provider_id, status: "unloaded", was_connected }`, and `reload_provider` returns `{ provider_id, status: "connected" }`
+- lifecycle controls accept only `provider_id`; app names are display text and are not stable identifiers
+- `query_provider` returns provider-owned SLOP nodes as-is; metadata such as `salience` or `focus` belongs to the queried provider and may be part of an external App's discovery contract
 
 ### `/transcript`
 

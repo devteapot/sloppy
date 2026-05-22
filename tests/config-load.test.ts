@@ -96,9 +96,10 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
-  test("default runtime enables only terminal and filesystem plugins", () => {
+  test("default runtime enables apps, terminal, and filesystem plugins", () => {
     const config = createDefaultConfig(originalCwd);
     expect(activeFirstPartyPlugins(config).map((plugin) => plugin.id)).toEqual([
+      "apps",
       "terminal",
       "filesystem",
     ]);

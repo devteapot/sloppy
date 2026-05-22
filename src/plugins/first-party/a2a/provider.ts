@@ -786,8 +786,6 @@ export class A2AProvider {
         }),
       },
       meta: {
-        focus: errored > 0,
-        salience: agents.length > 0 ? 0.72 : 0.25,
         urgency: errored > 0 ? ("medium" as const) : ("low" as const),
       },
     };
@@ -982,7 +980,6 @@ export class A2AProvider {
         tasks: this.buildAgentTasksDescriptor(agent.id),
       },
       meta: {
-        salience: agent.status === "ready" ? 0.72 : 0.5,
         urgency: agent.status === "error" ? "medium" : "low",
       },
     };
@@ -1019,9 +1016,6 @@ export class A2AProvider {
               : (agent.card?.defaultOutputModes ?? []),
           },
           summary: optionalString(skill.description) ?? optionalString(skill.name) ?? id,
-          meta: {
-            salience: 0.55,
-          },
         };
       }),
     };
@@ -1139,7 +1133,6 @@ export class A2AProvider {
         ),
       },
       meta: {
-        salience: record.statusState === "TASK_STATE_INPUT_REQUIRED" ? 0.85 : 0.62,
         urgency: record.statusState === "TASK_STATE_INPUT_REQUIRED" ? "medium" : "low",
       },
     };

@@ -289,7 +289,9 @@ export interface SessionAgent {
       window?: [number, number];
     },
   ): Promise<SlopNode>;
-  retryProvider?(providerId: string): Promise<boolean>;
+  loadProvider?(providerId: string): Promise<boolean>;
+  reloadProvider?(providerId: string): Promise<void>;
+  unloadProvider?(providerId: string): boolean;
   resolveApprovalDirect(approvalId: string): Promise<ResultMessage>;
   rejectApprovalDirect(approvalId: string, reason?: string): void;
   cancelActiveTurn(): boolean;
@@ -1020,14 +1022,50 @@ export class SessionRuntime {
     return this.agent.invokeProvider(providerId, path, action, params);
   }
 
-  async retryProvider(providerId: string): Promise<{ providerId: string; connected: boolean }> {
+  async loadProvider(providerId: string): Promise<{
+    provider_id: string;
+    status: "connected";
+    was_connected: boolean;
+  }> {
     await this.start();
-    if (!this.agent.retryProvider) {
-      throw new Error("Provider reconnect is not available for this session agent.");
+    if (!this.agent.loadProvider) {
+      throw new Error("Provider load is not available for this session agent.");
     }
     return {
-      providerId,
-      connected: await this.agent.retryProvider(providerId),
+      provider_id: providerId,
+      status: "connected",
+      was_connected: await this.agent.loadProvider(providerId),
+    };
+  }
+
+  async reloadProvider(providerId: string): Promise<{
+    provider_id: string;
+    status: "connected";
+  }> {
+    await this.start();
+    if (!this.agent.reloadProvider) {
+      throw new Error("Provider reload is not available for this session agent.");
+    }
+    await this.agent.reloadProvider(providerId);
+    return {
+      provider_id: providerId,
+      status: "connected",
+    };
+  }
+
+  async unloadProvider(providerId: string): Promise<{
+    provider_id: string;
+    status: "unloaded";
+    was_connected: boolean;
+  }> {
+    await this.start();
+    if (!this.agent.unloadProvider) {
+      throw new Error("Provider unload is not available for this session agent.");
+    }
+    return {
+      provider_id: providerId,
+      status: "unloaded",
+      was_connected: this.agent.unloadProvider(providerId),
     };
   }
 

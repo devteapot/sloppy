@@ -131,7 +131,40 @@ describe("ConsumerHub", () => {
     }
   });
 
-  test("retries a previously failed external provider connection", async () => {
+  test("registers external providers as unloaded without connecting them", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+
+      hub.registerProvider(createProvider("demo", "Demo"));
+
+      expect(hub.getProviderViews()).toHaveLength(0);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "demo",
+          name: "Demo",
+          transport: "in-process:test",
+          status: "unloaded",
+        },
+      ]);
+
+      expect(await hub.loadProvider("demo")).toBe(false);
+      expect(hub.getProviderViews().map((view) => view.providerId)).toEqual(["demo"]);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "demo",
+          name: "Demo",
+          transport: "in-process:test",
+          status: "connected",
+        },
+      ]);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("loads a previously failed external provider connection", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
     const socketPath = `/tmp/sloppy-retry-${crypto.randomUUID()}.sock`;
     const provider = {
@@ -153,7 +186,7 @@ describe("ConsumerHub", () => {
       expect(hub.getExternalProviderStates()[0]?.status).toBe("error");
 
       listenUnix(server, socketPath, { register: false });
-      expect(await hub.retryProvider("late-socket")).toBe(true);
+      expect(await hub.loadProvider("late-socket")).toBe(false);
       expect(hub.getExternalProviderStates()).toEqual([
         {
           id: "late-socket",
@@ -168,6 +201,47 @@ describe("ConsumerHub", () => {
     } finally {
       hub.shutdown();
       server.stop();
+    }
+  });
+
+  test("unloads and reloads an external provider while keeping its app card", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+
+    try {
+      await hub.connect();
+      expect(await hub.addProvider(createProvider("demo", "Demo"))).toBe(true);
+
+      expect(hub.unloadProvider("demo")).toBe(true);
+      expect(hub.getProviderViews()).toHaveLength(0);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "demo",
+          name: "Demo",
+          transport: "in-process:test",
+          status: "unloaded",
+        },
+      ]);
+
+      await expect(hub.queryState({ providerId: "demo", path: "/" })).rejects.toThrow(
+        "Unknown provider: demo",
+      );
+      await expect(hub.reloadProvider("demo")).rejects.toThrow(
+        "Cannot reload provider that is not connected: demo",
+      );
+
+      expect(await hub.loadProvider("demo")).toBe(false);
+      await hub.reloadProvider("demo");
+      expect(hub.getProviderViews().map((view) => view.providerId)).toEqual(["demo"]);
+      expect(hub.getExternalProviderStates()).toEqual([
+        {
+          id: "demo",
+          name: "Demo",
+          transport: "in-process:test",
+          status: "connected",
+        },
+      ]);
+    } finally {
+      hub.shutdown();
     }
   });
 
@@ -337,6 +411,41 @@ describe("ConsumerHub", () => {
       // Non-dangerous affordances and unknown lookups stay false.
       expect(hub.isDangerousAffordance(id, "/session", "ping")).toBe(false);
       expect(hub.isDangerousAffordance(id, "/nonexistent", "wipe")).toBe(false);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("clears dangerous affordance metadata when an external provider unloads", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    try {
+      await hub.connect();
+
+      const id = "external-danger";
+      const server = createSlopServer({ id, name: "ExternalDanger" });
+      server.register("session", () => ({
+        type: "collection",
+        props: {},
+        actions: {
+          wipe: {
+            label: "Wipe",
+            dangerous: true,
+            handler: async () => ({ ok: true }),
+          },
+        },
+      }));
+
+      await hub.addProvider({
+        id,
+        name: "ExternalDanger",
+        kind: "external",
+        transport: new InProcessTransport(server),
+        transportLabel: "in-process:test",
+      });
+
+      expect(hub.isDangerousAffordance(id, "/session", "wipe")).toBe(true);
+      expect(hub.unloadProvider(id)).toBe(true);
+      expect(hub.isDangerousAffordance(id, "/session", "wipe")).toBe(false);
     } finally {
       hub.shutdown();
     }

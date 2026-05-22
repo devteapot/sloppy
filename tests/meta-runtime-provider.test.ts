@@ -2570,6 +2570,7 @@ describe("MetaRuntimeProvider", () => {
     const config = createTestConfig({
       agent: { maxIterations: 1 },
       plugins: {
+        apps: { enabled: false },
         terminal: { enabled: false },
         filesystem: { enabled: false },
         memory: { enabled: false },

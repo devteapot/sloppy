@@ -47,8 +47,8 @@ describe("BrowserProvider", () => {
         "navigate",
         "close_tab",
       ]);
-      expect(session.meta?.focus).toBe(true);
-      expect(session.meta?.salience).toBe(1);
+      expect(session.meta?.focus).toBeUndefined();
+      expect(session.meta?.salience).toBeUndefined();
 
       const tabs = await consumer.query("/tabs", 2);
       expect(tabs.type).toBe("collection");

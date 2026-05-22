@@ -56,7 +56,7 @@ type ConnectedProvider = RegisteredProvider & {
   >;
 };
 
-export type ExternalProviderStatus = "connected" | "disconnected" | "error";
+export type ExternalProviderStatus = "connected" | "disconnected" | "error" | "unloaded";
 
 export type ExternalProviderState = {
   id: string;
@@ -71,6 +71,17 @@ export type ProviderEvent = {
   name: string;
   data: unknown;
 };
+
+export type ProviderLifecycleEvent =
+  | {
+      kind: "connected";
+      providerId: string;
+    }
+  | {
+      kind: "detached";
+      providerId: string;
+      reason: "disconnected" | "removed" | "reload" | "shutdown" | "unloaded";
+    };
 
 const AFFORDANCE_KEY_SEPARATOR = "\u001f";
 
@@ -131,6 +142,9 @@ export class ConsumerHub implements ProviderRuntimeHub {
   private config: SloppyConfig;
   private registeredProviders: RegisteredProvider[];
   private providerEventListeners = new Set<(event: ProviderEvent) => void>();
+  private providerLifecycleEventListeners = new Set<
+    (event: ProviderLifecycleEvent) => void | Promise<void>
+  >();
   private externalProviderStateListeners = new Set<(states: ExternalProviderState[]) => void>();
   private stateRevision = 0;
   private stateRevisionListeners = new Set<() => void>();
@@ -147,12 +161,10 @@ export class ConsumerHub implements ProviderRuntimeHub {
    * Hub-level registry of affordances marked `dangerous: true` in their
    * descriptors. Keyed by provider id, path, and action with a text-safe
    * separator.
-   * Populated by walking each provider's subscribed trees whenever they
-   * update; entries are sticky (never removed) so an affordance discovered
-   * in a focused/detail tree continues to be policed even after the focus
-   * moves elsewhere. `dangerousActionRule` consults this registry so it
-   * does not depend on an affordance being present in a *currently* visible
-   * subtree at the moment of invocation.
+   * Populated by walking each connected provider's observed trees whenever
+   * they update. Entries are scoped to the current provider attachment and
+   * cleared when that provider detaches, so unloaded app cards do not keep
+   * stale affordance metadata alive.
    */
   private dangerousAffordances = new Set<string>();
 
@@ -256,6 +268,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
         this.teardownProvider(registeredProvider.id, {
           connectionAlive: false,
           disconnectError: "Provider disconnected.",
+          lifecycleReason: "disconnected",
         });
       };
       const unsubscribeEvent = consumer.onEvent((name, data) => {
@@ -317,9 +330,15 @@ export class ConsumerHub implements ProviderRuntimeHub {
       }
       debug("hub", "add_provider", { id: provider.id, kind: provider.kind });
       this.bumpStateRevision();
+      await this.emitProviderLifecycleEvent({
+        kind: "connected",
+        providerId: provider.id,
+      });
       return true;
     } catch (error) {
-      registeredProvider.stop?.();
+      if (registeredProvider.kind !== "external") {
+        registeredProvider.stop?.();
+      }
       if (registeredProvider.kind === "external") {
         this.upsertExternalProviderState({
           id: registeredProvider.id,
@@ -338,13 +357,61 @@ export class ConsumerHub implements ProviderRuntimeHub {
     }
   }
 
+  registerProvider(registeredProvider: RegisteredProvider): void {
+    this.registeredProviderById.set(registeredProvider.id, registeredProvider);
+    if (registeredProvider.kind === "external" && !this.providers.has(registeredProvider.id)) {
+      this.upsertExternalProviderState({
+        id: registeredProvider.id,
+        name: registeredProvider.name,
+        transport: registeredProvider.transportLabel,
+        status: "unloaded",
+      });
+    }
+  }
+
   removeProvider(providerId: string): void {
     debug("hub", "remove_provider", { id: providerId });
-    this.teardownProvider(providerId, { connectionAlive: true, removeExternalState: true });
+    const registeredProvider = this.registeredProviderById.get(providerId);
+    this.teardownProvider(providerId, {
+      connectionAlive: true,
+      removeExternalState: true,
+      lifecycleReason: "removed",
+      stopProvider: registeredProvider?.kind === "external" ? false : undefined,
+    });
     this.registeredProviderById.delete(providerId);
   }
 
-  async retryProvider(providerId: string): Promise<boolean> {
+  unloadProvider(providerId: string): boolean {
+    const registeredProvider = this.registeredProviderById.get(providerId);
+    if (!registeredProvider) {
+      throw new Error(`Unknown registered provider: ${providerId}`);
+    }
+    if (registeredProvider.kind !== "external") {
+      throw new Error(`Provider is not an unloadable app: ${providerId}`);
+    }
+
+    if (!this.providers.has(providerId)) {
+      this.clearDangerousAffordances(providerId);
+      this.upsertExternalProviderState({
+        id: registeredProvider.id,
+        name: registeredProvider.name,
+        transport: registeredProvider.transportLabel,
+        status: "unloaded",
+      });
+      return false;
+    }
+
+    debug("hub", "unload_provider", { id: providerId });
+    this.teardownProvider(providerId, {
+      connectionAlive: true,
+      externalStatus: "unloaded",
+      lifecycleReason: "unloaded",
+      stopProvider: false,
+    });
+    return true;
+  }
+
+  async loadProvider(providerId: string): Promise<boolean> {
     if (this.providers.has(providerId)) {
       return true;
     }
@@ -352,7 +419,39 @@ export class ConsumerHub implements ProviderRuntimeHub {
     if (!registeredProvider) {
       throw new Error(`Unknown registered provider: ${providerId}`);
     }
-    return this.addProvider(registeredProvider);
+    if (registeredProvider.kind !== "external") {
+      throw new Error(`Provider is not a loadable app: ${providerId}`);
+    }
+    const connected = await this.addProvider(registeredProvider);
+    if (!connected) {
+      throw new Error(`Failed to load provider: ${providerId}`);
+    }
+    return false;
+  }
+
+  async reloadProvider(providerId: string): Promise<void> {
+    const registeredProvider = this.registeredProviderById.get(providerId);
+    if (!registeredProvider) {
+      throw new Error(`Unknown registered provider: ${providerId}`);
+    }
+    if (registeredProvider.kind !== "external") {
+      throw new Error(`Provider is not a reloadable app: ${providerId}`);
+    }
+    if (!this.providers.has(providerId)) {
+      throw new Error(`Cannot reload provider that is not connected: ${providerId}`);
+    }
+
+    debug("hub", "reload_provider", { id: providerId });
+    this.teardownProvider(providerId, {
+      connectionAlive: true,
+      lifecycleReason: "reload",
+      stopProvider: false,
+      suppressExternalState: true,
+    });
+    const connected = await this.addProvider(registeredProvider);
+    if (!connected) {
+      throw new Error(`Failed to reload provider: ${providerId}`);
+    }
   }
 
   private teardownProvider(
@@ -361,10 +460,15 @@ export class ConsumerHub implements ProviderRuntimeHub {
       connectionAlive: boolean;
       removeExternalState?: boolean;
       disconnectError?: string;
+      externalStatus?: Exclude<ExternalProviderStatus, "connected" | "error">;
+      lifecycleReason: Extract<ProviderLifecycleEvent, { kind: "detached" }>["reason"];
+      stopProvider?: boolean;
+      suppressExternalState?: boolean;
     },
   ): void {
     const provider = this.providers.get(providerId);
     if (!provider) {
+      this.clearDangerousAffordances(providerId);
       if (options.removeExternalState) {
         this.deleteExternalProviderState(providerId);
       }
@@ -409,22 +513,33 @@ export class ConsumerHub implements ProviderRuntimeHub {
     }
 
     provider.approvals?.setQueue(null);
-    provider.stop?.();
+    if (options.stopProvider !== false) {
+      provider.stop?.();
+    }
     this.providers.delete(providerId);
+    this.clearDangerousAffordances(providerId);
     this.bumpStateRevision();
     if (provider.kind === "external") {
       if (options.removeExternalState) {
         this.deleteExternalProviderState(providerId);
-      } else {
+      } else if (!options.suppressExternalState) {
+        const status = options.externalStatus ?? "disconnected";
         this.upsertExternalProviderState({
           id: provider.id,
           name: provider.name,
           transport: provider.transportLabel,
-          status: "disconnected",
-          lastError: options.disconnectError ?? "Provider disconnected.",
+          status,
+          ...(status === "unloaded"
+            ? {}
+            : { lastError: options.disconnectError ?? "Provider disconnected." }),
         });
       }
     }
+    void this.emitProviderLifecycleEvent({
+      kind: "detached",
+      providerId,
+      reason: options.lifecycleReason,
+    });
   }
 
   /**
@@ -695,7 +810,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
 
     try {
       const subscription = await provider.consumer.subscribe(path, options?.depth ?? 2, {
-        max_nodes: options?.maxNodes ?? this.config.agent.detailMaxNodes,
+        max_nodes: options?.maxNodes,
       });
       const watched = {
         path,
@@ -732,9 +847,26 @@ export class ConsumerHub implements ProviderRuntimeHub {
     };
   }
 
+  onProviderLifecycleEvent(
+    listener: (event: ProviderLifecycleEvent) => void | Promise<void>,
+  ): () => void {
+    this.providerLifecycleEventListeners.add(listener);
+    return () => {
+      this.providerLifecycleEventListeners.delete(listener);
+    };
+  }
+
   shutdown(): void {
     for (const providerId of [...this.providers.keys()]) {
-      this.removeProvider(providerId);
+      this.teardownProvider(providerId, {
+        connectionAlive: true,
+        lifecycleReason: "shutdown",
+      });
+    }
+    this.registeredProviderById.clear();
+    if (this.externalProviderStates.size > 0) {
+      this.externalProviderStates.clear();
+      this.emitExternalProviderStateChange();
     }
   }
 
@@ -791,6 +923,19 @@ export class ConsumerHub implements ProviderRuntimeHub {
     const states = this.getExternalProviderStates();
     for (const listener of this.externalProviderStateListeners) {
       listener(states);
+    }
+  }
+
+  private async emitProviderLifecycleEvent(event: ProviderLifecycleEvent): Promise<void> {
+    await Promise.all([...this.providerLifecycleEventListeners].map((listener) => listener(event)));
+  }
+
+  private clearDangerousAffordances(providerId: string): void {
+    const prefix = `${providerId}${AFFORDANCE_KEY_SEPARATOR}`;
+    for (const key of [...this.dangerousAffordances]) {
+      if (key.startsWith(prefix)) {
+        this.dangerousAffordances.delete(key);
+      }
     }
   }
 
