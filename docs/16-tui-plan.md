@@ -77,10 +77,14 @@ Implemented:
 - plugin notifications projected into the notice line
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
-- lightweight leading editor sigil: `!cmd` is expanded into an explicit
-  natural-language request for the terminal provider; `@` is autocomplete-only
-  and does not rewrite submitted message text or attach file context
-
+- Composer sigils for first-line composer presentation: `>` is the default
+  prompt, leading `/` switches the gutter to slash-command presentation, and
+  leading `!` switches the gutter to shell-intent presentation; the sigil may
+  hide the raw leading trigger character from the rendered input line, but
+  submitted message semantics remain separate
+- `!cmd` is still expanded into an explicit natural-language request for the
+  terminal provider; `@` is autocomplete-only and does not rewrite submitted
+  message text or attach file context
 Still deferred:
 
 - true masked API-key entry for `/profile-secret`
