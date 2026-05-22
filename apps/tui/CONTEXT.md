@@ -4,6 +4,12 @@ The first-party terminal UI under `apps/tui/`: a scrollback-preserving human UI 
 
 ## Language
 
+### Composer Input
+
+**Composer autocomplete**:
+TUI-owned input assistance that suggests and applies text while the user edits the composer. It is not submitted message semantics, not file attachment, not context injection, and not semantic workspace search; accepted completions become ordinary composer text.
+_Avoid_: treating autocomplete trigger characters as hidden commands after submission; using autocomplete for file-content or symbol search.
+
 ### Transcript Rendering
 
 **Streaming markdown state**:

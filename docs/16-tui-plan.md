@@ -42,18 +42,30 @@ Implemented:
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`; this is local TUI presentation state until backed by a public session policy affordance
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
-- command-name-only slash completion in the composer from built-in commands and
-  namespaced v2 plugin action presentations whose target affordance is live,
-  with partial matching and highlighted matches; built-ins stay unqualified,
-  while plugin commands project as `/<plugin-id>:<command>` using the raw plugin id
+- composer autocomplete for command-name-only slash completion from built-in
+  commands and namespaced v2 plugin action presentations whose target
+  affordance is live, with partial matching and highlighted matches; built-ins
+  stay unqualified, while plugin commands project as
+  `/<plugin-id>:<command>` using the raw plugin id
+- composer autocomplete for `@`-triggered file and directory path completion,
+  rooted at the session workspace and fuzzy-matched primarily against basenames;
+  accepting a file suggestion replaces the active `@` token with a plain relative
+  path plus trailing space, quoting the path when it contains whitespace;
+  accepting a directory inserts a plain relative path with trailing slash and no
+  trailing space; matching uses path strings only,
+  not file contents or symbols; absolute and parent-directory queries are not
+  resolved or walked; git workspaces use `git ls-files
+  --cached --others --exclude-standard`, with parent directories synthesized
+  from known files and a bounded directory-walk fallback outside git repos
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
 - route overlays for setup, approvals, tasks, apps, inspect, runtime, and help
 - plugin notifications projected into the notice line
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
-- lightweight editor sigils: `!cmd` and `@path` are expanded into explicit
-  natural-language requests for the agent/runtime
+- lightweight leading editor sigil: `!cmd` is expanded into an explicit
+  natural-language request for the terminal provider; `@` is autocomplete-only
+  and does not rewrite submitted message text or attach file context
 
 Still deferred:
 
@@ -100,9 +112,10 @@ execution, overlays, mode, notices, and session/supervisor updates.
 `status-line.ts` renders ambient session status and plugin indicators.
 `command-palette.ts` wraps pi-tui `SelectList` for Ctrl+K.
 `route-overlay.ts` renders temporary route panels.
-`custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms and slash-command completion.
+`custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms and composer completion.
+`composer-autocomplete.ts` is a façade over separate slash-command and workspace-rooted `@` file-path autocomplete providers; each provider owns its own trigger rules, matching, and apply behavior.
 
-The composer owns the input frame, prompt gutter, placeholder, slash-completion presentation, and local mode label rendering. The mode label and live slash entries are passed from `AppUi`; the composer does not own runtime policy.
+The composer owns the input frame, prompt gutter, placeholder, autocomplete presentation, and local mode label rendering. The mode label, live slash entries, and session workspace root are passed from `AppUi`; the composer does not own runtime policy.
 
 ## Interaction Map
 

@@ -6,8 +6,8 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 
-import { BUILTIN_SLASH_ENTRIES, type SlashEntry } from "../state/slash-catalog";
-import { SlashAutocompleteProvider } from "./slash-autocomplete";
+import type { SlashEntry } from "../state/slash-catalog";
+import { ComposerAutocompleteProvider } from "./composer-autocomplete";
 import { dim, editorTheme, orange, redOrange, teal } from "./theme";
 
 const SIDE_PADDING = 1;
@@ -17,16 +17,20 @@ const ESC = "\x1b";
 const BEL = "\x07";
 
 export class CustomEditor extends Editor {
-  private readonly slashAutocomplete = new SlashAutocompleteProvider(BUILTIN_SLASH_ENTRIES);
+  private readonly composerAutocomplete = new ComposerAutocompleteProvider();
   private modeLabel = "default";
 
   constructor(tui: TUI) {
     super(tui, editorTheme, { paddingX: 1 });
-    this.setAutocompleteProvider(this.slashAutocomplete);
+    this.setAutocompleteProvider(this.composerAutocomplete);
   }
 
   setSlashEntries(entries: SlashEntry[]): void {
-    this.slashAutocomplete.setEntries(entries);
+    this.composerAutocomplete.setSlashEntries(entries);
+  }
+
+  setWorkspaceRoot(root: string | null | undefined): void {
+    this.composerAutocomplete.setWorkspaceRoot(root);
   }
 
   clearSlashDraft(): boolean {
@@ -34,6 +38,7 @@ export class CustomEditor extends Editor {
       return false;
     }
     this.setText("");
+    this.tui.requestRender();
     return true;
   }
 
@@ -85,9 +90,6 @@ export class CustomEditor extends Editor {
     const trimmed = text.trim();
     if (trimmed.startsWith("!")) {
       return `Run this shell command through the terminal provider: ${trimmed.slice(1).trim()}`;
-    }
-    if (trimmed.startsWith("@")) {
-      return `Inspect this workspace path through the filesystem provider: ${trimmed.slice(1).trim()}`;
     }
     return text;
   }

@@ -127,6 +127,7 @@ export class AppUi {
     this.statusLine.update(snapshot, this.mode);
     this.turnStatus.setText(dim(turnStatusLabel(snapshot)));
     this.editor.setModeLabel(this.mode);
+    this.editor.setWorkspaceRoot(snapshot.session.workspaceRoot);
     this.editor.setSlashEntries(
       buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath }),
     );
