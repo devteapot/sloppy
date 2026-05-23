@@ -19,6 +19,15 @@ function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
 }
 
+function approvalModeFromArgs(args: string[]): "auto" | undefined {
+  return hasFlag(args, "--yolo") ? "auto" : undefined;
+}
+
+function stripStandaloneFlags(args: string[], flags: string[]): string[] {
+  const set = new Set(flags);
+  return args.filter((arg) => !set.has(arg));
+}
+
 function writeStdout(text: string): void {
   stdout.write(text);
 }
@@ -28,14 +37,15 @@ function writeStderr(text: string): void {
 }
 
 async function runSingleShot(args: string[]): Promise<number> {
-  const promptIndex = args.findIndex((arg) => arg === "-p" || arg === "--prompt");
+  const promptArgs = stripStandaloneFlags(args, ["--yolo"]);
+  const promptIndex = promptArgs.findIndex((arg) => arg === "-p" || arg === "--prompt");
   const prompt =
     promptIndex >= 0
-      ? args
+      ? promptArgs
           .slice(promptIndex + 1)
           .join(" ")
           .trim()
-      : args
+      : promptArgs
           .find((arg) => arg.startsWith("--prompt="))
           ?.slice("--prompt=".length)
           .trim();
@@ -46,6 +56,7 @@ async function runSingleShot(args: string[]): Promise<number> {
   return runHeadlessSingleShot({
     prompt,
     config: await loadConfig(),
+    approvalMode: approvalModeFromArgs(args),
     metricsPath: Bun.env.SLOPPY_CLI_METRICS_PATH,
     writeStdout,
     writeStderr,
@@ -71,6 +82,7 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
           project_id: readOption(args, "--project-id"),
           title: readOption(args, "--title"),
           session_id: readOption(args, "--session-id"),
+          approval_mode: approvalModeFromArgs(args),
         },
     autoClose: hasFlag(args, "--auto-close-enabled")
       ? {
@@ -99,15 +111,19 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
 }
 
 async function runSessionServe(args: string[]): Promise<number> {
+  const workspaceId = readOption(args, "--workspace-id");
+  const projectId = readOption(args, "--project-id");
   const config = await loadScopedConfig({
-    workspaceId: readOption(args, "--workspace-id"),
-    projectId: readOption(args, "--project-id"),
+    workspaceId,
+    projectId,
   });
   const service = new SessionService({
     config,
     sessionId: readOption(args, "--session-id"),
     title: readOption(args, "--title"),
     socketPath: readOption(args, "--socket"),
+    approvalMode: approvalModeFromArgs(args),
+    configReloader: () => loadScopedConfig({ workspaceId, projectId }),
   });
   await service.start({ register: !hasFlag(args, "--no-register") });
   writeStdout(
@@ -129,10 +145,11 @@ function usage(): string {
   return [
     "Usage:",
     "  sloppy",
+    "  sloppy --yolo",
     "  sloppy --continue",
-    '  sloppy -p "<prompt>"',
-    "  sloppy session serve [--socket <path>]",
-    "  sloppy session supervisor --socket <path>",
+    '  sloppy -p "<prompt>" [--yolo]',
+    "  sloppy session serve [--socket <path>] [--yolo]",
+    "  sloppy session supervisor --socket <path> [--yolo]",
     "",
   ].join("\n");
 }

@@ -13,6 +13,7 @@ import {
   mapTranscriptNode,
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
+import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
 import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
 import { parseLocalCommand, parsePluginSlashCommand } from "../apps/tui/src/state/commands";
 import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
@@ -62,6 +63,18 @@ afterEach(() => {
   }
 });
 
+async function waitFor<T>(check: () => T | null, timeoutMs = 1000, intervalMs = 10): Promise<T> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const result = check();
+    if (result !== null) {
+      return result;
+    }
+    await Bun.sleep(intervalMs);
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
 function registerMinimalSessionNodes(
   server: ReturnType<typeof createSlopServer>,
   options: { includeGoal?: boolean } = {},
@@ -76,7 +89,11 @@ function registerMinimalSessionNodes(
   server.register("composer", { type: "control", props: { ready: true } });
   server.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
   server.register("activity", { type: "collection", props: { count: 0 }, items: [] });
-  server.register("approvals", { type: "collection", props: { count: 0 }, items: [] });
+  server.register("approvals", {
+    type: "collection",
+    props: { count: 0, approval_mode: "normal" },
+    items: [],
+  });
   server.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
   server.register("apps", { type: "collection", props: { count: 0 }, items: [] });
   server.register("queue", { type: "collection", props: { count: 0 }, items: [] });
@@ -179,7 +196,9 @@ describe("TUI v2 manifest mapping", () => {
       }).some((entry) => entry.name === "persistent-goal:goal"),
     ).toBe(true);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
-    expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("persistent-goal:goal");
+    expect(matchSlashEntries("/persistent-goal:go", 8, next.plugins)[0]?.entry.name).toBe(
+      "persistent-goal:goal",
+    );
     expect(matchSlashEntries("/qc")[0]?.entry.name).toBe("queue-cancel");
   });
 
@@ -377,21 +396,29 @@ describe("TUI v2 manifest mapping", () => {
     });
   });
 
-  test("renders slash command drafts with slash as the composer prompt marker", () => {
+  test("renders and clears composer sigil drafts", () => {
     const tui = new TUI(new FakeTerminal());
     const editor = new CustomEditor(tui);
 
     editor.setText("/help");
     const slashRender = stripAnsiForTest(editor.render(44).join("\n"));
-    expect(slashRender).toContain("/  help");
-    expect(slashRender).not.toContain("/ /help");
+    expect(slashRender).toContain("?/ help");
+    expect(slashRender).not.toContain("?/ /help");
 
-    expect(editor.clearSlashDraft()).toBe(true);
+    expect(editor.clearSigilDraft()).toBe(true);
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
+
+    editor.setText("$pwd");
+    const shellRender = stripAnsiForTest(editor.render(44).join("\n"));
+    expect(shellRender).toContain("?$ pwd");
+    expect(shellRender).not.toContain("?$ $pwd");
+
+    expect(editor.clearSigilDraft()).toBe(true);
     expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
 
     editor.setText("hello");
-    expect(editor.clearSlashDraft()).toBe(false);
-    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>  hello");
+    expect(editor.clearSigilDraft()).toBe(false);
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?> hello");
   });
 
   test("parses explicit verbosity commands without compact aliases", () => {
@@ -410,7 +437,7 @@ describe("TUI v2 manifest mapping", () => {
     ).toBeUndefined();
   });
 
-  test("parses local approval mode commands", () => {
+  test("parses session approval mode commands", () => {
     expect(parseLocalCommand("/approval")).toEqual({ type: "approval_mode", mode: "show" });
     expect(parseLocalCommand("/approval normal")).toEqual({
       type: "approval_mode",
@@ -428,6 +455,22 @@ describe("TUI v2 manifest mapping", () => {
       type: "rejected",
       reason: "Usage: /approval [normal|auto|toggle]",
     });
+  });
+
+  test("parses config reload commands", () => {
+    expect(parseLocalCommand("/reload-config")).toEqual({
+      type: "config_reload",
+      target: "session",
+    });
+    expect(parseLocalCommand("/config-reload supervisor")).toEqual({
+      type: "config_reload",
+      target: "supervisor",
+    });
+    expect(parseLocalCommand("/reload-config all")).toEqual({
+      type: "unknown",
+      name: "/reload-config all",
+    });
+    expect(buildSlashEntries().find((entry) => entry.name === "reload-config")).toBeTruthy();
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {
@@ -498,6 +541,48 @@ describe("TUI v2 manifest mapping", () => {
     expect(statusText).not.toContain("thinking");
     expect(statusText).not.toContain("Idle");
     expect(routeOverlayText("help", withGoal, null)).toContain("/help");
+  });
+
+  test("renders supervised session approval modes in the runtime overlay", () => {
+    const supervisor: SupervisorSnapshot = {
+      connection: { status: "connected", socketPath: "/tmp/supervisor.sock" },
+      resumeSessionId: "auto-session",
+      autoCloseEnabled: false,
+      clientLeaseCount: 1,
+      sessions: [
+        {
+          id: "auto-session",
+          socketPath: "/tmp/auto.sock",
+          runtimeStatus: "live",
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "auto",
+          isResumeSession: true,
+          canSwitch: true,
+          canStop: true,
+        },
+        {
+          id: "normal-session",
+          socketPath: "",
+          runtimeStatus: "dormant",
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "normal",
+          isResumeSession: false,
+          canSwitch: true,
+          canStop: false,
+        },
+      ],
+      scopes: [],
+    };
+
+    const rendered = routeOverlayText("runtime", EMPTY_SESSION_VIEW, supervisor);
+    expect(rendered).toContain("* auto-session live approval=auto");
+    expect(rendered).toContain("normal-session dormant approval=normal");
   });
 
   test("evaluates plugin manifest notifications against session snapshots", () => {
@@ -597,9 +682,12 @@ describe("TUI transcript assembly", () => {
 
 describe("TUI node mappers", () => {
   test("maps approvals with affordance availability", () => {
-    const approvals = mapApprovalsNode({
+    const approvalNode = {
       id: "approvals",
       type: "collection",
+      properties: {
+        approval_mode: "auto",
+      },
       children: [
         {
           id: "approval-1",
@@ -617,7 +705,8 @@ describe("TUI node mappers", () => {
           affordances: [{ action: "approve" }, { action: "reject" }],
         },
       ],
-    });
+    };
+    const approvals = mapApprovalsNode(approvalNode);
 
     expect(approvals).toEqual([
       {
@@ -635,6 +724,10 @@ describe("TUI node mappers", () => {
         resolvedAt: undefined,
       },
     ]);
+
+    const next = applyPathSnapshot(EMPTY_SESSION_VIEW, "/approvals", approvalNode);
+    expect(next.approvalMode).toBe("auto");
+    expect(next.actionsByPath["/approvals"]).toEqual([]);
   });
 
   test("maps task progress and cancellation affordance", () => {
@@ -846,6 +939,46 @@ describe("SessionClient", () => {
       const result = await client.sendMessage("hello from tui");
       expect(result.status).toBe("ok");
       expect(sentMessages).toEqual(["hello from tui"]);
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("updates approval mode from the connected provider snapshot", async () => {
+    const socketPath = `/tmp/slop/tui-approval-mode-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    let approvalMode = "normal";
+
+    registerMinimalSessionNodes(server, { includeGoal: true });
+    server.register("approvals", () => ({
+      type: "collection",
+      props: { count: 0, approval_mode: approvalMode },
+      actions: {
+        set_mode: action(
+          { mode: "string" },
+          async ({ mode }) => {
+            approvalMode = mode === "auto" ? "auto" : "normal";
+            server.refresh();
+            return { mode: approvalMode };
+          },
+          { label: "Set Approval Mode" },
+        ),
+      },
+      items: [],
+    }));
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      const snapshot = await client.connect();
+      expect(snapshot.approvalMode).toBe("normal");
+
+      const result = await client.setApprovalMode("auto");
+      expect(result.status).toBe("ok");
+
+      await waitFor(() => (client.getSnapshot().approvalMode === "auto" ? true : null));
+      expect(client.getSnapshot().approvalMode).toBe("auto");
     } finally {
       client.disconnect();
       server.stop();

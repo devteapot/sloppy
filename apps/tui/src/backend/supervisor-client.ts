@@ -5,6 +5,8 @@ import {
   type SlopNode,
 } from "@slop-ai/consumer";
 
+import type { ApprovalMode } from "./slop-types";
+
 export type SupervisorSessionItem = {
   id: string;
   title?: string;
@@ -23,6 +25,7 @@ export type SupervisorSessionItem = {
   queuedCount: number;
   pendingApprovalCount: number;
   runningTaskCount: number;
+  approvalMode: ApprovalMode;
   lastActivityAt?: string;
   isResumeSession: boolean;
   createdAt?: string;
@@ -92,6 +95,15 @@ function booleanProp(props: Record<string, unknown>, name: string): boolean {
 function numberProp(props: Record<string, unknown>, name: string, fallback = 0): number {
   const value = props[name];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function approvalModeProp(data: Record<string, unknown>): ApprovalMode {
+  const value =
+    optionalStringProp(data, "approvalMode") ?? optionalStringProp(data, "approval_mode");
+  if (value === "normal" || value === "auto") {
+    return value;
+  }
+  return "normal";
 }
 
 function affordanceActions(node: SlopNode): Set<string> {
@@ -179,6 +191,7 @@ function mapSessionRecord(
       numberProp(data, "pending_approval_count"),
     ),
     runningTaskCount: numberProp(data, "runningTaskCount", numberProp(data, "running_task_count")),
+    approvalMode: approvalModeProp(data),
     lastActivityAt:
       optionalStringProp(data, "lastActivityAt") ?? optionalStringProp(data, "last_activity_at"),
     isResumeSession: overrides.isResumeSession ?? booleanProp(data, "is_resume_session"),
@@ -235,13 +248,20 @@ export class SessionSupervisorClient {
   }
 
   async createSession(
-    input: { workspaceId?: string; projectId?: string; title?: string; sessionId?: string } = {},
+    input: {
+      workspaceId?: string;
+      projectId?: string;
+      title?: string;
+      sessionId?: string;
+      approvalMode?: ApprovalMode;
+    } = {},
   ): Promise<SupervisorSessionItem> {
     const result = await this.invoke("/session", "create_session", {
       ...(input.workspaceId && { workspace_id: input.workspaceId }),
       ...(input.projectId && { project_id: input.projectId }),
       ...(input.title && { title: input.title }),
       ...(input.sessionId && { session_id: input.sessionId }),
+      ...(input.approvalMode && { approval_mode: input.approvalMode }),
     });
     const data = resultRecord(result);
     return mapSessionRecord(data, {
@@ -250,6 +270,32 @@ export class SessionSupervisorClient {
       canSwitch: true,
       canStop: true,
     });
+  }
+
+  async createSessionInScope(
+    scopeId: string,
+    input: {
+      title?: string;
+      sessionId?: string;
+      approvalMode?: ApprovalMode;
+    } = {},
+  ): Promise<SupervisorSessionItem> {
+    const result = await this.invoke(`/scopes/${encodeURIComponent(scopeId)}`, "create_session", {
+      ...(input.title && { title: input.title }),
+      ...(input.sessionId && { session_id: input.sessionId }),
+      ...(input.approvalMode && { approval_mode: input.approvalMode }),
+    });
+    const data = resultRecord(result);
+    return mapSessionRecord(data, {
+      id: stringProp(data, "sessionId", stringProp(data, "session_id")),
+      isResumeSession: true,
+      canSwitch: true,
+      canStop: true,
+    });
+  }
+
+  async reloadConfig(): Promise<ResultMessage> {
+    return this.invoke("/session", "reload_config");
   }
 
   async switchSession(sessionId: string): Promise<SupervisorSessionItem> {

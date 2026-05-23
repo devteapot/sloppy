@@ -78,6 +78,26 @@ function thinkingMessage(input: {
   };
 }
 
+function thinkingBarrier(input: { id: string; seq: number }): TranscriptMessage {
+  return {
+    id: input.id,
+    seq: input.seq,
+    role: "assistant",
+    state: "complete",
+    turnId: null,
+    blocks: [
+      {
+        id: `${input.id}-thinking`,
+        seq: input.seq,
+        type: "thinking",
+        text: "checking next target",
+        format: "summary",
+        display: "hidden",
+      },
+    ],
+  };
+}
+
 function activity(
   input: Partial<ActivityItem> & Pick<ActivityItem, "id" | "kind" | "seq">,
 ): ActivityItem {
@@ -86,6 +106,47 @@ function activity(
     summary: input.kind,
     ...input,
   };
+}
+
+function readFileActivityPair(input: {
+  callSeq: number;
+  path: string;
+  resultSeq: number;
+  toolUseId: string;
+}): ActivityItem[] {
+  return [
+    activity({
+      id: `call-${input.toolUseId}`,
+      seq: input.callSeq,
+      kind: "tool_call",
+      status: "running",
+      summary: `filesystem:read ${input.path}`,
+      provider: "filesystem",
+      action: "read",
+      label: "Read File",
+      path: input.path,
+      toolUseId: input.toolUseId,
+    }),
+    activity({
+      id: `result-${input.toolUseId}`,
+      seq: input.resultSeq,
+      kind: "tool_result",
+      status: "ok",
+      summary: `filesystem:read ${input.path}`,
+      provider: "filesystem",
+      action: "read",
+      label: "Read File",
+      path: input.path,
+      toolUseId: input.toolUseId,
+      result: { kind: "code", data: { path: input.path } },
+    }),
+  ];
+}
+
+function expectBottomPadding(lines: string[], width: number): void {
+  expect(lines.length).toBeGreaterThan(1);
+  expect(lines.at(-1)).toBe(" ".repeat(width));
+  expect(stripAnsi(lines[0] ?? "").trim()).not.toBe("");
 }
 
 describe("ChatLog", () => {
@@ -128,7 +189,7 @@ describe("ChatLog", () => {
     ]);
   });
 
-  test("renders user messages with a left accent and no background highlight", () => {
+  test("renders user messages with a left accent and bottom padding", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -151,11 +212,12 @@ describe("ChatLog", () => {
     expect(rendered).toContain("hello");
     expect(rendered).not.toContain("┌");
     expect(rendered).not.toContain("└");
-    expect(lines).toHaveLength(1);
+    expect(lines).toHaveLength(2);
+    expect(lines.at(-1)).toBe(" ".repeat(40));
     expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
   });
 
-  test("pads non-composer chat content horizontally", () => {
+  test("pads assistant chat content horizontally and only below", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -172,7 +234,26 @@ describe("ChatLog", () => {
     );
 
     const lines = log.children[0]?.render(20) ?? [];
-    expect(lines.some((line) => line.startsWith(" part"))).toBe(true);
+    expect(stripAnsi(lines[0] ?? "")).toContain("part");
+    expect(lines[0]?.startsWith(" part")).toBe(true);
+    expectBottomPadding(lines, 20);
+  });
+
+  test("pads thinking chat content only below", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [thinkingMessage({ id: "assistant-thinking", seq: 1, display: "hidden" })],
+      }),
+      { thinking: "expanded" },
+    );
+
+    const thinkingLines = log.children[0]?.render(30) ?? [];
+    const assistantLines = log.children[1]?.render(30) ?? [];
+    expect(stripAnsi(thinkingLines[0] ?? "")).toContain("[thinking");
+    expect(stripAnsi(assistantLines[0] ?? "")).toContain("final answer");
+    expectBottomPadding(thinkingLines, 30);
+    expectBottomPadding(assistantLines, 30);
   });
 
   test("uses final markdown for completed assistant and system entries, plain for tools", () => {
@@ -334,6 +415,213 @@ describe("ChatLog", () => {
 
     expect(entries.map((entry) => entry.key)).toEqual(["tool:tool-2", "tool:tool-1"]);
   });
+
+  test("compact-groups adjacent matching tool pairs", () => {
+    const entries = buildChatLogEntries(
+      snapshotWith({
+        activity: [
+          ...readFileActivityPair({
+            toolUseId: "tool-1",
+            callSeq: 1,
+            resultSeq: 2,
+            path: "README.md",
+          }),
+          ...readFileActivityPair({
+            toolUseId: "tool-2",
+            callSeq: 3,
+            resultSeq: 4,
+            path: "package.json",
+          }),
+        ],
+      }),
+      { verbosity: "compact", width: 80 },
+    );
+
+    expect(entries.map((entry) => entry.key)).toEqual(["tool-group:tool-1:2"]);
+  });
+
+  test("splits compact tool groups across assistant thinking and text blocks", () => {
+    const entries = buildChatLogEntries(
+      snapshotWith({
+        transcript: [
+          {
+            id: "assistant-thinking",
+            seq: 3,
+            role: "assistant",
+            state: "complete",
+            turnId: "turn-1",
+            blocks: [
+              {
+                id: "thinking-1",
+                seq: 3,
+                type: "thinking",
+                text: "checking next target",
+                format: "summary",
+                display: "hidden",
+              },
+            ],
+          },
+          {
+            id: "assistant-text",
+            seq: 6,
+            role: "assistant",
+            state: "complete",
+            turnId: "turn-1",
+            blocks: [
+              {
+                id: "text-1",
+                seq: 6,
+                type: "text",
+                text: "Now checking another file.",
+              },
+            ],
+          },
+        ],
+        activity: [
+          ...readFileActivityPair({
+            toolUseId: "tool-1",
+            callSeq: 1,
+            resultSeq: 2,
+            path: "README.md",
+          }),
+          ...readFileActivityPair({
+            toolUseId: "tool-2",
+            callSeq: 4,
+            resultSeq: 5,
+            path: "package.json",
+          }),
+          ...readFileActivityPair({
+            toolUseId: "tool-3",
+            callSeq: 7,
+            resultSeq: 8,
+            path: "tsconfig.json",
+          }),
+        ],
+      }),
+      { verbosity: "compact", width: 80 },
+    );
+
+    expect(entries.map((entry) => entry.key)).toEqual([
+      "tool:tool-1",
+      "msg:assistant-thinking:block:thinking-1",
+      "tool:tool-2",
+      "msg:assistant-text:block:text-1",
+      "tool:tool-3",
+    ]);
+  });
+
+  for (const variant of [
+    {
+      name: "single middle tool",
+      activity: [
+        ...readFileActivityPair({
+          toolUseId: "tool-1",
+          callSeq: 1,
+          resultSeq: 2,
+          path: "README.md",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-2",
+          callSeq: 3,
+          resultSeq: 4,
+          path: "package.json",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-3",
+          callSeq: 6,
+          resultSeq: 7,
+          path: "tsconfig.json",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-4",
+          callSeq: 9,
+          resultSeq: 10,
+          path: "src/index.ts",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-5",
+          callSeq: 11,
+          resultSeq: 12,
+          path: "src/cli.ts",
+        }),
+      ],
+      expectedKeys: [
+        "tool-group:tool-1:2",
+        "msg:thinking-1:block:thinking-1-thinking",
+        "tool:tool-3",
+        "msg:thinking-2:block:thinking-2-thinking",
+        "tool-group:tool-4:2",
+      ],
+      transcript: [
+        thinkingBarrier({ id: "thinking-1", seq: 5 }),
+        thinkingBarrier({ id: "thinking-2", seq: 8 }),
+      ],
+    },
+    {
+      name: "middle tool group",
+      activity: [
+        ...readFileActivityPair({
+          toolUseId: "tool-1",
+          callSeq: 1,
+          resultSeq: 2,
+          path: "README.md",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-2",
+          callSeq: 3,
+          resultSeq: 4,
+          path: "package.json",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-3",
+          callSeq: 6,
+          resultSeq: 7,
+          path: "tsconfig.json",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-4",
+          callSeq: 8,
+          resultSeq: 9,
+          path: "biome.json",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-5",
+          callSeq: 11,
+          resultSeq: 12,
+          path: "src/index.ts",
+        }),
+        ...readFileActivityPair({
+          toolUseId: "tool-6",
+          callSeq: 13,
+          resultSeq: 14,
+          path: "src/cli.ts",
+        }),
+      ],
+      expectedKeys: [
+        "tool-group:tool-1:2",
+        "msg:thinking-1:block:thinking-1-thinking",
+        "tool-group:tool-3:2",
+        "msg:thinking-2:block:thinking-2-thinking",
+        "tool-group:tool-5:2",
+      ],
+      transcript: [
+        thinkingBarrier({ id: "thinking-1", seq: 5 }),
+        thinkingBarrier({ id: "thinking-2", seq: 10 }),
+      ],
+    },
+  ]) {
+    test(`groups each compact tool run across thinking barriers with ${variant.name}`, () => {
+      const entries = buildChatLogEntries(
+        snapshotWith({
+          activity: variant.activity,
+          transcript: variant.transcript,
+        }),
+        { verbosity: "compact", width: 80 },
+      );
+
+      expect(entries.map((entry) => entry.key)).toEqual(variant.expectedKeys);
+    });
+  }
 
   test("interleaves assistant blocks with tool activity by block sequence", () => {
     const entries = buildChatLogEntries(

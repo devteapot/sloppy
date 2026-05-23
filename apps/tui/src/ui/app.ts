@@ -8,12 +8,11 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { SessionClient } from "../backend/session-client";
-import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
+import type { ApprovalMode, SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
 import { submitMessage } from "../handlers/submit";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
 import {
-  type ApprovalMode,
   type LocalCommand,
   parseLocalCommand,
   parsePluginSlashCommand,
@@ -47,11 +46,9 @@ export class AppUi {
   private supervisorSnapshot: SupervisorSnapshot | null = null;
   private route: TuiRoute = "chat";
   private mode: InteractionMode = "default";
-  private approvalMode: ApprovalMode = "normal";
   private verbosity: Verbosity = "compact";
   private thinkingExpandedOverride: boolean | null = null;
   private notificationValues = new Map<string, string | undefined>();
-  private autoApprovalAttempts = new Set<string>();
   private routeOverlay: OverlayHandle | null = null;
   private routeOverlayComponent: RouteOverlay | null = null;
   private paletteOverlay: OverlayHandle | null = null;
@@ -105,7 +102,7 @@ export class AppUi {
           this.hideRoute();
           return { consume: true };
         }
-        if (this.editor.clearSlashDraft()) {
+        if (this.editor.clearSigilDraft()) {
           return { consume: true };
         }
         if (!this.snapshot?.turn.canCancel) {
@@ -130,7 +127,7 @@ export class AppUi {
     this.statusLine.update(snapshot, this.mode);
     this.turnStatus.setText(dim(turnStatusLabel(snapshot)));
     this.editor.setModeLabel(this.mode);
-    this.editor.setApprovalMode(this.approvalMode);
+    this.editor.setApprovalMode(snapshot.approvalMode);
     this.editor.setWorkspaceRoot(snapshot.session.workspaceRoot);
     this.editor.setSlashEntries(
       buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath }),
@@ -139,7 +136,6 @@ export class AppUi {
       this.setNotice(notification.message);
     }
     this.editor.disableSubmit = !snapshot.composer.canSend;
-    this.handleAutoApprovals(snapshot);
     this.refreshRouteOverlay();
     this.tui.requestRender();
   }
@@ -206,7 +202,11 @@ export class AppUi {
       return;
     }
     if (command.type === "approval_mode") {
-      this.setApprovalMode(command.mode);
+      await this.setApprovalMode(command.mode);
+      return;
+    }
+    if (command.type === "config_reload") {
+      await this.reloadConfig(command.target);
       return;
     }
     if (command.type === "route") {
@@ -387,47 +387,41 @@ export class AppUi {
     }
   }
 
-  private setApprovalMode(mode: ApprovalMode | "show" | "toggle"): void {
+  private async setApprovalMode(mode: ApprovalMode | "show" | "toggle"): Promise<void> {
+    const current = this.snapshot?.approvalMode ?? "normal";
     if (mode === "show") {
-      this.setNotice(`Approval mode: ${this.approvalMode}`);
+      this.setNotice(`Approval mode: ${current}`);
       return;
     }
-    const next = mode === "toggle" ? (this.approvalMode === "auto" ? "normal" : "auto") : mode;
-    this.approvalMode = next;
-    this.editor.setApprovalMode(next);
+    const next = mode === "toggle" ? (current === "auto" ? "normal" : "auto") : mode;
+    await this.client.setApprovalMode(next);
     this.setNotice(`Approval mode: ${next}`);
-    if (this.snapshot) {
-      this.handleAutoApprovals(this.snapshot);
-    }
+    this.editor.setApprovalMode(next);
   }
 
-  private handleAutoApprovals(snapshot: SessionViewSnapshot): void {
-    const visibleApprovalIds = new Set(snapshot.approvals.map((approval) => approval.id));
-    for (const approvalId of this.autoApprovalAttempts) {
-      const approval = snapshot.approvals.find((item) => item.id === approvalId);
-      if (!visibleApprovalIds.has(approvalId) || approval?.status !== "pending") {
-        this.autoApprovalAttempts.delete(approvalId);
+  private async reloadConfig(target: "session" | "supervisor"): Promise<void> {
+    if (target === "supervisor") {
+      if (!this.options.supervisor) {
+        this.setNotice("No supervisor is connected.");
+        return;
       }
-    }
-    if (this.approvalMode !== "auto") {
+      await this.options.supervisor.reloadConfig();
+      this.setNotice("Supervisor config reloaded.");
       return;
     }
-    for (const approval of snapshot.approvals) {
-      if (
-        approval.status !== "pending" ||
-        !approval.canApprove ||
-        this.autoApprovalAttempts.has(approval.id)
-      ) {
-        continue;
-      }
-      this.autoApprovalAttempts.add(approval.id);
-      this.client.approveApproval(approval.id).catch((error: unknown) => {
-        this.autoApprovalAttempts.delete(approval.id);
-        this.setNotice(
-          `Auto approval failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+    const result = await this.client.reloadConfig();
+    if (result.status !== "ok") {
+      return;
     }
+    const data =
+      result.data && typeof result.data === "object"
+        ? (result.data as Record<string, unknown>)
+        : {};
+    this.setNotice(
+      data.configRequiresRestart === true
+        ? "Session config reloaded; restart required for runtime wiring changes."
+        : "Session config reloaded.",
+    );
   }
 
   private setVerbosity(mode: Verbosity | "show"): void {

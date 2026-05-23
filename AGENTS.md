@@ -55,7 +55,7 @@ bun run typecheck
 bun run test
 ```
 
-- The packaged CLI is `sloppy`; in source, use `bun run src/bin/sloppy.ts` for the same router. Headless CLI single-shot mode uses `bun run src/bin/sloppy.ts -p "<prompt>"`; the legacy `bun run src/cli.ts -p "<prompt>"` path is still available for focused CLI loops.
+- The packaged CLI is `sloppy`; in source, use `bun run src/bin/sloppy.ts` for the same router. Headless CLI single-shot mode uses `bun run src/bin/sloppy.ts -p "<prompt>"`; add `--yolo` to start the session with approval mode set to `auto`. The legacy `bun run src/cli.ts -p "<prompt>"` path is still available for focused CLI loops and also accepts `--yolo`.
 - Current test runner: Bun's built-in runner.
 - Preferred single-test commands:
 

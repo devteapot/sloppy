@@ -217,6 +217,8 @@ export type ApprovalItem = {
   resolvedAt?: string;
 };
 
+export type ApprovalMode = "normal" | "auto";
+
 export type TaskItem = {
   id: string;
   status: string;
@@ -344,6 +346,7 @@ export type SessionViewSnapshot = {
   turn: TurnState;
   goal: GoalState;
   composer: ComposerState;
+  approvalMode: ApprovalMode;
   transcript: TranscriptMessage[];
   activity: ActivityItem[];
   approvals: ApprovalItem[];

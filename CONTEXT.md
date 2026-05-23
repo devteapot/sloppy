@@ -76,6 +76,10 @@ The runtime instance hosting exactly one Agent — its transcript, turn state, a
 **Session provider**:
 The per-Session public SLOP Provider exposing one Session's surface (`/session`, `/turn`, `/transcript`, `/goal`, `/approvals`, `/activity`, `/tasks`, …). The boundary first-party UIs and external clients consume.
 
+**Approval mode**:
+The Session-owned setting that determines whether approval-capable pending approval items across the whole Session are resolved by normal user action or automatically by the Runtime. The supported modes are `normal` and `auto`; `auto` applies to foreground-turn and background/provider approvals alike, the mode persists with the Session snapshot, and UIs render and set it through the Session provider but do not own auto-approval behavior.
+_Avoid_: approval posture, local approval policy, TUI approval mode, yolo mode.
+
 **Session supervisor**:
 A separate public SLOP Provider that manages many Sessions — `/sessions`, `/scopes`, `create_session`, `select_session`, `stop_session`. Owns lifecycle bookkeeping only; it does not schedule or route work.
 _Avoid_: calling it an orchestrator.

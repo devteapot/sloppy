@@ -197,6 +197,7 @@ permanently remove both registry entry and snapshot.
 For a running session, inspect public state instead of runtime internals:
 
 - `/session`: status, restart-required flags, persistence path, recovery flags
+  and `reload_config` for re-reading the session's scoped config
 - `/llm`: active profile, credential source, secure-store status
 - `/turn`: current turn phase and cancel affordance, when active
 - `/goal`: persistent objective status and usage accounting
@@ -214,10 +215,18 @@ For a running supervisor, inspect public supervisor state instead of process
 internals:
 
 - `/session`: launch-scope key/root, resume session id/socket, registry path,
-  live/session counts, client lease count, and auto-close status
+  live/session counts, client lease count, auto-close status, and `reload_config`
+  for refreshing supervisor config and scopes
 - `/sessions`: session records with runtime status, resume marker, scope
   metadata, live socket when available, and compact turn/goal/queue/task summary
 - `/scopes`: configured workspace/project scopes that can launch new sessions
+
+Use session `/session.reload_config` after editing LLM profile defaults or other
+session-scoped config. It applies LLM-profile changes to the live session and
+sets `/session.config_requires_restart=true` when the edit affects runtime
+wiring that only a restart can rebuild. It does not change approval mode. Use
+supervisor `/session.reload_config` after editing workspace/project scope
+definitions so `/scopes` and future session creation use the new config.
 
 The supervisor owns lifecycle bookkeeping only. It should not be used as a
 hidden scheduler or provider-rewiring layer.

@@ -1,4 +1,5 @@
 import type { AgentSessionSnapshot, SessionStoreEventType } from "../types";
+import { normalizeApprovalPolicy } from "./approval-policy";
 import { cloneExtensions } from "./extensions";
 import { selectGoalSnapshot } from "./goal";
 import { emptyUsage, normalizeUsage } from "./usage";
@@ -82,6 +83,10 @@ export function createInitialState(options: {
         message: "Idle",
       },
       goal: null,
+      approvalPolicy: {
+        mode: "normal",
+        updatedAt: startedAt,
+      },
       extensions: {},
       queue: [],
       transcript: [],
@@ -124,6 +129,10 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
     },
     turn: { ...snapshot.turn },
     goal: selectGoalSnapshot(snapshot),
+    approvalPolicy: normalizeApprovalPolicy(
+      snapshot.approvalPolicy,
+      snapshot.session.updatedAt ?? snapshot.session.startedAt,
+    ),
     extensions: cloneExtensions(snapshot.extensions),
     queue: (snapshot.queue ?? []).map((message) => ({ ...message })),
     transcript: snapshot.transcript.map((message) => ({

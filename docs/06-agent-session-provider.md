@@ -40,17 +40,25 @@ workspace/project scopes, and create/select/stop affordances. It does not expose
 one global active session; each connected UI keeps its selected session through a
 connection-bound supervisor client lease. Its `/sessions` items include runtime
 status plus compact live turn, goal, queue, pending approval, running task, and
-last-activity summary fields so UIs can compare supervised sessions without
-reading runtime internals. Each supervised session still exposes the
-single-session contract described in this document.
+last-activity summary fields, plus each session's approval mode (`normal` or
+`auto`), so UIs can compare supervised sessions without reading runtime
+internals. Supervisor session items expose approval mode for visibility only;
+approval-mode mutation stays on the selected Session provider's `/approvals`
+affordance. When
+`create_session` omits `approval_mode`, the supervisor propagates the current
+approval mode from the caller's selected session at creation time, then from the
+launch-scope resume session. This applies to both `/session.create_session` and
+scope-item `/scopes/{id}.create_session`. Each supervised session still exposes
+the single-session contract described in this document.
+Selected-session inheritance requires the tracked connection/lease invocation
+path; untracked in-process descriptor actions have no caller-selected Session
+context and only honor explicit `approval_mode` plus launch-scope fallback.
 
 ---
 
 ## Session Model
 
-The recommended model is one provider instance per session.
-
-That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
+The recommended model is one provider instance per session. That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
 
 Recommended properties of a session provider instance:
 
@@ -725,6 +733,21 @@ Purpose:
 
 - expose actions blocked on explicit user approval
 - mirror provider-native approval state rather than owning the downstream approval policy itself
+- expose the session-owned approval mode so all clients can observe and
+  update whether pending approvals are handled normally or automatically
+
+`/approvals` is the in-session source path for approval mode. `/session` remains
+focused on session lifecycle/status, while supervisor `/sessions` may project
+approval mode, but not `approval_mode_updated_at`, for cross-session comparison.
+Model visibility should come from ordinary public `/approvals` state when that
+path is in context; do not add a separate hidden prompt field for approval mode.
+
+Collection props:
+
+- `count`: total pending and retained resolved approval items
+- `approval_mode`: `normal | auto`
+- `approval_mode_updated_at`: ISO timestamp for the latest mode value change;
+  idempotent `set_mode(auto)` drain requests do not update it
 
 Each approval item:
 
@@ -751,11 +774,47 @@ Affordances while pending:
 - `approve`
 - `reject(reason?)`
 
+Collection affordances:
+
+- `set_mode(mode)` where `mode` is `normal | auto`
+- mode input is strict; clients should not send aliases such as `yolo` or
+  differently-cased values
+- `set_mode(auto)` is idempotent and should still trigger an auto-approval pass
+  over current pending approvals
+
 Rules:
 
+- approval mode changes apply immediately as Session control state and are not
+  queued behind active model turns
 - when at least one approval is pending, `/turn.state` should become `waiting_approval`
 - approving or rejecting should patch both the approval item and `/turn`
 - approval items are expected to correspond to real downstream provider approval nodes and should forward resolution back to that provider
+- when `approval_mode=auto`, the session runtime should approve every pending
+  approval in the Session with `canApprove=true`, including foreground-turn and
+  background/provider approvals; clients only set and render the mode
+- auto-approval processes pending approvals sequentially, not concurrently
+- auto-approval uses the current approval snapshot order; it does not prioritize
+  foreground-turn approvals over background/provider approvals
+- switching from `normal` to `auto` immediately applies to already-pending
+  approval-capable items, not only future approvals
+- auto-approval failures should not demote `approval_mode` to `normal`; the
+  failure should be recorded and the unresolved approval should remain visible
+  for manual resolution or inspection
+- auto-approval should be attempted once per pending approval item while that
+  item remains pending; if a provider replaces it with a new approval item, the
+  new item may be auto-approved
+- remembered attempt state is cleared when an approval id is no longer pending;
+  if the same id later becomes pending again, it may be attempted again
+- changing `approval_mode` from `auto` to `normal` stops future auto-approval
+  passes but does not cancel or undo an approval resolution already invoked
+  against a provider
+- setting `approval_mode=normal` clears remembered auto-approval attempts; a
+  later switch back to `auto` may retry still-pending approval items
+- setting `approval_mode=auto` does not clear remembered attempts; `normal` is
+  the explicit reset boundary
+- auto-approval does not create separate transcript or activity narration; the
+  visible state remains the approval item, provider/tool result state, and audit
+  log entries for errors
 - resolved approvals may remain visible for session history unless trimmed by retention policy
 
 ### `/tasks`
@@ -903,8 +962,12 @@ When session snapshot persistence is enabled, the runtime writes the public
 session snapshot after each state mutation. Restoring a snapshot is intentionally
 state-first rather than a hidden replay engine:
 
-- completed transcript, queued input, activity, approvals, tasks, apps, and LLM state are
-  restored for inspection
+- completed transcript, queued input, activity, approvals, tasks, apps, and LLM
+  state are restored for inspection
+- approval mode is restored as live Session policy; plain `--continue` preserves
+  the persisted mode rather than resetting it
+- durable snapshots store approval mode under `approvalPolicy`, while the public
+  provider projects it as `/approvals.approval_mode`
 - client connections are never restored
 - in-flight model turns cannot be replayed safely, so they are marked `error`
   with `recovered_after_restart=true`

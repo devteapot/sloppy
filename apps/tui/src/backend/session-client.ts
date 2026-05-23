@@ -14,6 +14,7 @@ import {
   withInspectTree,
 } from "./node-mappers";
 import type {
+  ApprovalMode,
   CreateGoalInput,
   InspectQueryOptions,
   SaveProfileInput,
@@ -211,6 +212,14 @@ export class SessionClient {
 
   async rejectApproval(id: string, reason?: string): Promise<ResultMessage> {
     return this.invoke(`/approvals/${id}`, "reject", reason ? { reason } : undefined);
+  }
+
+  async setApprovalMode(mode: ApprovalMode): Promise<ResultMessage> {
+    return this.invoke("/approvals", "set_mode", { mode });
+  }
+
+  async reloadConfig(): Promise<ResultMessage> {
+    return this.invoke("/session", "reload_config");
   }
 
   async cancelTask(id: string): Promise<ResultMessage> {

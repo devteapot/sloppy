@@ -170,6 +170,12 @@ export type ActivityItem = {
 };
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+export type ApprovalMode = "normal" | "auto";
+
+export type ApprovalPolicySnapshot = {
+  mode: ApprovalMode;
+  updatedAt: string;
+};
 
 export type ApprovalItem = {
   id: string;
@@ -339,6 +345,7 @@ export type AgentSessionSnapshot = {
   usage: SessionUsageSnapshot;
   turn: TurnStateSnapshot;
   goal: SessionGoalSnapshot | null;
+  approvalPolicy: ApprovalPolicySnapshot;
   extensions: Record<string, SessionExtensionRecord>;
   queue: QueuedSessionMessage[];
   transcript: TranscriptMessage[];

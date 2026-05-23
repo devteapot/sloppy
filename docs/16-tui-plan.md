@@ -30,6 +30,8 @@ Implemented:
   the configured session persistence directory
 - fresh-session default launch plus `sloppy --continue` for selecting the
   launch-scope resume session
+- `--yolo` launch flag for setting the selected session's approval mode to
+  `auto` before interaction
 - attach mode via `bun run tui -- --socket <session.sock>`
 - supervisor mode via `bun run tui -- --supervisor <supervisor.sock>` or
   `--supervisor-socket <supervisor.sock>`
@@ -51,8 +53,8 @@ Implemented:
 - above-composer turn status text rendered from the TUI human label mapper
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `plan`
-- local approval posture with `/approval [normal|auto]`; `auto` causes this TUI
-  client to approve pending approval items while enabled
+- session approval mode with `/approval [normal|auto]`; the TUI invokes the
+  public `/approvals.set_mode` affordance and renders the session-owned mode
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
 - composer autocomplete for command-name-only slash completion from built-in
   commands and namespaced v2 plugin action presentations whose target
@@ -71,8 +73,12 @@ Implemented:
   from known files and a bounded directory-walk fallback outside git repos
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
+- TUI scoped New Session commands may invoke supervisor `/session.create_session`
+  with `workspace_id`/`project_id`; generic consumers can also use scope-item
+  `/scopes/{id}.create_session`, with the same approval-mode inheritance
 - supervisor client leases for per-TUI session selection, auto-close accounting,
   and stop guards when another connected TUI is using a session
+- runtime overlay shows supervised Session approval modes before switching
 - dormant supervised sessions backed by snapshots and restored lazily when
   selected
 - route overlays for setup, approvals, tasks, apps, inspect, runtime, and help
@@ -80,13 +86,17 @@ Implemented:
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
 - Composer sigils for first-line composer presentation: normal prompt renders
-  `?>`, auto prompt renders `!>`, normal shell intent renders `?!`, and auto
-  shell intent renders `!!`; leading `/` keeps slash-command presentation as
-  `/`. The gutter may hide the raw leading trigger character from the rendered
-  input line, but submitted message semantics remain separate.
-- `!cmd` is still expanded into an explicit natural-language request for the
+  `?>`, auto prompt renders `!>`, normal slash command renders `?/`, auto slash
+  command renders `!/`, normal shell intent renders `?$`, and auto shell intent
+  renders `!$`. Leading `$` switches to shell-intent presentation. The gutter
+  may hide the raw leading trigger character from the rendered input line, but
+  submitted message semantics remain separate. The `!` approval marker is TUI
+  presentation for `approval_mode=auto`, not a separate mode name.
+- `$cmd` is still expanded into an explicit natural-language request for the
   terminal provider; `@` is autocomplete-only and does not rewrite submitted
   message text or attach file context
+- `!cmd` is no longer shell intent and is submitted as ordinary prompt text;
+  shell intent uses `$cmd`
 Still deferred:
 
 - true masked API-key entry for `/profile-secret`
@@ -154,7 +164,11 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 - Enter: submit composer text or slash command
 - Ctrl+K: command palette
 - Shift+Tab: cycle mode chip between `default` and `plan`
-- `/approval [normal|auto]`: show or set the local approval posture
+- `/approval [normal|auto]`: show or set the session approval mode
+- `/approval` accepts only `normal`, `auto`, and `toggle`; `yolo` remains a
+  launch flag spelling, not an in-app command alias
+- `--yolo`: launch or attach with session approval mode set to `auto`; on an
+  existing Session this mutates shared Session state until `/approval normal`
 - Esc: close overlay, otherwise clear slash-command draft, otherwise cancel active turn when cancellable
 - Ctrl+K: command palette, including approval/task actions
 - Ctrl+C: disconnect session/supervisor and exit
@@ -163,8 +177,9 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 
 - The TUI remains a consumer of public SLOP state and affordances.
 - Interaction mode labels in the composer frame are local TUI presentation state.
-- Approval posture is local TUI behavior for now; move it behind a public
-  session policy affordance before treating it as shared session state.
+- Approval mode is shared session behavior exposed through public session
+  state; first-party UI clients render and invoke that boundary rather than
+  owning auto-approval policy locally.
 - Turn state is rendered above the composer through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
 - First-party UI behavior must not inspect runtime internals.
 - Managed launch, `--continue`, and auto-close are TUI launcher behavior on top

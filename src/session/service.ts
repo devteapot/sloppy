@@ -5,6 +5,7 @@ import type { LlmProfileManager } from "../llm/profile-manager";
 import { AgentSessionProvider } from "./provider";
 import { SessionRuntime } from "./runtime";
 import { closeUnixListener, type UnixListener } from "./socket";
+import type { ApprovalMode } from "./types";
 
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "-");
@@ -33,6 +34,8 @@ export class SessionService {
     socketPath?: string;
     llmProfileManager?: LlmProfileManager;
     sessionPersistencePath?: string | false;
+    approvalMode?: ApprovalMode;
+    configReloader?: () => Promise<SloppyConfig>;
     launchScope?: {
       key: string;
       root: string;
@@ -48,6 +51,8 @@ export class SessionService {
       ignoredProviderIds: [providerId],
       llmProfileManager: options?.llmProfileManager,
       sessionPersistencePath: options?.sessionPersistencePath,
+      approvalMode: options?.approvalMode,
+      configReloader: options?.configReloader,
       launchScope: options?.launchScope,
     });
 

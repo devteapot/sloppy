@@ -8,6 +8,7 @@ import type { LlmProfileManager } from "./llm/profile-manager";
 import { InProcessTransport } from "./providers/in-process";
 import { AgentSessionProvider } from "./session/provider";
 import { type SessionAgentFactory, SessionRuntime } from "./session/runtime";
+import type { ApprovalMode } from "./session/types";
 
 type WriteFn = (text: string) => void;
 
@@ -45,6 +46,7 @@ export type RunHeadlessSingleShotOptions = {
   agentFactory?: SessionAgentFactory;
   sessionId?: string;
   providerId?: string;
+  approvalMode?: ApprovalMode;
   writeStdout?: WriteFn;
   writeStderr?: WriteFn;
 };
@@ -270,6 +272,7 @@ export async function runHeadlessSingleShot(
       actorId: "cli-single-shot",
       actorName: "Sloppy CLI",
       sessionPersistencePath: false,
+      approvalMode: options.approvalMode,
     });
     provider = new AgentSessionProvider(runtime, {
       providerId,

@@ -21,13 +21,16 @@ import {
 } from "./registry";
 import { SessionService } from "./service";
 import type { UnixListener } from "./socket";
+import { loadPersistedSessionSnapshot } from "./store/persistence";
 import { listenSessionSupervisor } from "./supervisor-listener";
+import type { ApprovalMode } from "./types";
 
 export type SessionScopeInput = {
   workspace_id?: string;
   project_id?: string;
   title?: string;
   session_id?: string;
+  approval_mode?: ApprovalMode;
 };
 
 export type SessionRecord = {
@@ -79,6 +82,8 @@ type PublicSessionRecord = {
   queued_count?: number;
   pending_approval_count?: number;
   running_task_count?: number;
+  approvalMode?: ApprovalMode;
+  approval_mode?: ApprovalMode;
   [key: string]: unknown;
 };
 
@@ -163,6 +168,30 @@ function registryRecordFromSession(record: SessionRecord): SessionRegistryRecord
 function stringParam(params: Record<string, unknown>, name: string): string | undefined {
   const value = params[name];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function approvalModeParam(
+  params: Record<string, unknown>,
+  name: string,
+): ApprovalMode | undefined {
+  const value = params[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "normal" || value === "auto") {
+    return value;
+  }
+  throw new Error(`${name} must be 'normal' or 'auto'.`);
+}
+
+function sessionScopeInputFromParams(params: Record<string, unknown>): SessionScopeInput {
+  return {
+    workspace_id: stringParam(params, "workspace_id"),
+    project_id: stringParam(params, "project_id"),
+    title: stringParam(params, "title"),
+    session_id: stringParam(params, "session_id"),
+    approval_mode: approvalModeParam(params, "approval_mode"),
+  };
 }
 
 export class SessionSupervisorProvider {
@@ -297,11 +326,17 @@ export class SessionSupervisorProvider {
       projectId: config.workspaces?.activeProjectId,
       fallback: input.title,
     });
+    const reloadScope = {
+      workspace_id: config.workspaces?.activeWorkspaceId,
+      project_id: config.workspaces?.activeProjectId,
+    };
     const service = new SessionService({
       config,
       sessionId,
       title,
       socketPath: sessionSocketPath(sessionId),
+      approvalMode: input.approval_mode ?? this.inheritedApprovalMode(owner),
+      configReloader: () => this.resolveConfig(reloadScope),
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -317,6 +352,54 @@ export class SessionSupervisorProvider {
     this.server.refresh();
     this.notifyLifecycle();
     return record;
+  }
+
+  async reloadConfig(): Promise<{
+    status: "ok";
+    scope_count: number;
+    registry_path: string | null;
+  }> {
+    await this.ensureInitialized();
+    this.cachedConfig = null;
+    const config = await this.baseConfig();
+    this.server.refresh();
+    this.notifyLifecycle();
+    return {
+      status: "ok",
+      scope_count: this.scopesFromConfig(config).length,
+      registry_path: this.registryPath,
+    };
+  }
+
+  private inheritedApprovalMode(owner?: object): ApprovalMode | undefined {
+    const selectedSessionId = owner ? this.clientLeases.get(owner)?.selectedSessionId : undefined;
+    const selectedMode = selectedSessionId
+      ? this.approvalModeForSession(selectedSessionId)
+      : undefined;
+    if (selectedMode) {
+      return selectedMode;
+    }
+    return this.resumeSessionId ? this.approvalModeForSession(this.resumeSessionId) : undefined;
+  }
+
+  private approvalModeForSession(sessionId: string): ApprovalMode | undefined {
+    const record = this.records.get(sessionId);
+    if (!record) {
+      return undefined;
+    }
+    const liveMode = record.service?.runtime.store.getSnapshot().approvalPolicy.mode;
+    if (liveMode === "normal" || liveMode === "auto") {
+      return liveMode;
+    }
+    if (!record.snapshotPath || !existsSync(record.snapshotPath)) {
+      return undefined;
+    }
+    try {
+      const persistedMode = loadPersistedSessionSnapshot(record.snapshotPath)?.approvalPolicy?.mode;
+      return persistedMode === "normal" || persistedMode === "auto" ? persistedMode : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async selectSession(sessionId: string, owner?: object): Promise<SessionRecord> {
@@ -411,10 +494,13 @@ export class SessionSupervisorProvider {
         queued_count: snapshot.queue.length,
         pending_approval_count: pendingApprovalCount,
         running_task_count: runningTaskCount,
+        approvalMode: snapshot.approvalPolicy.mode,
+        approval_mode: snapshot.approvalPolicy.mode,
         ...pluginSummary.props,
       };
     }
 
+    const approvalMode = this.approvalModeForSession(record.sessionId) ?? "normal";
     return {
       sessionId: record.sessionId,
       providerId: record.providerId,
@@ -438,6 +524,8 @@ export class SessionSupervisorProvider {
       created_at: record.createdAt,
       last_activity_at: record.lastActivityAt,
       is_resume_session: record.sessionId === this.resumeSessionId,
+      approvalMode,
+      approval_mode: approvalMode,
     };
   }
 
@@ -449,7 +537,9 @@ export class SessionSupervisorProvider {
   ): Promise<Record<string, unknown> | null> {
     if (path === "/session") {
       if (actionName === "create_session") {
-        return this.publicSessionRecord(await this.createSession(params, owner));
+        return this.publicSessionRecord(
+          await this.createSession(sessionScopeInputFromParams(params), owner),
+        );
       }
       if (actionName === "select_session") {
         const sessionId = stringParam(params, "session_id");
@@ -477,6 +567,30 @@ export class SessionSupervisorProvider {
       if (actionName === "stop_session") {
         return this.stopSession(sessionId, owner);
       }
+    }
+    const scopeMatch = path.match(/^\/scopes\/(.+)$/);
+    if (scopeMatch && actionName === "create_session") {
+      // Scope item creation needs the tracked connection owner so approval mode
+      // can inherit from the caller's selected Session lease.
+      await this.ensureInitialized();
+      const scopeId = decodeURIComponent(scopeMatch[1] ?? "");
+      const config = await this.baseConfig();
+      const scope = this.scopesFromConfig(config).find((item) => item.id === scopeId);
+      if (!scope) {
+        throw new Error(`Unknown scope: ${scopeId}`);
+      }
+      return this.publicSessionRecord(
+        await this.createSession(
+          {
+            workspace_id: scope.workspaceId,
+            project_id: scope.projectId,
+            title: stringParam(params, "title"),
+            session_id: stringParam(params, "session_id"),
+            approval_mode: approvalModeParam(params, "approval_mode"),
+          },
+          owner,
+        ),
+      );
     }
     return null;
   }
@@ -561,6 +675,11 @@ export class SessionSupervisorProvider {
       title: record.title,
       socketPath: sessionSocketPath(record.sessionId),
       sessionPersistencePath: snapshotPath,
+      configReloader: () =>
+        this.resolveConfig({
+          workspace_id: record.workspaceId,
+          project_id: record.projectId,
+        }),
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -725,8 +844,19 @@ export class SessionSupervisorProvider {
             project_id: { type: "string", optional: true },
             title: { type: "string", optional: true },
             session_id: { type: "string", optional: true },
+            approval_mode: {
+              type: "string",
+              optional: true,
+              description: "Initial approval mode: normal or auto.",
+            },
           },
-          async (input) => this.publicSessionRecord(await this.createSession(input)),
+          async (input) =>
+            this.publicSessionRecord(
+              await this.createSession({
+                ...input,
+                approval_mode: approvalModeParam(input, "approval_mode"),
+              }),
+            ),
           {
             label: "New Session",
             description: "Start a new scoped session provider and select it.",
@@ -743,6 +873,11 @@ export class SessionSupervisorProvider {
             estimate: "instant",
           },
         ),
+        reload_config: action(async () => this.reloadConfig(), {
+          label: "Reload Config",
+          description: "Reload supervisor config and refresh available workspace/project scopes.",
+          estimate: "fast",
+        }),
         register_client_lease: action(
           {
             selected_session_id: { type: "string", optional: true },
@@ -809,6 +944,7 @@ export class SessionSupervisorProvider {
       ...(typeof publicRecord.queued_count === "number"
         ? [`queued=${publicRecord.queued_count}`]
         : []),
+      ...(publicRecord.approval_mode ? [`approval=${publicRecord.approval_mode}`] : []),
     ];
     const actions: Record<string, Action> = {
       select_session: action(
@@ -851,6 +987,7 @@ export class SessionSupervisorProvider {
         queued_count: publicRecord.queued_count ?? null,
         pending_approval_count: publicRecord.pending_approval_count ?? null,
         running_task_count: publicRecord.running_task_count ?? null,
+        approval_mode: publicRecord.approval_mode ?? null,
       },
       summary: `${publicRecord.title ?? record.sessionId}: ${summaryParts.join(" ")}`,
       actions,
@@ -913,14 +1050,20 @@ export class SessionSupervisorProvider {
           {
             title: { type: "string", optional: true },
             session_id: { type: "string", optional: true },
+            approval_mode: {
+              type: "string",
+              optional: true,
+              description: "Initial approval mode: normal or auto.",
+            },
           },
-          async ({ title, session_id }) =>
+          async ({ title, session_id, approval_mode }) =>
             this.publicSessionRecord(
               await this.createSession({
                 workspace_id: scope.workspaceId,
                 project_id: scope.projectId,
                 title,
                 session_id,
+                approval_mode: approvalModeParam({ approval_mode }, "approval_mode"),
               }),
             ),
           {

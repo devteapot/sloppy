@@ -37,7 +37,7 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     name: "approval",
     aliases: ["approval-mode"],
     signature: "[normal|auto]",
-    description: "Show or set the local approval posture",
+    description: "Show or set the session approval mode",
   },
   {
     name: "query",
@@ -66,6 +66,12 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     name: "queue-cancel",
     signature: "<id|position>",
     description: "Cancel a queued user message",
+  },
+  {
+    name: "reload-config",
+    aliases: ["config-reload"],
+    signature: "[session|supervisor]",
+    description: "Reload session or supervisor config",
   },
 
   {

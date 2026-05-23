@@ -518,7 +518,11 @@ function createGatedApprovalHarnessFactory() {
   };
 }
 
-function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage }) {
+function createApprovalHarnessFactory(options?: {
+  approveResult?: ResultMessage;
+  approveError?: unknown;
+  providerInvokeDelay?: Promise<void>;
+}) {
   let callbacks: AgentCallbacks | null = null;
   const providerInvokes: Array<{
     providerId: string;
@@ -607,10 +611,14 @@ function createApprovalHarnessFactory(options?: { approveResult?: ResultMessage 
       },
       invokeProvider: async (providerId, path, action, params) => {
         providerInvokes.push({ providerId, path, action, params });
+        await options?.providerInvokeDelay;
         return { type: "result", id: "inv-approval", status: "ok", data: { ok: true } };
       },
       resolveApprovalDirect: async (approvalId) => {
         approveCalls.push(approvalId);
+        if (options?.approveError) {
+          throw options.approveError;
+        }
         return approveResult;
       },
       rejectApprovalDirect: (approvalId, reason) => {
@@ -1566,6 +1574,68 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("session reload_config refreshes scoped config and marks restart-required changes", async () => {
+    const changedConfig: SloppyConfig = {
+      ...TEST_CONFIG,
+      llm: {
+        ...TEST_CONFIG.llm,
+        profiles: [
+          {
+            ...TEST_CONFIG.llm.profiles[0]!,
+            model: "gpt-5.5",
+          },
+        ],
+      },
+      plugins: {
+        ...TEST_CONFIG.plugins,
+        terminal: {
+          ...TEST_CONFIG.plugins.terminal,
+          enabled: !TEST_CONFIG.plugins.terminal.enabled,
+        },
+      },
+    };
+    const llmProfileManager = createTestProfileManager();
+    let reloadCount = 0;
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-reload-config",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager,
+      configReloader: async () => {
+        reloadCount += 1;
+        return changedConfig;
+      },
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-reload-config",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const result = await consumer.invoke("/session", "reload_config");
+      expect(result.status).toBe("ok");
+      expect(result.data).toMatchObject({
+        status: "ok",
+        configRequiresRestart: true,
+      });
+      expect(reloadCount).toBe(1);
+
+      const session = await consumer.query("/session", 1);
+      const llm = await consumer.query("/llm", 1);
+      expect(session.properties?.config_requires_restart).toBe(true);
+      expect(session.properties?.config_restart_reason).toContain(
+        "Runtime provider or agent configuration changed",
+      );
+      expect(llm.properties?.selected_model).toBe("gpt-5.5");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("session recovers persisted stale turns at the public provider boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-session-runtime-recover-"));
     const persistencePath = join(root, "session.json");
@@ -1932,6 +2002,206 @@ describe("AgentSessionProvider", () => {
       const turn = await consumer.query("/turn", 1);
       expect(turn.properties?.state).toBe("idle");
     } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session approval mode auto-approves pending approvals across the session", async () => {
+    const harness = createApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-auto-approval",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-auto-approval",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      let approvals = await consumer.query("/approvals", 1);
+      expect(approvals.properties?.approval_mode).toBe("normal");
+      expect(approvals.affordances?.map((item) => item.action)).toContain("set_mode");
+
+      const modeResult = await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      expect(modeResult.status).toBe("ok");
+
+      approvals = await consumer.query("/approvals", 1);
+      expect(approvals.properties?.approval_mode).toBe("auto");
+
+      await consumer.invoke("/composer", "send_message", {
+        text: "remove the file",
+      });
+      harness.emitApprovalSnapshot();
+
+      await runtime.waitForIdle();
+
+      expect(harness.approveCalls).toEqual(["approval-1"]);
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("idle");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session approval mode attempts failed auto-approval once per pending item", async () => {
+    const harness = createApprovalHarnessFactory({
+      approveError: new Error("provider approval failed"),
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-auto-approval-failure",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-auto-approval-failure",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      await consumer.invoke("/composer", "send_message", {
+        text: "remove the file",
+      });
+      harness.emitApprovalSnapshot();
+      await runtime.waitForIdle();
+
+      harness.emitApprovalSnapshot();
+      await runtime.waitForIdle();
+
+      expect(harness.approveCalls).toEqual(["approval-1"]);
+      const approvals = await consumer.query("/approvals", 3);
+      expect(approvals.children?.[0]?.properties?.status).toBe("pending");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("cycling approval mode to normal clears failed auto-approval attempts", async () => {
+    const harness = createApprovalHarnessFactory({
+      approveError: new Error("provider approval failed"),
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-auto-approval-retry-reset",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-auto-approval-retry-reset",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      await consumer.invoke("/composer", "send_message", {
+        text: "remove the file",
+      });
+      harness.emitApprovalSnapshot();
+      await runtime.waitForIdle();
+
+      await consumer.invoke("/approvals", "set_mode", { mode: "normal" });
+      await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      harness.emitApprovalSnapshot();
+      await runtime.waitForIdle();
+
+      expect(harness.approveCalls).toEqual(["approval-1", "approval-1"]);
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("session approval mode chains scheduled auto-approval passes", async () => {
+    const gate = createDeferred<void>();
+    const harness = createApprovalHarnessFactory({
+      providerInvokeDelay: gate.promise,
+    });
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-auto-approval-chained",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-auto-approval-chained",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      harness.emitApprovalSnapshot({
+        providerId: "sloppy-session-child",
+        approvalId: "approval-child-1",
+        approvalProvider: "skills",
+        path: "/skills/one",
+        action: "skill_manage",
+        mirrorLineage: ["skills"],
+      });
+
+      for (let attempt = 0; attempt < 20 && harness.providerInvokes.length === 0; attempt += 1) {
+        await Bun.sleep(5);
+      }
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "sloppy-session-child",
+          path: "/approvals/approval-child-1",
+          action: "approve",
+          params: undefined,
+        },
+      ]);
+
+      harness.emitApprovalSnapshot({
+        providerId: "sloppy-session-child",
+        approvalId: "approval-child-2",
+        approvalProvider: "skills",
+        path: "/skills/two",
+        action: "skill_manage",
+        mirrorLineage: ["skills"],
+      });
+      await Bun.sleep(25);
+      expect(harness.providerInvokes).toHaveLength(1);
+
+      gate.resolve(undefined);
+      await runtime.waitForIdle();
+
+      expect(harness.providerInvokes).toEqual([
+        {
+          providerId: "sloppy-session-child",
+          path: "/approvals/approval-child-1",
+          action: "approve",
+          params: undefined,
+        },
+        {
+          providerId: "sloppy-session-child",
+          path: "/approvals/approval-child-2",
+          action: "approve",
+          params: undefined,
+        },
+      ]);
+    } finally {
+      gate.resolve(undefined);
       provider.stop();
       runtime.shutdown();
     }

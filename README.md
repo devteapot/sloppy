@@ -368,8 +368,24 @@ sloppy --continue
 ```
 
 If there is no previous session for that launch scope, `sloppy --continue`
-fails at the CLI level and tells you to run `sloppy` first. To attach to an
-existing session provider socket directly, use:
+fails at the CLI level and tells you to run `sloppy` first.
+
+Use `--yolo` to start or attach with session approval mode set to `auto`:
+
+```sh
+sloppy --yolo
+sloppy --continue --yolo
+bun run session:serve -- --yolo
+bun run src/cli.ts -p "read README.md" --yolo
+```
+
+`--yolo` may appear before or after the prompt/session arguments. It sets the same public `/approvals.approval_mode` state controlled by
+`/approval auto` in the TUI. When used with `--continue`, direct socket attach,
+or any other existing-session path, it mutates that Session's shared approval
+mode to `auto` until a client sets `/approval normal`. Plain `sloppy --continue`
+restores the Session's persisted approval mode without resetting it.
+
+To attach to an existing session provider socket directly, use:
 
 ```sh
 bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock

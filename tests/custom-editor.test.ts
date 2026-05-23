@@ -118,7 +118,7 @@ describe("CustomEditor", () => {
     expect(plain(lines[0] ?? "")).toContain(" default ");
     expect(plain(lines[0] ?? "")).toMatch(/^╭─+ default ╮$/);
     expect(plain(lines[1] ?? "")).toContain("?> ");
-    expect(plain(lines[1] ?? "")).toContain("Type a prompt, / for commands, or ! for shell");
+    expect(plain(lines[1] ?? "")).toContain("Type a prompt, / for commands, or $ for shell");
     expect(plain(lines[2] ?? "")).toMatch(/^╰─+╯$/);
     expect(lines.every((line) => visibleWidth(line) === 56)).toBe(true);
   });
@@ -131,6 +131,16 @@ describe("CustomEditor", () => {
 
     expect(rendered).toContain("hello");
     expect(rendered).not.toContain("Type a prompt");
+  });
+
+  test("aligns the empty cursor with the first typed character", () => {
+    const editor = createEditor();
+    const placeholderLine = plain(editor.render(56)[1] ?? "");
+
+    editor.setText("text");
+    const typedLine = plain(editor.render(56)[1] ?? "");
+
+    expect(typedLine.indexOf("text")).toBe(placeholderLine.indexOf("Type a prompt"));
   });
 
   test("updates the composer mode label", () => {
@@ -167,14 +177,14 @@ describe("CustomEditor", () => {
     expect(plain(editor.render(40)[1] ?? "")).toContain("!> ");
 
     editor.setApprovalMode("normal");
-    editor.setText("!pwd");
-    expect(plain(editor.render(40)[1] ?? "")).toContain("?! pwd");
+    editor.setText("$pwd");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("?$ pwd");
 
     editor.setApprovalMode("auto");
-    expect(plain(editor.render(40)[1] ?? "")).toContain("!! pwd");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("!$ pwd");
 
     editor.setText("/help");
-    expect(plain(editor.render(40)[1] ?? "")).toContain("/  help");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("!/ help");
   });
 
   test("does not rewrite leading @ paths on submission", () => {
@@ -182,6 +192,15 @@ describe("CustomEditor", () => {
 
     expect(editor.prepareSubmission("@README.md")).toBe("@README.md");
     expect(editor.prepareSubmission("  @docs/16-tui-plan.md  ")).toBe("  @docs/16-tui-plan.md  ");
+  });
+
+  test("expands leading dollar shell intent on submission", () => {
+    const editor = createEditor();
+
+    expect(editor.prepareSubmission("$pwd")).toBe(
+      "Run this shell command through the terminal provider: pwd",
+    );
+    expect(editor.prepareSubmission("!pwd")).toBe("!pwd");
   });
 
   test("requests a redraw when clearing a slash draft", () => {

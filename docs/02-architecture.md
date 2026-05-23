@@ -116,7 +116,8 @@ The session supervisor is a public SLOP provider for managing multiple ordinary
 agent sessions. It is separate from the per-session provider:
 
 - `/session` reports launch-scope metadata, the launch-scope resume session,
-  client lease counts, and exposes `create_session` and `select_session`.
+  client lease counts, and exposes `create_session`, `select_session`, and
+  `reload_config`.
 - `/sessions` lists live and dormant session records and exposes per-session
   `select_session` and, when live, `stop_session` affordances.
 - `/scopes` lists configured workspace/project scopes that can launch new
@@ -139,6 +140,14 @@ through the normal session snapshot recovery path. Each supervised session still
 loads config through the normal scoped launcher and still exposes the standard
 `/session`, `/llm`, `/turn`, `/goal`, `/extensions`, `/composer`, `/queue`,
 `/transcript`, `/activity`, `/approvals`, `/tasks`, and `/apps` surface.
+
+`/session.reload_config` on the supervisor refreshes the supervisor's cached
+base config and projected `/scopes`; it does not rewrite existing live session
+provider wiring. `/session.reload_config` on an individual session reloads that
+session's scoped config, refreshes LLM profile state, and marks the session
+restart-required when provider, plugin, policy, or agent wiring changed. Config
+reload does not change approval mode; approval mode is Session state, not config
+state.
 
 The supervisor owns lifecycle bookkeeping only. It does not schedule work,
 route tasks, mutate provider wiring, or become a privileged orchestrator.

@@ -106,6 +106,7 @@ describe("SessionSupervisorProvider", () => {
       projectId: "app",
       title: "App Session",
       sessionId: "app-session",
+      approvalMode: "auto",
     });
     expect(appSession.socketPath).toContain("app-session");
     expect(appSession).toMatchObject({
@@ -114,6 +115,7 @@ describe("SessionSupervisorProvider", () => {
       queuedCount: 0,
       pendingApprovalCount: 0,
       runningTaskCount: 0,
+      approvalMode: "auto",
     });
     expect(appSession.goalStatus).toBeUndefined();
     await expect(supervisor.createSession({ sessionId: "app-session" })).rejects.toThrow(
@@ -128,6 +130,7 @@ describe("SessionSupervisorProvider", () => {
       expect(snapshot.session.workspaceRoot).toBe(projectRoot);
       expect(snapshot.llm.selectedModel).toBe("project-model");
       expect(snapshot.llm.status).toBe("needs_credentials");
+      expect(snapshot.approvalMode).toBe("auto");
     } finally {
       appClient.disconnect();
     }
@@ -144,6 +147,7 @@ describe("SessionSupervisorProvider", () => {
         turnState: "idle",
         goalStatus: undefined,
         queuedCount: 0,
+        approvalMode: "auto",
       }),
     );
 
@@ -156,6 +160,7 @@ describe("SessionSupervisorProvider", () => {
       expect.objectContaining({
         id: "workspace-session",
         runtimeStatus: "dormant",
+        approvalMode: "auto",
       }),
     );
     expect(existsSync(workspaceSession.socketPath)).toBe(false);
@@ -200,6 +205,7 @@ describe("SessionSupervisorProvider", () => {
       initial: {
         session_id: "initial-cleanup",
         title: "Initial Cleanup",
+        approval_mode: "auto",
       },
     });
     providers.push(running.provider);
@@ -207,6 +213,13 @@ describe("SessionSupervisorProvider", () => {
 
     expect(existsSync(supervisorSocket)).toBe(true);
     expect(existsSync(running.initialSession!.socketPath)).toBe(true);
+    const initialClient = new SessionClient(running.initialSession!.socketPath);
+    try {
+      const snapshot = await initialClient.connect();
+      expect(snapshot.approvalMode).toBe("auto");
+    } finally {
+      initialClient.disconnect();
+    }
 
     running.listener.close();
     listeners.splice(listeners.indexOf(running.listener), 1);
@@ -251,12 +264,17 @@ describe("SessionSupervisorProvider", () => {
     const created = await firstClient.createSession({
       sessionId: "restore-session",
       title: "Restore Session",
+      approvalMode: "auto",
     });
     expect(created.runtimeStatus).toBe("live");
     await firstClient.unregisterClientLease();
     await firstClient.stopSession("restore-session");
     expect(firstClient.getSnapshot().sessions).toContainEqual(
-      expect.objectContaining({ id: "restore-session", runtimeStatus: "dormant" }),
+      expect.objectContaining({
+        id: "restore-session",
+        runtimeStatus: "dormant",
+        approvalMode: "auto",
+      }),
     );
     firstClient.disconnect();
     first.listener.close();
@@ -285,6 +303,7 @@ describe("SessionSupervisorProvider", () => {
     try {
       const snapshot = await sessionClient.connect();
       expect(snapshot.session.sessionId).toBe("restore-session");
+      expect(snapshot.approvalMode).toBe("auto");
     } finally {
       sessionClient.disconnect();
       secondClient.disconnect();
@@ -342,6 +361,196 @@ describe("SessionSupervisorProvider", () => {
       expect.objectContaining({ id: a.id, runtimeStatus: "dormant" }),
     );
     first.disconnect();
+  });
+
+  test("new sessions inherit approval mode from the selected session", async () => {
+    const home = await createTempDir("sloppy-supervisor-approval-home-");
+    const workspace = await createTempDir("sloppy-supervisor-approval-workspace-");
+    await writeConfig(
+      home,
+      [
+        "llm:",
+        "  provider: openai",
+        "  model: approval-model",
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-approval-${crypto.randomUUID()}.sock`;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      launchScope: { key: "approval-scope", root: workspace },
+      register: false,
+      initial: false,
+    });
+    providers.push(running.provider);
+    listeners.push(running.listener);
+
+    const supervisor = new SessionSupervisorClient(socketPath);
+    await supervisor.connect();
+    await supervisor.registerClientLease();
+    await supervisor.createSession({
+      sessionId: "approval-source",
+      approvalMode: "auto",
+    });
+    const inherited = await supervisor.createSession({ sessionId: "approval-inherited" });
+
+    const session = new SessionClient(inherited.socketPath);
+    try {
+      const snapshot = await session.connect();
+      expect(snapshot.approvalMode).toBe("auto");
+    } finally {
+      session.disconnect();
+      supervisor.disconnect();
+    }
+  });
+
+  test("scope item session creation inherits approval mode from the selected session", async () => {
+    const home = await createTempDir("sloppy-supervisor-scope-approval-home-");
+    const workspace = await createTempDir("sloppy-supervisor-scope-approval-workspace-");
+    const projectRoot = join(workspace, "apps/app");
+    await mkdir(projectRoot, { recursive: true });
+    await writeConfig(
+      home,
+      [
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  items:",
+        "    main:",
+        "      name: Main",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+        "      projects:",
+        "        app:",
+        "          name: App",
+        "          root: apps/app",
+        "          configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+    await writeConfig(workspace, "llm:\n  provider: openai\n  model: scope-workspace-model\n");
+    await writeConfig(projectRoot, "llm:\n  model: scope-project-model\n");
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-scope-approval-${crypto.randomUUID()}.sock`;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      launchScope: { key: "scope-approval", root: workspace },
+      register: false,
+      initial: false,
+    });
+    providers.push(running.provider);
+    listeners.push(running.listener);
+
+    const supervisor = new SessionSupervisorClient(socketPath);
+    await supervisor.connect();
+    await waitForScopes(supervisor);
+    await supervisor.registerClientLease();
+    await supervisor.createSession({
+      sessionId: "scope-approval-source",
+      approvalMode: "auto",
+    });
+    const inherited = await supervisor.createSessionInScope("main/app", {
+      sessionId: "scope-approval-inherited",
+    });
+
+    const session = new SessionClient(inherited.socketPath);
+    try {
+      const snapshot = await session.connect();
+      expect(snapshot.session.workspaceId).toBe("main");
+      expect(snapshot.session.projectId).toBe("app");
+      expect(snapshot.approvalMode).toBe("auto");
+    } finally {
+      session.disconnect();
+      supervisor.disconnect();
+    }
+  });
+
+  test("supervisor reload_config refreshes configured scopes", async () => {
+    const home = await createTempDir("sloppy-supervisor-reload-home-");
+    const workspace = await createTempDir("sloppy-supervisor-reload-workspace-");
+    const projectRoot = join(workspace, "apps/app");
+    await mkdir(projectRoot, { recursive: true });
+    await writeConfig(
+      home,
+      [
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  items:",
+        "    main:",
+        "      name: Main",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+    await writeConfig(workspace, "llm:\n  provider: openai\n  model: reload-model\n");
+    await writeConfig(projectRoot, "llm:\n  model: reload-project-model\n");
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-reload-${crypto.randomUUID()}.sock`;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      register: false,
+      initial: false,
+    });
+    providers.push(running.provider);
+    listeners.push(running.listener);
+
+    const supervisor = new SessionSupervisorClient(socketPath);
+    await supervisor.connect();
+    await waitForScopes(supervisor);
+    expect(supervisor.getSnapshot().scopes.map((scope) => scope.id)).toEqual(["main"]);
+
+    await writeConfig(
+      home,
+      [
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  items:",
+        "    main:",
+        "      name: Main",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+        "      projects:",
+        "        app:",
+        "          name: App",
+        "          root: apps/app",
+        "          configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+
+    const result = await supervisor.reloadConfig();
+    expect(result.status).toBe("ok");
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        supervisor
+          .getSnapshot()
+          .scopes.map((scope) => scope.id)
+          .includes("main/app")
+      ) {
+        break;
+      }
+      await Bun.sleep(25);
+    }
+    expect(supervisor.getSnapshot().scopes.map((scope) => scope.id)).toEqual(["main", "main/app"]);
+    supervisor.disconnect();
   });
 
   test("auto-close stops an idle managed supervisor after leases disconnect", async () => {

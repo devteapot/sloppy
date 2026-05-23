@@ -24,9 +24,23 @@ export function buildCommandPaletteCommands(
   commands.push({
     id: "approval-mode:toggle",
     label: "Toggle approval mode",
-    description: "Switch the local TUI between normal and auto approvals",
+    description: "Switch the session between normal and auto approvals",
     command: { type: "approval_mode", mode: "toggle" },
   });
+  commands.push({
+    id: "config:reload-session",
+    label: "Reload session config",
+    description: "Reload config for the selected session",
+    command: { type: "config_reload", target: "session" },
+  });
+  if (supervisor) {
+    commands.push({
+      id: "config:reload-supervisor",
+      label: "Reload supervisor config",
+      description: "Refresh supervisor config and available scopes",
+      command: { type: "config_reload", target: "supervisor" },
+    });
+  }
 
   for (const item of snapshot.queue) {
     if (item.canCancel) {
