@@ -345,7 +345,11 @@ export function buildChatLogEntries(
   const messages = assembleTranscript(snapshot.transcript, {
     thinking: options.thinking ?? "default",
   }).flatMap(messageEntries);
-  const tools = buildToolEntries(buildToolPairs(snapshot.activity), options);
+  const tools = buildToolEntries(
+    buildToolPairs(snapshot.activity),
+    options,
+    messages.map((entry) => entry.seq),
+  );
   return [...messages, ...tools]
     .filter((item) => item.content.length > 0)
     .sort((left, right) => left.seq - right.seq)
@@ -420,12 +424,13 @@ function entryRendererKey(entry: ChatLogEntry): string {
 function buildToolEntries(
   pairs: ToolActivityPair[],
   options: { verbosity: Verbosity; width: number },
+  barrierSeqs: number[],
 ): Array<ToolChatLogEntry & { seq: number }> {
   const entries: Array<ToolChatLogEntry & { seq: number }> = [];
   const orderedPairs = [...pairs].sort((left, right) => toolPairSeq(left) - toolPairSeq(right));
   const groups =
     options.verbosity === "compact"
-      ? groupConsecutiveToolPairs(orderedPairs)
+      ? groupConsecutiveToolPairs(orderedPairs, barrierSeqs)
       : orderedPairs.map((pair) => [pair]);
 
   for (const group of groups) {
@@ -453,17 +458,30 @@ function buildToolEntries(
   return entries;
 }
 
-function groupConsecutiveToolPairs(pairs: ToolActivityPair[]): ToolActivityPair[][] {
+function groupConsecutiveToolPairs(
+  pairs: ToolActivityPair[],
+  barrierSeqs: number[],
+): ToolActivityPair[][] {
   const groups: ToolActivityPair[][] = [];
   for (const pair of pairs) {
     const previous = groups[groups.length - 1];
-    if (previous && toolActivityGroupKey(previous[0]) === toolActivityGroupKey(pair)) {
+    const previousPair = previous?.at(-1);
+    if (
+      previous &&
+      previousPair &&
+      toolActivityGroupKey(previous[0]) === toolActivityGroupKey(pair) &&
+      !hasBarrierBetween(toolPairSeq(previousPair), toolPairSeq(pair), barrierSeqs)
+    ) {
       previous.push(pair);
     } else {
       groups.push([pair]);
     }
   }
   return groups;
+}
+
+function hasBarrierBetween(startSeq: number, endSeq: number, barrierSeqs: number[]): boolean {
+  return barrierSeqs.some((seq) => seq > startSeq && seq < endSeq);
 }
 
 function toolPairId(pair: ToolActivityPair): string {
