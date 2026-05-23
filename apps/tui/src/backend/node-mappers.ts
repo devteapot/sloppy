@@ -475,15 +475,8 @@ export function mapApprovalsNode(node: SlopNode | null | undefined): ApprovalIte
   });
 }
 
-export function mapApprovalMode(
-  node: SlopNode | null | undefined,
-  fallback: ApprovalMode,
-): ApprovalMode {
-  const mode = props(node).approval_mode;
-  if (mode === "auto" || mode === "normal") {
-    return mode;
-  }
-  return fallback;
+export function mapApprovalMode(node: SlopNode | null | undefined): ApprovalMode {
+  return stringProp(props(node), "approval_mode") === "auto" ? "auto" : "normal";
 }
 
 export function mapTasksNode(node: SlopNode | null | undefined): TaskItem[] {
@@ -658,7 +651,7 @@ export function applyPathSnapshot(
     case "/approvals":
       return withActions({
         ...snapshot,
-        approvalMode: mapApprovalMode(node, snapshot.approvalMode),
+        approvalMode: mapApprovalMode(node),
         approvals: mapApprovalsNode(node),
       });
     case "/tasks":

@@ -215,14 +215,7 @@ export class SessionClient {
   }
 
   async setApprovalMode(mode: ApprovalMode): Promise<ResultMessage> {
-    const result = await this.invoke("/approvals", "set_mode", { mode });
-    if (result.status === "ok") {
-      const runtimeMode = approvalModeFromResult(result);
-      const approvals = await (await this.ensureConsumer()).query("/approvals", 2);
-      const next = applyPathSnapshot(this.snapshot, "/approvals", approvals);
-      this.updateSnapshot(runtimeMode ? { ...next, approvalMode: runtimeMode } : next);
-    }
-    return result;
+    return this.invoke("/approvals", "set_mode", { mode });
   }
 
   async cancelTask(id: string): Promise<ResultMessage> {
@@ -588,13 +581,4 @@ function createTransportFromLabel(label: string) {
   }
 
   throw new Error(`Unsupported inspect transport: ${label}`);
-}
-
-function approvalModeFromResult(result: ResultMessage): ApprovalMode | null {
-  const data = result.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return null;
-  }
-  const mode = (data as Record<string, unknown>).mode;
-  return mode === "auto" || mode === "normal" ? mode : null;
 }
