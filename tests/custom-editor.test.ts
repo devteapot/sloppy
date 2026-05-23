@@ -110,15 +110,16 @@ function plain(value: string): string {
 }
 
 describe("CustomEditor", () => {
-  test("renders a boxed composer with mode label and prompt gutter", () => {
+  test("renders a rounded composer with mode label and prompt gutter", () => {
     const editor = createEditor();
     const lines = editor.render(56);
 
     expect(lines).toHaveLength(3);
     expect(plain(lines[0] ?? "")).toContain(" default ");
+    expect(plain(lines[0] ?? "")).toMatch(/^╭─+ default ╮$/);
     expect(plain(lines[1] ?? "")).toContain("> ");
-    expect(plain(lines[1] ?? "")).toContain("Type a prompt or / for commands");
-    expect(plain(lines[2] ?? "")).toMatch(/^└─+┘$/);
+    expect(plain(lines[1] ?? "")).toContain("Type a prompt, / for commands, or ! for shell");
+    expect(plain(lines[2] ?? "")).toMatch(/^╰─+╯$/);
     expect(lines.every((line) => visibleWidth(line) === 56)).toBe(true);
   });
 

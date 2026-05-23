@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { EMPTY_SESSION_VIEW } from "../apps/tui/src/backend/node-mappers";
 import type {
@@ -127,7 +128,7 @@ describe("ChatLog", () => {
     ]);
   });
 
-  test("renders user messages with a muted box", () => {
+  test("renders user messages with a left accent and no background highlight", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -145,10 +146,13 @@ describe("ChatLog", () => {
 
     const lines = log.children[0]?.render(40) ?? [];
     const rendered = lines.join("\n");
-    expect(rendered).toContain("┌");
+    expect(rendered).not.toContain("\x1b[48;5;237m");
+    expect(rendered).toContain("\x1b[38;5;214m▌");
     expect(rendered).toContain("hello");
-    expect(rendered).toContain("└");
-    expect(lines).toHaveLength(3);
+    expect(rendered).not.toContain("┌");
+    expect(rendered).not.toContain("└");
+    expect(lines).toHaveLength(1);
+    expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
   });
 
   test("pads non-composer chat content horizontally", () => {

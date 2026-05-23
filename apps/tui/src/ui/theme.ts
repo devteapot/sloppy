@@ -19,7 +19,6 @@ export const red = sgr("31", "39");
 export const teal = sgr("38;5;43", "39");
 export const bgAdd = sgr("48;5;22", "49");
 export const bgRemove = sgr("48;5;52", "49");
-export const userMessageOverlay = sgr("48;5;237", "49");
 
 export const selectListTheme: SelectListTheme = {
   selectedPrefix: plain,

@@ -19,7 +19,7 @@ import {
 } from "../state/stream-assembler";
 import { safeMarkdownText, safePlainText } from "./render-safety";
 import { PlainTranscriptText, SafeMarkdown, StreamingMarkdown } from "./streaming-markdown";
-import { dim, markdownTheme } from "./theme";
+import { markdownTheme, orange } from "./theme";
 import {
   renderToolCallCard,
   renderToolCallGroup,
@@ -142,7 +142,7 @@ class TranscriptMessageComponent implements Component {
       key,
       "user",
       content,
-      () => new BorderedUserMessage(content),
+      () => new HighlightedUserMessage(content),
     );
     this.pruneInactiveBlocks(new Set([key]));
     return component.render(width);
@@ -198,7 +198,7 @@ class BottomPaddedText extends Text {
   }
 }
 
-class BorderedUserMessage implements Component {
+class HighlightedUserMessage implements Component {
   private text: string;
   private cachedText?: string;
   private cachedWidth?: number;
@@ -225,20 +225,15 @@ class BorderedUserMessage implements Component {
     }
 
     const outerWidth = Math.max(8, Math.floor(width));
-    const innerWidth = outerWidth - 2;
-    const contentWidth = Math.max(1, innerWidth - 2);
+    const contentWidth = Math.max(1, outerWidth - 3);
     const contentLines = wrapTextWithAnsi(
       safePlainText(this.text).replace(/\t/g, "   "),
       contentWidth,
     );
-    const border = dim;
-    const lines = [
-      border(`┌${"─".repeat(innerWidth)}┐`),
-      ...contentLines.map(
-        (line) => `${border("│")} ${padToWidth(line, contentWidth)} ${border("│")}`,
-      ),
-      border(`└${"─".repeat(innerWidth)}┘`),
-    ];
+    const renderedLines = contentLines.length > 0 ? contentLines : [""];
+    const lines = renderedLines.map(
+      (line) => `${orange("▌")} ${orange(padToWidth(line, contentWidth))} `,
+    );
 
     this.cachedText = this.text;
     this.cachedWidth = width;

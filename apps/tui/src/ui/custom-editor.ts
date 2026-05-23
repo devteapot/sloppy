@@ -103,13 +103,13 @@ export class CustomEditor extends Editor {
     const label = ` ${this.modeLabel} `;
     const style = this.modeFrameStyle();
     if (visibleWidth(label) >= innerWidth) {
-      return style(`┌${"─".repeat(innerWidth)}┐`);
+      return style(`╭${"─".repeat(innerWidth)}╮`);
     }
-    return style(`┌${"─".repeat(innerWidth - visibleWidth(label))}${label}┐`);
+    return style(`╭${"─".repeat(innerWidth - visibleWidth(label))}${label}╮`);
   }
 
   private renderBottomBorder(width: number): string {
-    return this.modeFrameStyle()(`└${"─".repeat(width - 2)}┘`);
+    return this.modeFrameStyle()(`╰${"─".repeat(width - 2)}╯`);
   }
 
   private renderBoxLine(content: string, innerWidth: number): string {
