@@ -30,7 +30,7 @@ Implemented:
   the configured session persistence directory
 - fresh-session default launch plus `sloppy --continue` for selecting the
   launch-scope resume session
-- `--yolo` launch flag for setting the selected session's approval posture to
+- `--yolo` launch flag for setting the selected session's approval mode to
   `auto` before interaction
 - attach mode via `bun run tui -- --socket <session.sock>`
 - supervisor mode via `bun run tui -- --supervisor <supervisor.sock>` or
@@ -53,7 +53,7 @@ Implemented:
 - above-composer turn status text rendered from the TUI human label mapper
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `plan`
-- session approval posture with `/approval [normal|auto]`; the TUI invokes the
+- session approval mode with `/approval [normal|auto]`; the TUI invokes the
   public `/approvals.set_mode` affordance and renders the session-owned mode
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
 - composer autocomplete for command-name-only slash completion from built-in
@@ -157,8 +157,9 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 - Enter: submit composer text or slash command
 - Ctrl+K: command palette
 - Shift+Tab: cycle mode chip between `default` and `plan`
-- `/approval [normal|auto]`: show or set the session approval posture
-- `--yolo`: launch with session approval posture set to `auto`
+- `/approval [normal|auto]`: show or set the session approval mode
+- `--yolo`: launch or attach with session approval mode set to `auto`; on an
+  existing Session this mutates shared Session state until `/approval normal`
 - Esc: close overlay, otherwise clear slash-command draft, otherwise cancel active turn when cancellable
 - Ctrl+K: command palette, including approval/task actions
 - Ctrl+C: disconnect session/supervisor and exit
@@ -167,7 +168,7 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 
 - The TUI remains a consumer of public SLOP state and affordances.
 - Interaction mode labels in the composer frame are local TUI presentation state.
-- Approval posture is shared session behavior exposed through public session
+- Approval mode is shared session behavior exposed through public session
   state; first-party UI clients render and invoke that boundary rather than
   owning auto-approval policy locally.
 - Turn state is rendered above the composer through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.

@@ -41,16 +41,16 @@ one global active session; each connected UI keeps its selected session through 
 connection-bound supervisor client lease. Its `/sessions` items include runtime
 status plus compact live turn, goal, queue, pending approval, running task, and
 last-activity summary fields so UIs can compare supervised sessions without
-reading runtime internals. Each supervised session still exposes the
+reading runtime internals. When `create_session` omits `approval_mode`, the
+supervisor propagates approval mode from the caller's selected session, then from
+the launch-scope resume session. Each supervised session still exposes the
 single-session contract described in this document.
 
 ---
 
 ## Session Model
 
-The recommended model is one provider instance per session.
-
-That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
+The recommended model is one provider instance per session. That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
 
 Recommended properties of a session provider instance:
 
@@ -725,7 +725,7 @@ Purpose:
 
 - expose actions blocked on explicit user approval
 - mirror provider-native approval state rather than owning the downstream approval policy itself
-- expose the session-owned approval posture so all clients can observe and
+- expose the session-owned approval mode so all clients can observe and
   update whether pending approvals are handled normally or automatically
 
 Collection props:
@@ -768,9 +768,12 @@ Rules:
 - when at least one approval is pending, `/turn.state` should become `waiting_approval`
 - approving or rejecting should patch both the approval item and `/turn`
 - approval items are expected to correspond to real downstream provider approval nodes and should forward resolution back to that provider
-- when `approval_mode=auto`, the session runtime should approve pending
-  approvals with available `approve` affordances; clients only set and render
-  the policy
+- when `approval_mode=auto`, the session runtime should approve every pending
+  approval in the Session with an available `approve` affordance; clients only
+  set and render the mode
+- auto-approval failures should not demote `approval_mode` to `normal`; the
+  failure should be recorded and the unresolved approval should remain visible
+  for manual resolution or inspection
 - resolved approvals may remain visible for session history unless trimmed by retention policy
 
 ### `/tasks`
@@ -918,8 +921,8 @@ When session snapshot persistence is enabled, the runtime writes the public
 session snapshot after each state mutation. Restoring a snapshot is intentionally
 state-first rather than a hidden replay engine:
 
-- completed transcript, queued input, activity, approvals, tasks, apps, and LLM state are
-  restored for inspection
+- completed transcript, queued input, activity, approvals, tasks, apps, LLM state,
+  and approval mode are restored for inspection
 - client connections are never restored
 - in-flight model turns cannot be replayed safely, so they are marked `error`
   with `recovered_after_restart=true`

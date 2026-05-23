@@ -261,6 +261,7 @@ describe("SessionSupervisorProvider", () => {
     const created = await firstClient.createSession({
       sessionId: "restore-session",
       title: "Restore Session",
+      approvalMode: "auto",
     });
     expect(created.runtimeStatus).toBe("live");
     await firstClient.unregisterClientLease();
@@ -295,6 +296,7 @@ describe("SessionSupervisorProvider", () => {
     try {
       const snapshot = await sessionClient.connect();
       expect(snapshot.session.sessionId).toBe("restore-session");
+      expect(snapshot.approvalMode).toBe("auto");
     } finally {
       sessionClient.disconnect();
       secondClient.disconnect();

@@ -436,7 +436,7 @@ describe("TUI v2 manifest mapping", () => {
     ).toBeUndefined();
   });
 
-  test("parses local approval mode commands", () => {
+  test("parses session approval mode commands", () => {
     expect(parseLocalCommand("/approval")).toEqual({ type: "approval_mode", mode: "show" });
     expect(parseLocalCommand("/approval normal")).toEqual({
       type: "approval_mode",

@@ -88,6 +88,12 @@ function activity(
   };
 }
 
+function expectBottomPadding(lines: string[], width: number): void {
+  expect(lines.length).toBeGreaterThan(1);
+  expect(lines.at(-1)).toBe(" ".repeat(width));
+  expect(stripAnsi(lines[0] ?? "").trim()).not.toBe("");
+}
+
 describe("ChatLog", () => {
   test("builds block-aware entries for user and streaming assistant messages", () => {
     const entries = buildChatLogEntries(
@@ -128,7 +134,7 @@ describe("ChatLog", () => {
     ]);
   });
 
-  test("renders user messages with a left accent and no background highlight", () => {
+  test("renders user messages with a left accent and bottom padding", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -151,11 +157,12 @@ describe("ChatLog", () => {
     expect(rendered).toContain("hello");
     expect(rendered).not.toContain("┌");
     expect(rendered).not.toContain("└");
-    expect(lines).toHaveLength(1);
+    expect(lines).toHaveLength(2);
+    expect(lines.at(-1)).toBe(" ".repeat(40));
     expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
   });
 
-  test("pads non-composer chat content horizontally", () => {
+  test("pads assistant chat content horizontally and only below", () => {
     const log = new ChatLog();
     log.update(
       snapshotWith({
@@ -172,7 +179,26 @@ describe("ChatLog", () => {
     );
 
     const lines = log.children[0]?.render(20) ?? [];
-    expect(lines.some((line) => line.startsWith(" part"))).toBe(true);
+    expect(stripAnsi(lines[0] ?? "")).toContain("part");
+    expect(lines[0]?.startsWith(" part")).toBe(true);
+    expectBottomPadding(lines, 20);
+  });
+
+  test("pads thinking chat content only below", () => {
+    const log = new ChatLog();
+    log.update(
+      snapshotWith({
+        transcript: [thinkingMessage({ id: "assistant-thinking", seq: 1, display: "hidden" })],
+      }),
+      { thinking: "expanded" },
+    );
+
+    const thinkingLines = log.children[0]?.render(30) ?? [];
+    const assistantLines = log.children[1]?.render(30) ?? [];
+    expect(stripAnsi(thinkingLines[0] ?? "")).toContain("[thinking");
+    expect(stripAnsi(assistantLines[0] ?? "")).toContain("final answer");
+    expectBottomPadding(thinkingLines, 30);
+    expectBottomPadding(assistantLines, 30);
   });
 
   test("uses final markdown for completed assistant and system entries, plain for tools", () => {

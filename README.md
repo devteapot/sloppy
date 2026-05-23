@@ -380,7 +380,9 @@ bun run session:serve -- --yolo
 ```
 
 `--yolo` sets the same public `/approvals.approval_mode` state controlled by
-`/approval auto` in the TUI.
+`/approval auto` in the TUI. When used with `--continue` or an existing session
+socket, it mutates that Session's shared approval mode to `auto` until a client
+sets `/approval normal`.
 
 To attach to an existing session provider socket directly, use:
 

@@ -376,7 +376,7 @@ describe("runHeadlessSingleShot", () => {
     expect(metrics.turn?.state).toBe("idle");
   });
 
-  test("yolo mode auto-approves approval-gated single-shot turns", async () => {
+  test("--yolo auto-approves approval-gated single-shot turns", async () => {
     const harness = createAutoApprovalAgentHarness();
     let stdout = "";
     let stderr = "";

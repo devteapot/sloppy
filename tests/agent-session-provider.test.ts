@@ -1999,7 +1999,7 @@ describe("AgentSessionProvider", () => {
     }
   });
 
-  test("session approval mode auto-approves pending approvals", async () => {
+  test("session approval mode auto-approves pending approvals across the session", async () => {
     const harness = createApprovalHarnessFactory();
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,

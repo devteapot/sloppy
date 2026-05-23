@@ -54,14 +54,14 @@ export class ChatLog extends Container {
 
     this.clear();
     if (timeline.length === 0) {
-      this.addChild(new Markdown("No transcript yet.", CONTENT_PADDING_X, 0, markdownTheme));
+      this.addChild(new BottomPaddedMarkdown("No transcript yet."));
     }
     for (const item of timeline) {
       this.addChild(this.renderEntry(item));
     }
     const cards = inlineCards(snapshot);
     if (cards.length > 0) {
-      this.addChild(new Markdown(cards.join("\n\n"), CONTENT_PADDING_X, 1, markdownTheme));
+      this.addChild(new BottomPaddedMarkdown(cards.join("\n\n")));
     }
   }
 
@@ -116,7 +116,7 @@ class TranscriptMessageComponent implements Component {
 
   render(width: number): string[] {
     if (this.message.role === "user") {
-      return this.renderUserMessage(width);
+      return withBottomPadding(this.renderUserMessage(width), width);
     }
 
     const activeKeys = new Set<string>();
@@ -132,7 +132,7 @@ class TranscriptMessageComponent implements Component {
       lines.push(...component.render(width));
     }
     this.pruneInactiveBlocks(activeKeys);
-    return lines;
+    return withBottomPadding(lines, width);
   }
 
   private renderUserMessage(width: number): string[] {
@@ -193,8 +193,17 @@ class BottomPaddedText extends Text {
   }
 
   render(width: number): string[] {
-    const lines = super.render(width);
-    return lines.length > 0 ? [...lines, " ".repeat(width)] : lines;
+    return withBottomPadding(super.render(width), width);
+  }
+}
+
+class BottomPaddedMarkdown extends Markdown {
+  constructor(text: string) {
+    super(text, CONTENT_PADDING_X, 0, markdownTheme);
+  }
+
+  render(width: number): string[] {
+    return withBottomPadding(super.render(width), width);
   }
 }
 
@@ -244,15 +253,19 @@ class HighlightedUserMessage implements Component {
 
 function createBlockComponent(rendererKey: string, content: string): UpdatableComponent {
   if (rendererKey === "streaming-markdown") {
-    return new StreamingMarkdown(content, CONTENT_PADDING_X, 1);
+    return new StreamingMarkdown(content, CONTENT_PADDING_X, 0);
   }
   if (rendererKey === "final-markdown") {
-    return new SafeMarkdown(content, "final", CONTENT_PADDING_X, 1);
+    return new SafeMarkdown(content, "final", CONTENT_PADDING_X, 0);
   }
   if (rendererKey === "tolerant-markdown") {
-    return new SafeMarkdown(content, "tolerant", CONTENT_PADDING_X, 1);
+    return new SafeMarkdown(content, "tolerant", CONTENT_PADDING_X, 0);
   }
-  return new PlainTranscriptText(content, CONTENT_PADDING_X, 1);
+  return new PlainTranscriptText(content, CONTENT_PADDING_X, 0);
+}
+
+function withBottomPadding(lines: string[], width: number): string[] {
+  return lines.length > 0 ? [...lines, " ".repeat(width)] : lines;
 }
 
 function blockRendererKey(message: RenderableMessage, block: RenderableBlock): string {
