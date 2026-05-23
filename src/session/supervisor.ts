@@ -22,12 +22,14 @@ import {
 import { SessionService } from "./service";
 import type { UnixListener } from "./socket";
 import { listenSessionSupervisor } from "./supervisor-listener";
+import type { ApprovalMode } from "./types";
 
 export type SessionScopeInput = {
   workspace_id?: string;
   project_id?: string;
   title?: string;
   session_id?: string;
+  approval_mode?: ApprovalMode;
 };
 
 export type SessionRecord = {
@@ -163,6 +165,30 @@ function registryRecordFromSession(record: SessionRecord): SessionRegistryRecord
 function stringParam(params: Record<string, unknown>, name: string): string | undefined {
   const value = params[name];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function approvalModeParam(
+  params: Record<string, unknown>,
+  name: string,
+): ApprovalMode | undefined {
+  const value = params[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "normal" || value === "auto") {
+    return value;
+  }
+  throw new Error(`${name} must be 'normal' or 'auto'.`);
+}
+
+function sessionScopeInputFromParams(params: Record<string, unknown>): SessionScopeInput {
+  return {
+    workspace_id: stringParam(params, "workspace_id"),
+    project_id: stringParam(params, "project_id"),
+    title: stringParam(params, "title"),
+    session_id: stringParam(params, "session_id"),
+    approval_mode: approvalModeParam(params, "approval_mode"),
+  };
 }
 
 export class SessionSupervisorProvider {
@@ -302,6 +328,7 @@ export class SessionSupervisorProvider {
       sessionId,
       title,
       socketPath: sessionSocketPath(sessionId),
+      approvalMode: input.approval_mode,
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -449,7 +476,9 @@ export class SessionSupervisorProvider {
   ): Promise<Record<string, unknown> | null> {
     if (path === "/session") {
       if (actionName === "create_session") {
-        return this.publicSessionRecord(await this.createSession(params, owner));
+        return this.publicSessionRecord(
+          await this.createSession(sessionScopeInputFromParams(params), owner),
+        );
       }
       if (actionName === "select_session") {
         const sessionId = stringParam(params, "session_id");
@@ -725,8 +754,19 @@ export class SessionSupervisorProvider {
             project_id: { type: "string", optional: true },
             title: { type: "string", optional: true },
             session_id: { type: "string", optional: true },
+            approval_mode: {
+              type: "string",
+              optional: true,
+              description: "Initial approval mode: normal or auto.",
+            },
           },
-          async (input) => this.publicSessionRecord(await this.createSession(input)),
+          async (input) =>
+            this.publicSessionRecord(
+              await this.createSession({
+                ...input,
+                approval_mode: approvalModeParam(input, "approval_mode"),
+              }),
+            ),
           {
             label: "New Session",
             description: "Start a new scoped session provider and select it.",
@@ -913,14 +953,20 @@ export class SessionSupervisorProvider {
           {
             title: { type: "string", optional: true },
             session_id: { type: "string", optional: true },
+            approval_mode: {
+              type: "string",
+              optional: true,
+              description: "Initial approval mode: normal or auto.",
+            },
           },
-          async ({ title, session_id }) =>
+          async ({ title, session_id, approval_mode }) =>
             this.publicSessionRecord(
               await this.createSession({
                 workspace_id: scope.workspaceId,
                 project_id: scope.projectId,
                 title,
                 session_id,
+                approval_mode: approvalModeParam({ approval_mode }, "approval_mode"),
               }),
             ),
           {

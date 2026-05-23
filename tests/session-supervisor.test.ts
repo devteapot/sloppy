@@ -106,6 +106,7 @@ describe("SessionSupervisorProvider", () => {
       projectId: "app",
       title: "App Session",
       sessionId: "app-session",
+      approvalMode: "auto",
     });
     expect(appSession.socketPath).toContain("app-session");
     expect(appSession).toMatchObject({
@@ -128,6 +129,7 @@ describe("SessionSupervisorProvider", () => {
       expect(snapshot.session.workspaceRoot).toBe(projectRoot);
       expect(snapshot.llm.selectedModel).toBe("project-model");
       expect(snapshot.llm.status).toBe("needs_credentials");
+      expect(snapshot.approvalMode).toBe("auto");
     } finally {
       appClient.disconnect();
     }
@@ -200,6 +202,7 @@ describe("SessionSupervisorProvider", () => {
       initial: {
         session_id: "initial-cleanup",
         title: "Initial Cleanup",
+        approval_mode: "auto",
       },
     });
     providers.push(running.provider);
@@ -207,6 +210,13 @@ describe("SessionSupervisorProvider", () => {
 
     expect(existsSync(supervisorSocket)).toBe(true);
     expect(existsSync(running.initialSession!.socketPath)).toBe(true);
+    const initialClient = new SessionClient(running.initialSession!.socketPath);
+    try {
+      const snapshot = await initialClient.connect();
+      expect(snapshot.approvalMode).toBe("auto");
+    } finally {
+      initialClient.disconnect();
+    }
 
     running.listener.close();
     listeners.splice(listeners.indexOf(running.listener), 1);

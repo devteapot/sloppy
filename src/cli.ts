@@ -37,16 +37,6 @@ function summarizeApprovalResult(result: AgentRunResult | null): void {
   }
 }
 
-async function runSingleShot(prompt: string): Promise<number> {
-  return runHeadlessSingleShot({
-    prompt,
-    config: DEFAULT_CONFIG,
-    metricsPath: Bun.env.SLOPPY_CLI_METRICS_PATH,
-    writeStdout,
-    writeStderr,
-  });
-}
-
 const REPL_HELP = [
   "Commands:",
   "  /help                — show this help",
@@ -188,7 +178,14 @@ async function runRepl(): Promise<number> {
 const cliArgs = parseCliArgs(Bun.argv.slice(2));
 let exitCode: number;
 if (cliArgs.mode === "single") {
-  exitCode = await runSingleShot(cliArgs.prompt);
+  exitCode = await runHeadlessSingleShot({
+    prompt: cliArgs.prompt,
+    config: DEFAULT_CONFIG,
+    approvalMode: cliArgs.approvalMode,
+    metricsPath: Bun.env.SLOPPY_CLI_METRICS_PATH,
+    writeStdout,
+    writeStderr,
+  });
 } else if (cliArgs.mode === "help") {
   writeStdout(CLI_USAGE);
   exitCode = 0;

@@ -1,11 +1,11 @@
 import type {
+  ApprovalMode,
   PluginActionContribution,
   SessionViewSnapshot,
   TuiRoute,
 } from "../backend/slop-types";
 
 export type Verbosity = "compact" | "verbose";
-export type ApprovalMode = "normal" | "auto";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }

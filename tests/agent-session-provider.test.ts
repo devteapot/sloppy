@@ -1937,6 +1937,50 @@ describe("AgentSessionProvider", () => {
     }
   });
 
+  test("session approval mode auto-approves pending approvals", async () => {
+    const harness = createApprovalHarnessFactory();
+    const runtime = new SessionRuntime({
+      config: TEST_CONFIG,
+      sessionId: "sess-auto-approval",
+      agentFactory: harness.factory,
+      llmProfileManager: createTestProfileManager(),
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-auto-approval",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+      await consumer.subscribe("/", 5);
+
+      let approvals = await consumer.query("/approvals", 1);
+      expect(approvals.properties?.approval_mode).toBe("normal");
+      expect(approvals.affordances?.map((item) => item.action)).toContain("set_mode");
+
+      const modeResult = await consumer.invoke("/approvals", "set_mode", { mode: "auto" });
+      expect(modeResult.status).toBe("ok");
+
+      approvals = await consumer.query("/approvals", 1);
+      expect(approvals.properties?.approval_mode).toBe("auto");
+
+      await consumer.invoke("/composer", "send_message", {
+        text: "remove the file",
+      });
+      harness.emitApprovalSnapshot();
+
+      await runtime.waitForIdle();
+
+      expect(harness.approveCalls).toEqual(["approval-1"]);
+      const turn = await consumer.query("/turn", 1);
+      expect(turn.properties?.state).toBe("idle");
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
   test("async-approved action surfaces task_id to the resumed turn", async () => {
     // Regression: previously the session resume path went through
     // `agent.invokeProvider("/approvals/{id}", "approve")`. The provider

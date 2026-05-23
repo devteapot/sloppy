@@ -5,6 +5,8 @@ import {
   type SlopNode,
 } from "@slop-ai/consumer";
 
+import type { ApprovalMode } from "./slop-types";
+
 export type SupervisorSessionItem = {
   id: string;
   title?: string;
@@ -235,13 +237,20 @@ export class SessionSupervisorClient {
   }
 
   async createSession(
-    input: { workspaceId?: string; projectId?: string; title?: string; sessionId?: string } = {},
+    input: {
+      workspaceId?: string;
+      projectId?: string;
+      title?: string;
+      sessionId?: string;
+      approvalMode?: ApprovalMode;
+    } = {},
   ): Promise<SupervisorSessionItem> {
     const result = await this.invoke("/session", "create_session", {
       ...(input.workspaceId && { workspace_id: input.workspaceId }),
       ...(input.projectId && { project_id: input.projectId }),
       ...(input.title && { title: input.title }),
       ...(input.sessionId && { session_id: input.sessionId }),
+      ...(input.approvalMode && { approval_mode: input.approvalMode }),
     });
     const data = resultRecord(result);
     return mapSessionRecord(data, {

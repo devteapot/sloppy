@@ -7,6 +7,7 @@ import {
   supervisorRuntimePaths,
 } from "../../../src/session/launch-scope";
 import { SessionClient } from "./backend/session-client";
+import type { ApprovalMode } from "./backend/slop-types";
 import { SessionSupervisorClient, type SupervisorSessionItem } from "./backend/supervisor-client";
 import { handleSessionEvent, handleSupervisorEvent } from "./handlers/event-handlers";
 import { AppUi } from "./ui/app";
@@ -21,6 +22,10 @@ function readArg(argv: string[], name: string): string | null {
 
 function hasFlag(argv: string[], name: string): boolean {
   return argv.includes(name);
+}
+
+function initialApprovalMode(args: string[]): ApprovalMode | undefined {
+  return hasFlag(args, "--yolo") ? "auto" : undefined;
 }
 
 function supervisorSocketArg(args: string[]): string | null {
@@ -120,6 +125,7 @@ async function chooseManagedSession(
     projectId: readArg(args, "--project-id") ?? undefined,
     title: readArg(args, "--title") ?? undefined,
     sessionId: readArg(args, "--session-id") ?? undefined,
+    approvalMode: initialApprovalMode(args),
   });
 }
 
@@ -142,7 +148,7 @@ async function initialSessionForExplicitSupervisor(
   const live = snapshot.sessions.find((session) => session.runtimeStatus === "live");
   const selected = resume ?? live ?? snapshot.sessions[0];
   if (!selected) {
-    return supervisor.createSession();
+    return supervisor.createSession({ approvalMode: initialApprovalMode(args) });
   }
   return selected.runtimeStatus === "live" ? selected : supervisor.switchSession(selected.id);
 }
@@ -199,6 +205,9 @@ export async function runTui(args = process.argv.slice(2)): Promise<number> {
   });
 
   await client.connect();
+  if (initialApprovalMode(args) === "auto") {
+    await client.setApprovalMode("auto");
+  }
   app.start();
   return 0;
 }

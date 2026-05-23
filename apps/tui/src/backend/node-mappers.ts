@@ -4,6 +4,7 @@ import type {
   ActivityItem,
   AppItem,
   ApprovalItem,
+  ApprovalMode,
   ComposerState,
   GoalState,
   InspectState,
@@ -91,6 +92,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
     canSend: false,
     disabledReason: "Session provider is not connected.",
   },
+  approvalMode: "normal",
   transcript: [],
   activity: [],
   approvals: [],
@@ -473,6 +475,17 @@ export function mapApprovalsNode(node: SlopNode | null | undefined): ApprovalIte
   });
 }
 
+export function mapApprovalMode(
+  node: SlopNode | null | undefined,
+  fallback: ApprovalMode,
+): ApprovalMode {
+  const mode = props(node).approval_mode;
+  if (mode === "auto" || mode === "normal") {
+    return mode;
+  }
+  return fallback;
+}
+
 export function mapTasksNode(node: SlopNode | null | undefined): TaskItem[] {
   return children(node).map((item) => {
     const p = props(item);
@@ -643,7 +656,11 @@ export function applyPathSnapshot(
     case "/activity":
       return withActions({ ...snapshot, activity: mapActivityNode(node) });
     case "/approvals":
-      return withActions({ ...snapshot, approvals: mapApprovalsNode(node) });
+      return withActions({
+        ...snapshot,
+        approvalMode: mapApprovalMode(node, snapshot.approvalMode),
+        approvals: mapApprovalsNode(node),
+      });
     case "/tasks":
       return withActions({ ...snapshot, tasks: mapTasksNode(node) });
     case "/apps":

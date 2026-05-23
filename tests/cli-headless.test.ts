@@ -171,6 +171,72 @@ function createApprovalAgentHarness(): {
   };
 }
 
+function createAutoApprovalAgentHarness(): {
+  factory: SessionAgentFactory;
+  approved: string[];
+} {
+  const approved: string[] = [];
+  const invocation: AgentToolInvocation = {
+    toolUseId: "tool-approval",
+    toolName: "terminal__session__execute",
+    kind: "affordance",
+    providerId: "terminal",
+    path: "/session",
+    action: "execute",
+    params: { command: "rm demo.txt" },
+  };
+
+  return {
+    approved,
+    factory: (callbacks): SessionAgent =>
+      createBaseSessionAgent({
+        chat: async () => {
+          callbacks.onToolEvent?.({
+            kind: "approval_requested",
+            invocation,
+            summary: "terminal:execute /session",
+            approvalId: "source-approval-1",
+            errorCode: "approval_required",
+            errorMessage: "Dangerous command requires approval.",
+          });
+          await Promise.resolve();
+          callbacks.onProviderSnapshot?.({
+            providerId: "terminal",
+            path: "/approvals",
+            tree: {
+              id: "approvals",
+              type: "collection",
+              children: [
+                {
+                  id: "source-approval-1",
+                  type: "item",
+                  properties: {
+                    status: "pending",
+                    path: "/session",
+                    action: "execute",
+                    reason: "Dangerous command requires approval.",
+                    created_at: new Date().toISOString(),
+                    dangerous: true,
+                  },
+                  affordances: [{ action: "approve" }, { action: "reject" }],
+                },
+              ],
+            },
+          });
+          return {
+            status: "waiting_approval",
+            invocation,
+          };
+        },
+        resolveApprovalDirect: async (approvalId) => {
+          approved.push(approvalId);
+          return { type: "result", id: "inv-approved", status: "ok", data: { ok: true } };
+        },
+        resumeWithToolResult: async () => ({ status: "completed", response: "approved result" }),
+      }),
+  };
+}
+
 async function readJsonLines(path: string): Promise<Array<Record<string, unknown>>> {
   return (await readFile(path, "utf8"))
     .trim()
@@ -308,6 +374,33 @@ describe("runHeadlessSingleShot", () => {
     expect(metrics.status).toBe("approval_cancelled");
     expect(metrics.exitCode).toBe(2);
     expect(metrics.turn?.state).toBe("idle");
+  });
+
+  test("yolo mode auto-approves approval-gated single-shot turns", async () => {
+    const harness = createAutoApprovalAgentHarness();
+    let stdout = "";
+    let stderr = "";
+
+    const exitCode = await runHeadlessSingleShot({
+      prompt: "delete demo file",
+      config: TEST_CONFIG,
+      approvalMode: "auto",
+      llmProfileManager: createTestProfileManager(),
+      agentFactory: harness.factory,
+      sessionId: "cli-test-yolo",
+      providerId: "sloppy-session-cli-test-yolo",
+      writeStdout: (chunk) => {
+        stdout += chunk;
+      },
+      writeStderr: (chunk) => {
+        stderr += chunk;
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("approved result");
+    expect(stderr).not.toContain("[error]");
+    expect(harness.approved).toEqual(["source-approval-1"]);
   });
 
   test("treats CLI metrics as best-effort diagnostics", async () => {

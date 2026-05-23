@@ -2,6 +2,7 @@ import type {
   ActivityStatus,
   AgentSessionSnapshot,
   ApprovalItem,
+  ApprovalMode,
   ExternalAppSnapshot,
   LlmStateSnapshot,
   QueuedSessionMessage,
@@ -14,6 +15,7 @@ import type {
   ToolCallResult,
 } from "../types";
 import * as activity from "./activity";
+import * as approvalPolicy from "./approval-policy";
 import * as apps from "./apps";
 import * as extensions from "./extensions";
 import { now } from "./helpers";
@@ -392,6 +394,11 @@ export class SessionStore {
 
   syncProviderApprovals(providerId: string, approvals: ApprovalItem[]): void {
     mirrors.syncProviderApprovals(this.state, providerId, approvals);
+    this.emit();
+  }
+
+  setApprovalMode(mode: ApprovalMode): void {
+    approvalPolicy.setApprovalMode(this.state, mode);
     this.emit();
   }
 

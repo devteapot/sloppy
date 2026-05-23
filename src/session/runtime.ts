@@ -52,7 +52,13 @@ import {
 } from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
-import type { ApprovalItem, JsonValue, SessionStoreEventType, ToolCallResult } from "./types";
+import type {
+  ApprovalItem,
+  ApprovalMode,
+  JsonValue,
+  SessionStoreEventType,
+  ToolCallResult,
+} from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 
@@ -356,6 +362,8 @@ export class SessionRuntime {
   private currentTurnId: string | null = null;
   private activeTurnPromise: Promise<void> | null = null;
   private pendingApproval: PendingApprovalMirror | null = null;
+  private autoApprovalDrain: Promise<void> = Promise.resolve();
+  private readonly autoApprovalAttempts = new Set<string>();
   private readonly localProviderIds = new Set<string>();
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
@@ -389,6 +397,7 @@ export class SessionRuntime {
     llmModelOverride?: string;
     policyRules?: InvokePolicy[];
     sessionPersistencePath?: string | false;
+    approvalMode?: ApprovalMode;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.startedRuntimeConfigFingerprint = runtimeConfigFingerprint(this.config);
@@ -429,6 +438,9 @@ export class SessionRuntime {
         ),
         extensionEventTypes: mergePluginExtensionEventTypes(sessionPlugins),
       });
+    if (options?.approvalMode) {
+      this.store.setApprovalMode(options.approvalMode);
+    }
     this.plugins = new SessionPluginManager(sessionPlugins, this.createPluginContext());
 
     if (!this.requiresLlmProfile) {
@@ -488,6 +500,9 @@ export class SessionRuntime {
         syncProviderSnapshotToSession(this.store, update, this.pendingApproval, {
           localProviderIds: this.localProviderIds,
         });
+        if (update.path === "/approvals") {
+          this.scheduleAutoApprovals();
+        }
       },
       onExternalProviderStates: (states) => {
         syncExternalProviderStatesToSession(this.store, states);
@@ -633,6 +648,7 @@ export class SessionRuntime {
       stateContextTokenSource: "unavailable",
     });
     this.started = true;
+    this.scheduleAutoApprovals();
   }
 
   private buildLocalTools(): LocalRuntimeTool[] {
@@ -834,6 +850,12 @@ export class SessionRuntime {
     };
   }
 
+  setApprovalMode(mode: ApprovalMode): { mode: ApprovalMode } {
+    this.store.setApprovalMode(mode);
+    this.scheduleAutoApprovals();
+    return { mode };
+  }
+
   async approveApproval(approvalId: string): Promise<{ approvalId: string; status: string }> {
     let approval = this.store.getApproval(approvalId);
     if (!approval) {
@@ -907,6 +929,57 @@ export class SessionRuntime {
       approvalId,
       status: result.status,
     };
+  }
+
+  private scheduleAutoApprovals(): void {
+    if (this.store.getSnapshot().approvalPolicy.mode !== "auto") {
+      return;
+    }
+    this.autoApprovalDrain = Promise.resolve()
+      .then(() => this.runAutoApprovalPass())
+      .catch((error: unknown) => {
+        this.audit({
+          kind: "auto_approval_error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private async runAutoApprovalPass(): Promise<void> {
+    const snapshot = this.store.getSnapshot();
+    const pendingIds = new Set(
+      snapshot.approvals
+        .filter((approval) => approval.status === "pending")
+        .map((approval) => approval.id),
+    );
+    for (const approvalId of this.autoApprovalAttempts) {
+      if (!pendingIds.has(approvalId)) {
+        this.autoApprovalAttempts.delete(approvalId);
+      }
+    }
+    if (snapshot.approvalPolicy.mode !== "auto") {
+      return;
+    }
+    for (const approval of snapshot.approvals) {
+      if (
+        approval.status !== "pending" ||
+        !approval.canApprove ||
+        this.autoApprovalAttempts.has(approval.id)
+      ) {
+        continue;
+      }
+      this.autoApprovalAttempts.add(approval.id);
+      try {
+        await this.approveApproval(approval.id);
+      } catch (error) {
+        this.autoApprovalAttempts.delete(approval.id);
+        this.audit({
+          kind: "auto_approval_error",
+          approvalId: approval.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   async rejectApproval(
@@ -1154,8 +1227,15 @@ export class SessionRuntime {
   }
 
   async waitForIdle(): Promise<void> {
-    while (this.activeTurnPromise) {
-      await this.activeTurnPromise;
+    let observedAutoApprovalDrain: Promise<void> | null = null;
+    while (this.activeTurnPromise || observedAutoApprovalDrain !== this.autoApprovalDrain) {
+      const activeTurn = this.activeTurnPromise;
+      const autoApprovalDrain = this.autoApprovalDrain;
+      observedAutoApprovalDrain = autoApprovalDrain;
+      if (activeTurn) {
+        await activeTurn;
+      }
+      await autoApprovalDrain;
     }
   }
 

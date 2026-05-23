@@ -371,6 +371,19 @@ If there is no previous session for that launch scope, `sloppy --continue`
 fails at the CLI level and tells you to run `sloppy` first. To attach to an
 existing session provider socket directly, use:
 
+Use `--yolo` to start or attach with session approval mode set to `auto`:
+
+```sh
+sloppy --yolo
+sloppy --continue --yolo
+bun run session:serve -- --yolo
+```
+
+`--yolo` sets the same public `/approvals.approval_mode` state controlled by
+`/approval auto` in the TUI.
+
+To attach to an existing session provider socket directly, use:
+
 ```sh
 bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock
 ```

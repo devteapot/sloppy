@@ -10,6 +10,19 @@ describe("parseCliArgs", () => {
     });
   });
 
+  test("parses yolo approval mode without including it in prompts", () => {
+    expect(parseCliArgs(["--yolo", "-p", "read", "README.md"])).toEqual({
+      mode: "single",
+      prompt: "read README.md",
+      approvalMode: "auto",
+    });
+    expect(parseCliArgs(["-p", "read", "README.md", "--yolo"])).toEqual({
+      mode: "single",
+      prompt: "read README.md",
+      approvalMode: "auto",
+    });
+  });
+
   test("parses long prompt flags", () => {
     expect(parseCliArgs(["--prompt=hello world"])).toEqual({
       mode: "single",

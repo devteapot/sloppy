@@ -17,6 +17,13 @@ import type {
   TurnStateSnapshot,
 } from "./types";
 
+function parseApprovalMode(value: unknown): "normal" | "auto" {
+  if (value === "normal" || value === "auto") {
+    return value;
+  }
+  throw new Error("approval mode must be 'normal' or 'auto'.");
+}
+
 function toSnakeTurnProps(turn: TurnStateSnapshot) {
   return {
     turn_id: turn.turnId,
@@ -614,8 +621,27 @@ export class AgentSessionProvider {
       type: "collection",
       props: {
         count: snapshot.approvals.length,
+        approval_mode: snapshot.approvalPolicy.mode,
+        approval_mode_updated_at: snapshot.approvalPolicy.updatedAt,
       },
       summary: "Pending and resolved approvals for this session.",
+      actions: {
+        set_mode: action(
+          {
+            mode: {
+              type: "string",
+              description: "Approval mode: normal or auto.",
+            },
+          },
+          ({ mode }) => this.runtime.setApprovalMode(parseApprovalMode(mode)),
+          {
+            label: "Set Approval Mode",
+            description:
+              "Set whether this session asks for approvals normally or automatically approves pending approvals.",
+            estimate: "instant",
+          },
+        ),
+      },
       items: snapshot.approvals.map((approval) => ({
         id: approval.id,
         props: {

@@ -6,7 +6,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 
-import type { ApprovalMode } from "../state/commands";
+import type { ApprovalMode } from "../backend/slop-types";
 import type { SlashEntry } from "../state/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
 import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";

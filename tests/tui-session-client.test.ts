@@ -597,9 +597,12 @@ describe("TUI transcript assembly", () => {
 
 describe("TUI node mappers", () => {
   test("maps approvals with affordance availability", () => {
-    const approvals = mapApprovalsNode({
+    const approvalNode = {
       id: "approvals",
       type: "collection",
+      properties: {
+        approval_mode: "auto",
+      },
       children: [
         {
           id: "approval-1",
@@ -617,7 +620,8 @@ describe("TUI node mappers", () => {
           affordances: [{ action: "approve" }, { action: "reject" }],
         },
       ],
-    });
+    };
+    const approvals = mapApprovalsNode(approvalNode);
 
     expect(approvals).toEqual([
       {
@@ -635,6 +639,27 @@ describe("TUI node mappers", () => {
         resolvedAt: undefined,
       },
     ]);
+
+    const next = applyPathSnapshot(EMPTY_SESSION_VIEW, "/approvals", approvalNode);
+    expect(next.approvalMode).toBe("auto");
+    expect(next.actionsByPath["/approvals"]).toEqual([]);
+  });
+
+  test("keeps existing approval mode when an approvals patch omits mode", () => {
+    const previous = {
+      ...EMPTY_SESSION_VIEW,
+      approvalMode: "auto" as const,
+    };
+    const next = applyPathSnapshot(previous, "/approvals", {
+      id: "approvals",
+      type: "collection",
+      properties: {
+        count: 0,
+      },
+      children: [],
+    });
+
+    expect(next.approvalMode).toBe("auto");
   });
 
   test("maps task progress and cancellation affordance", () => {
@@ -846,6 +871,81 @@ describe("SessionClient", () => {
       const result = await client.sendMessage("hello from tui");
       expect(result.status).toBe("ok");
       expect(sentMessages).toEqual(["hello from tui"]);
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("applies approval mode immediately after invoking the public approvals control", async () => {
+    const socketPath = `/tmp/slop/tui-approval-mode-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    let approvalMode = "normal";
+
+    registerMinimalSessionNodes(server, { includeGoal: true });
+    server.register("approvals", () => ({
+      type: "collection",
+      props: { count: 0, approval_mode: approvalMode },
+      actions: {
+        set_mode: action(
+          { mode: "string" },
+          async ({ mode }) => {
+            approvalMode = mode === "auto" ? "auto" : "normal";
+            return { mode: approvalMode };
+          },
+          { label: "Set Approval Mode" },
+        ),
+      },
+      items: [],
+    }));
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      const snapshot = await client.connect();
+      expect(snapshot.approvalMode).toBe("normal");
+
+      const result = await client.setApprovalMode("auto");
+      expect(result.status).toBe("ok");
+
+      expect(client.getSnapshot().approvalMode).toBe("auto");
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("uses set_mode result when immediate approvals query omits mode", async () => {
+    const socketPath = `/tmp/slop/tui-approval-mode-result-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    let approvalMode = "normal";
+
+    registerMinimalSessionNodes(server, { includeGoal: true });
+    server.register("approvals", () => ({
+      type: "collection",
+      props: { count: 0 },
+      actions: {
+        set_mode: action(
+          { mode: "string" },
+          async ({ mode }) => {
+            approvalMode = mode === "auto" ? "auto" : "normal";
+            return { mode: approvalMode };
+          },
+          { label: "Set Approval Mode" },
+        ),
+      },
+      items: [],
+    }));
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath);
+    try {
+      await client.connect();
+
+      const result = await client.setApprovalMode("auto");
+      expect(result.status).toBe("ok");
+
+      expect(client.getSnapshot().approvalMode).toBe("auto");
     } finally {
       client.disconnect();
       server.stop();

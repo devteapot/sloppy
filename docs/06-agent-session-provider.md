@@ -725,6 +725,14 @@ Purpose:
 
 - expose actions blocked on explicit user approval
 - mirror provider-native approval state rather than owning the downstream approval policy itself
+- expose the session-owned approval posture so all clients can observe and
+  update whether pending approvals are handled normally or automatically
+
+Collection props:
+
+- `count`: total pending and retained resolved approval items
+- `approval_mode`: `normal | auto`
+- `approval_mode_updated_at`: ISO timestamp for the latest mode change
 
 Each approval item:
 
@@ -751,11 +759,18 @@ Affordances while pending:
 - `approve`
 - `reject(reason?)`
 
+Collection affordances:
+
+- `set_mode(mode)` where `mode` is `normal | auto`
+
 Rules:
 
 - when at least one approval is pending, `/turn.state` should become `waiting_approval`
 - approving or rejecting should patch both the approval item and `/turn`
 - approval items are expected to correspond to real downstream provider approval nodes and should forward resolution back to that provider
+- when `approval_mode=auto`, the session runtime should approve pending
+  approvals with available `approve` affordances; clients only set and render
+  the policy
 - resolved approvals may remain visible for session history unless trimmed by retention policy
 
 ### `/tasks`
