@@ -218,6 +218,10 @@ export class SessionClient {
     return this.invoke("/approvals", "set_mode", { mode });
   }
 
+  async reloadConfig(): Promise<ResultMessage> {
+    return this.invoke("/session", "reload_config");
+  }
+
   async cancelTask(id: string): Promise<ResultMessage> {
     return this.invoke(`/tasks/${id}`, "cancel");
   }

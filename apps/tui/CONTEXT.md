@@ -7,7 +7,7 @@ The first-party terminal UI under `apps/tui/`: a scrollback-preserving human UI 
 ### Composer Input
 
 **Composer sigil**:
-TUI-owned leading composer presentation marker shown in the input gutter for the first logical input line when the raw first character is a recognized trigger. The default sigil is `>`; leading `/` switches the gutter to slash-command presentation; leading `!` switches the gutter to shell-intent presentation. A Composer sigil may hide the leading trigger character from the rendered input line, but it does not by itself define submitted message semantics.
+TUI-owned leading composer presentation marker shown in the input gutter for the first logical input line when the raw first character is a recognized trigger. The default sigil is `>`; leading `/` switches the gutter to slash-command presentation; leading `$` switches the gutter to shell-intent presentation. A Composer sigil may hide the leading trigger character from the rendered input line, but it does not by itself define submitted message semantics.
 _Avoid_: treating all autocomplete trigger characters as sigils; `@` remains an inline autocomplete trigger, not a Composer sigil.
 
 **Composer autocomplete**:

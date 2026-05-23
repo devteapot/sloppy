@@ -328,6 +328,14 @@ export class AgentSessionProvider {
         queued_count: snapshot.queue.length,
       },
       summary: "Shared state for one running Sloppy agent session.",
+      actions: {
+        reload_config: action(async () => this.runtime.reloadConfig(), {
+          label: "Reload Config",
+          description:
+            "Reload this session's config from its configured scope. Provider or agent wiring changes are marked restart-required.",
+          estimate: "fast",
+        }),
+      },
     };
   }
 

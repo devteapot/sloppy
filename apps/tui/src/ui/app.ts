@@ -205,6 +205,10 @@ export class AppUi {
       await this.setApprovalMode(command.mode);
       return;
     }
+    if (command.type === "config_reload") {
+      await this.reloadConfig(command.target);
+      return;
+    }
     if (command.type === "route") {
       this.showRoute(command.route);
       return;
@@ -393,6 +397,31 @@ export class AppUi {
     await this.client.setApprovalMode(next);
     this.setNotice(`Approval mode: ${next}`);
     this.editor.setApprovalMode(next);
+  }
+
+  private async reloadConfig(target: "session" | "supervisor"): Promise<void> {
+    if (target === "supervisor") {
+      if (!this.options.supervisor) {
+        this.setNotice("No supervisor is connected.");
+        return;
+      }
+      await this.options.supervisor.reloadConfig();
+      this.setNotice("Supervisor config reloaded.");
+      return;
+    }
+    const result = await this.client.reloadConfig();
+    if (result.status !== "ok") {
+      return;
+    }
+    const data =
+      result.data && typeof result.data === "object"
+        ? (result.data as Record<string, unknown>)
+        : {};
+    this.setNotice(
+      data.configRequiresRestart === true
+        ? "Session config reloaded; restart required for runtime wiring changes."
+        : "Session config reloaded.",
+    );
   }
 
   private setVerbosity(mode: Verbosity | "show"): void {

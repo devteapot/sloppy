@@ -370,6 +370,7 @@ export class SessionRuntime {
   private currentPluginTurn: ActivePluginTurn | null = null;
   private readonly plugins: SessionPluginManager;
   private readonly startedRuntimeConfigFingerprint: string;
+  private readonly configReloader?: () => Promise<SloppyConfig>;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -398,9 +399,11 @@ export class SessionRuntime {
     policyRules?: InvokePolicy[];
     sessionPersistencePath?: string | false;
     approvalMode?: ApprovalMode;
+    configReloader?: () => Promise<SloppyConfig>;
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.startedRuntimeConfigFingerprint = runtimeConfigFingerprint(this.config);
+    this.configReloader = options?.configReloader;
     this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
     this.externalAgentState = options?.externalAgentState;
     this.llmProfileManager =
@@ -854,6 +857,27 @@ export class SessionRuntime {
     this.store.setApprovalMode(mode);
     this.scheduleAutoApprovals();
     return { mode };
+  }
+
+  async reloadConfig(): Promise<{
+    status: "ok";
+    configRequiresRestart: boolean;
+    configRestartReason?: string;
+  }> {
+    if (!this.configReloader) {
+      throw new Error("No config reload source is configured for this session.");
+    }
+    const nextConfig = await this.configReloader();
+    this.llmProfileManager.updateConfig(nextConfig);
+    await this.refreshLlmState();
+    const snapshot = this.store.getSnapshot();
+    return {
+      status: "ok",
+      configRequiresRestart: snapshot.session.configRequiresRestart === true,
+      ...(snapshot.session.configRestartReason && {
+        configRestartReason: snapshot.session.configRestartReason,
+      }),
+    };
   }
 
   async approveApproval(approvalId: string): Promise<{ approvalId: string; status: string }> {

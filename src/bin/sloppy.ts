@@ -111,9 +111,11 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
 }
 
 async function runSessionServe(args: string[]): Promise<number> {
+  const workspaceId = readOption(args, "--workspace-id");
+  const projectId = readOption(args, "--project-id");
   const config = await loadScopedConfig({
-    workspaceId: readOption(args, "--workspace-id"),
-    projectId: readOption(args, "--project-id"),
+    workspaceId,
+    projectId,
   });
   const service = new SessionService({
     config,
@@ -121,6 +123,7 @@ async function runSessionServe(args: string[]): Promise<number> {
     title: readOption(args, "--title"),
     socketPath: readOption(args, "--socket"),
     approvalMode: approvalModeFromArgs(args),
+    configReloader: () => loadScopedConfig({ workspaceId, projectId }),
   });
   await service.start({ register: !hasFlag(args, "--no-register") });
   writeStdout(

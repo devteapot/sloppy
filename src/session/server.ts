@@ -82,6 +82,11 @@ const service = new SessionService({
   sessionId,
   title,
   socketPath,
+  configReloader: () =>
+    loadScopedConfig({
+      workspaceId,
+      projectId,
+    }),
 });
 
 await service.start({ register: !noRegister });

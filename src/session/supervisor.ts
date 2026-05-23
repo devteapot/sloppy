@@ -21,6 +21,7 @@ import {
 } from "./registry";
 import { SessionService } from "./service";
 import type { UnixListener } from "./socket";
+import { loadPersistedSessionSnapshot } from "./store/persistence";
 import { listenSessionSupervisor } from "./supervisor-listener";
 import type { ApprovalMode } from "./types";
 
@@ -323,12 +324,17 @@ export class SessionSupervisorProvider {
       projectId: config.workspaces?.activeProjectId,
       fallback: input.title,
     });
+    const reloadScope = {
+      workspace_id: config.workspaces?.activeWorkspaceId,
+      project_id: config.workspaces?.activeProjectId,
+    };
     const service = new SessionService({
       config,
       sessionId,
       title,
       socketPath: sessionSocketPath(sessionId),
-      approvalMode: input.approval_mode,
+      approvalMode: input.approval_mode ?? this.inheritedApprovalMode(owner),
+      configReloader: () => this.resolveConfig(reloadScope),
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -344,6 +350,54 @@ export class SessionSupervisorProvider {
     this.server.refresh();
     this.notifyLifecycle();
     return record;
+  }
+
+  async reloadConfig(): Promise<{
+    status: "ok";
+    scope_count: number;
+    registry_path: string | null;
+  }> {
+    await this.ensureInitialized();
+    this.cachedConfig = null;
+    const config = await this.baseConfig();
+    this.server.refresh();
+    this.notifyLifecycle();
+    return {
+      status: "ok",
+      scope_count: this.scopesFromConfig(config).length,
+      registry_path: this.registryPath,
+    };
+  }
+
+  private inheritedApprovalMode(owner?: object): ApprovalMode | undefined {
+    const selectedSessionId = owner ? this.clientLeases.get(owner)?.selectedSessionId : undefined;
+    const selectedMode = selectedSessionId
+      ? this.approvalModeForSession(selectedSessionId)
+      : undefined;
+    if (selectedMode) {
+      return selectedMode;
+    }
+    return this.resumeSessionId ? this.approvalModeForSession(this.resumeSessionId) : undefined;
+  }
+
+  private approvalModeForSession(sessionId: string): ApprovalMode | undefined {
+    const record = this.records.get(sessionId);
+    if (!record) {
+      return undefined;
+    }
+    const liveMode = record.service?.runtime.store.getSnapshot().approvalPolicy.mode;
+    if (liveMode === "normal" || liveMode === "auto") {
+      return liveMode;
+    }
+    if (!record.snapshotPath || !existsSync(record.snapshotPath)) {
+      return undefined;
+    }
+    try {
+      const persistedMode = loadPersistedSessionSnapshot(record.snapshotPath)?.approvalPolicy?.mode;
+      return persistedMode === "normal" || persistedMode === "auto" ? persistedMode : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async selectSession(sessionId: string, owner?: object): Promise<SessionRecord> {
@@ -590,6 +644,11 @@ export class SessionSupervisorProvider {
       title: record.title,
       socketPath: sessionSocketPath(record.sessionId),
       sessionPersistencePath: snapshotPath,
+      configReloader: () =>
+        this.resolveConfig({
+          workspace_id: record.workspaceId,
+          project_id: record.projectId,
+        }),
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -783,6 +842,11 @@ export class SessionSupervisorProvider {
             estimate: "instant",
           },
         ),
+        reload_config: action(async () => this.reloadConfig(), {
+          label: "Reload Config",
+          description: "Reload supervisor config and refresh available workspace/project scopes.",
+          estimate: "fast",
+        }),
         register_client_lease: action(
           {
             selected_session_id: { type: "string", optional: true },

@@ -261,6 +261,10 @@ export class SessionSupervisorClient {
     });
   }
 
+  async reloadConfig(): Promise<ResultMessage> {
+    return this.invoke("/session", "reload_config");
+  }
+
   async switchSession(sessionId: string): Promise<SupervisorSessionItem> {
     const result = await this.invoke(
       `/sessions/${encodeURIComponent(sessionId)}`,

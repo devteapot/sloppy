@@ -82,11 +82,12 @@ Implemented:
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
 - Composer sigils for first-line composer presentation: normal prompt renders
-  `?>`, auto prompt renders `!>`, normal shell intent renders `?!`, and auto
-  shell intent renders `!!`; leading `/` keeps slash-command presentation as
-  `/`. The gutter may hide the raw leading trigger character from the rendered
-  input line, but submitted message semantics remain separate.
-- `!cmd` is still expanded into an explicit natural-language request for the
+  `?>`, auto prompt renders `!>`, normal shell intent renders `?$`, and auto
+  shell intent renders `!$`; leading `/` keeps slash-command presentation as
+  `/`. Leading `$` switches to shell-intent presentation. The gutter may hide
+  the raw leading trigger character from the rendered input line, but submitted
+  message semantics remain separate.
+- `$cmd` is still expanded into an explicit natural-language request for the
   terminal provider; `@` is autocomplete-only and does not rewrite submitted
   message text or attach file context
 Still deferred:

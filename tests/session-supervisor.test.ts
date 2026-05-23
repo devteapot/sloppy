@@ -354,6 +354,129 @@ describe("SessionSupervisorProvider", () => {
     first.disconnect();
   });
 
+  test("new sessions inherit approval mode from the selected session", async () => {
+    const home = await createTempDir("sloppy-supervisor-approval-home-");
+    const workspace = await createTempDir("sloppy-supervisor-approval-workspace-");
+    await writeConfig(
+      home,
+      [
+        "llm:",
+        "  provider: openai",
+        "  model: approval-model",
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-approval-${crypto.randomUUID()}.sock`;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      launchScope: { key: "approval-scope", root: workspace },
+      register: false,
+      initial: false,
+    });
+    providers.push(running.provider);
+    listeners.push(running.listener);
+
+    const supervisor = new SessionSupervisorClient(socketPath);
+    await supervisor.connect();
+    await supervisor.registerClientLease();
+    await supervisor.createSession({
+      sessionId: "approval-source",
+      approvalMode: "auto",
+    });
+    const inherited = await supervisor.createSession({ sessionId: "approval-inherited" });
+
+    const session = new SessionClient(inherited.socketPath);
+    try {
+      const snapshot = await session.connect();
+      expect(snapshot.approvalMode).toBe("auto");
+    } finally {
+      session.disconnect();
+      supervisor.disconnect();
+    }
+  });
+
+  test("supervisor reload_config refreshes configured scopes", async () => {
+    const home = await createTempDir("sloppy-supervisor-reload-home-");
+    const workspace = await createTempDir("sloppy-supervisor-reload-workspace-");
+    const projectRoot = join(workspace, "apps/app");
+    await mkdir(projectRoot, { recursive: true });
+    await writeConfig(
+      home,
+      [
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  items:",
+        "    main:",
+        "      name: Main",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+    await writeConfig(workspace, "llm:\n  provider: openai\n  model: reload-model\n");
+    await writeConfig(projectRoot, "llm:\n  model: reload-project-model\n");
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-reload-${crypto.randomUUID()}.sock`;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      register: false,
+      initial: false,
+    });
+    providers.push(running.provider);
+    listeners.push(running.listener);
+
+    const supervisor = new SessionSupervisorClient(socketPath);
+    await supervisor.connect();
+    await waitForScopes(supervisor);
+    expect(supervisor.getSnapshot().scopes.map((scope) => scope.id)).toEqual(["main"]);
+
+    await writeConfig(
+      home,
+      [
+        "plugins:",
+        "  workspaces:",
+        "    enabled: true",
+        "workspaces:",
+        "  activeWorkspaceId: main",
+        "  items:",
+        "    main:",
+        "      name: Main",
+        "      root: .",
+        "      configPath: .sloppy/config.yaml",
+        "      projects:",
+        "        app:",
+        "          name: App",
+        "          root: apps/app",
+        "          configPath: .sloppy/config.yaml",
+      ].join("\n"),
+    );
+
+    const result = await supervisor.reloadConfig();
+    expect(result.status).toBe("ok");
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        supervisor
+          .getSnapshot()
+          .scopes.map((scope) => scope.id)
+          .includes("main/app")
+      ) {
+        break;
+      }
+      await Bun.sleep(25);
+    }
+    expect(supervisor.getSnapshot().scopes.map((scope) => scope.id)).toEqual(["main", "main/app"]);
+    supervisor.disconnect();
+  });
+
   test("auto-close stops an idle managed supervisor after leases disconnect", async () => {
     const home = await createTempDir("sloppy-supervisor-autoclose-home-");
     const workspace = await createTempDir("sloppy-supervisor-autoclose-workspace-");

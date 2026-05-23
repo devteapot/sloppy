@@ -67,6 +67,12 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     signature: "<id|position>",
     description: "Cancel a queued user message",
   },
+  {
+    name: "reload-config",
+    aliases: ["config-reload"],
+    signature: "[session|supervisor]",
+    description: "Reload session or supervisor config",
+  },
 
   {
     name: "session-new",

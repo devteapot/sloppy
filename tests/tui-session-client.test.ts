@@ -195,7 +195,9 @@ describe("TUI v2 manifest mapping", () => {
       }).some((entry) => entry.name === "persistent-goal:goal"),
     ).toBe(true);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
-    expect(matchSlashEntries("/go", 8, next.plugins)[0]?.entry.name).toBe("persistent-goal:goal");
+    expect(matchSlashEntries("/persistent-goal:go", 8, next.plugins)[0]?.entry.name).toBe(
+      "persistent-goal:goal",
+    );
     expect(matchSlashEntries("/qc")[0]?.entry.name).toBe("queue-cancel");
   });
 
@@ -405,17 +407,17 @@ describe("TUI v2 manifest mapping", () => {
     expect(editor.clearSigilDraft()).toBe(true);
     expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
 
-    editor.setText("!pwd");
-    const bangRender = stripAnsiForTest(editor.render(44).join("\n"));
-    expect(bangRender).toContain("?! pwd");
-    expect(bangRender).not.toContain("?! !pwd");
+    editor.setText("$pwd");
+    const shellRender = stripAnsiForTest(editor.render(44).join("\n"));
+    expect(shellRender).toContain("?$ pwd");
+    expect(shellRender).not.toContain("?$ $pwd");
 
     expect(editor.clearSigilDraft()).toBe(true);
     expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
 
     editor.setText("hello");
     expect(editor.clearSigilDraft()).toBe(false);
-    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>  hello");
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?> hello");
   });
 
   test("parses explicit verbosity commands without compact aliases", () => {
@@ -452,6 +454,22 @@ describe("TUI v2 manifest mapping", () => {
       type: "rejected",
       reason: "Usage: /approval [normal|auto|toggle]",
     });
+  });
+
+  test("parses config reload commands", () => {
+    expect(parseLocalCommand("/reload-config")).toEqual({
+      type: "config_reload",
+      target: "session",
+    });
+    expect(parseLocalCommand("/config-reload supervisor")).toEqual({
+      type: "config_reload",
+      target: "supervisor",
+    });
+    expect(parseLocalCommand("/reload-config all")).toEqual({
+      type: "unknown",
+      name: "/reload-config all",
+    });
+    expect(buildSlashEntries().find((entry) => entry.name === "reload-config")).toBeTruthy();
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {

@@ -35,6 +35,7 @@ export class SessionService {
     llmProfileManager?: LlmProfileManager;
     sessionPersistencePath?: string | false;
     approvalMode?: ApprovalMode;
+    configReloader?: () => Promise<SloppyConfig>;
     launchScope?: {
       key: string;
       root: string;
@@ -51,6 +52,7 @@ export class SessionService {
       llmProfileManager: options?.llmProfileManager,
       sessionPersistencePath: options?.sessionPersistencePath,
       approvalMode: options?.approvalMode,
+      configReloader: options?.configReloader,
       launchScope: options?.launchScope,
     });
 

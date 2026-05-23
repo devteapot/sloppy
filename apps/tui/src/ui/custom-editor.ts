@@ -11,11 +11,11 @@ import type { SlashEntry } from "../state/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
 import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
 
-type ComposerSigilKind = "default" | "slash" | "bang";
+type ComposerSigilKind = "default" | "slash" | "shell";
 
 const SIDE_PADDING = 1;
 const PROMPT_GUTTER_WIDTH = 3;
-const PLACEHOLDER = "Type a prompt, / for commands, or ! for shell";
+const PLACEHOLDER = "Type a prompt, / for commands, or $ for shell";
 const ESC = "\x1b";
 const BEL = "\x07";
 
@@ -25,7 +25,7 @@ export class CustomEditor extends Editor {
   private approvalMode: ApprovalMode = "normal";
 
   constructor(tui: TUI) {
-    super(tui, editorTheme, { paddingX: 1 });
+    super(tui, editorTheme);
     this.setAutocompleteProvider(this.composerAutocomplete);
   }
 
@@ -106,7 +106,7 @@ export class CustomEditor extends Editor {
 
   prepareSubmission(text: string): string {
     const trimmed = text.trim();
-    if (trimmed.startsWith("!")) {
+    if (trimmed.startsWith("$")) {
       return `Run this shell command through the terminal provider: ${trimmed.slice(1).trim()}`;
     }
     return text;
@@ -146,8 +146,8 @@ export class CustomEditor extends Editor {
     if (kind === "slash") {
       return `${approval}${green("/")} `;
     }
-    if (kind === "bang") {
-      return `${approval}${red("!")} `;
+    if (kind === "shell") {
+      return `${approval}${red("$")} `;
     }
     return `${approval}${orange(">")} `;
   }
@@ -157,20 +157,21 @@ export class CustomEditor extends Editor {
     if (firstLine.startsWith("/")) {
       return "slash";
     }
-    if (firstLine.startsWith("!")) {
-      return "bang";
+    if (firstLine.startsWith("$")) {
+      return "shell";
     }
     return "default";
   }
 
   private isComposerSigilDraft(): boolean {
     const firstLine = this.getLines()[0] ?? "";
-    return firstLine.startsWith("/") || firstLine.startsWith("!");
+    return firstLine.startsWith("/") || firstLine.startsWith("$");
   }
 
   private renderPlaceholder(width: number): string {
-    const cursor = "\x1b[7m \x1b[0m";
-    return padToWidth(`${this.focused ? CURSOR_MARKER : ""}${cursor} ${dim(PLACEHOLDER)}`, width);
+    const [first = "", ...rest] = PLACEHOLDER;
+    const cursor = first ? `\x1b[7;2m${first}\x1b[0m` : "\x1b[7m \x1b[0m";
+    return padToWidth(`${this.focused ? CURSOR_MARKER : ""}${cursor}${dim(rest.join(""))}`, width);
   }
 
   private modeFrameStyle(): (value: string) => string {
@@ -203,17 +204,17 @@ function padToWidth(line: string, width: number): string {
   return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-function composerSigilTrigger(kind: ComposerSigilKind): "/" | "!" | null {
+function composerSigilTrigger(kind: ComposerSigilKind): "/" | "$" | null {
   if (kind === "slash") {
     return "/";
   }
-  if (kind === "bang") {
-    return "!";
+  if (kind === "shell") {
+    return "$";
   }
   return null;
 }
 
-function removeFirstVisibleSigil(line: string, sigil: "/" | "!"): string {
+function removeFirstVisibleSigil(line: string, sigil: "/" | "$"): string {
   let result = "";
   let index = 0;
   let removed = false;

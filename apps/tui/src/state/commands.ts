@@ -79,6 +79,7 @@ export type LocalCommand =
     }
   | { type: "rejected"; reason: string }
   | { type: "queue_cancel"; target: string | number }
+  | { type: "config_reload"; target: "session" | "supervisor" }
   | {
       type: "session_new";
       workspaceId?: string;
@@ -363,6 +364,17 @@ export function parseLocalCommand(input: string): LocalCommand | null {
     const asNumber = Number(raw);
     const isPosition = Number.isInteger(asNumber) && asNumber >= 1 && /^\d+$/.test(raw);
     return { type: "queue_cancel", target: isPosition ? asNumber : raw };
+  }
+
+  if (name === "reload-config" || name === "config-reload") {
+    const target = args[0];
+    if (!target || target === "session") {
+      return { type: "config_reload", target: "session" };
+    }
+    if (target === "supervisor") {
+      return { type: "config_reload", target: "supervisor" };
+    }
+    return { type: "unknown", name: trimmed };
   }
 
   if (name === "session-new" || name === "new-session") {
