@@ -8,11 +8,13 @@ import {
 
 import type { SlashEntry } from "../state/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
-import { dim, editorTheme, orange, redOrange, teal } from "./theme";
+import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
+
+type ComposerSigilKind = "default" | "slash" | "bang";
 
 const SIDE_PADDING = 1;
 const PROMPT_GUTTER_WIDTH = 2;
-const PLACEHOLDER = "Type a prompt or / for commands";
+const PLACEHOLDER = "Type a prompt, / for commands, or ! for shell";
 const ESC = "\x1b";
 const BEL = "\x07";
 
@@ -58,19 +60,21 @@ export class CustomEditor extends Editor {
     const rendered = splitEditorRender(super.render(editorWidth));
     const inputLines = rendered.inputLines.length > 0 ? rendered.inputLines : [""];
 
-    const slashDraft = this.isSlashCommandDraft();
-    const hideLeadingSlash = slashDraft && this.getCursor().line === 0 && this.getCursor().col > 0;
+    const sigilKind = this.composerSigilKind();
+    const hiddenSigil = composerSigilTrigger(sigilKind);
+    const hideLeadingSigil =
+      hiddenSigil !== null && this.getCursor().line === 0 && this.getCursor().col > 0;
     const lines = [this.renderTopBorder(outerWidth)];
     for (const [index, line] of inputLines.entries()) {
       const inputLine =
         this.getText().length === 0 && index === 0
           ? this.renderPlaceholder(editorWidth)
-          : hideLeadingSlash && index === 0
-            ? removeFirstVisibleSlash(line)
+          : hideLeadingSigil && index === 0
+            ? removeFirstVisibleSigil(line, hiddenSigil)
             : line;
       lines.push(
         this.renderBoxLine(
-          this.renderInputLine(inputLine, editorWidth, index === 0, slashDraft),
+          this.renderInputLine(inputLine, editorWidth, index === 0, sigilKind),
           innerWidth,
         ),
       );
@@ -117,11 +121,31 @@ export class CustomEditor extends Editor {
     line: string,
     editorWidth: number,
     firstLine: boolean,
-    slashDraft: boolean,
+    sigilKind: ComposerSigilKind,
   ): string {
-    const prompt = slashDraft ? "/" : ">";
-    const gutter = firstLine ? `${orange(prompt)} ` : "  ";
+    const gutter = firstLine ? `${this.renderPromptSigil(sigilKind)} ` : "  ";
     return `${" ".repeat(SIDE_PADDING)}${gutter}${padToWidth(line, editorWidth)}${" ".repeat(SIDE_PADDING)}`;
+  }
+
+  private renderPromptSigil(kind: ComposerSigilKind): string {
+    if (kind === "slash") {
+      return green("/");
+    }
+    if (kind === "bang") {
+      return red("!");
+    }
+    return orange(">");
+  }
+
+  private composerSigilKind(): ComposerSigilKind {
+    const firstLine = this.getLines()[0] ?? "";
+    if (firstLine.startsWith("/")) {
+      return "slash";
+    }
+    if (firstLine.startsWith("!")) {
+      return "bang";
+    }
+    return "default";
   }
 
   private isSlashCommandDraft(): boolean {
@@ -166,7 +190,17 @@ function padToWidth(line: string, width: number): string {
   return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-function removeFirstVisibleSlash(line: string): string {
+function composerSigilTrigger(kind: ComposerSigilKind): "/" | "!" | null {
+  if (kind === "slash") {
+    return "/";
+  }
+  if (kind === "bang") {
+    return "!";
+  }
+  return null;
+}
+
+function removeFirstVisibleSigil(line: string, sigil: "/" | "!"): string {
   let result = "";
   let index = 0;
   let removed = false;
@@ -178,7 +212,7 @@ function removeFirstVisibleSlash(line: string): string {
       continue;
     }
     const char = line[index] ?? "";
-    if (!removed && char === "/") {
+    if (!removed && char === sigil) {
       removed = true;
       index += 1;
       continue;
