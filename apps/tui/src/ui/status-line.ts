@@ -6,7 +6,7 @@ import { formatHomePath } from "./display-path";
 import { sanitizeTerminalText } from "./render-safety";
 import { dim } from "./theme";
 
-export type InteractionMode = "default" | "auto-approve" | "plan";
+export type InteractionMode = "default" | "plan";
 
 export class StatusLine implements Component {
   private leftText = "";

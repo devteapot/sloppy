@@ -13,6 +13,7 @@ import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/sup
 import { submitMessage } from "../handlers/submit";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
 import {
+  type ApprovalMode,
   type LocalCommand,
   parseLocalCommand,
   parsePluginSlashCommand,
@@ -46,9 +47,11 @@ export class AppUi {
   private supervisorSnapshot: SupervisorSnapshot | null = null;
   private route: TuiRoute = "chat";
   private mode: InteractionMode = "default";
+  private approvalMode: ApprovalMode = "normal";
   private verbosity: Verbosity = "compact";
   private thinkingExpandedOverride: boolean | null = null;
   private notificationValues = new Map<string, string | undefined>();
+  private autoApprovalAttempts = new Set<string>();
   private routeOverlay: OverlayHandle | null = null;
   private routeOverlayComponent: RouteOverlay | null = null;
   private paletteOverlay: OverlayHandle | null = null;
@@ -127,6 +130,7 @@ export class AppUi {
     this.statusLine.update(snapshot, this.mode);
     this.turnStatus.setText(dim(turnStatusLabel(snapshot)));
     this.editor.setModeLabel(this.mode);
+    this.editor.setApprovalMode(this.approvalMode);
     this.editor.setWorkspaceRoot(snapshot.session.workspaceRoot);
     this.editor.setSlashEntries(
       buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath }),
@@ -135,6 +139,7 @@ export class AppUi {
       this.setNotice(notification.message);
     }
     this.editor.disableSubmit = !snapshot.composer.canSend;
+    this.handleAutoApprovals(snapshot);
     this.refreshRouteOverlay();
     this.tui.requestRender();
   }
@@ -198,6 +203,10 @@ export class AppUi {
     }
     if (command.type === "verbosity") {
       this.setVerbosity(command.mode);
+      return;
+    }
+    if (command.type === "approval_mode") {
+      this.setApprovalMode(command.mode);
       return;
     }
     if (command.type === "route") {
@@ -369,13 +378,55 @@ export class AppUi {
   }
 
   private cycleMode(): void {
-    // UI hint only for now; runtime policy is not changed by this chip yet.
-    const modes: InteractionMode[] = ["default", "auto-approve", "plan"];
+    const modes: InteractionMode[] = ["default", "plan"];
     const next = modes[(modes.indexOf(this.mode) + 1) % modes.length] ?? "default";
     this.mode = next;
     this.editor.setModeLabel(this.mode);
     if (this.snapshot) {
       this.statusLine.update(this.snapshot, this.mode);
+    }
+  }
+
+  private setApprovalMode(mode: ApprovalMode | "show" | "toggle"): void {
+    if (mode === "show") {
+      this.setNotice(`Approval mode: ${this.approvalMode}`);
+      return;
+    }
+    const next = mode === "toggle" ? (this.approvalMode === "auto" ? "normal" : "auto") : mode;
+    this.approvalMode = next;
+    this.editor.setApprovalMode(next);
+    this.setNotice(`Approval mode: ${next}`);
+    if (this.snapshot) {
+      this.handleAutoApprovals(this.snapshot);
+    }
+  }
+
+  private handleAutoApprovals(snapshot: SessionViewSnapshot): void {
+    const visibleApprovalIds = new Set(snapshot.approvals.map((approval) => approval.id));
+    for (const approvalId of this.autoApprovalAttempts) {
+      const approval = snapshot.approvals.find((item) => item.id === approvalId);
+      if (!visibleApprovalIds.has(approvalId) || approval?.status !== "pending") {
+        this.autoApprovalAttempts.delete(approvalId);
+      }
+    }
+    if (this.approvalMode !== "auto") {
+      return;
+    }
+    for (const approval of snapshot.approvals) {
+      if (
+        approval.status !== "pending" ||
+        !approval.canApprove ||
+        this.autoApprovalAttempts.has(approval.id)
+      ) {
+        continue;
+      }
+      this.autoApprovalAttempts.add(approval.id);
+      this.client.approveApproval(approval.id).catch((error: unknown) => {
+        this.autoApprovalAttempts.delete(approval.id);
+        this.setNotice(
+          `Auto approval failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     }
   }
 

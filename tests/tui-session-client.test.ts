@@ -387,11 +387,11 @@ describe("TUI v2 manifest mapping", () => {
     expect(slashRender).not.toContain("/ /help");
 
     expect(editor.clearSlashDraft()).toBe(true);
-    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain(">");
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
 
     editor.setText("hello");
     expect(editor.clearSlashDraft()).toBe(false);
-    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain(">  hello");
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>  hello");
   });
 
   test("parses explicit verbosity commands without compact aliases", () => {
@@ -408,6 +408,26 @@ describe("TUI v2 manifest mapping", () => {
     expect(
       buildSlashEntries().find((entry) => entry.name === "verbosity")?.aliases,
     ).toBeUndefined();
+  });
+
+  test("parses local approval mode commands", () => {
+    expect(parseLocalCommand("/approval")).toEqual({ type: "approval_mode", mode: "show" });
+    expect(parseLocalCommand("/approval normal")).toEqual({
+      type: "approval_mode",
+      mode: "normal",
+    });
+    expect(parseLocalCommand("/approval auto")).toEqual({
+      type: "approval_mode",
+      mode: "auto",
+    });
+    expect(parseLocalCommand("/approval toggle")).toEqual({
+      type: "approval_mode",
+      mode: "toggle",
+    });
+    expect(parseLocalCommand("/approval nope")).toEqual({
+      type: "rejected",
+      reason: "Usage: /approval [normal|auto|toggle]",
+    });
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {

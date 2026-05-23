@@ -5,6 +5,7 @@ import type {
 } from "../backend/slop-types";
 
 export type Verbosity = "compact" | "verbose";
+export type ApprovalMode = "normal" | "auto";
 
 export type LocalCommand =
   | { type: "route"; route: TuiRoute }
@@ -13,6 +14,7 @@ export type LocalCommand =
   | { type: "clear" }
   | { type: "quit" }
   | { type: "verbosity"; mode: Verbosity | "show" }
+  | { type: "approval_mode"; mode: ApprovalMode | "show" | "toggle" }
   | {
       type: "goal";
       action: "show" | "create" | "pause" | "resume" | "complete" | "clear";
@@ -189,6 +191,20 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       return { type: "verbosity", mode };
     }
     return { type: "rejected", reason: "Usage: /verbosity [compact|verbose]" };
+  }
+
+  if (name === "approval" || name === "approval-mode") {
+    const mode = args[0]?.toLowerCase();
+    if (!mode) {
+      return { type: "approval_mode", mode: "show" };
+    }
+    if (mode === "normal" || mode === "auto") {
+      return { type: "approval_mode", mode };
+    }
+    if (mode === "toggle") {
+      return { type: "approval_mode", mode: "toggle" };
+    }
+    return { type: "rejected", reason: "Usage: /approval [normal|auto|toggle]" };
   }
 
   if (name === "inspect" || name === "tree" || name === "inspector") {

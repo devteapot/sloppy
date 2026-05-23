@@ -21,6 +21,12 @@ export function buildCommandPaletteCommands(
     label: `Open ${route}`,
     command: route === "inspect" ? { type: "inspect_open" } : { type: "route", route },
   }));
+  commands.push({
+    id: "approval-mode:toggle",
+    label: "Toggle approval mode",
+    description: "Switch the local TUI between normal and auto approvals",
+    command: { type: "approval_mode", mode: "toggle" },
+  });
 
   for (const item of snapshot.queue) {
     if (item.canCancel) {

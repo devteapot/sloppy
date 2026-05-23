@@ -6,6 +6,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 
+import type { ApprovalMode } from "../state/commands";
 import type { SlashEntry } from "../state/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
 import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
@@ -13,7 +14,7 @@ import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
 type ComposerSigilKind = "default" | "slash" | "bang";
 
 const SIDE_PADDING = 1;
-const PROMPT_GUTTER_WIDTH = 2;
+const PROMPT_GUTTER_WIDTH = 3;
 const PLACEHOLDER = "Type a prompt, / for commands, or ! for shell";
 const ESC = "\x1b";
 const BEL = "\x07";
@@ -21,6 +22,7 @@ const BEL = "\x07";
 export class CustomEditor extends Editor {
   private readonly composerAutocomplete = new ComposerAutocompleteProvider();
   private modeLabel = "default";
+  private approvalMode: ApprovalMode = "normal";
 
   constructor(tui: TUI) {
     super(tui, editorTheme, { paddingX: 1 });
@@ -50,6 +52,14 @@ export class CustomEditor extends Editor {
       return;
     }
     this.modeLabel = next;
+    this.tui.requestRender();
+  }
+
+  setApprovalMode(mode: ApprovalMode): void {
+    if (this.approvalMode === mode) {
+      return;
+    }
+    this.approvalMode = mode;
     this.tui.requestRender();
   }
 
@@ -123,18 +133,19 @@ export class CustomEditor extends Editor {
     firstLine: boolean,
     sigilKind: ComposerSigilKind,
   ): string {
-    const gutter = firstLine ? `${this.renderPromptSigil(sigilKind)} ` : "  ";
+    const gutter = firstLine ? this.renderPromptGutter(sigilKind) : " ".repeat(PROMPT_GUTTER_WIDTH);
     return `${" ".repeat(SIDE_PADDING)}${gutter}${padToWidth(line, editorWidth)}${" ".repeat(SIDE_PADDING)}`;
   }
 
-  private renderPromptSigil(kind: ComposerSigilKind): string {
+  private renderPromptGutter(kind: ComposerSigilKind): string {
     if (kind === "slash") {
-      return green("/");
+      return `${green("/")}  `;
     }
+    const approval = this.approvalMode === "auto" ? redOrange("!") : dim("?");
     if (kind === "bang") {
-      return red("!");
+      return `${approval}${red("!")} `;
     }
-    return orange(">");
+    return `${approval}${orange(">")} `;
   }
 
   private composerSigilKind(): ComposerSigilKind {
@@ -160,9 +171,6 @@ export class CustomEditor extends Editor {
   private modeFrameStyle(): (value: string) => string {
     if (this.modeLabel === "plan") {
       return teal;
-    }
-    if (this.modeLabel === "auto-approve") {
-      return redOrange;
     }
     return dim;
   }
@@ -214,6 +222,9 @@ function removeFirstVisibleSigil(line: string, sigil: "/" | "!"): string {
     const char = line[index] ?? "";
     if (!removed && char === sigil) {
       removed = true;
+      if (stripAnsi(result).trim().length === 0) {
+        result = "";
+      }
       index += 1;
       continue;
     }

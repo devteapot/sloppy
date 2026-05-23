@@ -50,7 +50,9 @@ Implemented:
 - status line with workspace, model, context usage, and plugin indicator templates
 - above-composer turn status text rendered from the TUI human label mapper
 - boxed composer frame with the current local interaction mode label
-- mode cycling with Shift+Tab: `default`, `auto-approve`, `plan`; this is local TUI presentation state until backed by a public session policy affordance
+- mode cycling with Shift+Tab: `default`, `plan`
+- local approval posture with `/approval [normal|auto]`; `auto` causes this TUI
+  client to approve pending approval items while enabled
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
 - composer autocomplete for command-name-only slash completion from built-in
   commands and namespaced v2 plugin action presentations whose target
@@ -77,11 +79,11 @@ Implemented:
 - plugin notifications projected into the notice line
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
-- Composer sigils for first-line composer presentation: `>` is the default
-  prompt, leading `/` switches the gutter to slash-command presentation, and
-  leading `!` switches the gutter to shell-intent presentation; the sigil may
-  hide the raw leading trigger character from the rendered input line, but
-  submitted message semantics remain separate
+- Composer sigils for first-line composer presentation: normal prompt renders
+  `?>`, auto prompt renders `!>`, normal shell intent renders `?!`, and auto
+  shell intent renders `!!`; leading `/` keeps slash-command presentation as
+  `/`. The gutter may hide the raw leading trigger character from the rendered
+  input line, but submitted message semantics remain separate.
 - `!cmd` is still expanded into an explicit natural-language request for the
   terminal provider; `@` is autocomplete-only and does not rewrite submitted
   message text or attach file context
@@ -151,7 +153,8 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 
 - Enter: submit composer text or slash command
 - Ctrl+K: command palette
-- Shift+Tab: cycle mode chip
+- Shift+Tab: cycle mode chip between `default` and `plan`
+- `/approval [normal|auto]`: show or set the local approval posture
 - Esc: close overlay, otherwise clear slash-command draft, otherwise cancel active turn when cancellable
 - Ctrl+K: command palette, including approval/task actions
 - Ctrl+C: disconnect session/supervisor and exit
@@ -159,7 +162,9 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 ## Design Rules
 
 - The TUI remains a consumer of public SLOP state and affordances.
-- Interaction mode labels in the composer frame are local TUI presentation state for now; `auto-approve` does not imply runtime approval policy until a public session affordance backs it.
+- Interaction mode labels in the composer frame are local TUI presentation state.
+- Approval posture is local TUI behavior for now; move it behind a public
+  session policy affordance before treating it as shared session state.
 - Turn state is rendered above the composer through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
 - First-party UI behavior must not inspect runtime internals.
 - Managed launch, `--continue`, and auto-close are TUI launcher behavior on top

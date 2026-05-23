@@ -117,7 +117,7 @@ describe("CustomEditor", () => {
     expect(lines).toHaveLength(3);
     expect(plain(lines[0] ?? "")).toContain(" default ");
     expect(plain(lines[0] ?? "")).toMatch(/^╭─+ default ╮$/);
-    expect(plain(lines[1] ?? "")).toContain("> ");
+    expect(plain(lines[1] ?? "")).toContain("?> ");
     expect(plain(lines[1] ?? "")).toContain("Type a prompt, / for commands, or ! for shell");
     expect(plain(lines[2] ?? "")).toMatch(/^╰─+╯$/);
     expect(lines.every((line) => visibleWidth(line) === 56)).toBe(true);
@@ -150,11 +150,31 @@ describe("CustomEditor", () => {
     expect(planLines[1]).toContain("\x1b[38;5;43m│");
     expect(planLines[2]).toContain("\x1b[38;5;43m");
 
-    editor.setModeLabel("auto-approve");
-    const autoApproveLines = editor.render(40);
-    expect(autoApproveLines[0]).toContain("\x1b[38;5;202m");
-    expect(autoApproveLines[1]).toContain("\x1b[38;5;202m│");
-    expect(autoApproveLines[2]).toContain("\x1b[38;5;202m");
+    editor.setModeLabel("default");
+    editor.setApprovalMode("auto");
+    const autoApprovalLines = editor.render(40);
+    expect(autoApprovalLines[0]).toContain("\x1b[2m");
+    expect(autoApprovalLines[1]).toContain("\x1b[2m│");
+    expect(autoApprovalLines[2]).toContain("\x1b[2m");
+  });
+
+  test("encodes approval mode and input intent in the prompt gutter", () => {
+    const editor = createEditor();
+
+    expect(plain(editor.render(40)[1] ?? "")).toContain("?> ");
+
+    editor.setApprovalMode("auto");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("!> ");
+
+    editor.setApprovalMode("normal");
+    editor.setText("!pwd");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("?! pwd");
+
+    editor.setApprovalMode("auto");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("!! pwd");
+
+    editor.setText("/help");
+    expect(plain(editor.render(40)[1] ?? "")).toContain("/  help");
   });
 
   test("does not rewrite leading @ paths on submission", () => {

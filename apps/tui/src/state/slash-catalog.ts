@@ -34,6 +34,12 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
     description: "Show or set chat verbosity",
   },
   {
+    name: "approval",
+    aliases: ["approval-mode"],
+    signature: "[normal|auto]",
+    description: "Show or set the local approval posture",
+  },
+  {
     name: "query",
     signature: "[app-id:]path depth [--window a:b] [--max-nodes n]",
     description: "Query a SLOP state tree into the inspector",
