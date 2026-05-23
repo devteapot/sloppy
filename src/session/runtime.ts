@@ -854,6 +854,9 @@ export class SessionRuntime {
   }
 
   setApprovalMode(mode: ApprovalMode): { mode: ApprovalMode } {
+    if (mode === "normal") {
+      this.autoApprovalAttempts.clear();
+    }
     this.store.setApprovalMode(mode);
     this.scheduleAutoApprovals();
     return { mode };
@@ -959,7 +962,7 @@ export class SessionRuntime {
     if (this.store.getSnapshot().approvalPolicy.mode !== "auto") {
       return;
     }
-    this.autoApprovalDrain = Promise.resolve()
+    this.autoApprovalDrain = this.autoApprovalDrain
       .then(() => this.runAutoApprovalPass())
       .catch((error: unknown) => {
         this.audit({
@@ -985,6 +988,9 @@ export class SessionRuntime {
       return;
     }
     for (const approval of snapshot.approvals) {
+      if (this.store.getSnapshot().approvalPolicy.mode !== "auto") {
+        return;
+      }
       if (
         approval.status !== "pending" ||
         !approval.canApprove ||
@@ -996,7 +1002,6 @@ export class SessionRuntime {
       try {
         await this.approveApproval(approval.id);
       } catch (error) {
-        this.autoApprovalAttempts.delete(approval.id);
         this.audit({
           kind: "auto_approval_error",
           approvalId: approval.id,

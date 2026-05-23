@@ -73,8 +73,12 @@ Implemented:
   from known files and a bounded directory-walk fallback outside git repos
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
+- TUI scoped New Session commands may invoke supervisor `/session.create_session`
+  with `workspace_id`/`project_id`; generic consumers can also use scope-item
+  `/scopes/{id}.create_session`, with the same approval-mode inheritance
 - supervisor client leases for per-TUI session selection, auto-close accounting,
   and stop guards when another connected TUI is using a session
+- runtime overlay shows supervised Session approval modes before switching
 - dormant supervised sessions backed by snapshots and restored lazily when
   selected
 - route overlays for setup, approvals, tasks, apps, inspect, runtime, and help
@@ -82,14 +86,17 @@ Implemented:
 - OSC 52 copy helper is available; direct copy binding is deferred to avoid
   stealing editor keys
 - Composer sigils for first-line composer presentation: normal prompt renders
-  `?>`, auto prompt renders `!>`, normal shell intent renders `?$`, and auto
-  shell intent renders `!$`; leading `/` keeps slash-command presentation as
-  `/`. Leading `$` switches to shell-intent presentation. The gutter may hide
-  the raw leading trigger character from the rendered input line, but submitted
-  message semantics remain separate.
+  `?>`, auto prompt renders `!>`, normal slash command renders `?/`, auto slash
+  command renders `!/`, normal shell intent renders `?$`, and auto shell intent
+  renders `!$`. Leading `$` switches to shell-intent presentation. The gutter
+  may hide the raw leading trigger character from the rendered input line, but
+  submitted message semantics remain separate. The `!` approval marker is TUI
+  presentation for `approval_mode=auto`, not a separate mode name.
 - `$cmd` is still expanded into an explicit natural-language request for the
   terminal provider; `@` is autocomplete-only and does not rewrite submitted
   message text or attach file context
+- `!cmd` is no longer shell intent and is submitted as ordinary prompt text;
+  shell intent uses `$cmd`
 Still deferred:
 
 - true masked API-key entry for `/profile-secret`
@@ -158,6 +165,8 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 - Ctrl+K: command palette
 - Shift+Tab: cycle mode chip between `default` and `plan`
 - `/approval [normal|auto]`: show or set the session approval mode
+- `/approval` accepts only `normal`, `auto`, and `toggle`; `yolo` remains a
+  launch flag spelling, not an in-app command alias
 - `--yolo`: launch or attach with session approval mode set to `auto`; on an
   existing Session this mutates shared Session state until `/approval normal`
 - Esc: close overlay, otherwise clear slash-command draft, otherwise cancel active turn when cancellable

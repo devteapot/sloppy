@@ -224,9 +224,9 @@ internals:
 Use session `/session.reload_config` after editing LLM profile defaults or other
 session-scoped config. It applies LLM-profile changes to the live session and
 sets `/session.config_requires_restart=true` when the edit affects runtime
-wiring that only a restart can rebuild. Use supervisor `/session.reload_config`
-after editing workspace/project scope definitions so `/scopes` and future
-session creation use the new config.
+wiring that only a restart can rebuild. It does not change approval mode. Use
+supervisor `/session.reload_config` after editing workspace/project scope
+definitions so `/scopes` and future session creation use the new config.
 
 The supervisor owns lifecycle bookkeeping only. It should not be used as a
 hidden scheduler or provider-rewiring layer.

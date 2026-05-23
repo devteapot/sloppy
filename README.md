@@ -376,12 +376,14 @@ Use `--yolo` to start or attach with session approval mode set to `auto`:
 sloppy --yolo
 sloppy --continue --yolo
 bun run session:serve -- --yolo
+bun run src/cli.ts -p "read README.md" --yolo
 ```
 
-`--yolo` sets the same public `/approvals.approval_mode` state controlled by
-`/approval auto` in the TUI. When used with `--continue` or an existing session
-socket, it mutates that Session's shared approval mode to `auto` until a client
-sets `/approval normal`.
+`--yolo` may appear before or after the prompt/session arguments. It sets the same public `/approvals.approval_mode` state controlled by
+`/approval auto` in the TUI. When used with `--continue`, direct socket attach,
+or any other existing-session path, it mutates that Session's shared approval
+mode to `auto` until a client sets `/approval normal`. Plain `sloppy --continue`
+restores the Session's persisted approval mode without resetting it.
 
 To attach to an existing session provider socket directly, use:
 

@@ -145,7 +145,9 @@ loads config through the normal scoped launcher and still exposes the standard
 base config and projected `/scopes`; it does not rewrite existing live session
 provider wiring. `/session.reload_config` on an individual session reloads that
 session's scoped config, refreshes LLM profile state, and marks the session
-restart-required when provider, plugin, policy, or agent wiring changed.
+restart-required when provider, plugin, policy, or agent wiring changed. Config
+reload does not change approval mode; approval mode is Session state, not config
+state.
 
 The supervisor owns lifecycle bookkeeping only. It does not schedule work,
 route tasks, mutate provider wiring, or become a privileged orchestrator.

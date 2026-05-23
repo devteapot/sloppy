@@ -13,6 +13,7 @@ import {
   mapTranscriptNode,
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
+import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
 import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
 import { parseLocalCommand, parsePluginSlashCommand } from "../apps/tui/src/state/commands";
 import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
@@ -540,6 +541,48 @@ describe("TUI v2 manifest mapping", () => {
     expect(statusText).not.toContain("thinking");
     expect(statusText).not.toContain("Idle");
     expect(routeOverlayText("help", withGoal, null)).toContain("/help");
+  });
+
+  test("renders supervised session approval modes in the runtime overlay", () => {
+    const supervisor: SupervisorSnapshot = {
+      connection: { status: "connected", socketPath: "/tmp/supervisor.sock" },
+      resumeSessionId: "auto-session",
+      autoCloseEnabled: false,
+      clientLeaseCount: 1,
+      sessions: [
+        {
+          id: "auto-session",
+          socketPath: "/tmp/auto.sock",
+          runtimeStatus: "live",
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "auto",
+          isResumeSession: true,
+          canSwitch: true,
+          canStop: true,
+        },
+        {
+          id: "normal-session",
+          socketPath: "",
+          runtimeStatus: "dormant",
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "normal",
+          isResumeSession: false,
+          canSwitch: true,
+          canStop: false,
+        },
+      ],
+      scopes: [],
+    };
+
+    const rendered = routeOverlayText("runtime", EMPTY_SESSION_VIEW, supervisor);
+    expect(rendered).toContain("* auto-session live approval=auto");
+    expect(rendered).toContain("normal-session dormant approval=normal");
   });
 
   test("evaluates plugin manifest notifications against session snapshots", () => {

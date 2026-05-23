@@ -59,10 +59,18 @@ function renderRuntime(
     .map((indicator) => indicator.text)
     .join("\n");
   const sessions = (supervisor?.sessions ?? [])
-    .map(
-      (session) =>
-        `${session.isResumeSession ? "*" : " "} ${session.id} ${session.runtimeStatus} ${session.title ?? ""}`,
-    )
+    .map((session) => {
+      const prefix = session.isResumeSession ? "*" : " ";
+      return [
+        prefix,
+        session.id,
+        session.runtimeStatus,
+        `approval=${session.approvalMode}`,
+        session.title,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    })
     .join("\n");
   return [
     indicators || "No active UI indicators.",
