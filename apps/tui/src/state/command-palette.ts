@@ -24,7 +24,7 @@ export function buildCommandPaletteCommands(
   commands.push({
     id: "approval-mode:toggle",
     label: "Toggle approval mode",
-    description: "Switch the local TUI between normal and auto approvals",
+    description: "Switch the session between normal and auto approvals",
     command: { type: "approval_mode", mode: "toggle" },
   });
   commands.push({

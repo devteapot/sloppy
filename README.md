@@ -368,8 +368,7 @@ sloppy --continue
 ```
 
 If there is no previous session for that launch scope, `sloppy --continue`
-fails at the CLI level and tells you to run `sloppy` first. To attach to an
-existing session provider socket directly, use:
+fails at the CLI level and tells you to run `sloppy` first.
 
 Use `--yolo` to start or attach with session approval mode set to `auto`:
 
