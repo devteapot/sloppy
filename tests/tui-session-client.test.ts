@@ -393,20 +393,28 @@ describe("TUI v2 manifest mapping", () => {
     });
   });
 
-  test("renders slash command drafts with slash as the composer prompt marker", () => {
+  test("renders and clears composer sigil drafts", () => {
     const tui = new TUI(new FakeTerminal());
     const editor = new CustomEditor(tui);
 
     editor.setText("/help");
     const slashRender = stripAnsiForTest(editor.render(44).join("\n"));
-    expect(slashRender).toContain("/  help");
-    expect(slashRender).not.toContain("/ /help");
+    expect(slashRender).toContain("?/ help");
+    expect(slashRender).not.toContain("?/ /help");
 
-    expect(editor.clearSlashDraft()).toBe(true);
+    expect(editor.clearSigilDraft()).toBe(true);
+    expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
+
+    editor.setText("!pwd");
+    const bangRender = stripAnsiForTest(editor.render(44).join("\n"));
+    expect(bangRender).toContain("?! pwd");
+    expect(bangRender).not.toContain("?! !pwd");
+
+    expect(editor.clearSigilDraft()).toBe(true);
     expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>");
 
     editor.setText("hello");
-    expect(editor.clearSlashDraft()).toBe(false);
+    expect(editor.clearSigilDraft()).toBe(false);
     expect(stripAnsiForTest(editor.render(44).join("\n"))).toContain("?>  hello");
   });
 

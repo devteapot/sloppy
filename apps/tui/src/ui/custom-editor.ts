@@ -37,13 +37,17 @@ export class CustomEditor extends Editor {
     this.composerAutocomplete.setWorkspaceRoot(root);
   }
 
-  clearSlashDraft(): boolean {
-    if (!this.isSlashCommandDraft()) {
+  clearSigilDraft(): boolean {
+    if (!this.isComposerSigilDraft()) {
       return false;
     }
     this.setText("");
     this.tui.requestRender();
     return true;
+  }
+
+  clearSlashDraft(): boolean {
+    return this.clearSigilDraft();
   }
 
   setModeLabel(mode: string): void {
@@ -138,10 +142,10 @@ export class CustomEditor extends Editor {
   }
 
   private renderPromptGutter(kind: ComposerSigilKind): string {
-    if (kind === "slash") {
-      return `${green("/")}  `;
-    }
     const approval = this.approvalMode === "auto" ? redOrange("!") : dim("?");
+    if (kind === "slash") {
+      return `${approval}${green("/")} `;
+    }
     if (kind === "bang") {
       return `${approval}${red("!")} `;
     }
@@ -159,8 +163,9 @@ export class CustomEditor extends Editor {
     return "default";
   }
 
-  private isSlashCommandDraft(): boolean {
-    return this.getLines()[0]?.startsWith("/") ?? false;
+  private isComposerSigilDraft(): boolean {
+    const firstLine = this.getLines()[0] ?? "";
+    return firstLine.startsWith("/") || firstLine.startsWith("!");
   }
 
   private renderPlaceholder(width: number): string {

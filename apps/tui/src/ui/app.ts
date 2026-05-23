@@ -102,7 +102,7 @@ export class AppUi {
           this.hideRoute();
           return { consume: true };
         }
-        if (this.editor.clearSlashDraft()) {
+        if (this.editor.clearSigilDraft()) {
           return { consume: true };
         }
         if (!this.snapshot?.turn.canCancel) {
