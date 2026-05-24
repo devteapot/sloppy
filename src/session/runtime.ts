@@ -12,7 +12,6 @@ import {
 import type {
   AgentCallbacks,
   AgentRunResult,
-  AgentToolEvent,
   LocalRuntimeTool,
   ResolvedApprovalToolResult,
   RoleProfile,
@@ -38,27 +37,16 @@ import {
   toExternalAgentLlmState,
   toSessionLlmState,
 } from "./llm-state";
+import { syncExternalProviderStatesToSession, syncProviderSnapshotToSession } from "./mirror-sync";
 import {
-  type PendingApprovalMirror,
-  syncExternalProviderStatesToSession,
-  syncProviderSnapshotToSession,
-} from "./mirror-sync";
-import {
-  type ActivePluginTurn,
   type PluginRuntimeContext,
-  type PluginTurnRequest,
   SessionPluginManager,
   type SessionRuntimePlugin,
 } from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { SessionStore } from "./store";
-import type {
-  ApprovalItem,
-  ApprovalMode,
-  JsonValue,
-  SessionStoreEventType,
-  ToolCallResult,
-} from "./types";
+import { TurnCoordinator } from "./turn-coordinator";
+import type { ApprovalMode, JsonValue, SessionStoreEventType, ToolCallResult } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 
@@ -359,16 +347,9 @@ export class SessionRuntime {
   private requiresLlmProfile = true;
   private externalAgentState?: ExternalSessionAgentState;
   private started = false;
-  private currentTurnId: string | null = null;
-  private activeTurnPromise: Promise<void> | null = null;
-  private pendingApproval: PendingApprovalMirror | null = null;
-  private autoApprovalDrain: Promise<void> = Promise.resolve();
-  private readonly autoApprovalAttempts = new Set<string>();
   private readonly localProviderIds = new Set<string>();
-  private currentTurnStartedAt = 0;
-  private currentTurnUsedTools = false;
-  private currentPluginTurn: ActivePluginTurn | null = null;
   private readonly plugins: SessionPluginManager;
+  private turns!: TurnCoordinator;
   private readonly startedRuntimeConfigFingerprint: string;
   private readonly configReloader?: () => Promise<SloppyConfig>;
 
@@ -459,16 +440,18 @@ export class SessionRuntime {
 
     const callbacks: AgentCallbacks = {
       onText: (chunk) => {
-        if (!this.currentTurnId) {
+        const turnId = this.turns.snapshot().activeTurnId;
+        if (!turnId) {
           return;
         }
-        this.store.appendAssistantText(this.currentTurnId, chunk);
+        this.store.appendAssistantText(turnId, chunk);
       },
       onThinking: (delta) => {
-        if (!this.currentTurnId) {
+        const turnId = this.turns.snapshot().activeTurnId;
+        if (!turnId) {
           return;
         }
-        this.store.appendAssistantThinking(this.currentTurnId, {
+        this.store.appendAssistantThinking(turnId, {
           blockId: delta.id,
           provider: delta.provider,
           model: delta.model,
@@ -484,27 +467,20 @@ export class SessionRuntime {
         });
       },
       onToolEvent: (event) => {
-        if (!this.currentTurnId) {
-          return;
-        }
-
-        if (event.kind === "started") {
-          this.currentTurnUsedTools = true;
-        }
-        this.handleToolEvent(this.currentTurnId, event);
+        this.turns.handleToolEvent(event);
       },
       onTurnUsage: (usage) => {
         this.store.recordUsage({
           ...usage,
-          turnId: this.currentTurnId ?? undefined,
+          turnId: this.turns.snapshot().activeTurnId ?? undefined,
         });
       },
       onProviderSnapshot: (update) => {
-        syncProviderSnapshotToSession(this.store, update, this.pendingApproval, {
+        syncProviderSnapshotToSession(this.store, update, this.turns.snapshot().pendingApproval, {
           localProviderIds: this.localProviderIds,
         });
         if (update.path === "/approvals") {
-          this.scheduleAutoApprovals();
+          this.turns.scheduleAutoApprovals();
         }
       },
       onExternalProviderStates: (states) => {
@@ -556,6 +532,16 @@ export class SessionRuntime {
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
+    this.turns = new TurnCoordinator({
+      store: this.store,
+      plugins: this.plugins,
+      agent: () => this.agent,
+      audit: (event) => this.audit(event),
+      previewToolParams,
+      boundToolResult,
+      buildToolResultBlock,
+      isAbortError: isLlmAbortError,
+    });
   }
 
   private createPluginContext(): PluginRuntimeContext {
@@ -577,9 +563,9 @@ export class SessionRuntime {
         }
         return this.agent.queryProvider(providerId, path, options);
       },
-      startTurn: (request) => this.startPluginTurn(request),
-      queueTurn: (request) => this.queuePluginTurn(request),
-      drainQueue: () => this.startNextQueuedTurn(),
+      startTurn: (request) => this.turns.startPluginTurn(request),
+      queueTurn: (request) => this.turns.queuePluginTurn(request),
+      drainQueue: () => this.turns.drainQueue(),
       audit: (event) => this.audit(event),
     };
   }
@@ -651,117 +637,23 @@ export class SessionRuntime {
       stateContextTokenSource: "unavailable",
     });
     this.started = true;
-    this.scheduleAutoApprovals();
+    this.turns.scheduleAutoApprovals();
   }
 
   private buildLocalTools(): LocalRuntimeTool[] {
-    return this.plugins.localTools(this.currentPluginTurn);
+    return this.plugins.localTools(this.turns.snapshot().activePluginTurn);
   }
 
   async sendMessage(text: string): Promise<SendMessageResult> {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      throw new Error("Message text cannot be empty.");
-    }
-
     await this.start();
     if (this.requiresLlmProfile) {
       await this.refreshLlmState({ requireReady: true });
     }
-    if (this.currentTurnId) {
-      const queued = this.store.enqueueMessage(trimmed);
-      const position =
-        this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
-      this.audit({
-        kind: "turn_queued",
-        queuedMessageId: queued.id,
-        position,
-        source: "user",
-      });
-      return {
-        status: "queued",
-        queuedMessageId: queued.id,
-        position,
-      };
-    }
-
-    return this.startTurn(trimmed);
+    return this.turns.submit({ source: "user", text });
   }
 
   cancelQueuedMessage(queuedMessageId: string): { queuedMessageId: string; status: string } {
-    this.store.removeQueuedMessage(queuedMessageId);
-    this.audit({ kind: "turn_queue_cancelled", queuedMessageId });
-    return {
-      queuedMessageId,
-      status: "cancelled",
-    };
-  }
-
-  private startTurn(userMessage: string): { status: "started"; turnId: string } {
-    const turnId = this.store.beginTurn(userMessage);
-    this.currentTurnStartedAt = Date.now();
-    this.currentTurnUsedTools = false;
-    this.currentPluginTurn = null;
-    this.currentTurnId = turnId;
-    this.audit({
-      kind: "turn_started",
-      turnId,
-      source: "user",
-      continuation: false,
-    });
-    this.activeTurnPromise = this.runTurn(turnId, userMessage);
-    return { status: "started", turnId };
-  }
-
-  private startPluginTurn(request: PluginTurnRequest): { status: "started"; turnId: string } {
-    const turnId = this.store.beginTurn(request.text, {
-      role: request.role ?? (request.continuation ? "system" : "user"),
-      author: request.author,
-    });
-    this.currentTurnStartedAt = Date.now();
-    this.currentTurnUsedTools = false;
-    this.currentPluginTurn = {
-      pluginId: request.pluginId,
-      runId: request.runId,
-      author: request.author,
-      continuation: request.continuation === true,
-      metadata: request.metadata,
-    };
-    this.currentTurnId = turnId;
-    this.audit({
-      kind: "turn_started",
-      turnId,
-      source: "plugin",
-      pluginId: request.pluginId,
-      pluginRunId: request.runId,
-      author: request.author,
-      continuation: request.continuation === true,
-      ...(request.metadata ?? {}),
-    });
-    this.activeTurnPromise = this.runTurn(turnId, request.text);
-    return { status: "started", turnId };
-  }
-
-  private queuePluginTurn(request: PluginTurnRequest): {
-    status: "queued";
-    queuedMessageId: string;
-    position: number;
-  } {
-    const queued = this.store.enqueueMessage(request.text, {
-      author: request.author,
-      source: "plugin",
-      pluginId: request.pluginId,
-      pluginRunId: request.runId,
-      goalId: typeof request.metadata?.goalId === "string" ? request.metadata.goalId : undefined,
-      continuation: request.continuation === true,
-    });
-    const position =
-      this.store.getSnapshot().queue.findIndex((message) => message.id === queued.id) + 1;
-    return {
-      status: "queued",
-      queuedMessageId: queued.id,
-      position,
-    };
+    return this.turns.cancelQueuedTurn(queuedMessageId);
   }
 
   clearExtension(namespace: string): { status: string; namespace: string; removed: boolean } {
@@ -854,11 +746,7 @@ export class SessionRuntime {
   }
 
   setApprovalMode(mode: ApprovalMode): { mode: ApprovalMode } {
-    if (mode === "normal") {
-      this.autoApprovalAttempts.clear();
-    }
-    this.store.setApprovalMode(mode);
-    this.scheduleAutoApprovals();
+    this.turns.setApprovalMode(mode);
     return { mode };
   }
 
@@ -884,201 +772,14 @@ export class SessionRuntime {
   }
 
   async approveApproval(approvalId: string): Promise<{ approvalId: string; status: string }> {
-    let approval = this.store.getApproval(approvalId);
-    if (!approval) {
-      throw new Error(`Unknown approval: ${approvalId}`);
-    }
-
-    if (!approval.canApprove || !approval.sourcePath) {
-      throw new Error(`Approval cannot be approved: ${approvalId}`);
-    }
-
-    if (!approval.sourceApprovalId) {
-      throw new Error(`Approval is missing source identifier: ${approvalId}`);
-    }
-
-    // If this approval is the one blocking the current model turn, wait for
-    // the suspended turn to finish unwinding before resolving the hub
-    // approval. The `approval_requested` event fires synchronously inside
-    // agent.chat(); a fast approver can race the original chat()'s finally
-    // block, leaving activeRunAbortController still set when resumeTurn()
-    // asks for a new run loop. Unrelated approvals (e.g. background tasks)
-    // must NOT wait — that would block them behind a long-running active turn.
-    if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
-      await this.activeTurnPromise;
-
-      // Re-check after the await: pendingApproval may have been cleared by a
-      // concurrent cancelTurn, or the approval may have been resolved already.
-      const current = this.store.getApproval(approvalId);
-      if (!current || current.status !== "pending") {
-        return {
-          approvalId,
-          status: current?.status ?? "unknown",
-        };
-      }
-      approval = current;
-    }
-
-    if (!approval.sourcePath || !approval.sourceApprovalId) {
-      throw new Error(`Approval is missing source location: ${approvalId}`);
-    }
-
-    const resumePendingTurn = this.shouldResumePendingApproval(approval);
-    const result = resumePendingTurn
-      ? await this.agent.resolveApprovalDirect(approval.sourceApprovalId)
-      : await this.agent.invokeProvider(approval.provider, approval.sourcePath, "approve");
-    if (this.shouldResumePendingApproval(approval)) {
-      const toolUseId = this.pendingToolUseId(approval);
-      const resultKind = this.pendingApproval?.invocation.resultKind;
-      this.pendingApproval = null;
-      this.activeTurnPromise = this.resumeTurn(approval.turnId ?? this.currentTurnId ?? "", {
-        block: buildToolResultBlock(toolUseId, result),
-        status: result.status,
-        summary: `${approval.provider}:${approval.action} ${approval.path}`,
-        taskId:
-          result.status === "accepted" &&
-          result.data &&
-          typeof result.data === "object" &&
-          !Array.isArray(result.data) &&
-          typeof (result.data as { taskId?: unknown }).taskId === "string"
-            ? (result.data as { taskId: string }).taskId
-            : undefined,
-        errorCode: result.error?.code,
-        errorMessage: result.error?.message,
-        result: {
-          kind: resultKind,
-          data: result.data,
-        },
-      });
-    }
-
-    return {
-      approvalId,
-      status: result.status,
-    };
-  }
-
-  private scheduleAutoApprovals(): void {
-    if (this.store.getSnapshot().approvalPolicy.mode !== "auto") {
-      return;
-    }
-    this.autoApprovalDrain = this.autoApprovalDrain
-      .then(() => this.runAutoApprovalPass())
-      .catch((error: unknown) => {
-        this.audit({
-          kind: "auto_approval_error",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }
-
-  private async runAutoApprovalPass(): Promise<void> {
-    const snapshot = this.store.getSnapshot();
-    const pendingIds = new Set(
-      snapshot.approvals
-        .filter((approval) => approval.status === "pending")
-        .map((approval) => approval.id),
-    );
-    for (const approvalId of this.autoApprovalAttempts) {
-      if (!pendingIds.has(approvalId)) {
-        this.autoApprovalAttempts.delete(approvalId);
-      }
-    }
-    if (snapshot.approvalPolicy.mode !== "auto") {
-      return;
-    }
-    for (const approval of snapshot.approvals) {
-      if (this.store.getSnapshot().approvalPolicy.mode !== "auto") {
-        return;
-      }
-      if (
-        approval.status !== "pending" ||
-        !approval.canApprove ||
-        this.autoApprovalAttempts.has(approval.id)
-      ) {
-        continue;
-      }
-      this.autoApprovalAttempts.add(approval.id);
-      try {
-        await this.approveApproval(approval.id);
-      } catch (error) {
-        this.audit({
-          kind: "auto_approval_error",
-          approvalId: approval.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    return this.turns.resolveApproval(approvalId, "approve");
   }
 
   async rejectApproval(
     approvalId: string,
     reason?: string,
   ): Promise<{ approvalId: string; status: string }> {
-    let approval = this.store.getApproval(approvalId);
-    if (!approval) {
-      throw new Error(`Unknown approval: ${approvalId}`);
-    }
-
-    if (!approval.canReject || !approval.sourcePath) {
-      throw new Error(`Approval cannot be rejected: ${approvalId}`);
-    }
-
-    if (!approval.sourceApprovalId) {
-      throw new Error(`Approval is missing source identifier: ${approvalId}`);
-    }
-
-    // Mirror the approve path: only wait when this approval is what the
-    // current model turn is blocked on, so unrelated/background approvals
-    // don't queue behind a long-running active turn.
-    if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
-      await this.activeTurnPromise;
-
-      const current = this.store.getApproval(approvalId);
-      if (!current || current.status !== "pending") {
-        return {
-          approvalId,
-          status: current?.status ?? "unknown",
-        };
-      }
-      approval = current;
-    }
-
-    if (!approval.sourcePath || !approval.sourceApprovalId) {
-      throw new Error(`Approval is missing source location: ${approvalId}`);
-    }
-
-    const resumePendingTurn = this.shouldResumePendingApproval(approval);
-    const result = resumePendingTurn
-      ? null
-      : await this.agent.invokeProvider(
-          approval.provider,
-          approval.sourcePath,
-          "reject",
-          reason ? { reason } : undefined,
-        );
-    if (resumePendingTurn) {
-      this.agent.rejectApprovalDirect(approval.sourceApprovalId, reason);
-      const toolUseId = this.pendingToolUseId(approval);
-      this.pendingApproval = null;
-      this.activeTurnPromise = this.resumeTurn(approval.turnId ?? this.currentTurnId ?? "", {
-        block: {
-          type: "tool_result",
-          toolUseId,
-          content: reason ? `Approval rejected: ${reason}` : "Approval rejected.",
-          isError: true,
-        },
-        status: "cancelled",
-        summary: `${approval.provider}:${approval.action} ${approval.path}`,
-        errorCode: "approval_rejected",
-        errorMessage: reason ? `Approval rejected: ${reason}` : "Approval rejected.",
-      });
-    }
-
-    return {
-      approvalId,
-      status: result?.status === "error" ? "error" : "rejected",
-    };
+    return this.turns.resolveApproval(approvalId, "reject", { reason });
   }
 
   async cancelTask(taskId: string): Promise<{ taskId: string; status: string }> {
@@ -1172,102 +873,16 @@ export class SessionRuntime {
   }
 
   canCancelTurn(): boolean {
-    const snapshot = this.store.getSnapshot();
-    if (!this.currentTurnId) {
-      return false;
-    }
-
-    if (this.pendingApproval) {
-      return true;
-    }
-
-    return (
-      snapshot.turn.state === "running" &&
-      (snapshot.turn.waitingOn === "model" || snapshot.turn.waitingOn === "tool")
-    );
+    return this.turns.canCancel();
   }
 
   async cancelTurn(): Promise<{ status: string; turnId: string }> {
-    const turnId = this.currentTurnId;
-    if (!turnId) {
-      throw new Error("No active turn to cancel.");
-    }
-
-    const message = "Turn cancelled by user.";
-    if (this.pendingApproval) {
-      const pendingApproval = this.pendingApproval;
-      // Reject the underlying hub approval directly using the synchronously
-      // known sourceApprovalId. The previous `if (sessionApprovalId)` guard
-      // left a window where a quick cancel before the /approvals mirror
-      // populated would skip rejection — leaving a live approval whose
-      // execute callback could later run without a model resume.
-      let approvalStatus: "rejected" | undefined;
-      try {
-        this.agent.rejectApprovalDirect(pendingApproval.sourceApprovalId, message);
-        approvalStatus = "rejected";
-      } catch {
-        // Best-effort provider cleanup should not block ending the local turn.
-      }
-
-      const pluginTurn = this.currentPluginTurn;
-      this.agent.clearPendingApproval();
-      this.pendingApproval = null;
-      this.currentTurnId = null;
-      this.activeTurnPromise = null;
-      this.store.cancelTurn(turnId, {
-        message,
-        toolUseId: pendingApproval.invocation.toolUseId,
-        approvalId: pendingApproval.sessionApprovalId,
-        approvalStatus,
-      });
-      this.audit({
-        kind: "turn_cancelled",
-        turnId,
-        reason: "user",
-        sourceApprovalId: pendingApproval.sourceApprovalId,
-        sessionApprovalId: pendingApproval.sessionApprovalId,
-        approvalStatus,
-      });
-      if (pluginTurn) {
-        this.plugins.onTurnFailure({
-          turnId,
-          pluginTurn,
-          message,
-          cancelled: true,
-        });
-      }
-      this.currentPluginTurn = null;
-      this.startNextQueuedTurn();
-      return {
-        status: "cancelled",
-        turnId,
-      };
-    }
-
-    if (!this.agent.cancelActiveTurn()) {
-      throw new Error("Turn cancellation is not available in the current phase.");
-    }
-
-    this.audit({ kind: "turn_cancel_requested", turnId, reason: "user" });
-    return {
-      status: "cancelling",
-      turnId,
-    };
+    return this.turns.cancelActiveTurn();
   }
 
   async waitForIdle(): Promise<void> {
-    let observedAutoApprovalDrain: Promise<void> | null = null;
-    while (this.activeTurnPromise || observedAutoApprovalDrain !== this.autoApprovalDrain) {
-      const activeTurn = this.activeTurnPromise;
-      const autoApprovalDrain = this.autoApprovalDrain;
-      observedAutoApprovalDrain = autoApprovalDrain;
-      if (activeTurn) {
-        await activeTurn;
-      }
-      await autoApprovalDrain;
-    }
+    await this.turns.waitForIdle();
   }
-
   shutdown(): void {
     try {
       this.plugins.onShutdown();
@@ -1275,10 +890,8 @@ export class SessionRuntime {
       console.warn("[sloppy] plugin shutdown hook failed:", error);
     } finally {
       this.agent.shutdown();
+      this.turns.shutdown();
       this.started = false;
-      this.currentTurnId = null;
-      this.pendingApproval = null;
-      this.activeTurnPromise = null;
       this.store.close();
       this.eventBus?.stop();
       this.eventBus = null;
@@ -1287,241 +900,6 @@ export class SessionRuntime {
 
   private audit(event: Record<string, unknown> & { kind: string }): void {
     this.eventBus?.publish(event);
-  }
-
-  private handleToolEvent(turnId: string, event: AgentToolEvent): void {
-    switch (event.kind) {
-      case "started": {
-        this.store.recordToolStart(turnId, {
-          toolUseId: event.invocation.toolUseId,
-          summary: event.summary,
-          provider: event.invocation.providerId,
-          path: event.invocation.path,
-          action: event.invocation.action,
-          label: event.invocation.label,
-          paramsPreview: previewToolParams(event.invocation.action, event.invocation.params),
-        });
-        break;
-      }
-      case "completed": {
-        this.store.recordToolCompletion(turnId, {
-          toolUseId: event.invocation.toolUseId,
-          summary: event.summary,
-          status: event.status,
-          provider: event.invocation.providerId,
-          path: event.invocation.path,
-          action: event.invocation.action,
-          label: event.invocation.label,
-          taskId: event.taskId,
-          errorMessage: event.errorMessage,
-          result: boundToolResult(event.result),
-        });
-        break;
-      }
-      case "approval_requested": {
-        if (!event.approvalId) {
-          // Defensive: the hub always populates this on the
-          // `approval_required` ResultMessage. Fail loudly rather than
-          // silently fall back to tuple-matching.
-          throw new Error(
-            `approval_requested event missing approvalId for ${event.invocation.providerId}:${event.invocation.action}`,
-          );
-        }
-        this.pendingApproval = {
-          turnId,
-          invocation: event.invocation,
-          sourceApprovalId: event.approvalId,
-        };
-        this.store.recordApprovalRequested(turnId, {
-          toolUseId: event.invocation.toolUseId,
-          summary: event.summary,
-          provider: event.invocation.providerId,
-          path: event.invocation.path,
-          action: event.invocation.action,
-          label: event.invocation.label,
-          reason: event.errorMessage,
-        });
-        break;
-      }
-    }
-  }
-
-  private shouldResumePendingApproval(approval: ApprovalItem): boolean {
-    if (!this.pendingApproval || approval.status !== "pending") {
-      return false;
-    }
-
-    // Match strictly on the hub-owned approval id. Tuple-matching is unsafe
-    // when multiple approvals share (provider, path, action) — the model can
-    // emit two of the same destructive call in one turn, and the user's
-    // approve/reject would otherwise be applied to whichever happens to come
-    // first in the mirrored tree.
-    return (
-      approval.provider === this.pendingApproval.invocation.providerId &&
-      approval.sourceApprovalId === this.pendingApproval.sourceApprovalId
-    );
-  }
-
-  private pendingToolUseId(approval: ApprovalItem): string {
-    if (!this.pendingApproval || !this.shouldResumePendingApproval(approval)) {
-      throw new Error(`Approval is not linked to the current pending turn: ${approval.id}`);
-    }
-
-    return this.pendingApproval.invocation.toolUseId;
-  }
-
-  private runTurn(turnId: string, userMessage: string): Promise<void> {
-    const run = this.agent
-      .chat(userMessage)
-      .then((result) => {
-        this.handleAgentResult(turnId, result);
-      })
-      .catch((error) => {
-        this.handleTurnFailure(turnId, error);
-      });
-    let tracked!: Promise<void>;
-    tracked = run.finally(() => {
-      if (this.activeTurnPromise === tracked) {
-        this.activeTurnPromise = null;
-      }
-    });
-    return tracked;
-  }
-
-  private resumeTurn(turnId: string, result: ResolvedApprovalToolResult): Promise<void> {
-    const run = this.agent
-      .resumeWithToolResult(result)
-      .then((nextResult) => {
-        this.handleAgentResult(turnId, nextResult);
-      })
-      .catch((error) => {
-        this.handleTurnFailure(turnId, error);
-      });
-    let tracked!: Promise<void>;
-    tracked = run.finally(() => {
-      if (this.activeTurnPromise === tracked) {
-        this.activeTurnPromise = null;
-      }
-    });
-    return tracked;
-  }
-
-  private handleAgentResult(turnId: string, result: AgentRunResult): void {
-    if (result.status === "waiting_approval") {
-      // `pendingApproval` is set synchronously by the `approval_requested`
-      // tool event fired earlier in the same loop iteration (which carries
-      // the hub-owned approvalId). If it's somehow missing here, fail loudly
-      // rather than silently fall back to a half-populated record without a
-      // sourceApprovalId.
-      if (!this.pendingApproval) {
-        throw new Error(
-          `Agent reported waiting_approval without a pending approval record (turn ${turnId}).`,
-        );
-      }
-      this.audit({
-        kind: "turn_waiting_approval",
-        turnId,
-        sourceApprovalId: this.pendingApproval.sourceApprovalId,
-        sessionApprovalId: this.pendingApproval.sessionApprovalId,
-        toolUseId: this.pendingApproval.invocation.toolUseId,
-      });
-      return;
-    }
-
-    const pluginTurn = this.currentPluginTurn;
-    const elapsedMs = this.currentTurnStartedAt > 0 ? Date.now() - this.currentTurnStartedAt : 0;
-    if (pluginTurn) {
-      this.plugins.onTurnComplete({
-        turnId,
-        pluginTurn,
-        result,
-        elapsedMs,
-        usedTools: this.currentTurnUsedTools,
-      });
-    }
-    this.pendingApproval = null;
-    this.currentTurnId = null;
-    this.currentPluginTurn = null;
-    this.store.completeTurn(turnId, result.response);
-    this.audit({
-      kind: "turn_completed",
-      turnId,
-      pluginId: pluginTurn?.pluginId,
-      pluginRunId: pluginTurn?.runId,
-      continuation: pluginTurn?.continuation ?? false,
-      inputTokens: result.usage?.inputTokens,
-      outputTokens: result.usage?.outputTokens,
-      thinkingTokens: result.usage?.thinkingTokens,
-    });
-    this.startNextQueuedTurn();
-  }
-
-  private failTurn(turnId: string, error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    const pluginTurn = this.currentPluginTurn;
-    this.pendingApproval = null;
-    this.currentTurnId = null;
-    this.store.failTurn(turnId, message);
-    this.audit({ kind: "turn_failed", turnId, errorMessage: message });
-    if (pluginTurn) {
-      this.plugins.onTurnFailure({
-        turnId,
-        pluginTurn,
-        message,
-        cancelled: false,
-      });
-    }
-    this.currentPluginTurn = null;
-    this.startNextQueuedTurn();
-  }
-
-  private handleTurnFailure(turnId: string, error: unknown): void {
-    if (isLlmAbortError(error)) {
-      const pluginTurn = this.currentPluginTurn;
-      this.pendingApproval = null;
-      this.currentTurnId = null;
-      this.store.cancelTurn(turnId, {
-        message: "Turn cancelled by user.",
-      });
-      this.audit({ kind: "turn_cancelled", turnId, reason: "llm_abort" });
-      if (pluginTurn) {
-        this.plugins.onTurnFailure({
-          turnId,
-          pluginTurn,
-          message: "Turn cancelled by user.",
-          cancelled: true,
-        });
-      }
-      this.currentPluginTurn = null;
-      this.startNextQueuedTurn();
-      return;
-    }
-
-    this.failTurn(turnId, error);
-  }
-
-  private startNextQueuedTurn(): void {
-    if (this.currentTurnId) {
-      return;
-    }
-    const next = this.store.dequeueMessage();
-    if (!next) {
-      const pluginTurn = this.plugins.nextTurn();
-      if (pluginTurn) {
-        this.startPluginTurn(pluginTurn);
-      }
-      return;
-    }
-    const pluginTurn = this.plugins.acceptQueuedTurn(next);
-    if (pluginTurn) {
-      this.startPluginTurn(pluginTurn);
-      return;
-    }
-    if (next.source === "plugin") {
-      this.startNextQueuedTurn();
-      return;
-    }
-    this.startTurn(next.text);
   }
 
   private async refreshLlmState(options?: { requireReady?: boolean }): Promise<void> {
