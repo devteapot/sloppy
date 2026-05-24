@@ -563,15 +563,9 @@ export class SessionRuntime {
         }
         return this.agent.queryProvider(providerId, path, options);
       },
-      startTurn: (request) =>
-        this.turns.submit({ source: "plugin", request }) as { status: "started"; turnId: string },
-      queueTurn: (request) =>
-        this.turns.submit({ source: "plugin", request }) as {
-          status: "queued";
-          queuedMessageId: string;
-          position: number;
-        },
-      drainQueue: () => undefined,
+      startTurn: (request) => this.turns.startPluginTurn(request),
+      queueTurn: (request) => this.turns.queuePluginTurn(request),
+      drainQueue: () => this.turns.drainQueue(),
       audit: (event) => this.audit(event),
     };
   }

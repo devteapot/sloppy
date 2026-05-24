@@ -76,6 +76,10 @@ export class TurnCoordinator {
     return { queuedMessageId, status: "cancelled" };
   }
 
+  drainQueue(): void {
+    this.startNextQueuedTurn();
+  }
+
   setApprovalMode(mode: ApprovalMode): void {
     if (mode === "normal") {
       this.autoApprovalAttempts.clear();
@@ -426,7 +430,7 @@ export class TurnCoordinator {
     return { status: "started", turnId };
   }
 
-  private startPluginTurn(request: PluginTurnRequest): { status: "started"; turnId: string } {
+  startPluginTurn(request: PluginTurnRequest): { status: "started"; turnId: string } {
     const turnId = this.deps.store.beginTurn(request.text, {
       role: request.role ?? (request.continuation ? "system" : "user"),
       author: request.author,
@@ -455,7 +459,7 @@ export class TurnCoordinator {
     return { status: "started", turnId };
   }
 
-  private queuePluginTurn(request: PluginTurnRequest): {
+  queuePluginTurn(request: PluginTurnRequest): {
     status: "queued";
     queuedMessageId: string;
     position: number;
