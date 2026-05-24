@@ -317,4 +317,153 @@ describe("TurnCoordinator", () => {
     active.resolve({ status: "completed", response: "done" });
     await turns.waitForIdle();
   });
+
+  test("drainQueue starts a pending plugin continuation when idle", async () => {
+    let nextTurnCalls = 0;
+    const plugin: SessionRuntimePlugin = {
+      id: "goal-plugin",
+      version: "0.0.0",
+      nextTurn: () => {
+        nextTurnCalls += 1;
+        return nextTurnCalls === 1
+          ? {
+              pluginId: "goal-plugin",
+              runId: "resume-1",
+              text: "continue goal",
+              author: "Goal Plugin",
+              continuation: true,
+            }
+          : null;
+      },
+    };
+    const { turns, agent } = makeCoordinator({ plugins: makePlugins([plugin]) });
+
+    turns.drainQueue();
+    await turns.waitForIdle();
+
+    expect(nextTurnCalls).toBeGreaterThanOrEqual(1);
+    expect(agent.chats).toEqual(["continue goal"]);
+  });
+
+  test("queuePluginTurn always queues, even while idle", () => {
+    const { turns, store, agent } = makeCoordinator();
+
+    const queued = turns.queuePluginTurn({
+      pluginId: "test-plugin",
+      runId: "run-queued",
+      text: "queued plugin work",
+      author: "Test Plugin",
+    });
+
+    expect(queued).toMatchObject({ status: "queued", position: 1 });
+    expect(store.getSnapshot().queue).toHaveLength(1);
+    expect(agent.chats).toEqual([]);
+  });
+
+  test("startPluginTurn always starts immediately", async () => {
+    const { turns, store, agent } = makeCoordinator();
+
+    const started = turns.startPluginTurn({
+      pluginId: "test-plugin",
+      runId: "run-started",
+      text: "started plugin work",
+      author: "Test Plugin",
+    });
+    await turns.waitForIdle();
+
+    expect(started.status).toBe("started");
+    expect(agent.chats).toEqual(["started plugin work"]);
+    expect(store.getSnapshot().queue).toHaveLength(0);
+  });
+
+  test("plugin turn failure calls failure hook exactly once and drains queue", async () => {
+    const failures: unknown[] = [];
+    const plugin: SessionRuntimePlugin = {
+      id: "test-plugin",
+      version: "0.0.0",
+      onTurnFailure: (event) => failures.push(event),
+    };
+    const agent = new FakeTurnAgent();
+    const first = agent.nextChat();
+    const { turns, store } = makeCoordinator({ agent, plugins: makePlugins([plugin]) });
+
+    turns.startPluginTurn({
+      pluginId: "test-plugin",
+      runId: "run-fails",
+      text: "plugin fails",
+      author: "Test Plugin",
+    });
+    turns.submit({ source: "user", text: "next user turn" });
+    first.reject(new Error("boom"));
+    await turns.waitForIdle();
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      pluginTurn: { pluginId: "test-plugin", runId: "run-fails" },
+      message: "boom",
+      cancelled: false,
+    });
+    expect(agent.chats).toEqual(["plugin fails", "next user turn"]);
+    expect(store.getSnapshot().turn.state).toBe("idle");
+  });
+
+  test("cancelActiveTurn during model execution asks the Agent to cancel", async () => {
+    const agent = new FakeTurnAgent();
+    agent.nextChat();
+    const { turns } = makeCoordinator({ agent });
+
+    const started = turns.submit({ source: "user", text: "long turn" });
+    expect(started.status).toBe("started");
+    const cancelled = await turns.cancelActiveTurn();
+
+    expect(cancelled).toMatchObject({ status: "cancelling" });
+    expect(agent.cancelCalls).toBe(1);
+  });
+
+  test("cancelActiveTurn during pending approval clears state and drains queue", async () => {
+    const agent = new FakeTurnAgent();
+    agent.nextChat();
+    const { turns, store } = makeCoordinator({ agent });
+
+    const started = turns.submit({ source: "user", text: "needs approval" });
+    if (started.status !== "started") {
+      throw new Error("expected approval cancellation test turn to start immediately");
+    }
+    const sourceApprovalId = "approval-source-cancel";
+    turns.handleToolEvent(approvalRequestedEvent(sourceApprovalId));
+    store.syncProviderApprovals("terminal", [approvalItem(sourceApprovalId, started.turnId)]);
+    turns.submit({ source: "user", text: "after cancel" });
+
+    const cancelled = await turns.cancelActiveTurn();
+    await turns.waitForIdle();
+
+    expect(cancelled).toMatchObject({ status: "cancelled", turnId: started.turnId });
+    expect(agent.directRejections).toMatchObject([
+      { id: sourceApprovalId, reason: "Turn cancelled by user." },
+    ]);
+    expect(agent.clearPendingApprovalCalls).toBe(1);
+    expect(agent.chats).toEqual(["needs approval", "after cancel"]);
+    expect(store.getSnapshot().turn.state).toBe("idle");
+  });
+
+  test("setApprovalMode(auto) auto-approves pending approval-capable items once", async () => {
+    const { turns, store, agent, audit } = makeCoordinator();
+    store.syncProviderApprovals("terminal", [
+      {
+        ...approvalItem("background-auto", "background-turn"),
+        id: "background-auto-session-approval",
+        turnId: undefined,
+      },
+    ]);
+
+    turns.setApprovalMode("auto");
+    await turns.waitForIdle();
+    turns.scheduleAutoApprovals();
+    await turns.waitForIdle();
+
+    expect(agent.providerInvocations).toMatchObject([
+      { providerId: "terminal", path: "/approvals/approval-source-1", action: "approve" },
+    ]);
+    expect(audit.filter((event) => event.kind === "auto_approval_error")).toHaveLength(0);
+  });
 });
