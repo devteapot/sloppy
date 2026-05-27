@@ -176,6 +176,43 @@ describe("loadConfig", () => {
     expect(config.llm.endpoints.openrouter?.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
 
+  test("preserves built-in endpoint auth when overriding endpoint metadata", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: openai-main",
+        "  endpoints:",
+        "    openai:",
+        "      protocol: openai-chat",
+        "      baseUrl: https://proxy.example/v1",
+        "      models:",
+        "        gpt-5.4: {}",
+        "  profiles:",
+        "    - id: openai-main",
+        "      endpointId: openai",
+        "      model: gpt-5.4",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.endpoints.openai?.baseUrl).toBe("https://proxy.example/v1");
+    expect(config.llm.endpoints.openai?.auth).toEqual({
+      type: "env",
+      env: "OPENAI_API_KEY",
+    });
+  });
+
   test("applies built-in endpoint defaults for Gemini profiles", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");

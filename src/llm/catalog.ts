@@ -1,4 +1,9 @@
-import type { LlmEndpointConfig, LlmEndpointModelConfig, LlmProtocol } from "../config/schema";
+import type {
+  LlmEndpointConfig,
+  LlmEndpointInputConfig,
+  LlmEndpointModelConfig,
+  LlmProtocol,
+} from "../config/schema";
 
 export type BuiltInLlmEndpoint = LlmEndpointConfig & {
   defaultModel: string;
@@ -125,7 +130,7 @@ export function resolveEndpointModelMetadata(
 
 export function mergeEndpointConfig(
   base: LlmEndpointConfig | undefined,
-  override: LlmEndpointConfig,
+  override: LlmEndpointInputConfig,
 ): LlmEndpointConfig {
   return {
     ...base,
@@ -159,7 +164,7 @@ export function mergeEndpointConfig(
 }
 
 export function mergeLlmEndpoints(
-  configured: Record<string, LlmEndpointConfig>,
+  configured: Record<string, LlmEndpointInputConfig>,
 ): Record<string, LlmEndpointConfig> {
   const endpoints: Record<string, LlmEndpointConfig> = Object.fromEntries(
     Object.entries(DEFAULT_LLM_ENDPOINTS).map(([id, endpoint]) => [id, endpoint]),

@@ -219,6 +219,56 @@ describe("LlmProfileManager", () => {
     expect(activeProfile?.keySource).toBe("env");
   });
 
+  test("runtime profile manager applies reasoning effort without rerouting", async () => {
+    process.env.OPENAI_API_KEY = "router-key";
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_MODEL;
+    process.env.SLOPPY_LLM_REASONING_EFFORT = "low";
+
+    const manager = createRuntimeLlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+      env: process.env,
+    });
+
+    const state = await manager.getState();
+    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
+
+    expect(state.activeProfileId).toBe("openai-main");
+    expect(activeProfile?.reasoningEffort).toBe("low");
+    expect(activeProfile?.thinking.effectiveEffort).toBe("low");
+  });
+
+  test("applies top-level reasoning effort to managed profiles", async () => {
+    process.env.OPENAI_API_KEY = "env-key";
+
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          reasoningEffort: "high",
+          defaultProfileId: "openai-main",
+          profiles: [
+            {
+              kind: "native",
+              id: "openai-main",
+              endpointId: "openai",
+              model: "gpt-5.4",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
+
+    expect(activeProfile?.reasoningEffort).toBe("high");
+    expect(activeProfile?.thinking.effectiveEffort).toBe("high");
+  });
+
   test("allows selecting an environment-backed profile as the active default", async () => {
     process.env.GEMINI_API_KEY = "gemini-env-key";
 

@@ -170,6 +170,13 @@ function buildFallbackProfile(config: LlmConfig): ResolvedProfile {
   };
 }
 
+function resolveProfileReasoningEffort(
+  config: LlmConfig,
+  profile: Pick<AnyLlmProfileConfig, "reasoningEffort">,
+): LlmReasoningEffort | undefined {
+  return profile.reasoningEffort ?? config.reasoningEffort;
+}
+
 function endpointModelMetadata(
   config: LlmConfig,
   profile: Pick<LlmProfileState, "endpointId" | "model">,
@@ -558,8 +565,10 @@ export class LlmProfileManager {
 
     const credential = await this.resolveCredential(profile, endpoint);
     const metadata = endpoint.models[profile.model];
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, profile);
     return {
       ...profile,
+      reasoningEffort,
       protocol: endpoint.protocol,
       baseUrl: endpoint.baseUrl,
       authEnv: endpoint.auth.type === "env" ? endpoint.auth.env : undefined,
@@ -577,15 +586,17 @@ export class LlmProfileManager {
         model: profile.model,
         global: this.config.llm.thinking,
         profile: profile.thinking,
-        reasoningEffort: profile.reasoningEffort,
+        reasoningEffort,
       }),
     } satisfies LlmProfileState;
   }
 
   private resolveSessionAgentProfileState(profile: ResolvedProfile): LlmProfileState {
     const sessionProfile = profile as LlmSessionAgentProfileConfig & ResolvedProfile;
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, sessionProfile);
     return {
       ...sessionProfile,
+      reasoningEffort,
       protocol: "session-agent",
       isDefault: false,
       hasKey: false,
@@ -598,7 +609,7 @@ export class LlmProfileManager {
         model: sessionProfile.model,
         global: this.config.llm.thinking,
         profile: sessionProfile.thinking,
-        reasoningEffort: sessionProfile.reasoningEffort,
+        reasoningEffort,
       }),
     } satisfies LlmProfileState;
   }
@@ -606,8 +617,10 @@ export class LlmProfileManager {
   private resolveMissingEndpointProfileState(
     profile: ResolvedProfile & { kind: "native" },
   ): LlmProfileState {
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, profile);
     return {
       ...profile,
+      reasoningEffort,
       isDefault: false,
       hasKey: false,
       keySource: "missing",
@@ -620,7 +633,7 @@ export class LlmProfileManager {
         model: profile.model,
         global: this.config.llm.thinking,
         profile: profile.thinking,
-        reasoningEffort: profile.reasoningEffort,
+        reasoningEffort,
       }),
     } satisfies LlmProfileState;
   }

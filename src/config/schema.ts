@@ -116,7 +116,7 @@ export const llmEndpointSchema = z
     label: z.string().trim().min(1).optional(),
     protocol: llmProtocolSchema,
     baseUrl: z.string().trim().min(1).optional(),
-    auth: llmEndpointAuthSchema.default({ type: "none" }),
+    auth: llmEndpointAuthSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
     models: z.record(z.string().min(1), llmEndpointModelSchema).default({}),
   })
@@ -595,6 +595,10 @@ export type LlmEndpointConfig = {
   auth: LlmEndpointAuthConfig;
   headers?: Record<string, string>;
   models: Record<string, LlmEndpointModelConfig>;
+};
+
+export type LlmEndpointInputConfig = Omit<LlmEndpointConfig, "auth"> & {
+  auth?: LlmEndpointAuthConfig;
 };
 
 export interface LlmConfig {
