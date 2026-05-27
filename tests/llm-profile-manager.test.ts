@@ -175,6 +175,27 @@ describe("LlmProfileManager", () => {
     expect(envProfile?.isDefault).toBe(false);
   });
 
+  test("falls back to legacy profile-scoped stored API keys", async () => {
+    delete process.env.OPENAI_API_KEY;
+
+    const manager = new LlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: new MemoryCredentialStore(
+        "available",
+        new Map([["openai-main", "stored-key"]]),
+      ),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.status).toBe("ready");
+    expect(state.activeProfileId).toBe("openai-main");
+    expect(state.profiles.find((profile) => profile.id === "openai-main")?.keySource).toBe(
+      "secure_store",
+    );
+  });
+
   test("runtime profile manager honors explicit endpoint routing", async () => {
     process.env.OPENAI_API_KEY = "router-key";
     process.env.SLOPPY_LLM_ENDPOINT = "openai";

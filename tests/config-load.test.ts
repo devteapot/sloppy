@@ -258,7 +258,10 @@ describe("loadConfig", () => {
 
     const homeConfigPath = join(home, ".sloppy/config.yaml");
     const persisted = await readFile(homeConfigPath, "utf8");
+    const parsed = YAML.parse(persisted) as { llm?: { endpoints?: unknown } };
+
     expect(persisted).not.toContain("defaultModel");
+    expect(parsed.llm?.endpoints).toEqual({});
 
     const config = await loadConfigFromLayerPaths([homeConfigPath], { cwd: originalCwd });
     expect(config.llm.endpoints.openai?.models["gpt-5.4"]).toBeDefined();

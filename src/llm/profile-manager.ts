@@ -484,9 +484,12 @@ export class LlmProfileManager {
       }
       const endpoint = this.config.llm.endpoints[profile.endpointId];
       if (endpoint.auth.type === "none" || endpoint.auth.type === "codex") {
-        await this.credentialStore.delete(profile.endpointId);
+        await this.deleteStoredCredentialKeys(profile);
       } else {
         await this.credentialStore.set(profile.endpointId, normalizedApiKey);
+        if (profile.id !== profile.endpointId) {
+          await this.credentialStore.delete(profile.id);
+        }
       }
     }
 
@@ -527,7 +530,7 @@ export class LlmProfileManager {
       throw new Error(`Only native profiles can delete stored endpoint credentials: ${profileId}`);
     }
 
-    await this.credentialStore.delete(profile.endpointId);
+    await this.deleteStoredCredentialKeys(profile);
     this.adapterCache.clear();
     return this.getState();
   }
@@ -648,6 +651,27 @@ export class LlmProfileManager {
     this.adapterCache.clear();
   }
 
+  private async getStoredCredentialKey(
+    profile: Pick<ResolvedProfile, "id">,
+    endpointId: string,
+  ): Promise<string | null> {
+    const endpointKey = await this.credentialStore.get(endpointId);
+    if (endpointKey || profile.id === endpointId) {
+      return endpointKey;
+    }
+
+    return this.credentialStore.get(profile.id);
+  }
+
+  private async deleteStoredCredentialKeys(
+    profile: Pick<ResolvedProfile, "id"> & { endpointId: string },
+  ): Promise<void> {
+    await this.credentialStore.delete(profile.endpointId);
+    if (profile.id !== profile.endpointId) {
+      await this.credentialStore.delete(profile.id);
+    }
+  }
+
   private async resolveCredential(
     profile: Pick<ResolvedProfile, "kind" | "id"> & {
       endpointId?: string;
@@ -697,7 +721,7 @@ export class LlmProfileManager {
       }
     }
 
-    const storedKey = endpointId ? await this.credentialStore.get(endpointId) : null;
+    const storedKey = endpointId ? await this.getStoredCredentialKey(profile, endpointId) : null;
     if (storedKey && endpointId) {
       const normalizedApiKey = normalizeApiKey(storedKey);
       const invalidReason = validateApiKey(endpointId, normalizedApiKey);

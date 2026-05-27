@@ -1,6 +1,8 @@
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 
+import { DEFAULT_LLM_ENDPOINTS } from "../llm/catalog";
 import { getHomeConfigPath, readConfigFile } from "./load";
 import type { LlmConfig, LlmEndpointConfig, LlmEndpointModelConfig } from "./schema";
 
@@ -38,16 +40,30 @@ function toPersistedEndpoint(endpoint: LlmEndpointConfig): LlmEndpointConfig {
   };
 }
 
+function isUnchangedBuiltInEndpoint(endpointId: string, endpoint: LlmEndpointConfig): boolean {
+  const builtInEndpoint = DEFAULT_LLM_ENDPOINTS[endpointId];
+  if (!builtInEndpoint) {
+    return false;
+  }
+
+  return isDeepStrictEqual(toPersistedEndpoint(endpoint), toPersistedEndpoint(builtInEndpoint));
+}
+
+function toPersistedEndpoints(config: LlmConfig): Record<string, LlmEndpointConfig> {
+  return Object.fromEntries(
+    Object.entries(config.endpoints).flatMap(([endpointId, endpoint]) =>
+      isUnchangedBuiltInEndpoint(endpointId, endpoint)
+        ? []
+        : [[endpointId, toPersistedEndpoint(endpoint)]],
+    ),
+  );
+}
+
 function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
   return {
     reasoningEffort: config.reasoningEffort,
     thinking: config.thinking,
-    endpoints: Object.fromEntries(
-      Object.entries(config.endpoints).map(([endpointId, endpoint]) => [
-        endpointId,
-        toPersistedEndpoint(endpoint),
-      ]),
-    ),
+    endpoints: toPersistedEndpoints(config),
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
     profiles: config.profiles.map((profile) => ({ ...profile })),
