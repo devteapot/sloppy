@@ -5,6 +5,7 @@ import type {
   LlmConfig,
   LlmEndpointConfig,
   LlmEndpointModelConfig,
+  LlmProfileConfig,
   LlmReasoningEffort,
   LlmSessionAgentProfileConfig,
   LlmThinkingDisplay,
@@ -508,9 +509,14 @@ export class LlmProfileManager {
   }
 
   async deleteProfile(profileId: string): Promise<LlmStateSnapshot> {
-    const nextProfiles = this.config.llm.profiles.filter((profile) => profile.id !== profileId);
-    if (nextProfiles.length === this.config.llm.profiles.length) {
+    const deletedProfile = this.config.llm.profiles.find((profile) => profile.id === profileId);
+    if (!deletedProfile) {
       throw new Error(`Unknown profile: ${profileId}`);
+    }
+
+    const nextProfiles = this.config.llm.profiles.filter((profile) => profile.id !== profileId);
+    if (deletedProfile.kind === "native") {
+      await this.deleteStoredCredentialKeysForProfileRemoval(deletedProfile, nextProfiles);
     }
 
     const nextDefaultProfileId =
@@ -526,8 +532,13 @@ export class LlmProfileManager {
     if (!profile) {
       throw new Error(`Unknown profile: ${profileId}`);
     }
-    if (profile.kind !== "native") {
-      throw new Error(`Only native profiles can delete stored endpoint credentials: ${profileId}`);
+    if (profile.kind !== "native" || profile.origin !== "managed") {
+      throw new Error(`Cannot delete stored endpoint credentials for profile: ${profileId}`);
+    }
+
+    const endpoint = this.config.llm.endpoints[profile.endpointId];
+    if (!endpoint || !endpointRequiresCredential(endpoint)) {
+      throw new Error(`Cannot delete stored endpoint credentials for profile: ${profileId}`);
     }
 
     await this.deleteStoredCredentialKeys(profile);
@@ -669,6 +680,22 @@ export class LlmProfileManager {
     await this.credentialStore.delete(profile.endpointId);
     if (profile.id !== profile.endpointId) {
       await this.credentialStore.delete(profile.id);
+    }
+  }
+
+  private async deleteStoredCredentialKeysForProfileRemoval(
+    profile: LlmProfileConfig,
+    remainingProfiles: AnyLlmProfileConfig[],
+  ): Promise<void> {
+    const hasRemainingEndpointProfile = remainingProfiles.some(
+      (candidate) => candidate.kind === "native" && candidate.endpointId === profile.endpointId,
+    );
+
+    if (profile.id !== profile.endpointId) {
+      await this.credentialStore.delete(profile.id);
+    }
+    if (!hasRemainingEndpointProfile) {
+      await this.credentialStore.delete(profile.endpointId);
     }
   }
 

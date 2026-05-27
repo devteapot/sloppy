@@ -323,6 +323,75 @@ describe("LlmProfileManager", () => {
     expect(store.secrets.get("gemini")).toBe("secret-key");
   });
 
+  test("rejects stored key deletion through environment-backed profiles", async () => {
+    process.env.OPENAI_API_KEY = "env-key";
+    const store = new MemoryCredentialStore("available", new Map([["openai", "stored-key"]]));
+    const manager = new LlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: store,
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+    const envProfile = state.profiles.find(
+      (profile) => profile.origin === "environment" && profile.endpointId === "openai",
+    );
+
+    expect(envProfile?.canDeleteApiKey).toBe(false);
+    expect(envProfile?.id).toBeTruthy();
+    if (!envProfile) {
+      throw new Error("Expected an environment-backed OpenAI profile.");
+    }
+
+    await expect(manager.deleteApiKey(envProfile.id)).rejects.toThrow(
+      "Cannot delete stored endpoint credentials for profile",
+    );
+    expect(store.secrets.get("openai")).toBe("stored-key");
+  });
+
+  test("deletes endpoint credentials only after the last managed endpoint profile is deleted", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const store = new MemoryCredentialStore(
+      "available",
+      new Map([
+        ["openai", "stored-key"],
+        ["openai-alt", "legacy-profile-key"],
+      ]),
+    );
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          defaultProfileId: "openai-main",
+          profiles: [
+            {
+              kind: "native",
+              id: "openai-main",
+              endpointId: "openai",
+              model: "gpt-5.4",
+            },
+            {
+              kind: "native",
+              id: "openai-alt",
+              endpointId: "openai",
+              model: "gpt-5.4-mini",
+            },
+          ],
+        },
+      }),
+      credentialStore: store,
+      writeConfig: async () => undefined,
+    });
+
+    await manager.deleteProfile("openai-alt");
+
+    expect(store.secrets.get("openai")).toBe("stored-key");
+    expect(store.secrets.has("openai-alt")).toBe(false);
+
+    await manager.deleteProfile("openai-main");
+
+    expect(store.secrets.has("openai")).toBe(false);
+  });
+
   test("treats session-agent profiles as ready model profiles without API keys", async () => {
     const manager = new LlmProfileManager({
       config: createTestConfig({
