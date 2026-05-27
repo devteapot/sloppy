@@ -10,6 +10,7 @@ import { runRuntimeDoctor } from "../src/runtime/doctor-runner";
 import { createTestConfig } from "./helpers/config";
 
 const originalFetch = globalThis.fetch;
+const originalHome = process.env.HOME;
 const originalLiteLlmKey = process.env.LITELLM_API_KEY;
 const originalOpenAiKey = process.env.OPENAI_API_KEY;
 const originalEventLog = process.env.SLOPPY_EVENT_LOG;
@@ -48,6 +49,11 @@ const TEST_CONFIG = createTestConfig({
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalHome == null) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
   if (originalLiteLlmKey == null) {
     delete process.env.LITELLM_API_KEY;
   } else {
@@ -524,20 +530,17 @@ describe("runtime doctor", () => {
             defaultProfileId: "managed-openai",
             profiles: [
               {
+                kind: "native",
                 id: "managed-openai",
                 label: "Managed OpenAI",
-                provider: "openai",
+                endpointId: "openai",
                 model: "gpt-5.4",
-                apiKeyEnv: "OPENAI_API_KEY",
               },
             ],
           },
         },
         workspaceRoot,
-        credentialStore: new MemoryCredentialStore(
-          "available",
-          new Map([["managed-openai", "sk-test"]]),
-        ),
+        credentialStore: new MemoryCredentialStore("available", new Map([["openai", "sk-test"]])),
       });
 
       expect(result.checks).toContainEqual(
@@ -616,8 +619,14 @@ describe("runtime doctor", () => {
           ...TEST_CONFIG,
           llm: {
             ...TEST_CONFIG.llm,
-            apiKeyEnv: "LITELLM_API_KEY",
-            baseUrl: "http://sloppy-mba.local:8001/v1",
+            endpoints: {
+              ...TEST_CONFIG.llm.endpoints,
+              openai: {
+                ...TEST_CONFIG.llm.endpoints.openai!,
+                baseUrl: "http://sloppy-mba.local:8001/v1",
+                auth: { type: "env", env: "LITELLM_API_KEY" },
+              },
+            },
           },
         },
         workspaceRoot,
@@ -650,9 +659,15 @@ describe("runtime doctor", () => {
           ...TEST_CONFIG,
           llm: {
             ...TEST_CONFIG.llm,
-            provider: "openai-codex",
-            model: "gpt-5.5",
-            baseUrl: "https://chatgpt.com/backend-api/codex",
+            defaultProfileId: "codex-native",
+            profiles: [
+              {
+                kind: "native",
+                id: "codex-native",
+                endpointId: "openai-codex",
+                model: "gpt-5.5",
+              },
+            ],
           },
         },
         workspaceRoot,
@@ -711,16 +726,16 @@ describe("runtime doctor", () => {
   });
 
   test("uses the requested workspace as the config normalization root", async () => {
+    const home = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-home-"));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-doctor-workspace-"));
     await mkdir(join(workspaceRoot, ".sloppy"), { recursive: true });
     await mkdir(join(workspaceRoot, "project"), { recursive: true });
     await writeFile(
       join(workspaceRoot, ".sloppy/config.yaml"),
-      ["llm:", "  provider: anthropic", "plugins:", "  filesystem:", "    root: project"].join(
-        "\n",
-      ),
+      ["plugins:", "  filesystem:", "    root: project"].join("\n"),
       "utf8",
     );
+    process.env.HOME = home;
 
     try {
       const result = await runRuntimeDoctor({ workspaceRoot });
@@ -733,6 +748,7 @@ describe("runtime doctor", () => {
         )}; the directory will be created on first write.`,
       });
     } finally {
+      await rm(home, { recursive: true, force: true });
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
@@ -765,9 +781,10 @@ describe("runtime doctor", () => {
             },
             llm: {
               status: "needs_credentials",
-              message: "Add an API key to start the agent.",
+              message: "Add an endpoint credential to start the agent.",
               activeProfileId: "default",
-              selectedProvider: "openai",
+              selectedEndpointId: "openai",
+              selectedProtocol: "openai-chat",
               selectedModel: "gpt-5.4",
               secureStoreKind: "none",
               secureStoreStatus: "unsupported",

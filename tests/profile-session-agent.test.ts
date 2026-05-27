@@ -82,15 +82,12 @@ new acp.AgentSideConnection((clientConnection) => {
 function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
   return createTestConfig({
     llm: {
-      provider: "acp",
-      model: "sonnet",
-      adapterId: "fake",
       defaultProfileId: "fake-acp",
       profiles: [
         {
+          kind: "session-agent",
           id: "fake-acp",
           label: "Fake ACP",
-          provider: "acp",
           model: "sonnet",
           adapterId: "fake",
         },
@@ -157,7 +154,7 @@ describe("ProfileSessionAgent", () => {
 
         const snapshot = runtime.store.getSnapshot();
         expect(snapshot.llm.status).toBe("ready");
-        expect(snapshot.llm.selectedProvider).toBe("acp");
+        expect(snapshot.llm.selectedProtocol).toBe("session-agent");
         expect(snapshot.llm.selectedModel).toBe("sonnet");
         const lastBlock = snapshot.transcript.at(-1)?.content[0];
         expect(lastBlock?.type).toBe("text");

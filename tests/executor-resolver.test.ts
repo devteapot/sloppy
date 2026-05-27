@@ -11,12 +11,11 @@ function buildConfig(overrides?: {
 }): SloppyConfig {
   return createTestConfig({
     llm: {
-      provider: "anthropic",
-      model: "claude",
+      defaultProfileId: "anthropic-main",
       maxTokens: 4096,
       profiles: overrides?.profiles ?? [
-        { id: "anthropic-main", provider: "anthropic", model: "claude" },
-        { id: "openai-cheap", provider: "openai", model: "gpt-mini" },
+        { kind: "native", id: "anthropic-main", endpointId: "anthropic", model: "claude" },
+        { kind: "native", id: "openai-cheap", endpointId: "openai", model: "gpt-mini" },
       ],
     },
     plugins: {

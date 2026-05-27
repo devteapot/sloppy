@@ -7,7 +7,7 @@ export function syncLlmState(state: SessionStoreState, llm: LlmStateSnapshot): v
     ...llm,
     profiles: llm.profiles.map((profile) => ({ ...profile })),
   };
-  state.snapshot.session.modelProvider = llm.selectedProvider;
+  state.snapshot.session.modelProvider = llm.selectedEndpointId ?? "session-agent";
   state.snapshot.session.model = llm.selectedModel;
   state.snapshot.session.updatedAt = now();
   state.llmChanged = true;

@@ -1,5 +1,5 @@
 import type {
-  LlmProvider,
+  LlmProtocol,
   LlmReasoningEffort,
   LlmThinkingConfig,
   LlmThinkingConfigInput,
@@ -19,7 +19,11 @@ export const DEFAULT_THINKING_CONFIG: LlmThinkingConfig = {
   effort: "medium",
 };
 
-const OPENAI_REASONING_PROVIDERS = new Set<LlmProvider>(["openai", "openai-codex", "openrouter"]);
+const OPENAI_REASONING_PROTOCOLS = new Set<LlmProtocol>([
+  "openai-chat",
+  "openai-responses",
+  "openai-codex",
+]);
 
 function mergeRecord<T extends Record<string, unknown>>(
   left: T | undefined,
@@ -57,12 +61,15 @@ export function normalizeThinkingConfig(
   };
 }
 
-function modelLikelyForcesThinking(provider: LlmProvider, model: string): boolean {
+function modelLikelyForcesThinking(
+  protocol: LlmProtocol | "session-agent",
+  model: string,
+): boolean {
   const normalized = model.toLowerCase();
-  if (provider === "gemini") {
+  if (protocol === "gemini") {
     return normalized.startsWith("gemini-2.5-pro") || normalized.startsWith("gemini-3");
   }
-  if (OPENAI_REASONING_PROVIDERS.has(provider)) {
+  if (protocol !== "session-agent" && OPENAI_REASONING_PROTOCOLS.has(protocol)) {
     return (
       normalized.startsWith("o") ||
       normalized.includes("gpt-5") ||
@@ -70,22 +77,22 @@ function modelLikelyForcesThinking(provider: LlmProvider, model: string): boolea
       normalized.includes("deepseek-r")
     );
   }
-  if (provider === "ollama") {
+  if (protocol === "openai-chat") {
     return normalized.includes("gpt-oss") || normalized.includes("qwen3");
   }
   return false;
 }
 
 export function resolveEffectiveThinkingConfig(options: {
-  provider: LlmProvider;
+  protocol: LlmProtocol | "session-agent";
   model: string;
   global?: LlmThinkingConfigInput;
   profile?: LlmThinkingConfigInput;
   reasoningEffort?: LlmReasoningEffort;
 }): EffectiveThinkingConfig {
   const normalized = normalizeThinkingConfig(options.global, options.profile);
-  const providerUnsupported = options.provider === "acp";
-  const forced = !providerUnsupported && modelLikelyForcesThinking(options.provider, options.model);
+  const providerUnsupported = options.protocol === "session-agent";
+  const forced = !providerUnsupported && modelLikelyForcesThinking(options.protocol, options.model);
   const effectiveEnabled = providerUnsupported ? false : normalized.enabled || forced;
   const effectiveReason: LlmThinkingEffectiveReason = providerUnsupported
     ? "provider_unsupported"

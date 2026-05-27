@@ -55,26 +55,26 @@ export type LocalCommand =
       type: "profile";
       profileId?: string;
       label?: string;
-      provider: string;
+      kind?: "native" | "session-agent";
+      endpointId?: string;
       model?: string;
       reasoningEffort?: string;
       thinkingEnabled?: boolean;
       thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
-      baseUrl?: string;
       makeDefault: boolean;
     }
   | {
       type: "profile_secret";
       profileId?: string;
       label?: string;
-      provider: string;
+      kind?: "native" | "session-agent";
+      endpointId?: string;
       model?: string;
       reasoningEffort?: string;
       thinkingEnabled?: boolean;
       thinkingDisplay?: "visible" | "hidden";
       adapterId?: string;
-      baseUrl?: string;
       makeDefault: boolean;
     }
   | { type: "rejected"; reason: string }
@@ -312,46 +312,48 @@ export function parseLocalCommand(input: string): LocalCommand | null {
       return { type: "rejected", reason: inlineSecret };
     }
     const parsed = parseCommandOptions(args);
-    const [provider = "", model, positionalBaseUrl] = parsed.positionals;
-    if (!provider) {
+    const [endpointId = "", model] = parsed.positionals;
+    if (!endpointId) {
       return { type: "unknown", name: trimmed };
     }
+    const adapterId = parsed.values.adapter ?? parsed.values["adapter-id"];
 
     return {
       type: "profile",
       profileId: parsed.values.id ?? parsed.values["profile-id"],
       label: parsed.values.label,
-      provider,
+      kind: parseProfileKind(parsed.values.kind, adapterId),
+      endpointId,
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
       thinkingEnabled: parseThinkingEnabled(parsed),
       thinkingDisplay: parseThinkingDisplay(parsed),
-      adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
-      baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
+      adapterId,
       makeDefault: !parsed.flags.has("no-default"),
     };
   }
 
   if (name === "profile-secret" || name === "secret-profile") {
     const parsed = parseCommandOptions(args);
-    const [provider = "", model, positionalBaseUrl] = parsed.positionals;
-    if (!provider) {
+    const [endpointId = "", model] = parsed.positionals;
+    if (!endpointId) {
       return { type: "unknown", name: trimmed };
     }
+    const adapterId = parsed.values.adapter ?? parsed.values["adapter-id"];
 
     return {
       type: "profile_secret",
       profileId: parsed.values.id ?? parsed.values["profile-id"],
       label: parsed.values.label,
-      provider,
+      kind: parseProfileKind(parsed.values.kind, adapterId),
+      endpointId,
       model,
       reasoningEffort:
         parsed.values["reasoning-effort"] ?? parsed.values.reasoning ?? parsed.values.effort,
       thinkingEnabled: parseThinkingEnabled(parsed),
       thinkingDisplay: parseThinkingDisplay(parsed),
-      adapterId: parsed.values.adapter ?? parsed.values["adapter-id"],
-      baseUrl: parsed.values["base-url"] ?? parsed.values.baseUrl ?? positionalBaseUrl,
+      adapterId,
       makeDefault: !parsed.flags.has("no-default"),
     };
   }
@@ -563,6 +565,19 @@ function parsePositiveInteger(raw: string | undefined): number | undefined {
   }
 
   return value;
+}
+
+function parseProfileKind(
+  raw: string | undefined,
+  adapterId: string | undefined,
+): "native" | "session-agent" | undefined {
+  if (!raw) {
+    return adapterId ? "session-agent" : undefined;
+  }
+  if (raw === "native" || raw === "session-agent") {
+    return raw;
+  }
+  throw new Error("profile kind must be native or session-agent.");
 }
 
 function parseThinkingEnabled(parsed: {

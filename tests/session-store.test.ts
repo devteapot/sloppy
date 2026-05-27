@@ -120,7 +120,7 @@ describe("SessionStore — initial state", () => {
     expect(snapshot.apps).toEqual([]);
 
     expect(snapshot.llm.status).toBe("needs_credentials");
-    expect(snapshot.llm.selectedProvider).toBe("openai");
+    expect(snapshot.llm.selectedEndpointId).toBe("openai");
     expect(snapshot.llm.selectedModel).toBe("gpt-5.4");
   });
 
@@ -1226,14 +1226,17 @@ describe("SessionStore — LLM state", () => {
       status: "ready",
       message: "ready",
       activeProfileId: "p1",
-      selectedProvider: "anthropic",
+      selectedEndpointId: "anthropic",
+      selectedProtocol: "anthropic-messages",
       selectedModel: "claude-opus-4-7",
       secureStoreKind: "keychain",
       secureStoreStatus: "available",
       profiles: [
         {
+          kind: "native",
           id: "p1",
-          provider: "anthropic",
+          endpointId: "anthropic",
+          protocol: "anthropic-messages",
           model: "claude-opus-4-7",
           isDefault: true,
           hasKey: true,
@@ -1950,17 +1953,14 @@ describe("SessionService — multi-session support", () => {
     // secureStoreKind: "none").
     const config: SloppyConfig = createTestConfig({
       llm: {
-        provider: "openai",
-        model: "gpt-5.4",
-        apiKeyEnv: "OPENAI_API_KEY",
         defaultProfileId: "test-openai",
         profiles: [
           {
+            kind: "native",
             id: "test-openai",
             label: "Test OpenAI",
-            provider: "openai",
+            endpointId: "openai",
             model: "gpt-5.4",
-            apiKeyEnv: "OPENAI_API_KEY",
           },
         ],
         maxTokens: 4096,
@@ -1973,8 +1973,8 @@ describe("SessionService — multi-session support", () => {
       async getStatus(): Promise<CredentialStoreStatus> {
         return "available";
       }
-      async get(profileId: string): Promise<string | null> {
-        return profileId === "test-openai" ? this.key : null;
+      async get(endpointId: string): Promise<string | null> {
+        return endpointId === "openai" ? this.key : null;
       }
       async set(): Promise<void> {}
       async delete(): Promise<void> {}

@@ -1,33 +1,72 @@
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 
+import { DEFAULT_LLM_ENDPOINTS } from "../llm/catalog";
 import { getHomeConfigPath, readConfigFile } from "./load";
-import type { LlmConfig } from "./schema";
+import type { LlmConfig, LlmEndpointConfig, LlmEndpointModelConfig } from "./schema";
+
+function definedFields<T extends Record<string, unknown>>(fields: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
+
+function toPersistedEndpointModel(model: LlmEndpointModelConfig): LlmEndpointModelConfig {
+  return definedFields({
+    label: model.label,
+    contextWindowTokens: model.contextWindowTokens,
+    maxOutputTokens: model.maxOutputTokens,
+    capabilities: model.capabilities,
+    compat: model.compat,
+  }) as LlmEndpointModelConfig;
+}
+
+function toPersistedEndpoint(endpoint: LlmEndpointConfig): LlmEndpointConfig {
+  return {
+    ...(definedFields({
+      label: endpoint.label,
+      baseUrl: endpoint.baseUrl,
+      headers: endpoint.headers,
+    }) as Partial<LlmEndpointConfig>),
+    protocol: endpoint.protocol,
+    auth: endpoint.auth,
+    models: Object.fromEntries(
+      Object.entries(endpoint.models).map(([modelId, model]) => [
+        modelId,
+        toPersistedEndpointModel(model),
+      ]),
+    ),
+  };
+}
+
+function isUnchangedBuiltInEndpoint(endpointId: string, endpoint: LlmEndpointConfig): boolean {
+  const builtInEndpoint = DEFAULT_LLM_ENDPOINTS[endpointId];
+  if (!builtInEndpoint) {
+    return false;
+  }
+
+  return isDeepStrictEqual(toPersistedEndpoint(endpoint), toPersistedEndpoint(builtInEndpoint));
+}
+
+function toPersistedEndpoints(config: LlmConfig): Record<string, LlmEndpointConfig> {
+  return Object.fromEntries(
+    Object.entries(config.endpoints).flatMap(([endpointId, endpoint]) =>
+      isUnchangedBuiltInEndpoint(endpointId, endpoint)
+        ? []
+        : [[endpointId, toPersistedEndpoint(endpoint)]],
+    ),
+  );
+}
 
 function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
   return {
-    provider: config.provider,
-    model: config.model,
     reasoningEffort: config.reasoningEffort,
     thinking: config.thinking,
-    adapterId: config.adapterId,
-    apiKeyEnv: config.apiKeyEnv,
-    baseUrl: config.baseUrl,
-    contextWindowTokens: config.contextWindowTokens,
+    endpoints: toPersistedEndpoints(config),
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
-    profiles: config.profiles.map((profile) => ({
-      id: profile.id,
-      label: profile.label,
-      provider: profile.provider,
-      model: profile.model,
-      reasoningEffort: profile.reasoningEffort,
-      thinking: profile.thinking,
-      adapterId: profile.adapterId,
-      apiKeyEnv: profile.apiKeyEnv,
-      baseUrl: profile.baseUrl,
-      contextWindowTokens: profile.contextWindowTokens,
-    })),
+    profiles: config.profiles.map((profile) => ({ ...profile })),
   };
 }
 

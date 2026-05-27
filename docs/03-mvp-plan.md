@@ -11,6 +11,9 @@ Checked in now:
 - Bun/TypeScript runtime scaffold
 - native Anthropic, Gemini, OpenAI-compatible, and OpenAI Codex subscription
   adapters
+- endpoint/protocol-based LLM config with built-in endpoint catalog,
+  config-defined custom OpenAI-compatible endpoints, env/secure-store/no-auth
+  auth modes, and `session-agent` profiles for adapter-backed main sessions
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order

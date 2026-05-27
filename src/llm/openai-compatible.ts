@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import { LlmAbortError, normalizeLlmAbortError } from "./types";
 
-type OpenAICompatibleProvider = "openai" | "openrouter" | "ollama";
+export type OpenAICompatibleProviderKind = "openai" | "openrouter" | "ollama" | "generic";
 
 interface OpenAICompatibleClient {
   chat: {
@@ -341,7 +341,7 @@ function reasoningTokens(completion: ChatCompletion): number | undefined {
 
 function normalizeThinkingContent(
   completion: ChatCompletion,
-  provider: OpenAICompatibleProvider,
+  provider: string,
   model: string,
   thinking: EffectiveThinkingConfig | undefined,
 ): ThinkingOutputBlock[] | undefined {
@@ -375,7 +375,7 @@ type StreamedThinkingState = {
 function thinkingBlockFromStream(
   streamed: StreamedThinkingState | undefined,
   completion: ChatCompletion,
-  provider: OpenAICompatibleProvider,
+  provider: string,
   model: string,
   thinking: EffectiveThinkingConfig | undefined,
 ): ThinkingOutputBlock[] | undefined {
@@ -419,7 +419,7 @@ function normalizeStopReason(completion: ChatCompletion): LlmResponse["stopReaso
 }
 
 function buildChatParameters(
-  provider: OpenAICompatibleProvider,
+  provider: OpenAICompatibleProviderKind,
   options: LlmChatOptions,
   model: string,
   thinking?: EffectiveThinkingConfig,
@@ -450,7 +450,7 @@ function buildChatParameters(
 
 function applyThinkingParameters(
   parameters: Record<string, unknown>,
-  provider: OpenAICompatibleProvider,
+  provider: OpenAICompatibleProviderKind,
   thinking: EffectiveThinkingConfig,
 ): void {
   if (provider === "openai") {
@@ -483,15 +483,18 @@ function applyThinkingParameters(
 export class OpenAICompatibleAdapter implements LlmAdapter {
   private client: OpenAICompatibleClient;
   private model: string;
-  private provider: OpenAICompatibleProvider;
+  private provider: string;
+  private providerKind: OpenAICompatibleProviderKind;
   private baseUrl?: string;
   private thinking?: EffectiveThinkingConfig;
 
   constructor(options: {
     apiKey: string;
     model: string;
-    provider: OpenAICompatibleProvider;
+    provider: string;
+    providerKind?: OpenAICompatibleProviderKind;
     baseUrl?: string;
+    headers?: Record<string, string>;
     thinking?: EffectiveThinkingConfig;
     client?: OpenAICompatibleClient;
   }) {
@@ -500,9 +503,11 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       (new OpenAI({
         apiKey: options.apiKey,
         baseURL: options.baseUrl,
+        defaultHeaders: options.headers,
       }) as unknown as OpenAICompatibleClient);
     this.model = options.model;
     this.provider = options.provider;
+    this.providerKind = options.providerKind ?? toOpenAICompatibleProviderKind(options.provider);
     this.baseUrl = options.baseUrl;
     this.thinking = options.thinking;
   }
@@ -513,7 +518,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
     }
 
     if (
-      this.provider !== "openai" ||
+      this.providerKind !== "openai" ||
       (this.baseUrl && !isOpenAIBaseUrl(this.baseUrl)) ||
       !this.client.responses
     ) {
@@ -543,7 +548,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       throw new LlmAbortError();
     }
 
-    const parameters = buildChatParameters(this.provider, options, this.model, this.thinking);
+    const parameters = buildChatParameters(this.providerKind, options, this.model, this.thinking);
     try {
       const streamed = options.onText
         ? await this.streamChat(parameters, options.onText, options.onThinking, options.signal)
@@ -653,6 +658,13 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       signal?.removeEventListener("abort", abortStream);
     }
   }
+}
+
+function toOpenAICompatibleProviderKind(provider: string): OpenAICompatibleProviderKind {
+  if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    return provider;
+  }
+  return "generic";
 }
 
 function emitThinkingBlocks(

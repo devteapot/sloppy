@@ -152,6 +152,21 @@ state.
 The supervisor owns lifecycle bookkeeping only. It does not schedule work,
 route tasks, mutate provider wiring, or become a privileged orchestrator.
 
+## LLM Endpoints And Profiles
+
+LLM configuration is endpoint/protocol based. An `llm.endpoints.<id>` entry
+describes a deployment and wire protocol (`anthropic-messages`, `openai-chat`,
+`openai-codex`, `gemini`, or a future protocol), auth mode, base URL, headers,
+and model metadata. A native profile selects an endpoint plus model; a
+`session-agent` profile selects an adapter-backed external session agent such as
+ACP. ACP is therefore an explicit session-agent path, not an LLM provider.
+
+The session provider exposes this as `/llm.selected_endpoint_id`,
+`selected_protocol`, and profile item `endpoint_id`/`protocol` props. API keys
+are never stored inline in YAML. Endpoint credentials come from the OS secure
+store, endpoint-declared environment variables, no-auth local endpoints, or the
+Codex CLI auth store for `openai-codex`.
+
 ## LLM Context Tail
 
 The model sees current provider state as an ephemeral `<slop-state>` tail,

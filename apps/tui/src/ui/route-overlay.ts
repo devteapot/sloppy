@@ -40,7 +40,8 @@ function renderSetup(snapshot: SessionViewSnapshot): string {
       const thinking = profile.thinkingEffectiveReason
         ? ` thinking=${profile.thinkingEffectiveEnabled ? "on" : "off"}/${profile.thinkingDisplay ?? "visible"}/${profile.thinkingEffort ?? "-"}`
         : "";
-      return `${profile.id}${profile.isDefault ? " *" : ""} ${profile.provider}/${profile.model} ${profile.ready ? "ready" : "not ready"}${thinking}`;
+      const route = profile.endpointId ?? profile.adapterId ?? profile.kind;
+      return `${profile.id}${profile.isDefault ? " *" : ""} ${route}/${profile.model} ${profile.ready ? "ready" : "not ready"}${thinking}`;
     })
     .join("\n");
   return [

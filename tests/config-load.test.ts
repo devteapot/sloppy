@@ -10,17 +10,16 @@ import {
   loadConfigFromLayerPaths,
   loadScopedConfig,
 } from "../src/config/load";
+import { writeHomeLlmConfig } from "../src/config/persist";
 import { activeFirstPartyPlugins } from "../src/plugins/first-party/catalog";
 
 const tempPaths: string[] = [];
 const originalCwd = process.cwd();
 const originalHome = process.env.HOME;
-const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
+const originalEndpoint = process.env.SLOPPY_LLM_ENDPOINT;
+const originalProfile = process.env.SLOPPY_LLM_PROFILE;
 const originalModel = process.env.SLOPPY_MODEL;
 const originalReasoningEffort = process.env.SLOPPY_LLM_REASONING_EFFORT;
-const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
-const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
-const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 const originalMaxIterations = process.env.SLOPPY_MAX_ITERATIONS;
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -44,10 +43,16 @@ afterEach(async () => {
     process.env.HOME = originalHome;
   }
 
-  if (originalProvider == null) {
-    delete process.env.SLOPPY_LLM_PROVIDER;
+  if (originalEndpoint == null) {
+    delete process.env.SLOPPY_LLM_ENDPOINT;
   } else {
-    process.env.SLOPPY_LLM_PROVIDER = originalProvider;
+    process.env.SLOPPY_LLM_ENDPOINT = originalEndpoint;
+  }
+
+  if (originalProfile == null) {
+    delete process.env.SLOPPY_LLM_PROFILE;
+  } else {
+    process.env.SLOPPY_LLM_PROFILE = originalProfile;
   }
 
   if (originalModel == null) {
@@ -60,24 +65,6 @@ afterEach(async () => {
     delete process.env.SLOPPY_LLM_REASONING_EFFORT;
   } else {
     process.env.SLOPPY_LLM_REASONING_EFFORT = originalReasoningEffort;
-  }
-
-  if (originalBaseUrl == null) {
-    delete process.env.SLOPPY_LLM_BASE_URL;
-  } else {
-    process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
-  }
-
-  if (originalAdapterId == null) {
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-  } else {
-    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
-  }
-
-  if (originalApiKeyEnv == null) {
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
-  } else {
-    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
   }
 
   if (originalMaxIterations == null) {
@@ -111,12 +98,10 @@ describe("loadConfig", () => {
   test("checked-in config example is loadable", async () => {
     const home = await createTempDir("sloppy-home-");
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
     delete process.env.SLOPPY_LLM_REASONING_EFFORT;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     delete process.env.SLOPPY_MAX_ITERATIONS;
 
     const config = await loadConfigFromLayerPaths(
@@ -157,46 +142,106 @@ describe("loadConfig", () => {
     });
   });
 
-  test("applies provider-specific defaults for OpenRouter", async () => {
+  test("applies built-in endpoint defaults for OpenRouter profiles", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
-    await writeConfig(workspace, "llm:\n  provider: openrouter\n");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: openrouter-main",
+        "  profiles:",
+        "    - id: openrouter-main",
+        "      endpointId: openrouter",
+        "      model: openai/gpt-5.4",
+      ].join("\n"),
+    );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
 
-    expect(config.llm.provider).toBe("openrouter");
-    expect(config.llm.model).toBe("openai/gpt-5.4");
-    expect(config.llm.apiKeyEnv).toBe("OPENROUTER_API_KEY");
-    expect(config.llm.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(config.llm.profiles[0]).toMatchObject({
+      endpointId: "openrouter",
+      model: "openai/gpt-5.4",
+    });
+    expect(config.llm.endpoints.openrouter?.auth).toEqual({
+      type: "env",
+      env: "OPENROUTER_API_KEY",
+    });
+    expect(config.llm.endpoints.openrouter?.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
 
-  test("applies provider-specific defaults for Gemini", async () => {
+  test("preserves built-in endpoint auth when overriding endpoint metadata", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
-    await writeConfig(workspace, "llm:\n  provider: gemini\n");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: openai-main",
+        "  endpoints:",
+        "    openai:",
+        "      protocol: openai-chat",
+        "      baseUrl: https://proxy.example/v1",
+        "      models:",
+        "        gpt-5.4: {}",
+        "  profiles:",
+        "    - id: openai-main",
+        "      endpointId: openai",
+        "      model: gpt-5.4",
+      ].join("\n"),
+    );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
     process.chdir(workspace);
 
     const config = await loadConfig();
 
-    expect(config.llm.provider).toBe("gemini");
-    expect(config.llm.model).toBe("gemini-2.5-pro");
-    expect(config.llm.apiKeyEnv).toBe("GEMINI_API_KEY");
-    expect(config.llm.baseUrl).toBeUndefined();
+    expect(config.llm.endpoints.openai?.baseUrl).toBe("https://proxy.example/v1");
+    expect(config.llm.endpoints.openai?.auth).toEqual({
+      type: "env",
+      env: "OPENAI_API_KEY",
+    });
+  });
+
+  test("applies built-in endpoint defaults for Gemini profiles", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: gemini-main",
+        "  profiles:",
+        "    - id: gemini-main",
+        "      endpointId: gemini",
+        "      model: gemini-2.5-pro",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.profiles[0]).toMatchObject({
+      endpointId: "gemini",
+      model: "gemini-2.5-pro",
+    });
+    expect(config.llm.endpoints.gemini?.auth).toEqual({ type: "env", env: "GEMINI_API_KEY" });
+    expect(config.llm.endpoints.gemini?.baseUrl).toBeUndefined();
   });
 
   test("loads native OpenAI Codex profiles with reasoning effort", async () => {
@@ -206,75 +251,280 @@ describe("loadConfig", () => {
       workspace,
       [
         "llm:",
-        "  provider: openai-codex",
-        "  model: gpt-5.5",
         "  reasoningEffort: low",
+        "  defaultProfileId: codex-native",
         "  profiles:",
         "    - id: codex-native",
         "      label: Codex Native",
-        "      provider: openai-codex",
+        "      endpointId: openai-codex",
         "      model: gpt-5.5",
         "      reasoningEffort: low",
       ].join("\n"),
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
     delete process.env.SLOPPY_LLM_REASONING_EFFORT;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
 
-    expect(config.llm.provider).toBe("openai-codex");
-    expect(config.llm.model).toBe("gpt-5.5");
     expect(config.llm.reasoningEffort).toBe("low");
-    expect(config.llm.baseUrl).toBe("https://chatgpt.com/backend-api/codex");
-    expect(config.llm.apiKeyEnv).toBeUndefined();
-    expect(config.llm.profiles[0]?.reasoningEffort).toBe("low");
+    expect(config.llm.profiles[0]).toMatchObject({
+      endpointId: "openai-codex",
+      model: "gpt-5.5",
+      reasoningEffort: "low",
+    });
+    expect(config.llm.endpoints["openai-codex"]?.baseUrl).toBe(
+      "https://chatgpt.com/backend-api/codex",
+    );
+    expect(config.llm.endpoints["openai-codex"]?.auth).toEqual({ type: "codex" });
   });
 
-  test("applies env overrides for provider and base URL", async () => {
+  test("persists runtime endpoint defaults without schema-only fields", async () => {
+    const home = await createTempDir("sloppy-home-");
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+
+    await writeHomeLlmConfig(createDefaultConfig(originalCwd).llm);
+
+    const homeConfigPath = join(home, ".sloppy/config.yaml");
+    const persisted = await readFile(homeConfigPath, "utf8");
+    const parsed = YAML.parse(persisted) as { llm?: { endpoints?: unknown } };
+
+    expect(persisted).not.toContain("defaultModel");
+    expect(parsed.llm?.endpoints).toEqual({});
+
+    const config = await loadConfigFromLayerPaths([homeConfigPath], { cwd: originalCwd });
+    expect(config.llm.endpoints.openai?.models["gpt-5.4"]).toBeDefined();
+  });
+
+  test("loads endpoint configs persisted with runtime-only defaultModel", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
-    await writeConfig(workspace, "llm:\n  provider: anthropic\n");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  endpoints:",
+        "    openai:",
+        "      protocol: openai-chat",
+        "      defaultModel: gpt-5.4",
+        "      auth:",
+        "        type: env",
+        "        env: OPENAI_API_KEY",
+        "      models:",
+        "        gpt-5.4: {}",
+        "  defaultProfileId: openai-main",
+        "  profiles:",
+        "    - id: openai-main",
+        "      endpointId: openai",
+        "      model: gpt-5.4",
+      ].join("\n"),
+    );
 
     process.env.HOME = home;
-    process.env.SLOPPY_LLM_PROVIDER = "ollama";
-    process.env.SLOPPY_LLM_BASE_URL = "http://127.0.0.1:11434/v1";
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
     process.chdir(workspace);
 
     const config = await loadConfig();
 
-    expect(config.llm.provider).toBe("ollama");
-    expect(config.llm.model).toBe("llama3.2");
-    expect(config.llm.apiKeyEnv).toBeUndefined();
-    expect(config.llm.baseUrl).toBe("http://127.0.0.1:11434/v1");
+    expect(config.llm.endpoints.openai?.models["gpt-5.4"]).toBeDefined();
   });
 
-  test("applies env override for API key env name", async () => {
+  test("applies env overrides for endpoint and model", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
-    await writeConfig(workspace, "llm:\n  provider: openai\n");
+    await writeConfig(workspace, "llm:\n  profiles: []\n");
 
     process.env.HOME = home;
-    process.env.SLOPPY_LLM_API_KEY_ENV = "LITELLM_API_KEY";
-    delete process.env.SLOPPY_LLM_PROVIDER;
-    delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
+    process.env.SLOPPY_LLM_ENDPOINT = "ollama";
+    process.env.SLOPPY_MODEL = "local/test-model";
+    delete process.env.SLOPPY_LLM_PROFILE;
     process.chdir(workspace);
 
     const config = await loadConfig();
 
-    expect(config.llm.provider).toBe("openai");
-    expect(config.llm.apiKeyEnv).toBe("LITELLM_API_KEY");
+    expect(config.llm.defaultProfileId).toBe("runtime");
+    expect(config.llm.profiles).toEqual([
+      {
+        kind: "native",
+        id: "runtime",
+        label: "Runtime Override",
+        endpointId: "ollama",
+        model: "local/test-model",
+      },
+    ]);
+    expect(config.llm.endpoints.ollama?.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  test("applies model env overrides on the active native endpoint", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: openrouter-main",
+        "  profiles:",
+        "    - id: openrouter-main",
+        "      endpointId: openrouter",
+        "      model: openai/gpt-5.4",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    process.env.SLOPPY_MODEL = "openai/gpt-custom";
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("runtime");
+    expect(config.llm.profiles).toEqual([
+      {
+        kind: "native",
+        id: "runtime",
+        label: "Runtime Override",
+        endpointId: "openrouter",
+        model: "openai/gpt-custom",
+      },
+    ]);
+  });
+
+  test("normalizes legacy top-level LLM provider config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: openrouter",
+        "  model: openai/gpt-5.4",
+        "  apiKeyEnv: OPENROUTER_API_KEY",
+        "  baseUrl: https://openrouter.ai/api/v1",
+        "  contextWindowTokens: 123456",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("default");
+    expect(config.llm.profiles[0]).toMatchObject({
+      kind: "native",
+      id: "default",
+      endpointId: "openrouter",
+      model: "openai/gpt-5.4",
+    });
+    expect(config.llm.endpoints.openrouter?.auth).toEqual({
+      type: "env",
+      env: "OPENROUTER_API_KEY",
+    });
+    expect(config.llm.endpoints.openrouter?.models["openai/gpt-5.4"]?.contextWindowTokens).toBe(
+      123456,
+    );
+  });
+
+  test("normalizes legacy LLM profile endpoint fields", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: anthropic",
+        "  defaultProfileId: custom-openai",
+        "  profiles:",
+        "    - id: custom-openai",
+        "      label: Custom OpenAI",
+        "      provider: openai",
+        "      model: custom/gpt",
+        "      apiKeyEnv: CUSTOM_OPENAI_KEY",
+        "      baseUrl: https://llm.example.test/v1",
+        "      contextWindowTokens: 98765",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("custom-openai");
+    expect(config.llm.profiles[0]).toMatchObject({
+      kind: "native",
+      id: "custom-openai",
+      label: "Custom OpenAI",
+      endpointId: "custom-openai",
+      model: "custom/gpt",
+    });
+    expect(config.llm.endpoints["custom-openai"]).toMatchObject({
+      protocol: "openai-chat",
+      baseUrl: "https://llm.example.test/v1",
+      auth: { type: "env", env: "CUSTOM_OPENAI_KEY" },
+    });
+    expect(config.llm.endpoints["custom-openai"]?.models["custom/gpt"]?.contextWindowTokens).toBe(
+      98765,
+    );
+  });
+
+  test("loads custom endpoint auth env names", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  endpoints:",
+        "    local-router:",
+        "      protocol: openai-chat",
+        "      baseUrl: http://sloppy-mba.local:8001/v1",
+        "      auth:",
+        "        type: env",
+        "        env: LITELLM_API_KEY",
+        "      models:",
+        "        local/test-model: {}",
+        "  defaultProfileId: local-router",
+        "  profiles:",
+        "    - id: local-router",
+        "      endpointId: local-router",
+        "      model: local/test-model",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.profiles[0]).toMatchObject({
+      endpointId: "local-router",
+      model: "local/test-model",
+    });
+    expect(config.llm.endpoints["local-router"]?.auth).toEqual({
+      type: "env",
+      env: "LITELLM_API_KEY",
+    });
   });
 
   test("expands ~ in skills.skillsDir to the user's home directory", async () => {
@@ -282,11 +532,9 @@ describe("loadConfig", () => {
     const workspace = await createTempDir("sloppy-workspace-");
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -310,11 +558,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -351,11 +597,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -400,11 +644,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -446,11 +688,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -498,8 +738,11 @@ describe("loadConfig", () => {
       workspace,
       [
         "llm:",
-        "  provider: openai",
-        "  model: workspace-model",
+        "  defaultProfileId: scoped-openai",
+        "  profiles:",
+        "    - id: scoped-openai",
+        "      endpointId: openai",
+        "      model: workspace-model",
         "plugins:",
         "  mcp:",
         "    connectOnStart: false",
@@ -509,7 +752,10 @@ describe("loadConfig", () => {
       projectRoot,
       [
         "llm:",
-        "  model: project-model",
+        "  profiles:",
+        "    - id: scoped-openai",
+        "      endpointId: openai",
+        "      model: project-model",
         "plugins:",
         "  mcp:",
         "    enabled: true",
@@ -522,11 +768,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadScopedConfig({
@@ -537,7 +781,7 @@ describe("loadConfig", () => {
       projectId: "app",
     });
 
-    expect(config.llm.model).toBe("project-model");
+    expect(config.llm.profiles[0]?.model).toBe("project-model");
     expect(config.workspaces?.activeWorkspaceId).toBe("main");
     expect(config.workspaces?.activeProjectId).toBe("app");
     expect(config.plugins.filesystem.root).toBe(projectRoot);
@@ -557,11 +801,9 @@ describe("loadConfig", () => {
 
     process.env.HOME = home;
     process.env.SLOPPY_MAX_ITERATIONS = "80";
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();
@@ -589,11 +831,9 @@ describe("loadConfig", () => {
     );
 
     process.env.HOME = home;
-    delete process.env.SLOPPY_LLM_PROVIDER;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
     delete process.env.SLOPPY_MODEL;
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-    delete process.env.SLOPPY_LLM_BASE_URL;
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
     process.chdir(workspace);
 
     const config = await loadConfig();

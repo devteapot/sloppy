@@ -8,9 +8,9 @@ const originalGeminiKey = process.env.GEMINI_API_KEY;
 
 function createConfig(overrides: Partial<LlmAdapterConfig>): LlmAdapterConfig {
   return {
-    provider: "anthropic",
+    endpointId: "anthropic",
+    protocol: "anthropic-messages",
     model: "claude-sonnet-4-20250514",
-    apiKeyEnv: "ANTHROPIC_API_KEY",
     apiKey: process.env.ANTHROPIC_API_KEY,
     ...overrides,
   };
@@ -36,10 +36,10 @@ describe("createLlmAdapter", () => {
 
     const adapter = createLlmAdapter(
       createConfig({
-        provider: "gemini",
+        endpointId: "gemini",
+        protocol: "gemini",
         model: "gemini-2.5-pro",
         apiKey: process.env.GEMINI_API_KEY,
-        apiKeyEnv: "GEMINI_API_KEY",
       }),
     );
 
@@ -49,9 +49,9 @@ describe("createLlmAdapter", () => {
   test("creates the OpenAI-compatible adapter for Ollama without an API key", () => {
     const adapter = createLlmAdapter(
       createConfig({
-        provider: "ollama",
+        endpointId: "ollama",
+        protocol: "openai-chat",
         model: "llama3.2",
-        apiKeyEnv: undefined,
         baseUrl: "http://localhost:11434/v1",
       }),
     );
@@ -62,10 +62,10 @@ describe("createLlmAdapter", () => {
   test("creates the native OpenAI Codex adapter without an API key", () => {
     const adapter = createLlmAdapter(
       createConfig({
-        provider: "openai-codex",
+        endpointId: "openai-codex",
+        protocol: "openai-codex",
         model: "gpt-5.5",
         reasoningEffort: "low",
-        apiKeyEnv: undefined,
       }),
     );
 
@@ -75,8 +75,16 @@ describe("createLlmAdapter", () => {
   test("requires API keys for Anthropic-backed providers", () => {
     delete process.env.ANTHROPIC_API_KEY;
 
-    expect(() => createLlmAdapter(createConfig({ apiKey: undefined }))).toThrow(
-      "No API key was resolved for anthropic. Set ANTHROPIC_API_KEY, store a key in the app, or choose another profile before starting a model turn.",
+    expect(() =>
+      createLlmAdapter(
+        createConfig({
+          apiKey: undefined,
+          authHint:
+            "Set ANTHROPIC_API_KEY, store a key for endpoint anthropic in the app, or choose another profile before starting a model turn.",
+        }),
+      ),
+    ).toThrow(
+      "No API key was resolved for anthropic. Set ANTHROPIC_API_KEY, store a key for endpoint anthropic in the app, or choose another profile before starting a model turn.",
     );
   });
 });

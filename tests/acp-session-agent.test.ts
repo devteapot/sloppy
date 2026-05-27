@@ -11,11 +11,7 @@ import { AgentSessionProvider } from "../src/session/provider";
 import { SessionRuntime } from "../src/session/runtime";
 import { createTestConfig } from "./helpers/config";
 
-const TEST_CONFIG = createTestConfig({
-  llm: {
-    apiKeyEnv: "OPENAI_API_KEY",
-  },
-});
+const TEST_CONFIG = createTestConfig();
 
 const tempDirs: string[] = [];
 
@@ -418,7 +414,7 @@ describe("AcpSessionAgent", () => {
     try {
       const llm = await consumer.query("/llm", 2);
       expect(llm.properties?.status).toBe("ready");
-      expect(llm.properties?.selected_provider).toBe("acp");
+      expect(llm.properties?.selected_protocol).toBe("session-agent");
 
       const sendResult = await consumer.invoke("/composer", "send_message", {
         text: "hello",

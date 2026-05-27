@@ -1,12 +1,7 @@
-import {
-  type LlmConfig,
-  llmProviderSchema,
-  llmReasoningEffortSchema,
-  type SloppyConfig,
-} from "../config/schema";
+import { type LlmConfig, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
+import { getDefaultEndpointModel } from "./catalog";
 import type { CredentialStore } from "./credential-store";
 import { LlmProfileManager } from "./profile-manager";
-import { getProviderDefaults, resolveModelContextWindowTokens } from "./provider-defaults";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -17,44 +12,70 @@ function trimOptional(value?: string): string | undefined {
 
 export function hasExplicitRuntimeLlmRouting(env: RuntimeEnvironment = Bun.env): boolean {
   return Boolean(
-    trimOptional(env.SLOPPY_LLM_PROVIDER) ??
+    trimOptional(env.SLOPPY_LLM_ENDPOINT) ??
+      trimOptional(env.SLOPPY_LLM_PROFILE) ??
       trimOptional(env.SLOPPY_MODEL) ??
-      trimOptional(env.SLOPPY_LLM_REASONING_EFFORT) ??
-      trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ??
-      trimOptional(env.SLOPPY_LLM_BASE_URL) ??
-      trimOptional(env.SLOPPY_LLM_API_KEY_ENV),
+      trimOptional(env.SLOPPY_LLM_REASONING_EFFORT),
   );
+}
+
+function activeNativeProfile(baseConfig: LlmConfig) {
+  const activeProfile = baseConfig.profiles.find(
+    (profile) => profile.id === baseConfig.defaultProfileId,
+  );
+  if (activeProfile?.kind === "native") {
+    return activeProfile;
+  }
+  return baseConfig.profiles.find((profile) => profile.kind === "native");
+}
+
+function firstEndpointModel(baseConfig: LlmConfig, endpointId: string): string | undefined {
+  return Object.keys(baseConfig.endpoints[endpointId]?.models ?? {})[0];
 }
 
 export function buildRuntimeLlmConfig(
   baseConfig: LlmConfig,
   env: RuntimeEnvironment = Bun.env,
 ): LlmConfig {
-  const provider = trimOptional(env.SLOPPY_LLM_PROVIDER)
-    ? llmProviderSchema.parse(trimOptional(env.SLOPPY_LLM_PROVIDER))
-    : baseConfig.provider;
   const reasoningEffort = trimOptional(env.SLOPPY_LLM_REASONING_EFFORT)
     ? llmReasoningEffortSchema.parse(trimOptional(env.SLOPPY_LLM_REASONING_EFFORT))
     : baseConfig.reasoningEffort;
-  const defaults = getProviderDefaults(provider);
-  const model = trimOptional(env.SLOPPY_MODEL) ?? baseConfig.model ?? defaults.model;
+  const endpointOverride = trimOptional(env.SLOPPY_LLM_ENDPOINT);
+  const modelOverride = trimOptional(env.SLOPPY_MODEL);
+  const profileOverride = trimOptional(env.SLOPPY_LLM_PROFILE);
+
+  if (!endpointOverride && !modelOverride) {
+    return {
+      ...baseConfig,
+      reasoningEffort,
+      defaultProfileId: profileOverride ?? baseConfig.defaultProfileId,
+    };
+  }
+
+  const activeProfile = activeNativeProfile(baseConfig);
+  const endpointId = endpointOverride ?? activeProfile?.endpointId ?? "anthropic";
+  const model =
+    modelOverride ??
+    activeProfile?.model ??
+    getDefaultEndpointModel(endpointId) ??
+    firstEndpointModel(baseConfig, endpointId) ??
+    "default";
+  const runtimeProfileId = profileOverride ?? "runtime";
 
   return {
     ...baseConfig,
-    provider,
-    model,
     reasoningEffort,
-    adapterId:
-      trimOptional(env.SLOPPY_LLM_ADAPTER_ID) ?? baseConfig.adapterId ?? defaults.adapterId,
-    apiKeyEnv:
-      trimOptional(env.SLOPPY_LLM_API_KEY_ENV) ?? baseConfig.apiKeyEnv ?? defaults.apiKeyEnv,
-    baseUrl: trimOptional(env.SLOPPY_LLM_BASE_URL) ?? baseConfig.baseUrl ?? defaults.baseUrl,
-    contextWindowTokens:
-      baseConfig.contextWindowTokens ??
-      resolveModelContextWindowTokens(provider, model) ??
-      defaults.contextWindowTokens,
-    defaultProfileId: undefined,
-    profiles: [],
+    defaultProfileId: runtimeProfileId,
+    profiles: [
+      {
+        kind: "native",
+        id: runtimeProfileId,
+        label: "Runtime Override",
+        endpointId,
+        model,
+        reasoningEffort,
+      },
+    ],
   };
 }
 

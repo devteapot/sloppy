@@ -154,11 +154,14 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
 }
 
 function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
+  const summaryPrefix = profile.endpointId ?? profile.adapterId ?? profile.kind;
   return {
     id: profile.id,
     props: {
+      kind: profile.kind,
       label: profile.label,
-      provider: profile.provider,
+      endpoint_id: profile.endpointId,
+      protocol: profile.protocol,
       model: profile.model,
       reasoning_effort: profile.reasoningEffort,
       thinking_enabled: profile.thinkingEnabled,
@@ -167,7 +170,7 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       thinking_effective_reason: profile.thinkingEffectiveReason,
       thinking_effort: profile.thinkingEffort,
       adapter_id: profile.adapterId,
-      api_key_env: profile.apiKeyEnv,
+      auth_env: profile.authEnv,
       base_url: profile.baseUrl,
       context_window_tokens: profile.contextWindowTokens,
       is_default: profile.isDefault,
@@ -179,7 +182,7 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       can_delete_profile: profile.canDeleteProfile,
       can_delete_api_key: profile.canDeleteApiKey,
     },
-    summary: `${profile.provider} ${profile.model}`,
+    summary: `${summaryPrefix} ${profile.model}`,
   };
 }
 
@@ -394,7 +397,8 @@ export class AgentSessionProvider {
         status: snapshot.llm.status,
         message: snapshot.llm.message,
         active_profile_id: snapshot.llm.activeProfileId,
-        selected_provider: snapshot.llm.selectedProvider,
+        selected_endpoint_id: snapshot.llm.selectedEndpointId,
+        selected_protocol: snapshot.llm.selectedProtocol,
         selected_model: snapshot.llm.selectedModel,
         selected_context_window_tokens: snapshot.llm.selectedContextWindowTokens,
         secure_store_kind: snapshot.llm.secureStoreKind,
@@ -413,14 +417,21 @@ export class AgentSessionProvider {
               type: "string",
               description: "Optional display label for the profile.",
             },
-            provider: "string",
+            kind: {
+              type: "string",
+              description: "Profile kind: native or session-agent.",
+            },
+            endpoint_id: {
+              type: "string",
+              description: "Endpoint id for native LLM profiles.",
+            },
             model: {
               type: "string",
-              description: "Optional model override for the provider.",
+              description: "Optional model override for the endpoint.",
             },
             reasoning_effort: {
               type: "string",
-              description: "Optional reasoning effort for providers that expose it.",
+              description: "Optional reasoning effort for protocols that expose it.",
             },
             thinking_enabled: {
               type: "boolean",
@@ -432,11 +443,7 @@ export class AgentSessionProvider {
             },
             adapter_id: {
               type: "string",
-              description: "Optional ACP adapter id for external-agent profiles.",
-            },
-            base_url: {
-              type: "string",
-              description: "Optional base URL override.",
+              description: "Optional adapter id for session-agent profiles.",
             },
             api_key: {
               type: "string",

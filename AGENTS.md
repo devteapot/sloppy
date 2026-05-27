@@ -97,12 +97,14 @@ src/
   core/
   llm/
     anthropic.ts
+    catalog.ts
     credential-store.ts
     factory.ts
     gemini.ts
+    openai-codex.ts
     openai-compatible.ts
     profile-manager.ts
-    provider-defaults.ts
+    runtime-config.ts
     types.ts
   providers/
   runtime/

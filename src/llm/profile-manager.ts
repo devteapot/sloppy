@@ -1,13 +1,21 @@
 import { createDefaultConfig } from "../config/load";
 import { writeHomeLlmConfig } from "../config/persist";
 import type {
+  AnyLlmProfileConfig,
   LlmConfig,
+  LlmEndpointConfig,
+  LlmEndpointModelConfig,
   LlmProfileConfig,
-  LlmProvider,
   LlmReasoningEffort,
+  LlmSessionAgentProfileConfig,
   LlmThinkingDisplay,
   SloppyConfig,
 } from "../config/schema";
+import {
+  endpointRequiresCredential,
+  endpointUsesCodexAuth,
+  getDefaultEndpointModel,
+} from "./catalog";
 import {
   type CredentialStore,
   type CredentialStoreKind,
@@ -16,13 +24,6 @@ import {
 } from "./credential-store";
 import { createLlmAdapter } from "./factory";
 import { getCodexAuthStatus } from "./openai-codex";
-import {
-  DEFAULT_LLM_PROVIDER_CONFIG,
-  getProviderDefaults,
-  providerRequiresApiKey,
-  providerUsesCodexAuth,
-  resolveModelContextWindowTokens,
-} from "./provider-defaults";
 import { type EffectiveThinkingConfig, resolveEffectiveThinkingConfig } from "./thinking";
 import type { LlmAdapter } from "./types";
 
@@ -30,13 +31,24 @@ const DEFAULT_CONFIG = createDefaultConfig();
 
 export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required" | "external_auth";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
+export type LlmProfileKind = "native" | "session-agent";
 
-type ResolvedProfile = LlmProfileConfig & {
+type ResolvedProfile = AnyLlmProfileConfig & {
   origin: LlmProfileOrigin;
   managed: boolean;
 };
 
-export type LlmProfileState = LlmProfileConfig & {
+export type LlmProfileState = {
+  kind: LlmProfileKind;
+  id: string;
+  label?: string;
+  endpointId?: string;
+  protocol?: string;
+  model: string;
+  reasoningEffort?: LlmReasoningEffort;
+  adapterId?: string;
+  baseUrl?: string;
+  authEnv?: string;
   isDefault: boolean;
   hasKey: boolean;
   keySource: LlmKeySource;
@@ -46,6 +58,7 @@ export type LlmProfileState = LlmProfileConfig & {
   canDeleteProfile: boolean;
   canDeleteApiKey: boolean;
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
   thinking: EffectiveThinkingConfig;
   invalidReason?: string;
 };
@@ -54,7 +67,8 @@ export type LlmStateSnapshot = {
   status: "ready" | "needs_credentials";
   message: string;
   activeProfileId: string;
-  selectedProvider: string;
+  selectedEndpointId?: string;
+  selectedProtocol?: string;
   selectedModel: string;
   selectedContextWindowTokens?: number;
   secureStoreKind: CredentialStoreKind;
@@ -64,15 +78,14 @@ export type LlmStateSnapshot = {
 
 export type SaveProfileInput = {
   profileId?: string;
+  kind?: LlmProfileKind;
   label?: string;
-  provider: LlmProvider;
+  endpointId?: string;
   model?: string;
   reasoningEffort?: LlmReasoningEffort;
   thinkingEnabled?: boolean;
   thinkingDisplay?: LlmThinkingDisplay;
   adapterId?: string;
-  baseUrl?: string;
-  contextWindowTokens?: number;
   apiKey?: string;
   makeDefault?: boolean;
 };
@@ -89,32 +102,14 @@ function normalizeApiKey(value: string): string {
   return value.trim();
 }
 
-function validateApiKey(provider: LlmProvider, apiKey: string): string | null {
-  if (provider === "openrouter") {
+function validateApiKey(endpointId: string, apiKey: string): string | null {
+  if (endpointId === "openrouter") {
     if (!apiKey.startsWith("sk-or-v1-") && !apiKey.startsWith("sk-or-")) {
       return "The configured OpenRouter API key does not look valid. OpenRouter keys usually start with sk-or-v1-.";
     }
   }
 
   return null;
-}
-
-function sanitizeIdSegment(value: string): string {
-  const sanitized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-  return sanitized || "default";
-}
-
-export class LlmConfigurationError extends Error {
-  readonly code = "llm_not_configured";
-
-  constructor(message: string) {
-    super(message);
-    this.name = "LlmConfigurationError";
-  }
 }
 
 function trimOptional(value?: string): string | undefined {
@@ -130,57 +125,66 @@ function slugifySegment(value: string): string {
     .slice(0, 24);
 }
 
-function buildProfileId(input: { label?: string; provider: LlmProvider; model: string }): string {
-  const base = slugifySegment(input.label ?? `${input.provider}-${input.model}`) || input.provider;
+function buildProfileId(input: { label?: string; endpointId?: string; model: string }): string {
+  const base =
+    slugifySegment(input.label ?? `${input.endpointId ?? "agent"}-${input.model}`) || "profile";
   const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   return `${base}-${suffix}`;
 }
 
-function buildFallbackProfile(config: LlmConfig): LlmProfileConfig {
-  const defaults = getProviderDefaults(config.provider);
+function sanitizeIdSegment(value: string): string {
+  const sanitized = slugifySegment(value);
+  return sanitized || "default";
+}
 
+export class LlmConfigurationError extends Error {
+  readonly code = "llm_not_configured";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmConfigurationError";
+  }
+}
+
+function firstEndpointModel(endpoint: LlmEndpointConfig): string | undefined {
+  return Object.keys(endpoint.models)[0];
+}
+
+function defaultModelForEndpoint(endpointId: string, endpoint: LlmEndpointConfig): string {
+  return getDefaultEndpointModel(endpointId) ?? firstEndpointModel(endpoint) ?? "default";
+}
+
+function buildFallbackProfile(config: LlmConfig): ResolvedProfile {
+  const endpointId = "anthropic";
+  const endpoint = config.endpoints[endpointId];
   return {
+    kind: "native",
     id: "default",
     label: "Default",
-    provider: config.provider,
-    model: config.model || defaults.model,
+    endpointId,
+    model: endpoint ? defaultModelForEndpoint(endpointId, endpoint) : "claude-sonnet-4-20250514",
     reasoningEffort: config.reasoningEffort,
     thinking: config.thinking,
-    apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
-    baseUrl: config.baseUrl ?? defaults.baseUrl,
-    adapterId: config.adapterId ?? defaults.adapterId,
-    contextWindowTokens: config.contextWindowTokens,
+    managed: false,
+    origin: "fallback",
   };
 }
 
-function resolveProfileContextWindowTokens(
-  profile: Pick<LlmProfileConfig, "provider" | "model" | "contextWindowTokens">,
-): number | undefined {
-  return (
-    profile.contextWindowTokens ?? resolveModelContextWindowTokens(profile.provider, profile.model)
-  );
+function resolveProfileReasoningEffort(
+  config: LlmConfig,
+  profile: Pick<AnyLlmProfileConfig, "reasoningEffort">,
+): LlmReasoningEffort | undefined {
+  return profile.reasoningEffort ?? config.reasoningEffort;
 }
 
-function buildEnvironmentProfileId(
-  profile: Pick<LlmProfileConfig, "provider" | "model" | "apiKeyEnv">,
-): string {
-  return [
-    "env",
-    sanitizeIdSegment(profile.provider),
-    sanitizeIdSegment(profile.apiKeyEnv ?? "key"),
-    sanitizeIdSegment(profile.model),
-  ].join("-");
-}
-
-function buildEnvironmentLabel(
-  profile: Pick<LlmProfileConfig, "provider" | "apiKeyEnv" | "label">,
-): string {
-  const baseLabel = profile.label?.trim() || profile.provider;
-  if (profile.apiKeyEnv) {
-    return `${baseLabel} (${profile.apiKeyEnv})`;
+function endpointModelMetadata(
+  config: LlmConfig,
+  profile: Pick<LlmProfileState, "endpointId" | "model">,
+): LlmEndpointModelConfig | undefined {
+  if (!profile.endpointId) {
+    return undefined;
   }
-
-  return `${baseLabel} (Environment)`;
+  return config.endpoints[profile.endpointId]?.models[profile.model];
 }
 
 function selectActiveProfile(
@@ -199,14 +203,6 @@ function selectActiveProfile(
     return readyManagedProfile;
   }
 
-  const preferredEnvironmentProfile = profiles.find(
-    (profile) =>
-      profile.origin === "environment" && profile.provider === config.provider && profile.ready,
-  );
-  if (preferredEnvironmentProfile) {
-    return preferredEnvironmentProfile;
-  }
-
   const firstReadyProfile = profiles.find((profile) => profile.ready);
   if (firstReadyProfile) {
     return firstReadyProfile;
@@ -222,7 +218,7 @@ function selectActiveProfile(
 
 function buildNextLlmConfig(
   previous: LlmConfig,
-  profiles: LlmProfileConfig[],
+  profiles: AnyLlmProfileConfig[],
   candidates: ResolvedProfile[],
   defaultProfileId?: string,
 ): LlmConfig {
@@ -234,22 +230,42 @@ function buildNextLlmConfig(
 
   return {
     ...previous,
-    provider: activeProfile.provider,
-    model: activeProfile.model,
-    reasoningEffort: activeProfile.reasoningEffort,
-    thinking: previous.thinking,
-    adapterId: activeProfile.adapterId,
-    apiKeyEnv: activeProfile.apiKeyEnv,
-    baseUrl: activeProfile.baseUrl,
-    contextWindowTokens: activeProfile.contextWindowTokens,
     defaultProfileId: activeProfile.origin === "fallback" ? undefined : activeProfile.id,
     profiles,
   };
 }
 
+function buildEnvironmentProfileId(input: {
+  endpointId: string;
+  model: string;
+  env: string;
+}): string {
+  return [
+    "env",
+    sanitizeIdSegment(input.endpointId),
+    sanitizeIdSegment(input.env),
+    sanitizeIdSegment(input.model),
+  ].join("-");
+}
+
+function buildEndpointAuthHint(
+  endpointId: string,
+  endpoint: LlmEndpointConfig,
+): string | undefined {
+  if (endpoint.auth.type === "env") {
+    return `Set ${endpoint.auth.env}, store a key for endpoint ${endpointId} in the app, or choose another profile before starting a model turn.`;
+  }
+  if (endpoint.auth.type === "secure_store") {
+    return `Store a key for endpoint ${endpointId} in the app or choose another profile before starting a model turn.`;
+  }
+  return undefined;
+}
+
 export class LlmProfileManager {
   private config: SloppyConfig;
   private adapterCache = new Map<string, { fingerprint: string; adapter: LlmAdapter }>();
+  private readonly credentialStore: CredentialStore;
+  private readonly writeConfig: (config: LlmConfig) => Promise<void>;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -260,9 +276,6 @@ export class LlmProfileManager {
     this.credentialStore = options?.credentialStore ?? createCredentialStore();
     this.writeConfig = options?.writeConfig ?? writeHomeLlmConfig;
   }
-
-  private readonly credentialStore: CredentialStore;
-  private readonly writeConfig: (config: LlmConfig) => Promise<void>;
 
   getConfig(): SloppyConfig {
     return this.config;
@@ -281,53 +294,13 @@ export class LlmProfileManager {
     const profiles = this.getAvailableProfiles();
     const secureStoreStatus = await this.credentialStore.getStatus();
     const baseProfileStates = await Promise.all(
-      profiles.map(async (profile) => {
-        const credential = await this.resolveCredential(profile);
-        return {
-          ...profile,
-          isDefault: false,
-          hasKey: credential.hasKey,
-          keySource: credential.keySource,
-          ready: credential.ready,
-          invalidReason: credential.invalidReason,
-          managed: profile.managed,
-          origin: profile.origin,
-          canDeleteProfile: profile.origin === "managed",
-          canDeleteApiKey: profile.origin === "managed" && providerRequiresApiKey(profile.provider),
-          contextWindowTokens: resolveProfileContextWindowTokens(profile),
-          thinking: resolveEffectiveThinkingConfig({
-            provider: profile.provider,
-            model: profile.model,
-            global: this.config.llm.thinking,
-            profile: profile.thinking,
-            reasoningEffort: profile.reasoningEffort,
-          }),
-        } satisfies LlmProfileState;
-      }),
+      profiles.map(async (profile) => this.resolveProfileState(profile)),
     );
 
-    const activeProfile = selectActiveProfile(this.config.llm, baseProfileStates) ??
-      baseProfileStates[0] ?? {
-        ...buildFallbackProfile(this.config.llm),
-        isDefault: false,
-        hasKey: false,
-        keySource: "missing",
-        ready: false,
-        invalidReason: undefined,
-        managed: false,
-        origin: "fallback",
-        canDeleteProfile: false,
-        canDeleteApiKey: false,
-        contextWindowTokens: resolveProfileContextWindowTokens(
-          buildFallbackProfile(this.config.llm),
-        ),
-        thinking: resolveEffectiveThinkingConfig({
-          provider: this.config.llm.provider,
-          model: this.config.llm.model,
-          global: this.config.llm.thinking,
-          reasoningEffort: this.config.llm.reasoningEffort,
-        }),
-      };
+    const activeProfile =
+      selectActiveProfile(this.config.llm, baseProfileStates) ??
+      baseProfileStates[0] ??
+      (await this.resolveProfileState(buildFallbackProfile(this.config.llm)));
     const profileStates = baseProfileStates.map((profile) => ({
       ...profile,
       isDefault: profile.id === activeProfile.id,
@@ -338,7 +311,8 @@ export class LlmProfileManager {
       status,
       message: this.buildStatusMessage(activeProfile, secureStoreStatus),
       activeProfileId: activeProfile.id,
-      selectedProvider: activeProfile.provider,
+      selectedEndpointId: activeProfile.endpointId,
+      selectedProtocol: activeProfile.protocol,
       selectedModel: activeProfile.model,
       selectedContextWindowTokens: activeProfile.contextWindowTokens,
       secureStoreKind: this.credentialStore.kind,
@@ -360,24 +334,45 @@ export class LlmProfileManager {
       }
       throw new LlmConfigurationError(state.message);
     }
+    if (targetProfile.kind === "session-agent") {
+      throw new LlmConfigurationError(
+        `LLM profile '${targetProfile.id}' is a session-agent profile and cannot be used by the native LLM adapter factory.`,
+      );
+    }
     if (!targetProfile.ready) {
       throw new LlmConfigurationError(targetProfile.invalidReason ?? state.message);
     }
+    if (!targetProfile.endpointId) {
+      throw new LlmConfigurationError(`LLM profile '${targetProfile.id}' has no endpoint id.`);
+    }
 
-    const credential = await this.resolveCredential(targetProfile);
+    const endpoint = this.config.llm.endpoints[targetProfile.endpointId];
+    if (!endpoint) {
+      throw new LlmConfigurationError(
+        `LLM profile '${targetProfile.id}' references unknown endpoint '${targetProfile.endpointId}'.`,
+      );
+    }
+
+    const credential = await this.resolveCredential(targetProfile, endpoint);
     if (!credential.ready) {
       throw new LlmConfigurationError((await this.getState()).message);
     }
 
     const model = modelOverride ?? targetProfile.model;
+    const metadata = endpointModelMetadata(this.config.llm, {
+      endpointId: targetProfile.endpointId,
+      model,
+    });
     const fingerprint = [
       targetProfile.id,
-      targetProfile.provider,
+      targetProfile.endpointId,
+      endpoint.protocol,
       model,
       targetProfile.reasoningEffort ?? "",
       JSON.stringify(targetProfile.thinking),
-      targetProfile.adapterId ?? "",
-      targetProfile.baseUrl ?? "",
+      endpoint.baseUrl ?? "",
+      JSON.stringify(endpoint.headers ?? {}),
+      JSON.stringify(metadata?.compat ?? {}),
       credential.keySource,
       credential.apiKey ?? "",
     ].join(":");
@@ -388,19 +383,22 @@ export class LlmProfileManager {
     }
 
     const adapter = createLlmAdapter({
-      provider: targetProfile.provider,
+      endpointId: targetProfile.endpointId,
+      protocol: endpoint.protocol,
       model,
       reasoningEffort: targetProfile.reasoningEffort,
       thinking: resolveEffectiveThinkingConfig({
-        provider: targetProfile.provider,
+        protocol: endpoint.protocol,
         model,
         global: this.config.llm.thinking,
         profile: targetProfile.thinking,
         reasoningEffort: targetProfile.reasoningEffort,
       }),
       apiKey: credential.apiKey,
-      apiKeyEnv: targetProfile.apiKeyEnv,
-      baseUrl: targetProfile.baseUrl,
+      authHint: buildEndpointAuthHint(targetProfile.endpointId, endpoint),
+      baseUrl: endpoint.baseUrl,
+      headers: endpoint.headers,
+      compat: metadata?.compat,
     });
     this.adapterCache.set(cacheKey, { fingerprint, adapter });
     return adapter;
@@ -415,40 +413,63 @@ export class LlmProfileManager {
   }
 
   async saveProfile(input: SaveProfileInput): Promise<LlmStateSnapshot> {
-    const defaults = getProviderDefaults(input.provider);
     const existingProfile = input.profileId
       ? this.config.llm.profiles.find((profile) => profile.id === input.profileId)
       : undefined;
+    const kind =
+      input.kind ?? existingProfile?.kind ?? (input.adapterId ? "session-agent" : "native");
+    const model = trimOptional(input.model) ?? existingProfile?.model ?? "default";
     const profileId =
       existingProfile?.id ??
       buildProfileId({
         label: input.label,
-        provider: input.provider,
-        model: input.model ?? defaults.model,
+        endpointId: input.endpointId,
+        model,
       });
-    const profile: LlmProfileConfig = {
-      id: profileId,
-      label: trimOptional(input.label) ?? existingProfile?.label,
-      provider: input.provider,
-      model: trimOptional(input.model) ?? existingProfile?.model ?? defaults.model,
-      reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
-      thinking: {
-        ...(existingProfile?.thinking ?? {}),
-        ...(input.thinkingEnabled === undefined ? {} : { enabled: input.thinkingEnabled }),
-        ...(input.thinkingDisplay === undefined ? {} : { display: input.thinkingDisplay }),
-      },
-      adapterId: trimOptional(input.adapterId) ?? existingProfile?.adapterId ?? defaults.adapterId,
-      apiKeyEnv:
-        existingProfile && existingProfile.provider === input.provider
-          ? (existingProfile.apiKeyEnv ?? defaults.apiKeyEnv)
-          : defaults.apiKeyEnv,
-      baseUrl:
-        trimOptional(input.baseUrl) ??
-        (existingProfile && existingProfile.provider === input.provider
-          ? existingProfile.baseUrl
-          : defaults.baseUrl),
-      contextWindowTokens: input.contextWindowTokens ?? existingProfile?.contextWindowTokens,
-    };
+
+    const endpointId =
+      trimOptional(input.endpointId) ??
+      (existingProfile?.kind === "native" ? existingProfile.endpointId : undefined) ??
+      "anthropic";
+    const endpoint = this.config.llm.endpoints[endpointId];
+    const profile: AnyLlmProfileConfig =
+      kind === "session-agent"
+        ? {
+            kind: "session-agent",
+            id: profileId,
+            label: trimOptional(input.label) ?? existingProfile?.label,
+            adapterId:
+              trimOptional(input.adapterId) ??
+              (existingProfile?.kind === "session-agent" ? existingProfile.adapterId : undefined) ??
+              model,
+            model,
+            reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
+            thinking: {
+              ...(existingProfile?.thinking ?? {}),
+              ...(input.thinkingEnabled === undefined ? {} : { enabled: input.thinkingEnabled }),
+              ...(input.thinkingDisplay === undefined ? {} : { display: input.thinkingDisplay }),
+            },
+          }
+        : {
+            kind: "native",
+            id: profileId,
+            label: trimOptional(input.label) ?? existingProfile?.label,
+            endpointId,
+            model:
+              trimOptional(input.model) ??
+              existingProfile?.model ??
+              (endpoint ? defaultModelForEndpoint(endpointId, endpoint) : "default"),
+            reasoningEffort: input.reasoningEffort ?? existingProfile?.reasoningEffort,
+            thinking: {
+              ...(existingProfile?.thinking ?? {}),
+              ...(input.thinkingEnabled === undefined ? {} : { enabled: input.thinkingEnabled }),
+              ...(input.thinkingDisplay === undefined ? {} : { display: input.thinkingDisplay }),
+            },
+          };
+
+    if (profile.kind === "native" && !this.config.llm.endpoints[profile.endpointId]) {
+      throw new Error(`Unknown LLM endpoint: ${profile.endpointId}`);
+    }
 
     const nextProfiles = [...this.config.llm.profiles];
     const existingIndex = nextProfiles.findIndex((candidate) => candidate.id === profile.id);
@@ -463,17 +484,20 @@ export class LlmProfileManager {
         ? profile.id
         : (this.config.llm.defaultProfileId ?? nextProfiles[0]?.id);
 
-    if (trimOptional(input.apiKey)) {
+    if (profile.kind === "native" && trimOptional(input.apiKey)) {
       const normalizedApiKey = normalizeApiKey(trimOptional(input.apiKey) as string);
-      const invalidReason = validateApiKey(profile.provider, normalizedApiKey);
+      const invalidReason = validateApiKey(profile.endpointId, normalizedApiKey);
       if (invalidReason) {
         throw new Error(invalidReason);
       }
-
-      if (!providerRequiresApiKey(profile.provider)) {
-        await this.credentialStore.delete(profile.id);
+      const endpoint = this.config.llm.endpoints[profile.endpointId];
+      if (endpoint.auth.type === "none" || endpoint.auth.type === "codex") {
+        await this.deleteStoredCredentialKeys(profile);
       } else {
-        await this.credentialStore.set(profile.id, normalizedApiKey);
+        await this.credentialStore.set(profile.endpointId, normalizedApiKey);
+        if (profile.id !== profile.endpointId) {
+          await this.credentialStore.delete(profile.id);
+        }
       }
     }
 
@@ -492,12 +516,16 @@ export class LlmProfileManager {
   }
 
   async deleteProfile(profileId: string): Promise<LlmStateSnapshot> {
-    const nextProfiles = this.config.llm.profiles.filter((profile) => profile.id !== profileId);
-    if (nextProfiles.length === this.config.llm.profiles.length) {
+    const deletedProfile = this.config.llm.profiles.find((profile) => profile.id === profileId);
+    if (!deletedProfile) {
       throw new Error(`Unknown profile: ${profileId}`);
     }
 
-    await this.credentialStore.delete(profileId);
+    const nextProfiles = this.config.llm.profiles.filter((profile) => profile.id !== profileId);
+    if (deletedProfile.kind === "native") {
+      await this.deleteStoredCredentialKeysForProfileRemoval(deletedProfile, nextProfiles);
+    }
+
     const nextDefaultProfileId =
       this.config.llm.defaultProfileId === profileId
         ? nextProfiles[0]?.id
@@ -511,14 +539,103 @@ export class LlmProfileManager {
     if (!profile) {
       throw new Error(`Unknown profile: ${profileId}`);
     }
-
-    if (profile.origin !== "managed") {
-      throw new Error(`Only managed profiles can delete stored API keys: ${profileId}`);
+    if (profile.kind !== "native" || profile.origin !== "managed") {
+      throw new Error(`Cannot delete stored endpoint credentials for profile: ${profileId}`);
     }
 
-    await this.credentialStore.delete(profileId);
+    const endpoint = this.config.llm.endpoints[profile.endpointId];
+    if (!endpoint || !endpointRequiresCredential(endpoint)) {
+      throw new Error(`Cannot delete stored endpoint credentials for profile: ${profileId}`);
+    }
+
+    await this.deleteStoredCredentialKeys(profile);
     this.adapterCache.clear();
     return this.getState();
+  }
+
+  private async resolveProfileState(profile: ResolvedProfile): Promise<LlmProfileState> {
+    if (profile.kind === "session-agent") {
+      return this.resolveSessionAgentProfileState(profile);
+    }
+
+    const endpoint = this.config.llm.endpoints[profile.endpointId];
+    if (!endpoint) {
+      return this.resolveMissingEndpointProfileState(profile);
+    }
+
+    const credential = await this.resolveCredential(profile, endpoint);
+    const metadata = endpoint.models[profile.model];
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, profile);
+    return {
+      ...profile,
+      reasoningEffort,
+      protocol: endpoint.protocol,
+      baseUrl: endpoint.baseUrl,
+      authEnv: endpoint.auth.type === "env" ? endpoint.auth.env : undefined,
+      isDefault: false,
+      hasKey: credential.hasKey,
+      keySource: credential.keySource,
+      ready: credential.ready,
+      invalidReason: credential.invalidReason,
+      canDeleteProfile: profile.origin === "managed",
+      canDeleteApiKey: profile.origin === "managed" && endpointRequiresCredential(endpoint),
+      contextWindowTokens: metadata?.contextWindowTokens,
+      maxOutputTokens: metadata?.maxOutputTokens,
+      thinking: resolveEffectiveThinkingConfig({
+        protocol: endpoint.protocol,
+        model: profile.model,
+        global: this.config.llm.thinking,
+        profile: profile.thinking,
+        reasoningEffort,
+      }),
+    } satisfies LlmProfileState;
+  }
+
+  private resolveSessionAgentProfileState(profile: ResolvedProfile): LlmProfileState {
+    const sessionProfile = profile as LlmSessionAgentProfileConfig & ResolvedProfile;
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, sessionProfile);
+    return {
+      ...sessionProfile,
+      reasoningEffort,
+      protocol: "session-agent",
+      isDefault: false,
+      hasKey: false,
+      keySource: "not_required",
+      ready: true,
+      canDeleteProfile: profile.origin === "managed",
+      canDeleteApiKey: false,
+      thinking: resolveEffectiveThinkingConfig({
+        protocol: "session-agent",
+        model: sessionProfile.model,
+        global: this.config.llm.thinking,
+        profile: sessionProfile.thinking,
+        reasoningEffort,
+      }),
+    } satisfies LlmProfileState;
+  }
+
+  private resolveMissingEndpointProfileState(
+    profile: ResolvedProfile & { kind: "native" },
+  ): LlmProfileState {
+    const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, profile);
+    return {
+      ...profile,
+      reasoningEffort,
+      isDefault: false,
+      hasKey: false,
+      keySource: "missing",
+      ready: false,
+      invalidReason: `LLM profile '${profile.id}' references unknown endpoint '${profile.endpointId}'.`,
+      canDeleteProfile: profile.origin === "managed",
+      canDeleteApiKey: false,
+      thinking: resolveEffectiveThinkingConfig({
+        protocol: "session-agent",
+        model: profile.model,
+        global: this.config.llm.thinking,
+        profile: profile.thinking,
+        reasoningEffort,
+      }),
+    } satisfies LlmProfileState;
   }
 
   private getAvailableProfiles(): ResolvedProfile[] {
@@ -534,17 +651,11 @@ export class LlmProfileManager {
       return allProfiles;
     }
 
-    return [
-      {
-        ...buildFallbackProfile(this.config.llm),
-        managed: false,
-        origin: "fallback",
-      },
-    ];
+    return [buildFallbackProfile(this.config.llm)];
   }
 
   private async persistProfiles(
-    profiles: LlmProfileConfig[],
+    profiles: AnyLlmProfileConfig[],
     defaultProfileId?: string,
   ): Promise<void> {
     const nextLlmConfig = buildNextLlmConfig(
@@ -564,8 +675,51 @@ export class LlmProfileManager {
     this.adapterCache.clear();
   }
 
-  private async resolveCredential(profile: ResolvedProfile): Promise<ResolvedCredential> {
-    if (providerUsesCodexAuth(profile.provider)) {
+  private async getStoredCredentialKey(
+    profile: Pick<ResolvedProfile, "id">,
+    endpointId: string,
+  ): Promise<string | null> {
+    const endpointKey = await this.credentialStore.get(endpointId);
+    if (endpointKey || profile.id === endpointId) {
+      return endpointKey;
+    }
+
+    return this.credentialStore.get(profile.id);
+  }
+
+  private async deleteStoredCredentialKeys(
+    profile: Pick<ResolvedProfile, "id"> & { endpointId: string },
+  ): Promise<void> {
+    await this.credentialStore.delete(profile.endpointId);
+    if (profile.id !== profile.endpointId) {
+      await this.credentialStore.delete(profile.id);
+    }
+  }
+
+  private async deleteStoredCredentialKeysForProfileRemoval(
+    profile: LlmProfileConfig,
+    remainingProfiles: AnyLlmProfileConfig[],
+  ): Promise<void> {
+    const hasRemainingEndpointProfile = remainingProfiles.some(
+      (candidate) => candidate.kind === "native" && candidate.endpointId === profile.endpointId,
+    );
+
+    if (profile.id !== profile.endpointId) {
+      await this.credentialStore.delete(profile.id);
+    }
+    if (!hasRemainingEndpointProfile) {
+      await this.credentialStore.delete(profile.endpointId);
+    }
+  }
+
+  private async resolveCredential(
+    profile: Pick<ResolvedProfile, "kind" | "id"> & {
+      endpointId?: string;
+      origin?: LlmProfileOrigin;
+    },
+    endpoint: LlmEndpointConfig,
+  ): Promise<ResolvedCredential> {
+    if (endpointUsesCodexAuth(endpoint)) {
       const status = await getCodexAuthStatus();
       return {
         keySource: status.available ? "external_auth" : "missing",
@@ -575,21 +729,20 @@ export class LlmProfileManager {
       };
     }
 
-    if (!providerRequiresApiKey(profile.provider)) {
+    if (!endpointRequiresCredential(endpoint)) {
       return {
         keySource: "not_required",
         ready: true,
         hasKey: false,
-        apiKey: undefined,
       };
     }
 
-    if (profile.origin === "environment") {
-      const envName = profile.apiKeyEnv;
-      const envKey = envName ? Bun.env[envName] : undefined;
-      if (envKey) {
+    const endpointId = profile.endpointId;
+    if (profile.origin === "environment" && endpoint.auth.type === "env") {
+      const envKey = Bun.env[endpoint.auth.env];
+      if (envKey && endpointId) {
         const normalizedApiKey = normalizeApiKey(envKey);
-        const invalidReason = validateApiKey(profile.provider, normalizedApiKey);
+        const invalidReason = validateApiKey(endpointId, normalizedApiKey);
         if (invalidReason) {
           return {
             keySource: "env",
@@ -606,18 +759,12 @@ export class LlmProfileManager {
           apiKey: normalizedApiKey,
         };
       }
-
-      return {
-        keySource: "missing",
-        ready: false,
-        hasKey: false,
-      };
     }
 
-    const storedKey = await this.credentialStore.get(profile.id);
-    if (storedKey) {
+    const storedKey = endpointId ? await this.getStoredCredentialKey(profile, endpointId) : null;
+    if (storedKey && endpointId) {
       const normalizedApiKey = normalizeApiKey(storedKey);
-      const invalidReason = validateApiKey(profile.provider, normalizedApiKey);
+      const invalidReason = validateApiKey(endpointId, normalizedApiKey);
       if (invalidReason) {
         return {
           keySource: "secure_store",
@@ -635,6 +782,29 @@ export class LlmProfileManager {
       };
     }
 
+    if (endpoint.auth.type === "env") {
+      const envKey = Bun.env[endpoint.auth.env];
+      if (envKey && endpointId) {
+        const normalizedApiKey = normalizeApiKey(envKey);
+        const invalidReason = validateApiKey(endpointId, normalizedApiKey);
+        if (invalidReason) {
+          return {
+            keySource: "env",
+            ready: false,
+            hasKey: true,
+            invalidReason,
+          };
+        }
+
+        return {
+          keySource: "env",
+          ready: true,
+          hasKey: true,
+          apiKey: normalizedApiKey,
+        };
+      }
+    }
+
     return {
       keySource: "missing",
       ready: false,
@@ -645,9 +815,11 @@ export class LlmProfileManager {
   private buildStatusMessage(
     profile: Pick<
       LlmProfileState,
-      | "provider"
+      | "kind"
+      | "endpointId"
+      | "protocol"
       | "model"
-      | "apiKeyEnv"
+      | "authEnv"
       | "ready"
       | "keySource"
       | "managed"
@@ -661,54 +833,53 @@ export class LlmProfileManager {
     }
 
     if (profile.ready) {
+      if (profile.kind === "session-agent") {
+        return `Ready to chat with session-agent profile ${profile.model}.`;
+      }
       if (profile.keySource === "not_required") {
-        return `Ready to chat with ${profile.provider} ${profile.model}.`;
+        return `Ready to chat with ${profile.endpointId} ${profile.model}.`;
       }
-
       if (profile.keySource === "external_auth") {
-        return `Ready to chat with ${profile.provider} ${profile.model} using Codex auth.`;
+        return `Ready to chat with ${profile.endpointId} ${profile.model} using external auth.`;
       }
-
       if (profile.keySource === "env") {
-        return `Ready to chat with ${profile.provider} ${profile.model} using ${profile.apiKeyEnv}.`;
+        return `Ready to chat with ${profile.endpointId} ${profile.model} using ${profile.authEnv}.`;
       }
-
-      return `Ready to chat with ${profile.provider} ${profile.model} using stored credentials.`;
+      return `Ready to chat with ${profile.endpointId} ${profile.model} using stored credentials.`;
     }
 
     if (profile.origin === "environment") {
-      if (profile.apiKeyEnv) {
-        return `Set ${profile.apiKeyEnv} again or choose another profile before starting a model turn.`;
+      if (profile.authEnv) {
+        return `Set ${profile.authEnv} again or choose another profile before starting a model turn.`;
       }
-
-      return `Choose another profile before starting a model turn.`;
+      return "Choose another profile before starting a model turn.";
     }
 
+    const endpointLabel = profile.endpointId ?? "the selected endpoint";
     if (!profile.managed) {
-      const envHint = profile.apiKeyEnv
-        ? ` You can also set ${profile.apiKeyEnv} to use the current default ${profile.provider} profile immediately.`
+      const envHint = profile.authEnv
+        ? ` You can also set ${profile.authEnv} to use ${endpointLabel} immediately.`
         : "";
 
       if (secureStoreStatus !== "available") {
-        return `No ready LLM profile is configured yet. Add a profile and API key in the app.${envHint} Secure storage is ${secureStoreStatus} on this machine.`;
+        return `No ready LLM profile is configured yet. Add a profile and endpoint credential in the app.${envHint} Secure storage is ${secureStoreStatus} on this machine.`;
       }
 
-      return `No ready LLM profile is configured yet. Add a profile and API key in the app.${envHint}`;
+      return `No ready LLM profile is configured yet. Add a profile and endpoint credential in the app.${envHint}`;
     }
 
     if (secureStoreStatus !== "available") {
-      if (profile.apiKeyEnv) {
-        return `Add an API key for ${profile.provider} ${profile.model}. ${profile.apiKeyEnv} works immediately, but secure storage is ${secureStoreStatus} on this machine.`;
+      if (profile.authEnv) {
+        return `Add an API key for ${endpointLabel} ${profile.model}. ${profile.authEnv} works immediately, but secure storage is ${secureStoreStatus} on this machine.`;
       }
-
-      return `Add an API key for ${profile.provider} ${profile.model}. Secure storage is ${secureStoreStatus} on this machine.`;
+      return `Add an API key for ${endpointLabel} ${profile.model}. Secure storage is ${secureStoreStatus} on this machine.`;
     }
 
-    if (profile.apiKeyEnv) {
-      return `Add an API key for ${profile.provider} ${profile.model} or set ${profile.apiKeyEnv}.`;
+    if (profile.authEnv) {
+      return `Add an API key for ${endpointLabel} ${profile.model} or set ${profile.authEnv}.`;
     }
 
-    return `Add an API key for ${profile.provider} ${profile.model}.`;
+    return `Add an API key for ${endpointLabel} ${profile.model}.`;
   }
 
   private buildAvailableProfilesFromConfig(config: LlmConfig): ResolvedProfile[] {
@@ -724,13 +895,7 @@ export class LlmProfileManager {
       return allProfiles;
     }
 
-    return [
-      {
-        ...buildFallbackProfile(config),
-        managed: false,
-        origin: "fallback",
-      },
-    ];
+    return [buildFallbackProfile(config)];
   }
 
   private buildEnvironmentProfiles(
@@ -739,51 +904,47 @@ export class LlmProfileManager {
   ): ResolvedProfile[] {
     const environmentProfiles = new Map<string, ResolvedProfile>();
 
-    const addEnvironmentProfile = (profile: LlmProfileConfig) => {
-      if (!profile.apiKeyEnv || !Bun.env[profile.apiKeyEnv]) {
+    const addEnvironmentProfile = (
+      endpointId: string,
+      endpoint: LlmEndpointConfig,
+      model: string,
+    ) => {
+      if (endpoint.auth.type !== "env" || !Bun.env[endpoint.auth.env]) {
         return;
       }
 
-      const id = buildEnvironmentProfileId(profile);
+      const id = buildEnvironmentProfileId({ endpointId, model, env: endpoint.auth.env });
       if (environmentProfiles.has(id)) {
         return;
       }
 
       environmentProfiles.set(id, {
-        ...profile,
+        kind: "native",
         id,
-        label: buildEnvironmentLabel(profile),
+        label: `${endpoint.label ?? endpointId} (${endpoint.auth.env})`,
+        endpointId,
+        model,
         managed: false,
         origin: "environment",
       });
     };
 
     for (const profile of managedProfiles) {
-      addEnvironmentProfile(profile);
-    }
-
-    addEnvironmentProfile(buildFallbackProfile(config));
-
-    for (const [provider, defaults] of Object.entries(DEFAULT_LLM_PROVIDER_CONFIG) as Array<
-      [LlmProvider, (typeof DEFAULT_LLM_PROVIDER_CONFIG)[LlmProvider]]
-    >) {
-      if (!defaults.apiKeyEnv || !Bun.env[defaults.apiKeyEnv]) {
+      if (profile.kind !== "native") {
         continue;
       }
+      const endpoint = config.endpoints[profile.endpointId];
+      if (endpoint) {
+        addEnvironmentProfile(profile.endpointId, endpoint, profile.model);
+      }
+    }
 
-      addEnvironmentProfile({
-        id: `environment-${provider}`,
-        label: provider,
-        provider,
-        model: defaults.model,
-        apiKeyEnv: defaults.apiKeyEnv,
-        baseUrl: defaults.baseUrl,
-        contextWindowTokens: defaults.contextWindowTokens,
-      });
+    for (const [endpointId, endpoint] of Object.entries(config.endpoints)) {
+      addEnvironmentProfile(endpointId, endpoint, defaultModelForEndpoint(endpointId, endpoint));
     }
 
     return [...environmentProfiles.values()].sort((left, right) =>
-      (left.label ?? left.provider).localeCompare(right.label ?? right.provider),
+      (left.label ?? left.id).localeCompare(right.label ?? right.id),
     );
   }
 }

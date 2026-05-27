@@ -4,7 +4,6 @@ import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
 import {
-  llmProviderSchema,
   llmReasoningEffortSchema,
   llmThinkingDisplaySchema,
   type SloppyConfig,
@@ -19,6 +18,7 @@ import type {
 import { renderEditDiff } from "../core/diff";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
+import { getDefaultEndpointModel } from "../llm/catalog";
 import {
   LlmConfigurationError,
   type LlmProfileManager,
@@ -94,6 +94,44 @@ function resolveSessionPersistencePath(
   const dir = config.session.persistenceDir ?? ".sloppy/sessions";
   const absoluteDir = resolve(config.plugins.filesystem.root, dir);
   return join(absoluteDir, `${sanitizePathSegment(sessionId)}.json`);
+}
+
+function resolveInitialLlmRoute(config: SloppyConfig): { endpointId: string; model: string } {
+  const activeProfile = config.llm.profiles.find(
+    (profile) => profile.id === config.llm.defaultProfileId,
+  );
+  const profile = activeProfile ?? config.llm.profiles[0];
+  if (profile?.kind === "native") {
+    return {
+      endpointId: profile.endpointId,
+      model: profile.model,
+    };
+  }
+  if (profile?.kind === "session-agent") {
+    return {
+      endpointId: profile.adapterId,
+      model: profile.model,
+    };
+  }
+
+  const endpointId = "anthropic";
+  return {
+    endpointId,
+    model:
+      getDefaultEndpointModel(endpointId) ??
+      Object.keys(config.llm.endpoints[endpointId]?.models ?? {})[0] ??
+      "default",
+  };
+}
+
+function parseProfileKind(value: unknown): "native" | "session-agent" | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (value === "native" || value === "session-agent") {
+    return value;
+  }
+  throw new Error("LLM profile kind must be 'native' or 'session-agent'.");
 }
 
 function stringifyResultMessage(result: ResultMessage): string {
@@ -398,12 +436,13 @@ export class SessionRuntime {
     }
     this.localProviderIds.add(`sloppy-session-${sessionId}`);
     const sessionPlugins = createFirstPartySessionPlugins(this.config);
+    const initialLlmRoute = resolveInitialLlmRoute(this.config);
     this.store =
       options?.store ??
       new SessionStore({
         sessionId,
-        modelProvider: this.config.llm.provider,
-        model: this.config.llm.model,
+        modelProvider: initialLlmRoute.endpointId,
+        model: initialLlmRoute.model,
         title: options?.title,
         workspaceRoot: this.config.plugins.filesystem.root,
         workspaceId: this.config.workspaces?.activeWorkspaceId,
@@ -669,9 +708,15 @@ export class SessionRuntime {
   }
 
   async saveLlmProfile(params: Record<string, unknown>): Promise<{ status: string }> {
-    const provider = llmProviderSchema.parse(String(params.provider ?? "").trim());
+    const kind = parseProfileKind(params.kind);
     const profileId = typeof params.profile_id === "string" ? params.profile_id : undefined;
     const label = typeof params.label === "string" ? params.label : undefined;
+    const endpointId =
+      typeof params.endpoint_id === "string"
+        ? params.endpoint_id
+        : typeof params.endpointId === "string"
+          ? params.endpointId
+          : undefined;
     const model = typeof params.model === "string" ? params.model : undefined;
     const reasoningEffort =
       typeof params.reasoning_effort === "string"
@@ -697,20 +742,19 @@ export class SessionRuntime {
         : typeof params.adapterId === "string"
           ? params.adapterId
           : undefined;
-    const baseUrl = typeof params.base_url === "string" ? params.base_url : undefined;
     const apiKey = typeof params.api_key === "string" ? params.api_key : undefined;
     const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
 
     const state = await this.llmProfileManager.saveProfile({
       profileId,
       label,
-      provider,
+      kind,
+      endpointId,
       model,
       reasoningEffort,
       thinkingEnabled,
       thinkingDisplay,
       adapterId,
-      baseUrl,
       apiKey,
       makeDefault,
     });

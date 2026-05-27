@@ -26,8 +26,28 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function isOpenAiCompatibleDoctorProvider(provider: SloppyConfig["llm"]["provider"]): boolean {
-  return provider === "openai" || provider === "openrouter" || provider === "ollama";
+function selectedOpenAiCompatibleEndpoint(config: SloppyConfig): {
+  baseUrl?: string;
+  authEnv?: string;
+} {
+  const activeProfile = config.llm.profiles.find(
+    (profile) => profile.id === config.llm.defaultProfileId,
+  );
+  const profile =
+    activeProfile ?? config.llm.profiles.find((candidate) => candidate.kind === "native");
+  if (profile?.kind !== "native") {
+    return {};
+  }
+
+  const endpoint = config.llm.endpoints[profile.endpointId];
+  if (endpoint?.protocol !== "openai-chat") {
+    return {};
+  }
+
+  return {
+    baseUrl: endpoint.baseUrl,
+    authEnv: endpoint.auth.type === "env" ? endpoint.auth.env : undefined,
+  };
 }
 
 async function loadDoctorConfig(
@@ -209,7 +229,7 @@ async function checkLlmProfile(
     [
       profile.isDefault ? "*" : "-",
       profile.id,
-      `${profile.provider}/${profile.model}`,
+      `${profile.endpointId ?? profile.adapterId ?? profile.kind}/${profile.model}`,
       `origin=${profile.origin}`,
       `source=${profile.keySource}`,
       `ready=${profile.ready}`,
@@ -330,7 +350,7 @@ async function checkSessionPersistence(
 async function checkOpenAiCompatibleUrl(
   baseUrl: string | undefined,
   timeoutMs: number,
-  apiKeyEnv?: string,
+  authEnv?: string,
 ): Promise<RuntimeDoctorCheck> {
   if (!baseUrl) {
     return {
@@ -343,7 +363,7 @@ async function checkOpenAiCompatibleUrl(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const url = `${trimTrailingSlash(baseUrl)}/models`;
-  const apiKey = apiKeyEnv ? Bun.env[apiKeyEnv] : undefined;
+  const apiKey = authEnv ? Bun.env[authEnv] : undefined;
   const headers: HeadersInit = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   try {
     const response = await fetch(url, { headers, signal: controller.signal });
@@ -355,9 +375,7 @@ async function checkOpenAiCompatibleUrl(
         summary: `Router responded with HTTP ${response.status}.`,
         detail: [
           text.slice(0, 1000),
-          apiKeyEnv && !apiKey
-            ? `No API key found in ${apiKeyEnv}; request was unauthenticated.`
-            : "",
+          authEnv && !apiKey ? `No API key found in ${authEnv}; request was unauthenticated.` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -366,8 +384,8 @@ async function checkOpenAiCompatibleUrl(
     return {
       id: "litellm",
       status: "ok",
-      summary: apiKeyEnv
-        ? `Router responded at ${url}${apiKey ? ` using ${apiKeyEnv}.` : " without an API key."}`
+      summary: authEnv
+        ? `Router responded at ${url}${apiKey ? ` using ${authEnv}.` : " without an API key."}`
         : `Router responded at ${url}.`,
       detail: text.slice(0, 1000),
     };
@@ -389,9 +407,8 @@ export async function runRuntimeDoctor(
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const config = await loadDoctorConfig(workspaceRoot, options.config);
   const timeoutMs = options.timeoutMs ?? 5000;
-  const litellmUrl =
-    options.litellmUrl ??
-    (isOpenAiCompatibleDoctorProvider(config.llm.provider) ? config.llm.baseUrl : undefined);
+  const openAiEndpoint = selectedOpenAiCompatibleEndpoint(config);
+  const litellmUrl = options.litellmUrl ?? openAiEndpoint.baseUrl;
   const context: RuntimeDoctorContext = {
     config,
     workspaceRoot,
@@ -407,7 +424,7 @@ export async function runRuntimeDoctor(
     checkLlmProfile(config, options.credentialStore),
     checkAuditLogPath(options.eventLogPath),
     checkSocketPath(options.socketPath),
-    checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, config.llm.apiKeyEnv),
+    checkOpenAiCompatibleUrl(litellmUrl, timeoutMs, openAiEndpoint.authEnv),
     checkSessionPersistence(config, workspaceRoot),
   ]);
   checks.push(await checkSubprocessCommands(subprocessProbes));

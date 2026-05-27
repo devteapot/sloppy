@@ -232,9 +232,11 @@ export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 export type LlmSecureStoreStatus = "available" | "unavailable" | "unsupported";
 
 export type LlmProfileSnapshot = {
+  kind: "native" | "session-agent";
   id: string;
   label?: string;
-  provider: string;
+  endpointId?: string;
+  protocol?: string;
   model: string;
   reasoningEffort?: string;
   thinkingEnabled?: boolean;
@@ -243,7 +245,7 @@ export type LlmProfileSnapshot = {
   thinkingEffectiveReason?: string;
   thinkingEffort?: string;
   adapterId?: string;
-  apiKeyEnv?: string;
+  authEnv?: string;
   baseUrl?: string;
   contextWindowTokens?: number;
   isDefault: boolean;
@@ -284,7 +286,8 @@ export type LlmStateSnapshot = {
   status: "ready" | "needs_credentials";
   message: string;
   activeProfileId: string;
-  selectedProvider: string;
+  selectedEndpointId?: string;
+  selectedProtocol?: string;
   selectedModel: string;
   selectedContextWindowTokens?: number;
   secureStoreKind: string;

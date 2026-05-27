@@ -1,13 +1,11 @@
 import { z } from "zod";
 
-export const llmProviderSchema = z.enum([
-  "anthropic",
-  "openai",
+export const llmProtocolSchema = z.enum([
+  "anthropic-messages",
+  "openai-chat",
+  "openai-responses",
   "openai-codex",
-  "openrouter",
-  "ollama",
   "gemini",
-  "acp",
 ]);
 
 export const llmReasoningEffortSchema = z.enum([
@@ -79,18 +77,76 @@ export const llmThinkingConfigSchema = z
   })
   .strict();
 
-export const llmProfileSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().trim().min(1).optional(),
-  provider: llmProviderSchema,
-  model: z.string().optional(),
-  reasoningEffort: llmReasoningEffortSchema.optional(),
-  thinking: llmThinkingConfigSchema.optional(),
-  adapterId: z.string().optional(),
-  apiKeyEnv: z.string().optional(),
-  baseUrl: z.string().optional(),
-  contextWindowTokens: z.number().int().min(1).optional(),
-});
+export const llmEndpointAuthSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("none") }).strict(),
+  z.object({ type: z.literal("env"), env: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal("secure_store") }).strict(),
+  z.object({ type: z.literal("codex") }).strict(),
+]);
+
+export const llmEndpointModelCapabilitiesSchema = z
+  .object({
+    tools: z.boolean().optional(),
+    images: z.boolean().optional(),
+  })
+  .strict();
+
+export const llmEndpointModelCompatSchema = z
+  .object({
+    kind: z.enum(["openai", "openrouter", "ollama", "generic"]).optional(),
+    supportsDeveloperRole: z.boolean().optional(),
+    supportsReasoningEffort: z.boolean().optional(),
+    maxTokensField: z.enum(["max_tokens", "max_completion_tokens"]).optional(),
+    thinkingFormat: z.enum(["openai", "openrouter", "ollama", "none"]).optional(),
+  })
+  .strict();
+
+export const llmEndpointModelSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    contextWindowTokens: z.number().int().min(1).optional(),
+    maxOutputTokens: z.number().int().min(1).optional(),
+    capabilities: llmEndpointModelCapabilitiesSchema.optional(),
+    compat: llmEndpointModelCompatSchema.optional(),
+  })
+  .strict();
+
+export const llmEndpointSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    protocol: llmProtocolSchema,
+    baseUrl: z.string().trim().min(1).optional(),
+    auth: llmEndpointAuthSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    models: z.record(z.string().min(1), llmEndpointModelSchema).default({}),
+  })
+  .strict();
+
+const nativeLlmProfileSchema = z
+  .object({
+    kind: z.literal("native").default("native"),
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    endpointId: z.string().min(1),
+    model: z.string().min(1),
+    reasoningEffort: llmReasoningEffortSchema.optional(),
+    thinking: llmThinkingConfigSchema.optional(),
+  })
+  .strict();
+
+const sessionAgentLlmProfileSchema = z
+  .object({
+    kind: z.literal("session-agent"),
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    adapterId: z.string().min(1),
+    model: z.string().min(1).default("default"),
+    reasoningEffort: llmReasoningEffortSchema.optional(),
+    thinking: llmThinkingConfigSchema.optional(),
+  })
+  .strict();
+
+export const llmProfileSchema = z.union([sessionAgentLlmProfileSchema, nativeLlmProfileSchema]);
 
 const acpDelegationConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -417,21 +473,17 @@ export const sloppyConfigSchema = z.object({
     }),
   llm: z
     .object({
-      provider: llmProviderSchema.default("anthropic"),
-      model: z.string().optional(),
       reasoningEffort: llmReasoningEffortSchema.optional(),
       thinking: llmThinkingConfigSchema.default({}),
-      adapterId: z.string().optional(),
-      apiKeyEnv: z.string().optional(),
-      baseUrl: z.string().optional(),
-      contextWindowTokens: z.number().int().min(1).optional(),
+      endpoints: z.record(z.string().min(1), llmEndpointSchema).default({}),
       defaultProfileId: z.string().optional(),
       profiles: z.array(llmProfileSchema).default([]),
       maxTokens: z.number().int().min(256).default(4096),
     })
+    .strict()
     .default({
-      provider: "anthropic",
       thinking: {},
+      endpoints: {},
       profiles: [],
       maxTokens: 4096,
     }),
@@ -486,10 +538,13 @@ type SloppyConfigBase = z.infer<typeof sloppyConfigSchema>;
 type PluginsConfig = SloppyConfigBase["plugins"];
 type WorkspaceRegistryConfig = SloppyConfigBase["workspaces"];
 
-export type LlmProvider = z.infer<typeof llmProviderSchema>;
+export type LlmProtocol = z.infer<typeof llmProtocolSchema>;
 export type LlmReasoningEffort = z.infer<typeof llmReasoningEffortSchema>;
 export type LlmThinkingDisplay = z.infer<typeof llmThinkingDisplaySchema>;
 export type LlmThinkingConfigInput = z.infer<typeof llmThinkingConfigSchema>;
+export type LlmEndpointAuthConfig = z.infer<typeof llmEndpointAuthSchema>;
+export type LlmEndpointModelCapabilitiesConfig = z.infer<typeof llmEndpointModelCapabilitiesSchema>;
+export type LlmEndpointModelCompatConfig = z.infer<typeof llmEndpointModelCompatSchema>;
 
 export type LlmThinkingEffectiveReason =
   | "configured"
@@ -504,29 +559,54 @@ export type LlmThinkingConfig = LlmThinkingConfigInput & {
 };
 
 export type LlmProfileConfig = {
+  kind: "native";
   id: string;
   label?: string;
-  provider: LlmProvider;
+  endpointId: string;
   model: string;
   reasoningEffort?: LlmReasoningEffort;
   thinking?: LlmThinkingConfigInput;
-  adapterId?: string;
-  apiKeyEnv?: string;
-  baseUrl?: string;
+};
+
+export type LlmSessionAgentProfileConfig = {
+  kind: "session-agent";
+  id: string;
+  label?: string;
+  adapterId: string;
+  model: string;
+  reasoningEffort?: LlmReasoningEffort;
+  thinking?: LlmThinkingConfigInput;
+};
+
+export type AnyLlmProfileConfig = LlmProfileConfig | LlmSessionAgentProfileConfig;
+
+export type LlmEndpointModelConfig = {
+  label?: string;
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  capabilities?: LlmEndpointModelCapabilitiesConfig;
+  compat?: LlmEndpointModelCompatConfig;
+};
+
+export type LlmEndpointConfig = {
+  label?: string;
+  protocol: LlmProtocol;
+  baseUrl?: string;
+  auth: LlmEndpointAuthConfig;
+  headers?: Record<string, string>;
+  models: Record<string, LlmEndpointModelConfig>;
+};
+
+export type LlmEndpointInputConfig = Omit<LlmEndpointConfig, "auth"> & {
+  auth?: LlmEndpointAuthConfig;
 };
 
 export interface LlmConfig {
-  provider: LlmProvider;
-  model: string;
   reasoningEffort?: LlmReasoningEffort;
   thinking?: LlmThinkingConfig;
-  adapterId?: string;
-  apiKeyEnv?: string;
-  baseUrl?: string;
-  contextWindowTokens?: number;
+  endpoints: Record<string, LlmEndpointConfig>;
   defaultProfileId?: string;
-  profiles: LlmProfileConfig[];
+  profiles: AnyLlmProfileConfig[];
   maxTokens: number;
 }
 
