@@ -439,14 +439,13 @@ emit a warning but do not change the CLI exit code.
 
 Native mode uses the active LLM profile selected by the LLM profile manager
 unless `--profile <id>` is provided. For a local OpenAI-compatible router, point
-the run at that endpoint with the normal one-shot LLM environment overrides, for
-example:
+the run at a configured `llm.endpoints` entry with the one-shot LLM endpoint
+overrides, for example:
 
 ```sh
-SLOPPY_LLM_PROVIDER=openai \
+SLOPPY_LLM_ENDPOINT=litellm \
 SLOPPY_MODEL=<model> \
-SLOPPY_LLM_BASE_URL=http://sloppy-mba.local:8001/v1 \
-OPENAI_API_KEY=<router-key-or-dummy> \
+LITELLM_API_KEY=<router-key-or-dummy> \
 bun run runtime:smoke -- --mode native
 ```
 
@@ -480,7 +479,8 @@ for that run.
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
 Claude and Codex ACP adapters. Copy those adapter blocks into
-`.sloppy/config.yaml` and set the LiteLLM model/base URL for your machine.
+`.sloppy/config.yaml` and set the LiteLLM endpoint model/base URL for your
+machine.
 
 If the LiteLLM check fails before HTTP, verify local name resolution first:
 
@@ -490,7 +490,7 @@ ping -c 1 sloppy-mba.local
 ```
 
 If `.local` mDNS is not available from the current host, use the router's direct
-IP address in `--litellm-url` and `SLOPPY_LLM_BASE_URL`.
+IP address in `--litellm-url` and the configured `llm.endpoints.<id>.baseUrl`.
 
 If the ACP check fails for Claude, confirm that the installed command actually
 speaks Agent Client Protocol over stdio. `claude mcp ...` is MCP server support,
@@ -501,36 +501,31 @@ such as `["bunx", "@agentclientprotocol/claude-agent-acp"]` or an installed
 
 ACP adapters are not limited to sub-agents. They can be selected as the
 main session model profile through the same `/llm` state used for native API
-providers:
+endpoints:
 
 ```yaml
 llm:
-  provider: acp
-  model: sonnet
-  adapterId: claude
   defaultProfileId: claude-acp
   profiles:
-    - id: claude-acp
+    - kind: session-agent
+      id: claude-acp
       label: Claude ACP
-      provider: acp
       model: sonnet
       adapterId: claude
 ```
 
-For Codex subscription models, prefer the native `openai-codex` provider when
+For Codex subscription models, prefer the native `openai-codex` endpoint when
 you want Sloppy to keep its own model/tool loop. It reads the existing Codex CLI
 auth store, so run `codex login` first:
 
 ```yaml
 llm:
-  provider: openai-codex
-  model: gpt-5.5
-  reasoningEffort: low
   defaultProfileId: codex-native
   profiles:
-    - id: codex-native
+    - kind: native
+      id: codex-native
       label: Codex GPT-5.5 Low
-      provider: openai-codex
+      endpointId: openai-codex
       model: gpt-5.5
       reasoningEffort: low
 ```
@@ -550,14 +545,27 @@ Example:
 
 ```yaml
 llm:
-  provider: openai
-  model: gpt-5.4
+  endpoints:
+    local-router:
+      protocol: openai-chat
+      baseUrl: http://sloppy-mba.local:8001/v1
+      auth:
+        type: env
+        env: LITELLM_API_KEY
+      models:
+        local/test-model: {}
   defaultProfileId: openai-main
   profiles:
-    - id: openai-main
+    - kind: native
+      id: openai-main
       label: OpenAI Main
-      provider: openai
+      endpointId: openai
       model: gpt-5.4
+    - kind: native
+      id: local-router
+      label: Local Router
+      endpointId: local-router
+      model: local/test-model
 ```
 
 Thinking output is configured under `llm.thinking` and may be overridden per
@@ -569,8 +577,8 @@ output is still captured as public transcript state for later UI toggles, but
 it is not rendered by default and is never replayed into later model calls.
 
 Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
-`medium`, `high`, or `xhigh`) as a compatibility alias for providers that expose
-OpenAI-style reasoning controls. Prefer provider-specific `thinking` blocks for
+`medium`, `high`, or `xhigh`) as a compatibility alias for protocols that expose
+OpenAI-style reasoning controls. Prefer protocol-specific `thinking` blocks for
 new config.
 
 First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
@@ -716,18 +724,17 @@ adapter is published as `@zed-industries/codex-acp` and exposes the
 Routed or allow-masked ACP spawns require the adapter `capabilities` block so the
 runtime can reject child bindings that exceed the adapter's declared surface.
 
-Provider defaults:
+Built-in endpoint defaults:
 
 - `anthropic` -> `ANTHROPIC_API_KEY`
 - `openai` -> `OPENAI_API_KEY`
 - `openrouter` -> `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`
 - `gemini` -> `GEMINI_API_KEY`
 - `ollama` -> `http://localhost:11434/v1` and no API key by default
-- `acp` -> configured adapter profiles and no API key by default
+- `openai-codex` -> Codex CLI auth store and no API key by default
 
-You can override the provider, model, adapter id, or base URL with
-`SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, and
-`SLOPPY_LLM_BASE_URL`.
+You can override the endpoint/profile/model for one-shot runs with
+`SLOPPY_LLM_ENDPOINT`, `SLOPPY_LLM_PROFILE`, and `SLOPPY_MODEL`.
 
 The agent loop defaults to 32 model/tool iterations. For longer runs, set
 `agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
@@ -748,7 +755,7 @@ API keys are not written to YAML:
 - Linux stores them in Secret Service via `secret-tool`
 - environment variables still work, but they are surfaced in the LLM profile manager as separate env-backed profiles
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
-- one-shot runs explicitly routed with `SLOPPY_LLM_PROVIDER`, `SLOPPY_MODEL`, `SLOPPY_LLM_ADAPTER_ID`, `SLOPPY_LLM_BASE_URL`, or `SLOPPY_LLM_API_KEY_ENV` rebuild their runtime LLM config from the process env and ignore managed profiles for that run
+- one-shot runs explicitly routed with `SLOPPY_LLM_ENDPOINT` or `SLOPPY_MODEL` use a temporary runtime profile for that run
 
 The current TUI uses the session provider's `/llm` state to onboard and manage
 profiles, its `/apps` state to surface external provider attachment status, and
@@ -758,9 +765,9 @@ review. The Agent sees the same external app catalog through the first-party
 
 Useful TUI slash commands:
 
-- `/profile openai gpt-5.4 --base-url <url>` saves a profile without a key.
+- `/profile openai gpt-5.4` saves a native endpoint profile without a key.
 - `/profile-secret openai gpt-5.4` opens masked API-key entry.
-- `/profile acp sonnet --adapter claude` saves an ACP adapter-backed profile.
+- `/profile acp sonnet --adapter claude` saves a `session-agent` adapter-backed profile.
 - `/default <profile-id>`, `/delete-profile <profile-id>`, and `/delete-key <profile-id>` manage exposed profiles.
 - `/goal <objective> [--token-budget N]` starts a persistent runtime goal.
 - `/goal`, `/goal pause`, `/goal resume`, `/goal complete`, and `/goal clear` inspect and control the active goal.

@@ -257,13 +257,13 @@ export class SessionClient {
     return this.invoke("/llm", "save_profile", {
       ...(input.profileId && { profile_id: input.profileId }),
       ...(input.label && { label: input.label }),
-      provider: input.provider,
+      ...(input.kind && { kind: input.kind }),
+      ...(input.endpointId && { endpoint_id: input.endpointId }),
       ...(input.model && { model: input.model }),
       ...(input.reasoningEffort && { reasoning_effort: input.reasoningEffort }),
       ...(input.thinkingEnabled !== undefined && { thinking_enabled: input.thinkingEnabled }),
       ...(input.thinkingDisplay && { thinking_display: input.thinkingDisplay }),
       ...(input.adapterId && { adapter_id: input.adapterId }),
-      ...(input.baseUrl && { base_url: input.baseUrl }),
       ...(input.apiKey && { api_key: input.apiKey }),
       ...(input.makeDefault !== undefined && { make_default: input.makeDefault }),
     });

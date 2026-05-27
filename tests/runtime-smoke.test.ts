@@ -11,11 +11,10 @@ import { runRuntimeSmoke } from "../src/runtime/smoke-runner";
 import { createTestConfig } from "./helpers/config";
 
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
-const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
+const originalHome = process.env.HOME;
+const originalEndpoint = process.env.SLOPPY_LLM_ENDPOINT;
+const originalProfile = process.env.SLOPPY_LLM_PROFILE;
 const originalModel = process.env.SLOPPY_MODEL;
-const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
-const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
-const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 
 const TEST_CONFIG = createTestConfig({
   agent: { maxIterations: 4 },
@@ -24,18 +23,21 @@ const TEST_CONFIG = createTestConfig({
 const READY_LLM_STATE: LlmStateSnapshot = {
   status: "ready" as const,
   message: "ready",
-  activeProfileId: "stub",
-  selectedProvider: "openai",
+  activeProfileId: "openai-main",
+  selectedEndpointId: "openai",
+  selectedProtocol: "openai-chat",
   selectedModel: "stub-model",
   secureStoreKind: "keychain",
   secureStoreStatus: "available",
   profiles: [
     {
-      id: "stub",
+      kind: "native",
+      id: "openai-main",
       label: "Stub",
-      provider: "openai" as const,
+      endpointId: "openai",
+      protocol: "openai-chat",
       model: "stub-model",
-      apiKeyEnv: "STUB_KEY",
+      authEnv: "STUB_KEY",
       baseUrl: undefined,
       isDefault: true,
       hasKey: true,
@@ -57,36 +59,45 @@ const READY_LLM_STATE: LlmStateSnapshot = {
   ],
 };
 
+const RUNTIME_READY_LLM_STATE: LlmStateSnapshot = {
+  ...READY_LLM_STATE,
+  activeProfileId: "runtime",
+  selectedModel: "local/test-model",
+  profiles: [
+    {
+      ...READY_LLM_STATE.profiles[0]!,
+      id: "runtime",
+      label: "Runtime Override",
+      model: "local/test-model",
+    },
+  ],
+};
+
 function restoreEnv(): void {
+  if (originalHome == null) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
   if (originalOpenAIKey == null) {
     delete process.env.OPENAI_API_KEY;
   } else {
     process.env.OPENAI_API_KEY = originalOpenAIKey;
   }
-  if (originalProvider == null) {
-    delete process.env.SLOPPY_LLM_PROVIDER;
+  if (originalEndpoint == null) {
+    delete process.env.SLOPPY_LLM_ENDPOINT;
   } else {
-    process.env.SLOPPY_LLM_PROVIDER = originalProvider;
+    process.env.SLOPPY_LLM_ENDPOINT = originalEndpoint;
+  }
+  if (originalProfile == null) {
+    delete process.env.SLOPPY_LLM_PROFILE;
+  } else {
+    process.env.SLOPPY_LLM_PROFILE = originalProfile;
   }
   if (originalModel == null) {
     delete process.env.SLOPPY_MODEL;
   } else {
     process.env.SLOPPY_MODEL = originalModel;
-  }
-  if (originalAdapterId == null) {
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-  } else {
-    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
-  }
-  if (originalBaseUrl == null) {
-    delete process.env.SLOPPY_LLM_BASE_URL;
-  } else {
-    process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
-  }
-  if (originalApiKeyEnv == null) {
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
-  } else {
-    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
   }
 }
 
@@ -242,10 +253,9 @@ describe("runtime smoke runner", () => {
   test("native smoke honors explicit runtime env routing instead of managed profiles", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-env-"));
     process.env.OPENAI_API_KEY = "router-key";
-    process.env.SLOPPY_LLM_PROVIDER = "openai";
+    process.env.SLOPPY_LLM_ENDPOINT = "openai";
     process.env.SLOPPY_MODEL = "local/test-model";
-    process.env.SLOPPY_LLM_BASE_URL = "http://192.168.1.96:8001/v1";
-    process.env.SLOPPY_LLM_API_KEY_ENV = "OPENAI_API_KEY";
+    delete process.env.SLOPPY_LLM_PROFILE;
 
     const config: SloppyConfig = {
       ...TEST_CONFIG,
@@ -254,22 +264,22 @@ describe("runtime smoke runner", () => {
         defaultProfileId: "managed-openai",
         profiles: [
           {
+            kind: "native",
             id: "managed-openai",
             label: "Managed OpenAI",
-            provider: "openai",
+            endpointId: "openai",
             model: "gpt-5.4",
-            apiKeyEnv: "OPENAI_API_KEY",
           },
         ],
       },
     };
     const manager = {
-      ensureReady: async () => READY_LLM_STATE,
-      getState: async () => READY_LLM_STATE,
+      ensureReady: async () => RUNTIME_READY_LLM_STATE,
+      getState: async () => RUNTIME_READY_LLM_STATE,
       getConfig: () => config,
       updateConfig: () => undefined,
       createAdapter: async (profileId?: string) => {
-        expect(profileId).toBeUndefined();
+        expect(profileId).toBe("runtime");
         return {
           async chat(options) {
             options.onText?.("env-routed native received");
@@ -300,8 +310,10 @@ describe("runtime smoke runner", () => {
   });
 
   test("runs ACP delegated-agent smoke through a configured adapter", async () => {
+    const home = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-home-"));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-runtime-smoke-acp-"));
     try {
+      process.env.HOME = home;
       const scriptPath = await createFakeAcpAgent(workspaceRoot);
       await mkdir(join(workspaceRoot, ".sloppy"), { recursive: true });
       await writeFile(
@@ -336,6 +348,8 @@ describe("runtime smoke runner", () => {
       expect(result.delegatedAgent?.status).toBe("completed");
       expect(result.delegatedAgent?.resultPreview).toContain("acp received:");
     } finally {
+      restoreEnv();
+      await rm(home, { recursive: true, force: true });
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

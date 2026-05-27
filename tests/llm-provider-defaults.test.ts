@@ -1,25 +1,35 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveModelContextWindowTokens } from "../src/llm/provider-defaults";
+import { DEFAULT_LLM_ENDPOINTS, mergeLlmEndpoints } from "../src/llm/catalog";
 
-describe("resolveModelContextWindowTokens", () => {
-  test("uses current GPT-5.5 context metadata for API-compatible providers", () => {
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.5")).toBe(1_050_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.5-2026-04-23")).toBe(1_050_000);
-    expect(resolveModelContextWindowTokens("openrouter", "openai/gpt-5.5")).toBe(1_050_000);
+describe("default LLM endpoint catalog", () => {
+  test("ships endpoint metadata for API-compatible defaults", () => {
+    expect(DEFAULT_LLM_ENDPOINTS.openai?.models["gpt-5.4"]?.contextWindowTokens).toBe(1_050_000);
+    expect(DEFAULT_LLM_ENDPOINTS.openrouter?.models["openai/gpt-5.4"]?.contextWindowTokens).toBe(
+      1_050_000,
+    );
+    expect(DEFAULT_LLM_ENDPOINTS.ollama?.baseUrl).toBe("http://localhost:11434/v1");
   });
 
-  test("distinguishes GPT-5.4 full-size models from mini and nano", () => {
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4")).toBe(1_050_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4-2026-03-05")).toBe(1_050_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4-mini")).toBe(400_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4-mini-2026-04-23")).toBe(400_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4-nano")).toBe(400_000);
-    expect(resolveModelContextWindowTokens("openai", "gpt-5.4-nano-2026-04-23")).toBe(400_000);
-  });
+  test("merges custom endpoint model metadata over built-ins", () => {
+    const endpoints = mergeLlmEndpoints({
+      openai: {
+        protocol: "openai-chat",
+        auth: { type: "env", env: "CUSTOM_OPENAI_KEY" },
+        models: {
+          "gpt-5.4": {
+            contextWindowTokens: 123,
+          },
+          "local/test": {
+            contextWindowTokens: 456,
+          },
+        },
+      },
+    });
 
-  test("normalizes OpenRouter provider-prefixed model names", () => {
-    expect(resolveModelContextWindowTokens("openrouter", "openai/gpt-5.4")).toBe(1_050_000);
-    expect(resolveModelContextWindowTokens("openrouter", "openai/gpt-5.4-mini")).toBe(400_000);
+    expect(endpoints.openai?.auth).toEqual({ type: "env", env: "CUSTOM_OPENAI_KEY" });
+    expect(endpoints.openai?.models["gpt-5.4"]?.contextWindowTokens).toBe(123);
+    expect(endpoints.openai?.models["gpt-5.4"]?.capabilities?.tools).toBe(true);
+    expect(endpoints.openai?.models["local/test"]?.contextWindowTokens).toBe(456);
   });
 });

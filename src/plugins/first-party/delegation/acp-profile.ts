@@ -21,13 +21,13 @@ export function acpProfileFingerprint(
   profile: LlmProfileState,
   modelOverride?: string,
 ): string | null {
-  if (profile.provider !== "acp") {
+  if (profile.kind !== "session-agent") {
     return null;
   }
   const adapterId = adapterIdFor(profile);
   const adapter = config.plugins.delegation.acp?.adapters[adapterId];
   return [
-    profile.provider,
+    profile.kind,
     profile.id,
     adapterId,
     modelOverride ?? profile.model,
@@ -42,7 +42,7 @@ export function createAcpProfileSessionAgent(options: {
   modelOverride?: string;
   callbacks: AgentCallbacks;
 }): SessionAgent | null {
-  if (options.profile.provider !== "acp") {
+  if (options.profile.kind !== "session-agent") {
     return null;
   }
 

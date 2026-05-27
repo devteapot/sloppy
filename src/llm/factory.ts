@@ -1,58 +1,70 @@
-import type { LlmProvider, LlmReasoningEffort } from "../config/schema";
+import type {
+  LlmEndpointModelCompatConfig,
+  LlmProtocol,
+  LlmReasoningEffort,
+} from "../config/schema";
 
 import { AnthropicAdapter } from "./anthropic";
 import { GeminiAdapter } from "./gemini";
 import { OpenAICodexAdapter } from "./openai-codex";
-import { OpenAICompatibleAdapter } from "./openai-compatible";
-import { providerRequiresApiKey } from "./provider-defaults";
+import { OpenAICompatibleAdapter, type OpenAICompatibleProviderKind } from "./openai-compatible";
 import type { EffectiveThinkingConfig } from "./thinking";
 import type { LlmAdapter } from "./types";
 
 export type LlmAdapterConfig = {
-  provider: LlmProvider;
+  endpointId: string;
+  protocol: LlmProtocol;
   model: string;
   reasoningEffort?: LlmReasoningEffort;
   thinking?: EffectiveThinkingConfig;
   apiKey?: string;
-  apiKeyEnv?: string;
+  authHint?: string;
   baseUrl?: string;
+  compat?: LlmEndpointModelCompatConfig;
 };
 
 function requireApiKey(config: LlmAdapterConfig): string {
-  if (!providerRequiresApiKey(config.provider)) {
-    return "ollama";
-  }
-
   const apiKey = config.apiKey;
   if (!apiKey) {
-    if (config.apiKeyEnv) {
-      throw new Error(
-        `No API key was resolved for ${config.provider}. Set ${config.apiKeyEnv}, store a key in the app, or choose another profile before starting a model turn.`,
-      );
+    if (config.authHint) {
+      throw new Error(`No API key was resolved for ${config.endpointId}. ${config.authHint}`);
     }
 
     throw new Error(
-      `No API key was resolved for ${config.provider}. Store a key in the app or choose another profile before starting a model turn.`,
+      `No API key was resolved for ${config.endpointId}. Store a key in the app or choose another profile before starting a model turn.`,
     );
   }
 
   return apiKey;
 }
 
+function resolveOpenAICompatibleProviderKind(
+  endpointId: string,
+  compat: LlmEndpointModelCompatConfig | undefined,
+): OpenAICompatibleProviderKind {
+  if (compat?.kind) {
+    return compat.kind;
+  }
+  if (endpointId === "openai" || endpointId === "openrouter" || endpointId === "ollama") {
+    return endpointId;
+  }
+  return "generic";
+}
+
 export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
-  switch (config.provider) {
-    case "anthropic":
+  switch (config.protocol) {
+    case "anthropic-messages":
       return new AnthropicAdapter({
         apiKey: requireApiKey(config),
         model: config.model,
         thinking: config.thinking,
       });
-    case "openai":
-    case "openrouter":
+    case "openai-chat":
       return new OpenAICompatibleAdapter({
-        apiKey: requireApiKey(config),
+        apiKey: config.apiKey ?? "local",
         model: config.model,
-        provider: config.provider,
+        provider: config.endpointId,
+        providerKind: resolveOpenAICompatibleProviderKind(config.endpointId, config.compat),
         baseUrl: config.baseUrl,
         thinking: config.thinking,
       });
@@ -63,14 +75,6 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         reasoningEffort: config.reasoningEffort,
         thinking: config.thinking,
       });
-    case "ollama":
-      return new OpenAICompatibleAdapter({
-        apiKey: config.apiKey ?? "ollama",
-        model: config.model,
-        provider: "ollama",
-        baseUrl: config.baseUrl,
-        thinking: config.thinking,
-      });
     case "gemini":
       return new GeminiAdapter({
         apiKey: requireApiKey(config),
@@ -78,9 +82,9 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         baseUrl: config.baseUrl,
         thinking: config.thinking,
       });
-    case "acp":
+    case "openai-responses":
       throw new Error(
-        `${config.provider} profiles are external session-agent profiles and cannot be used by the native LLM adapter factory.`,
+        `${config.protocol} endpoints are not supported by the native adapter factory yet. Use openai-chat for OpenAI-compatible chat endpoints.`,
       );
   }
 }

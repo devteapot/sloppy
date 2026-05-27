@@ -98,8 +98,8 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
 ```text
 [root] agent-session: Agent Session
   [context] session (session_id="sess-123", status="active", model_provider="anthropic", model="claude-sonnet", client_count=2)
-  [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_provider="openai", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
-    [item] openai-main (provider="openai", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
+  [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_endpoint_id="openai", selected_protocol="openai-chat", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
+    [item] openai-main (kind="native", endpoint_id="openai", protocol="openai-chat", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [context] usage (last_model_call_input_tokens=4200, last_model_call_output_tokens=700, last_state_context_tokens=1800, last_state_context_token_source=provider, model_context_window_tokens=1050000, available_context_tokens=1045800, total_tokens=4900)
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
   [collection] plugins (count=1, ui_manifest_version=1)
@@ -140,7 +140,7 @@ Required props:
 
 - `session_id`: stable session identifier
 - `status`: `active | closing | closed | error`
-- `model_provider`: selected LLM provider name
+- `model_provider`: selected LLM endpoint or session-agent adapter name
 - `model`: selected model identifier
 - `started_at`: ISO timestamp
 - `updated_at`: ISO timestamp
@@ -208,7 +208,8 @@ Required props:
 - `status`: `ready | needs_credentials`
 - `message`: short onboarding or readiness summary
 - `active_profile_id`: selected profile id
-- `selected_provider`: currently selected provider name
+- `selected_endpoint_id`: currently selected endpoint id for native profiles
+- `selected_protocol`: currently selected endpoint protocol or `session-agent`
 - `selected_model`: currently selected model identifier
 - `secure_store_kind`: `keychain | secret-service | none`
 - `secure_store_status`: `available | unavailable | unsupported`
@@ -219,7 +220,9 @@ Children:
 
 Required profile item props:
 
-- `provider`: provider name
+- `kind`: `native | session-agent`
+- `endpoint_id`: endpoint id for native profiles
+- `protocol`: endpoint protocol or `session-agent`
 - `model`: selected model identifier
 - `origin`: `managed | environment | fallback`
 - `is_default`: boolean
@@ -233,19 +236,19 @@ Required profile item props:
 Optional profile item props:
 
 - `label`: display label
-- `reasoning_effort`: optional OpenAI-style reasoning effort for providers that expose it
+- `reasoning_effort`: optional OpenAI-style reasoning effort for protocols that expose it
 - `thinking_enabled`: requested Thinking-output policy from effective config
 - `thinking_display`: requested default display mode, `visible | hidden`
-- `thinking_effective_enabled`: whether the selected provider/model will actually use thinking
+- `thinking_effective_enabled`: whether the selected endpoint/model will actually use thinking
 - `thinking_effective_reason`: `configured | model_forces_thinking | provider_unsupported | unknown`
 - `thinking_effort`: compact provider-neutral effort label when applicable
-- `adapter_id`: ACP adapter id when the profile runs through an external session agent
-- `api_key_env`: environment variable name that can satisfy the profile for this process
-- `base_url`: provider base URL override
+- `adapter_id`: adapter id when the profile runs through an external session agent
+- `auth_env`: environment variable name that can satisfy the endpoint for this process
+- `base_url`: endpoint base URL
 
 Affordances:
 
-- `save_profile(profile_id?, label?, provider, model?, reasoning_effort?, thinking_enabled?, thinking_display?, adapter_id?, base_url?, api_key?, make_default?)`
+- `save_profile(profile_id?, kind?, label?, endpoint_id?, model?, reasoning_effort?, thinking_enabled?, thinking_display?, adapter_id?, api_key?, make_default?)`
 - `set_default_profile(profile_id)`
 - `delete_profile(profile_id)`
 - `delete_api_key(profile_id)`
@@ -255,7 +258,7 @@ Rules:
 - secret values must never be exposed in state, transcript, activity, or logs
 - `api_key` is write-only input for secure persistence
 - `save_profile` accepts compact Thinking-output controls only; advanced
-  provider-specific thinking blocks belong in YAML config
+  protocol-specific thinking blocks belong in YAML config
 - env-backed profiles should be listed explicitly so users can choose them without silently overriding a selected managed profile
 - `openai-codex` profiles use external Codex auth from the Codex CLI auth store; no API key is exposed through session state
 - ACP profiles are ready without API keys; `adapter_id` selects the configured external adapter while `model` remains the user-visible model choice

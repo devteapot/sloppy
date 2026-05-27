@@ -1,12 +1,26 @@
 llm:
-  provider: openai
-  model: <litellm-model>
-  apiKeyEnv: LITELLM_API_KEY
-  baseUrl: http://sloppy-mba.local:8001/v1
+  endpoints:
+    litellm:
+      protocol: openai-chat
+      baseUrl: http://sloppy-mba.local:8001/v1
+      auth:
+        type: env
+        env: LITELLM_API_KEY
+      models:
+        <litellm-model>: {}
+  defaultProfileId: litellm-main
+  profiles:
+    - id: litellm-main
+      label: LiteLLM Main
+      endpointId: litellm
+      model: <litellm-model>
   # To use a ChatGPT/Codex subscription natively, run `codex login` first:
-  # provider: openai-codex
-  # model: gpt-5.5
-  # reasoningEffort: low
+  # defaultProfileId: codex-native
+  # profiles:
+  #   - id: codex-native
+  #     endpointId: openai-codex
+  #     model: gpt-5.5
+  #     reasoningEffort: low
 
 session:
   persistSnapshots: true

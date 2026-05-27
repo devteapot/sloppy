@@ -26,6 +26,27 @@ async function writeConfig(root: string, contents: string): Promise<void> {
   await writeFile(join(configDir, "config.yaml"), contents, "utf8");
 }
 
+function llmProfileConfigLines(model: string, id = "test-openai"): string[] {
+  return [
+    "llm:",
+    `  defaultProfileId: ${id}`,
+    "  profiles:",
+    `    - id: ${id}`,
+    "      endpointId: openai",
+    `      model: ${model}`,
+  ];
+}
+
+function llmProfileOverrideLines(model: string, id = "test-openai"): string[] {
+  return [
+    "llm:",
+    "  profiles:",
+    `    - id: ${id}`,
+    "      endpointId: openai",
+    `      model: ${model}`,
+  ];
+}
+
 afterEach(async () => {
   for (const listener of listeners.splice(0)) {
     listener.close();
@@ -83,8 +104,27 @@ describe("SessionSupervisorProvider", () => {
         "          configPath: .sloppy/config.yaml",
       ].join("\n"),
     );
-    await writeConfig(workspace, "llm:\n  provider: openai\n  model: workspace-model\n");
-    await writeConfig(projectRoot, "llm:\n  model: project-model\n");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: scoped-openai",
+        "  profiles:",
+        "    - id: scoped-openai",
+        "      endpointId: openai",
+        "      model: workspace-model",
+      ].join("\n"),
+    );
+    await writeConfig(
+      projectRoot,
+      [
+        "llm:",
+        "  profiles:",
+        "    - id: scoped-openai",
+        "      endpointId: openai",
+        "      model: project-model",
+      ].join("\n"),
+    );
     process.env.HOME = home;
 
     const provider = new SessionSupervisorProvider({
@@ -181,9 +221,7 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(
       home,
       [
-        "llm:",
-        "  provider: openai",
-        "  model: supervisor-cleanup-model",
+        ...llmProfileConfigLines("supervisor-cleanup-model"),
         "plugins:",
         "  terminal:",
         "    enabled: false",
@@ -236,9 +274,7 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(
       home,
       [
-        "llm:",
-        "  provider: openai",
-        "  model: registry-model",
+        ...llmProfileConfigLines("registry-model"),
         "plugins:",
         "  terminal:",
         "    enabled: false",
@@ -316,9 +352,7 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(
       home,
       [
-        "llm:",
-        "  provider: openai",
-        "  model: lease-model",
+        ...llmProfileConfigLines("lease-model"),
         "plugins:",
         "  terminal:",
         "    enabled: false",
@@ -369,9 +403,7 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(
       home,
       [
-        "llm:",
-        "  provider: openai",
-        "  model: approval-model",
+        ...llmProfileConfigLines("approval-model"),
         "plugins:",
         "  terminal:",
         "    enabled: false",
@@ -439,8 +471,8 @@ describe("SessionSupervisorProvider", () => {
         "          configPath: .sloppy/config.yaml",
       ].join("\n"),
     );
-    await writeConfig(workspace, "llm:\n  provider: openai\n  model: scope-workspace-model\n");
-    await writeConfig(projectRoot, "llm:\n  model: scope-project-model\n");
+    await writeConfig(workspace, llmProfileConfigLines("scope-workspace-model").join("\n"));
+    await writeConfig(projectRoot, llmProfileOverrideLines("scope-project-model").join("\n"));
     process.env.HOME = home;
     const socketPath = `/tmp/slop/sloppy-supervisor-scope-approval-${crypto.randomUUID()}.sock`;
     const running = await startSessionSupervisor({
@@ -497,8 +529,8 @@ describe("SessionSupervisorProvider", () => {
         "      configPath: .sloppy/config.yaml",
       ].join("\n"),
     );
-    await writeConfig(workspace, "llm:\n  provider: openai\n  model: reload-model\n");
-    await writeConfig(projectRoot, "llm:\n  model: reload-project-model\n");
+    await writeConfig(workspace, llmProfileConfigLines("reload-model").join("\n"));
+    await writeConfig(projectRoot, llmProfileOverrideLines("reload-project-model").join("\n"));
     process.env.HOME = home;
     const socketPath = `/tmp/slop/sloppy-supervisor-reload-${crypto.randomUUID()}.sock`;
     const running = await startSessionSupervisor({
@@ -559,9 +591,7 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(
       home,
       [
-        "llm:",
-        "  provider: openai",
-        "  model: autoclose-model",
+        ...llmProfileConfigLines("autoclose-model"),
         "plugins:",
         "  terminal:",
         "    enabled: false",

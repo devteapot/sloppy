@@ -27,15 +27,14 @@ import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig({
   llm: {
-    apiKeyEnv: "OPENAI_API_KEY",
     defaultProfileId: "test-openai",
     profiles: [
       {
+        kind: "native",
         id: "test-openai",
         label: "Test OpenAI",
-        provider: "openai",
+        endpointId: "openai",
         model: "gpt-5.4",
-        apiKeyEnv: "OPENAI_API_KEY",
       },
     ],
   },
@@ -87,16 +86,16 @@ class MemoryCredentialStore implements CredentialStore {
     return this.status;
   }
 
-  async get(profileId: string): Promise<string | null> {
-    return this.secrets.get(profileId) ?? null;
+  async get(endpointId: string): Promise<string | null> {
+    return this.secrets.get(endpointId) ?? null;
   }
 
-  async set(profileId: string, secret: string): Promise<void> {
-    this.secrets.set(profileId, secret);
+  async set(endpointId: string, secret: string): Promise<void> {
+    this.secrets.set(endpointId, secret);
   }
 
-  async delete(profileId: string): Promise<void> {
-    this.secrets.delete(profileId);
+  async delete(endpointId: string): Promise<void> {
+    this.secrets.delete(endpointId);
   }
 }
 
@@ -108,7 +107,7 @@ function createTestProfileManager(options?: {
     config: TEST_CONFIG,
     credentialStore: new MemoryCredentialStore(
       options?.status,
-      new Map(Object.entries(options?.secrets ?? { "test-openai": "test-key" })),
+      new Map(Object.entries(options?.secrets ?? { openai: "test-key" })),
     ),
     writeConfig: async () => undefined,
   });
@@ -893,12 +892,19 @@ describe("AgentSessionProvider", () => {
       ...TEST_CONFIG,
       llm: {
         ...TEST_CONFIG.llm,
-        profiles: [
-          {
-            ...TEST_CONFIG.llm.profiles[0]!,
-            contextWindowTokens: 123_456,
+        endpoints: {
+          ...TEST_CONFIG.llm.endpoints,
+          openai: {
+            ...TEST_CONFIG.llm.endpoints.openai!,
+            models: {
+              ...TEST_CONFIG.llm.endpoints.openai!.models,
+              "gpt-5.4": {
+                ...TEST_CONFIG.llm.endpoints.openai!.models["gpt-5.4"],
+                contextWindowTokens: 123_456,
+              },
+            },
           },
-        ],
+        },
       },
     };
     const llmProfileManager = createTestProfileManager();
@@ -1519,17 +1525,20 @@ describe("AgentSessionProvider", () => {
       status: "ready" as const,
       message: "ready",
       activeProfileId: "test-openai",
-      selectedProvider: "openai",
+      selectedEndpointId: "openai",
+      selectedProtocol: "openai-chat",
       selectedModel: "gpt-5.4",
       secureStoreKind: "memory",
       secureStoreStatus: "available" as const,
       profiles: [
         {
+          kind: "native",
           id: "test-openai",
           label: "Test OpenAI",
-          provider: "openai",
+          endpointId: "openai",
+          protocol: "openai-chat",
           model: "gpt-5.4",
-          apiKeyEnv: "OPENAI_API_KEY",
+          authEnv: "OPENAI_API_KEY",
           isDefault: true,
           hasKey: true,
           keySource: "env" as const,

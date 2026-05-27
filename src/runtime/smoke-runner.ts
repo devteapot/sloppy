@@ -63,13 +63,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 function activeProfile(config: SloppyConfig, profileId?: string): LlmProfileConfig | undefined {
+  const nativeProfiles = config.llm.profiles.filter(
+    (profile): profile is LlmProfileConfig => profile.kind === "native",
+  );
   if (profileId) {
-    return config.llm.profiles.find((profile) => profile.id === profileId);
+    return nativeProfiles.find((profile) => profile.id === profileId);
   }
   if (config.llm.defaultProfileId) {
-    return config.llm.profiles.find((profile) => profile.id === config.llm.defaultProfileId);
+    return nativeProfiles.find((profile) => profile.id === config.llm.defaultProfileId);
   }
-  return config.llm.profiles[0];
+  return nativeProfiles[0];
 }
 
 function buildSmokeConfig(

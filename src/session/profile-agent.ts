@@ -226,7 +226,12 @@ export class ProfileSessionAgent implements SessionAgent {
     if (pluginFingerprint) {
       return pluginFingerprint;
     }
-    return [profile.provider, profile.id, model].join(":");
+    return [
+      profile.kind,
+      profile.endpointId ?? profile.adapterId ?? "native",
+      profile.id,
+      model,
+    ].join(":");
   }
 
   private createInner(profile: LlmProfileState): SessionAgent {

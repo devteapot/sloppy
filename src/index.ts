@@ -8,8 +8,9 @@ export {
 export { writeHomeLlmConfig } from "./config/persist";
 export type {
   LlmConfig,
+  LlmEndpointConfig,
   LlmProfileConfig,
-  LlmProvider,
+  LlmProtocol,
   RawSloppyConfig,
   SloppyConfig,
 } from "./config/schema";

@@ -1,10 +1,10 @@
 import { resolve } from "node:path";
 import YAML from "yaml";
-import { getProviderDefaults } from "../llm/provider-defaults";
+import { getDefaultEndpointModel, mergeLlmEndpoints } from "../llm/catalog";
 import { normalizeThinkingConfig } from "../llm/thinking";
 import {
+  type AnyLlmProfileConfig,
   type LlmConfig,
-  type LlmProfileConfig,
   type RawSloppyConfig,
   type SloppyConfig,
   sloppyConfigSchema,
@@ -82,17 +82,31 @@ export async function readConfigFile(filePath: string): Promise<JsonObject> {
 export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   const overrides: JsonObject = {};
 
-  if (Bun.env.SLOPPY_LLM_PROVIDER) {
+  const endpointId = Bun.env.SLOPPY_LLM_ENDPOINT?.trim();
+  const model = Bun.env.SLOPPY_MODEL?.trim();
+  const profileId = Bun.env.SLOPPY_LLM_PROFILE?.trim();
+
+  if (profileId) {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
-      provider: Bun.env.SLOPPY_LLM_PROVIDER,
+      defaultProfileId: profileId,
     };
   }
 
-  if (Bun.env.SLOPPY_MODEL) {
+  if (endpointId || model) {
+    const runtimeProfileId = profileId ?? "runtime";
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
-      model: Bun.env.SLOPPY_MODEL,
+      defaultProfileId: runtimeProfileId,
+      profiles: [
+        {
+          kind: "native",
+          id: runtimeProfileId,
+          label: "Runtime Override",
+          endpointId: endpointId ?? "anthropic",
+          model: model ?? getDefaultEndpointModel(endpointId ?? "anthropic") ?? "default",
+        },
+      ],
     };
   }
 
@@ -100,27 +114,6 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
     overrides.llm = {
       ...(overrides.llm as JsonObject | undefined),
       reasoningEffort: Bun.env.SLOPPY_LLM_REASONING_EFFORT,
-    };
-  }
-
-  if (Bun.env.SLOPPY_LLM_ADAPTER_ID) {
-    overrides.llm = {
-      ...(overrides.llm as JsonObject | undefined),
-      adapterId: Bun.env.SLOPPY_LLM_ADAPTER_ID,
-    };
-  }
-
-  if (Bun.env.SLOPPY_LLM_BASE_URL) {
-    overrides.llm = {
-      ...(overrides.llm as JsonObject | undefined),
-      baseUrl: Bun.env.SLOPPY_LLM_BASE_URL,
-    };
-  }
-
-  if (Bun.env.SLOPPY_LLM_API_KEY_ENV) {
-    overrides.llm = {
-      ...(overrides.llm as JsonObject | undefined),
-      apiKeyEnv: Bun.env.SLOPPY_LLM_API_KEY_ENV,
     };
   }
 
@@ -134,37 +127,25 @@ export function applyEnvironmentOverrides(config: JsonObject): JsonObject {
   return deepMerge(config, overrides);
 }
 
-function normalizeProfile(profile: RawSloppyConfig["llm"]["profiles"][number]): LlmProfileConfig {
-  const defaults = getProviderDefaults(profile.provider);
-
-  return {
-    id: profile.id,
-    label: profile.label,
-    provider: profile.provider,
-    model: profile.model ?? defaults.model,
-    reasoningEffort: profile.reasoningEffort,
-    thinking: profile.thinking,
-    adapterId: profile.adapterId ?? defaults.adapterId,
-    apiKeyEnv: profile.apiKeyEnv ?? defaults.apiKeyEnv,
-    baseUrl: profile.baseUrl ?? defaults.baseUrl,
-    contextWindowTokens: profile.contextWindowTokens,
-  };
-}
-
 function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
-  const defaults = getProviderDefaults(config.provider);
+  const endpoints = mergeLlmEndpoints(config.endpoints);
+  const profiles = config.profiles.map((profile): AnyLlmProfileConfig => {
+    if (profile.kind === "session-agent") {
+      return profile;
+    }
+
+    return {
+      ...profile,
+      model: profile.model ?? getDefaultEndpointModel(profile.endpointId) ?? profile.model,
+    };
+  });
 
   return {
-    provider: config.provider,
-    model: config.model ?? defaults.model,
     reasoningEffort: config.reasoningEffort,
     thinking: normalizeThinkingConfig(config.thinking),
-    adapterId: config.adapterId ?? defaults.adapterId,
-    apiKeyEnv: config.apiKeyEnv ?? defaults.apiKeyEnv,
-    baseUrl: config.baseUrl ?? defaults.baseUrl,
-    contextWindowTokens: config.contextWindowTokens,
+    endpoints,
     defaultProfileId: config.defaultProfileId,
-    profiles: config.profiles.map((profile) => normalizeProfile(profile)),
+    profiles,
     maxTokens: config.maxTokens,
   };
 }

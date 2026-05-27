@@ -6,28 +6,12 @@ import type { LlmConfig } from "./schema";
 
 function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
   return {
-    provider: config.provider,
-    model: config.model,
     reasoningEffort: config.reasoningEffort,
     thinking: config.thinking,
-    adapterId: config.adapterId,
-    apiKeyEnv: config.apiKeyEnv,
-    baseUrl: config.baseUrl,
-    contextWindowTokens: config.contextWindowTokens,
+    endpoints: config.endpoints,
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
-    profiles: config.profiles.map((profile) => ({
-      id: profile.id,
-      label: profile.label,
-      provider: profile.provider,
-      model: profile.model,
-      reasoningEffort: profile.reasoningEffort,
-      thinking: profile.thinking,
-      adapterId: profile.adapterId,
-      apiKeyEnv: profile.apiKeyEnv,
-      baseUrl: profile.baseUrl,
-      contextWindowTokens: profile.contextWindowTokens,
-    })),
+    profiles: config.profiles.map((profile) => ({ ...profile })),
   };
 }
 

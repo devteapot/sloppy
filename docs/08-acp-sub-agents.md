@@ -93,19 +93,17 @@ Main-session profile examples:
 
 ```yaml
 llm:
-  provider: openai-codex
-  model: gpt-5.5
-  reasoningEffort: low
   defaultProfileId: codex-native
   profiles:
-    - id: codex-native
+    - kind: native
+      id: codex-native
       label: Codex GPT-5.5 Low
-      provider: openai-codex
+      endpointId: openai-codex
       model: gpt-5.5
       reasoningEffort: low
-    - id: claude-acp
+    - kind: session-agent
+      id: claude-acp
       label: Claude ACP
-      provider: acp
       model: sonnet
       adapterId: claude
 ```

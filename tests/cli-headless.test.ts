@@ -13,15 +13,14 @@ import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig({
   llm: {
-    apiKeyEnv: "OPENAI_API_KEY",
     defaultProfileId: "test-openai",
     profiles: [
       {
+        kind: "native",
         id: "test-openai",
         label: "Test OpenAI",
-        provider: "openai",
+        endpointId: "openai",
         model: "gpt-5.4",
-        apiKeyEnv: "OPENAI_API_KEY",
       },
     ],
   },
@@ -42,7 +41,7 @@ class MemoryCredentialStore implements CredentialStore {
 
   constructor(
     private status: CredentialStoreStatus = "available",
-    private secrets = new Map<string, string>([["test-openai", "test-key"]]),
+    private secrets = new Map<string, string>([["openai", "test-key"]]),
   ) {}
 
   async getStatus(): Promise<CredentialStoreStatus> {

@@ -1,4 +1,5 @@
 import { type LlmConfig, type SloppyConfig, sloppyConfigSchema } from "../../src/config/schema";
+import { mergeLlmEndpoints } from "../../src/llm/catalog";
 
 export type TestPluginOverrides = {
   [Key in keyof SloppyConfig["plugins"]]?: Partial<SloppyConfig["plugins"][Key]>;
@@ -17,13 +18,21 @@ export function createTestConfig(
     maxToolResultSize?: number;
   } = {},
 ): SloppyConfig {
+  const llmOverrides = overrides.llm ?? {};
   return {
     llm: {
-      provider: "openai",
-      model: "gpt-5.4",
-      profiles: [],
+      defaultProfileId: "openai-main",
+      profiles: [
+        {
+          kind: "native",
+          id: "openai-main",
+          endpointId: "openai",
+          model: "gpt-5.4",
+        },
+      ],
       maxTokens: 4096,
-      ...overrides.llm,
+      ...llmOverrides,
+      endpoints: mergeLlmEndpoints(llmOverrides.endpoints ?? {}),
     },
     agent: {
       maxIterations: 12,

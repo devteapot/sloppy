@@ -35,7 +35,9 @@ export type SessionMeta = {
 export type LlmProfile = {
   id: string;
   label?: string;
-  provider: string;
+  kind: string;
+  endpointId?: string;
+  protocol?: string;
   model: string;
   reasoningEffort?: string;
   thinkingEnabled?: boolean;
@@ -51,7 +53,7 @@ export type LlmProfile = {
   ready: boolean;
   managed: boolean;
   baseUrl?: string;
-  apiKeyEnv?: string;
+  authEnv?: string;
   contextWindowTokens?: number;
   canDeleteProfile: boolean;
   canDeleteApiKey: boolean;
@@ -84,7 +86,8 @@ export type LlmState = {
   status: "ready" | "needs_credentials" | "unknown";
   message: string;
   activeProfileId?: string;
-  selectedProvider?: string;
+  selectedEndpointId?: string;
+  selectedProtocol?: string;
   selectedModel?: string;
   selectedContextWindowTokens?: number;
   secureStoreKind?: string;
@@ -361,13 +364,13 @@ export type SessionViewSnapshot = {
 export type SaveProfileInput = {
   profileId?: string;
   label?: string;
-  provider: string;
+  kind?: "native" | "session-agent";
+  endpointId?: string;
   model?: string;
   reasoningEffort?: string;
   thinkingEnabled?: boolean;
   thinkingDisplay?: "visible" | "hidden";
   adapterId?: string;
-  baseUrl?: string;
   apiKey?: string;
   makeDefault?: boolean;
 };

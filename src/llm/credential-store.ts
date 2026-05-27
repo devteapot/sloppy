@@ -197,11 +197,11 @@ class KeychainCredentialStore extends BaseCredentialStore {
     // because that places the API key in argv, where any local process can
     // observe it via `ps`. If the optional install failed (e.g. native
     // toolchain missing), the user can reinstall with keytar present or set
-    // the API key via the env var that the profile points at.
+    // the API key via the endpoint's configured environment variable.
     const keytar = await loadKeytar();
     if (!keytar) {
       throw new Error(
-        "Keychain storage requires the optional `keytar` package. Install it with `bun add keytar`, or set the API key via the profile's apiKeyEnv environment variable.",
+        "Keychain storage requires the optional `keytar` package. Install it with `bun add keytar`, or set the API key via the endpoint's configured environment variable.",
       );
     }
     await keytar.setPassword(KEYCHAIN_SERVICE_NAME, profileId, secret);

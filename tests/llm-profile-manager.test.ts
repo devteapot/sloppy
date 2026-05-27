@@ -5,31 +5,28 @@ import { join } from "node:path";
 
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
-import { buildRuntimeLlmConfig, createRuntimeLlmProfileManager } from "../src/llm/runtime-config";
+import { createRuntimeLlmProfileManager } from "../src/llm/runtime-config";
 import { createTestConfig } from "./helpers/config";
 
+const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 const originalOpenAIKey = process.env.OPENAI_API_KEY;
 const originalGeminiKey = process.env.GEMINI_API_KEY;
-const originalLiteLlmKey = process.env.LITELLM_API_KEY;
-const originalProvider = process.env.SLOPPY_LLM_PROVIDER;
+const originalEndpoint = process.env.SLOPPY_LLM_ENDPOINT;
+const originalProfile = process.env.SLOPPY_LLM_PROFILE;
 const originalModel = process.env.SLOPPY_MODEL;
-const originalAdapterId = process.env.SLOPPY_LLM_ADAPTER_ID;
-const originalBaseUrl = process.env.SLOPPY_LLM_BASE_URL;
-const originalApiKeyEnv = process.env.SLOPPY_LLM_API_KEY_ENV;
 const originalReasoningEffort = process.env.SLOPPY_LLM_REASONING_EFFORT;
 const originalCodexAuthPath = process.env.SLOPPY_CODEX_AUTH_PATH;
 
 const TEST_CONFIG = createTestConfig({
   llm: {
-    apiKeyEnv: "OPENAI_API_KEY",
     defaultProfileId: "openai-main",
     profiles: [
       {
+        kind: "native",
         id: "openai-main",
         label: "OpenAI Main",
-        provider: "openai",
+        endpointId: "openai",
         model: "gpt-5.4",
-        apiKeyEnv: "OPENAI_API_KEY",
       },
     ],
   },
@@ -47,79 +44,36 @@ class MemoryCredentialStore implements CredentialStore {
     return this.status;
   }
 
-  async get(profileId: string): Promise<string | null> {
-    return this.secrets.get(profileId) ?? null;
+  async get(endpointId: string): Promise<string | null> {
+    return this.secrets.get(endpointId) ?? null;
   }
 
-  async set(profileId: string, secret: string): Promise<void> {
-    this.secrets.set(profileId, secret);
+  async set(endpointId: string, secret: string): Promise<void> {
+    this.secrets.set(endpointId, secret);
   }
 
-  async delete(profileId: string): Promise<void> {
-    this.secrets.delete(profileId);
+  async delete(endpointId: string): Promise<void> {
+    this.secrets.delete(endpointId);
   }
 }
 
 afterEach(() => {
-  if (originalOpenAIKey == null) {
-    delete process.env.OPENAI_API_KEY;
-  } else {
-    process.env.OPENAI_API_KEY = originalOpenAIKey;
-  }
+  const restore = (name: string, value: string | undefined) => {
+    if (value == null) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  };
 
-  if (originalGeminiKey == null) {
-    delete process.env.GEMINI_API_KEY;
-  } else {
-    process.env.GEMINI_API_KEY = originalGeminiKey;
-  }
-
-  if (originalLiteLlmKey == null) {
-    delete process.env.LITELLM_API_KEY;
-  } else {
-    process.env.LITELLM_API_KEY = originalLiteLlmKey;
-  }
-
-  if (originalProvider == null) {
-    delete process.env.SLOPPY_LLM_PROVIDER;
-  } else {
-    process.env.SLOPPY_LLM_PROVIDER = originalProvider;
-  }
-
-  if (originalModel == null) {
-    delete process.env.SLOPPY_MODEL;
-  } else {
-    process.env.SLOPPY_MODEL = originalModel;
-  }
-
-  if (originalBaseUrl == null) {
-    delete process.env.SLOPPY_LLM_BASE_URL;
-  } else {
-    process.env.SLOPPY_LLM_BASE_URL = originalBaseUrl;
-  }
-
-  if (originalAdapterId == null) {
-    delete process.env.SLOPPY_LLM_ADAPTER_ID;
-  } else {
-    process.env.SLOPPY_LLM_ADAPTER_ID = originalAdapterId;
-  }
-
-  if (originalApiKeyEnv == null) {
-    delete process.env.SLOPPY_LLM_API_KEY_ENV;
-  } else {
-    process.env.SLOPPY_LLM_API_KEY_ENV = originalApiKeyEnv;
-  }
-
-  if (originalReasoningEffort == null) {
-    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
-  } else {
-    process.env.SLOPPY_LLM_REASONING_EFFORT = originalReasoningEffort;
-  }
-
-  if (originalCodexAuthPath == null) {
-    delete process.env.SLOPPY_CODEX_AUTH_PATH;
-  } else {
-    process.env.SLOPPY_CODEX_AUTH_PATH = originalCodexAuthPath;
-  }
+  restore("ANTHROPIC_API_KEY", originalAnthropicKey);
+  restore("OPENAI_API_KEY", originalOpenAIKey);
+  restore("GEMINI_API_KEY", originalGeminiKey);
+  restore("SLOPPY_LLM_ENDPOINT", originalEndpoint);
+  restore("SLOPPY_LLM_PROFILE", originalProfile);
+  restore("SLOPPY_MODEL", originalModel);
+  restore("SLOPPY_LLM_REASONING_EFFORT", originalReasoningEffort);
+  restore("SLOPPY_CODEX_AUTH_PATH", originalCodexAuthPath);
 });
 
 describe("LlmProfileManager", () => {
@@ -136,24 +90,37 @@ describe("LlmProfileManager", () => {
 
     expect(state.status).toBe("needs_credentials");
     expect(state.activeProfileId).toBe("openai-main");
+    expect(state.selectedEndpointId).toBe("openai");
     expect(state.profiles[0]?.ready).toBe(false);
     expect(state.message).toContain("OPENAI_API_KEY");
   });
 
-  test("exposes context window metadata from the active profile", async () => {
+  test("exposes context window metadata from endpoint models", async () => {
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
+          endpoints: {
+            openai: {
+              protocol: "openai-chat",
+              auth: { type: "env", env: "OPENAI_API_KEY" },
+              models: {
+                "gpt-5.4": {
+                  contextWindowTokens: 123_456,
+                },
+              },
+            },
+          },
+          defaultProfileId: "openai-main",
           profiles: [
             {
-              ...TEST_CONFIG.llm.profiles[0]!,
-              contextWindowTokens: 123_456,
+              kind: "native",
+              id: "openai-main",
+              endpointId: "openai",
+              model: "gpt-5.4",
             },
           ],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
     });
@@ -165,20 +132,15 @@ describe("LlmProfileManager", () => {
   });
 
   test("uses a provider-agnostic onboarding message before any managed profile exists", async () => {
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
 
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
-          provider: "anthropic",
-          model: "claude-sonnet-4-20250514",
-          apiKeyEnv: "ANTHROPIC_API_KEY",
           defaultProfileId: undefined,
           profiles: [],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
     });
@@ -195,10 +157,7 @@ describe("LlmProfileManager", () => {
 
     const manager = new LlmProfileManager({
       config: TEST_CONFIG,
-      credentialStore: new MemoryCredentialStore(
-        "available",
-        new Map([["openai-main", "stored-key"]]),
-      ),
+      credentialStore: new MemoryCredentialStore("available", new Map([["openai", "stored-key"]])),
       writeConfig: async () => undefined,
     });
 
@@ -211,63 +170,20 @@ describe("LlmProfileManager", () => {
     );
 
     const envProfile = state.profiles.find((profile) => profile.origin === "environment");
-    expect(envProfile?.provider).toBe("openai");
+    expect(envProfile?.endpointId).toBe("openai");
     expect(envProfile?.keySource).toBe("env");
     expect(envProfile?.isDefault).toBe(false);
   });
 
-  test("can pin a one-shot run to env routing without exposing managed profiles", async () => {
-    process.env.OPENAI_API_KEY = "stub-key";
-    process.env.SLOPPY_LLM_PROVIDER = "openai";
-    process.env.SLOPPY_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8";
-    process.env.SLOPPY_LLM_REASONING_EFFORT = "low";
-    process.env.SLOPPY_LLM_BASE_URL = "http://192.168.1.96:8001/v1";
-
-    const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
-        llm: buildRuntimeLlmConfig(
-          {
-            ...TEST_CONFIG.llm,
-            provider: "openai",
-            model: "Qwen/Qwen3.6-35B-A3B-FP8",
-            baseUrl: "http://192.168.1.96:8001/v1",
-          },
-          process.env,
-        ),
-      },
-      credentialStore: new MemoryCredentialStore(
-        "available",
-        new Map([["openai-main", "sk-stored-cloud-key"]]),
-      ),
-      writeConfig: async () => undefined,
-    });
-
-    const state = await manager.getState();
-    const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
-
-    expect(state.activeProfileId).toStartWith("env-openai-openai-api-key-");
-    expect(state.selectedModel).toBe("Qwen/Qwen3.6-35B-A3B-FP8");
-    expect(activeProfile?.reasoningEffort).toBe("low");
-    expect(activeProfile?.baseUrl).toBe("http://192.168.1.96:8001/v1");
-    expect(activeProfile?.keySource).toBe("env");
-    expect(activeProfile?.origin).toBe("environment");
-    expect(state.profiles.every((profile) => profile.origin !== "managed")).toBe(true);
-  });
-
-  test("runtime profile manager honors explicit env routing by default", async () => {
-    process.env.LITELLM_API_KEY = "router-key";
-    process.env.SLOPPY_LLM_PROVIDER = "openai";
+  test("runtime profile manager honors explicit endpoint routing", async () => {
+    process.env.OPENAI_API_KEY = "router-key";
+    process.env.SLOPPY_LLM_ENDPOINT = "openai";
     process.env.SLOPPY_MODEL = "local/test-model";
-    process.env.SLOPPY_LLM_BASE_URL = "http://sloppy-mba.local:8001/v1";
-    process.env.SLOPPY_LLM_API_KEY_ENV = "LITELLM_API_KEY";
+    process.env.SLOPPY_LLM_REASONING_EFFORT = "low";
 
     const manager = createRuntimeLlmProfileManager({
       config: TEST_CONFIG,
-      credentialStore: new MemoryCredentialStore(
-        "available",
-        new Map([["openai-main", "sk-stored-cloud-key"]]),
-      ),
+      credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
       env: process.env,
     });
@@ -275,11 +191,11 @@ describe("LlmProfileManager", () => {
     const state = await manager.getState();
     const activeProfile = state.profiles.find((profile) => profile.id === state.activeProfileId);
 
-    expect(state.activeProfileId).toStartWith("env-openai-litellm-api-key-");
+    expect(state.activeProfileId).toBe("runtime");
+    expect(state.selectedEndpointId).toBe("openai");
     expect(state.selectedModel).toBe("local/test-model");
-    expect(activeProfile?.baseUrl).toBe("http://sloppy-mba.local:8001/v1");
+    expect(activeProfile?.reasoningEffort).toBe("low");
     expect(activeProfile?.keySource).toBe("env");
-    expect(state.profiles.every((profile) => profile.origin !== "managed")).toBe(true);
   });
 
   test("allows selecting an environment-backed profile as the active default", async () => {
@@ -287,14 +203,12 @@ describe("LlmProfileManager", () => {
 
     let persistedDefaultProfileId: string | undefined;
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
           defaultProfileId: undefined,
           profiles: [],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async (config) => {
         persistedDefaultProfileId = config.defaultProfileId;
@@ -303,7 +217,7 @@ describe("LlmProfileManager", () => {
 
     const initialState = await manager.getState();
     const envProfile = initialState.profiles.find(
-      (profile) => profile.origin === "environment" && profile.provider === "gemini",
+      (profile) => profile.origin === "environment" && profile.endpointId === "gemini",
     );
 
     expect(envProfile).toBeTruthy();
@@ -316,7 +230,7 @@ describe("LlmProfileManager", () => {
     const nextState = await manager.setDefaultProfile(envProfileId);
 
     expect(nextState.activeProfileId).toBe(envProfileId);
-    expect(nextState.selectedProvider).toBe("gemini");
+    expect(nextState.selectedEndpointId).toBe("gemini");
     expect(nextState.profiles.find((profile) => profile.id === envProfileId)?.isDefault).toBe(true);
     expect(persistedDefaultProfileId).toBe(envProfileId);
   });
@@ -325,14 +239,12 @@ describe("LlmProfileManager", () => {
     process.env.OPENAI_API_KEY = "env-key";
 
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
           defaultProfileId: undefined,
           profiles: [],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
     });
@@ -343,7 +255,7 @@ describe("LlmProfileManager", () => {
     const nextState = await manager.saveProfile({
       profileId: envProfile?.id,
       label: "Managed OpenAI",
-      provider: "openai",
+      endpointId: "openai",
       model: "gpt-5.4",
       apiKey: "stored-key",
       makeDefault: true,
@@ -357,19 +269,17 @@ describe("LlmProfileManager", () => {
     ).toBe(true);
   });
 
-  test("saves profile metadata and stores API keys securely", async () => {
+  test("saves profile metadata and stores API keys securely by endpoint", async () => {
     const store = new MemoryCredentialStore("available");
     let persistedProfileId: string | undefined;
 
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
           defaultProfileId: undefined,
           profiles: [],
         },
-      },
+      }),
       credentialStore: store,
       writeConfig: async (config) => {
         persistedProfileId = config.defaultProfileId;
@@ -378,7 +288,7 @@ describe("LlmProfileManager", () => {
 
     const state = await manager.saveProfile({
       label: "Primary Gemini",
-      provider: "gemini",
+      endpointId: "gemini",
       model: "gemini-2.5-pro",
       apiKey: "secret-key",
       makeDefault: true,
@@ -386,34 +296,28 @@ describe("LlmProfileManager", () => {
 
     expect(state.status).toBe("ready");
     const managedProfile = state.profiles.find((profile) => profile.origin === "managed");
-    expect(managedProfile?.provider).toBe("gemini");
+    expect(managedProfile?.endpointId).toBe("gemini");
     expect(managedProfile?.keySource).toBe("secure_store");
     expect(persistedProfileId).toBe(managedProfile?.id);
-    expect(store.secrets.get(managedProfile?.id ?? "")).toBe("secret-key");
+    expect(store.secrets.get("gemini")).toBe("secret-key");
   });
 
-  test("treats ACP adapter profiles as ready model profiles without API keys", async () => {
+  test("treats session-agent profiles as ready model profiles without API keys", async () => {
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
-          provider: "acp",
-          model: "sonnet",
-          adapterId: "claude",
-          apiKeyEnv: undefined,
           defaultProfileId: "claude-sonnet",
           profiles: [
             {
+              kind: "session-agent",
               id: "claude-sonnet",
               label: "Claude Sonnet",
-              provider: "acp",
               model: "sonnet",
               adapterId: "claude",
             },
           ],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
     });
@@ -421,7 +325,7 @@ describe("LlmProfileManager", () => {
     const state = await manager.getState();
 
     expect(state.status).toBe("ready");
-    expect(state.selectedProvider).toBe("acp");
+    expect(state.selectedProtocol).toBe("session-agent");
     expect(state.selectedModel).toBe("sonnet");
     expect(state.profiles[0]?.adapterId).toBe("claude");
     expect(state.profiles[0]?.keySource).toBe("not_required");
@@ -446,26 +350,21 @@ describe("LlmProfileManager", () => {
       process.env.SLOPPY_CODEX_AUTH_PATH = authPath;
 
       const manager = new LlmProfileManager({
-        config: {
-          ...TEST_CONFIG,
+        config: createTestConfig({
           llm: {
-            ...TEST_CONFIG.llm,
-            provider: "openai-codex",
-            model: "gpt-5.5",
-            reasoningEffort: "low",
-            apiKeyEnv: undefined,
             defaultProfileId: "codex-native",
             profiles: [
               {
+                kind: "native",
                 id: "codex-native",
                 label: "Codex GPT-5.5",
-                provider: "openai-codex",
+                endpointId: "openai-codex",
                 model: "gpt-5.5",
                 reasoningEffort: "low",
               },
             ],
           },
-        },
+        }),
         credentialStore: new MemoryCredentialStore("available"),
         writeConfig: async () => undefined,
       });
@@ -473,73 +372,66 @@ describe("LlmProfileManager", () => {
       const state = await manager.getState();
 
       expect(state.status).toBe("ready");
-      expect(state.selectedProvider).toBe("openai-codex");
+      expect(state.selectedEndpointId).toBe("openai-codex");
       expect(state.selectedModel).toBe("gpt-5.5");
       expect(state.profiles[0]?.reasoningEffort).toBe("low");
       expect(state.profiles[0]?.keySource).toBe("external_auth");
       expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
-      expect(state.message).toContain("using Codex auth");
+      expect(state.message).toContain("external auth");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("persists adapter ids when saving external agent profiles", async () => {
+  test("persists adapter ids when saving session-agent profiles", async () => {
     let persistedAdapterId: string | undefined;
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
           defaultProfileId: undefined,
           profiles: [],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async (config) => {
-        persistedAdapterId = config.profiles[0]?.adapterId;
+        const profile = config.profiles[0];
+        persistedAdapterId = profile?.kind === "session-agent" ? profile.adapterId : undefined;
       },
     });
 
     const state = await manager.saveProfile({
+      kind: "session-agent",
       label: "Claude Sonnet",
-      provider: "acp",
       model: "sonnet",
       adapterId: "claude",
       makeDefault: true,
     });
 
     expect(state.status).toBe("ready");
-    expect(state.profiles[0]?.provider).toBe("acp");
+    expect(state.profiles[0]?.kind).toBe("session-agent");
     expect(state.profiles[0]?.adapterId).toBe("claude");
     expect(persistedAdapterId).toBe("claude");
   });
 
   test("marks invalid OpenRouter keys as not ready before a model turn starts", async () => {
     const manager = new LlmProfileManager({
-      config: {
-        ...TEST_CONFIG,
+      config: createTestConfig({
         llm: {
-          ...TEST_CONFIG.llm,
-          provider: "openrouter",
-          model: "claude-opus-4-6",
-          apiKeyEnv: "OPENROUTER_API_KEY",
           defaultProfileId: "openrouter-main",
           profiles: [
             {
+              kind: "native",
               id: "openrouter-main",
               label: "OpenRouter Main",
-              provider: "openrouter",
+              endpointId: "openrouter",
               model: "claude-opus-4-6",
-              apiKeyEnv: "OPENROUTER_API_KEY",
-              baseUrl: "https://openrouter.ai/api/v1",
             },
           ],
         },
-      },
+      }),
       credentialStore: new MemoryCredentialStore(
         "available",
-        new Map([["openrouter-main", "sk-this-is-an-openai-key"]]),
+        new Map([["openrouter", "sk-this-is-an-openai-key"]]),
       ),
       writeConfig: async () => undefined,
     });

@@ -64,9 +64,10 @@ export function createInitialState(options: {
       },
       llm: {
         status: "needs_credentials",
-        message: "Add an API key to start the agent.",
+        message: "Add an endpoint credential to start the agent.",
         activeProfileId: "default",
-        selectedProvider: options.modelProvider,
+        selectedEndpointId: options.modelProvider,
+        selectedProtocol: undefined,
         selectedModel: options.model,
         secureStoreKind: "none",
         secureStoreStatus: "unsupported",
