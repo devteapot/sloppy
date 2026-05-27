@@ -20,6 +20,7 @@ export type LlmAdapterConfig = {
   apiKey?: string;
   authHint?: string;
   baseUrl?: string;
+  headers?: Record<string, string>;
   compat?: LlmEndpointModelCompatConfig;
 };
 
@@ -66,6 +67,7 @@ export function createLlmAdapter(config: LlmAdapterConfig): LlmAdapter {
         provider: config.endpointId,
         providerKind: resolveOpenAICompatibleProviderKind(config.endpointId, config.compat),
         baseUrl: config.baseUrl,
+        headers: config.headers,
         thinking: config.thinking,
       });
     case "openai-codex":

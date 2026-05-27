@@ -494,6 +494,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
     provider: string;
     providerKind?: OpenAICompatibleProviderKind;
     baseUrl?: string;
+    headers?: Record<string, string>;
     thinking?: EffectiveThinkingConfig;
     client?: OpenAICompatibleClient;
   }) {
@@ -502,6 +503,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
       (new OpenAI({
         apiKey: options.apiKey,
         baseURL: options.baseUrl,
+        defaultHeaders: options.headers,
       }) as unknown as OpenAICompatibleClient);
     this.model = options.model;
     this.provider = options.provider;

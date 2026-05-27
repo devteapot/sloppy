@@ -10,6 +10,7 @@ import {
   loadConfigFromLayerPaths,
   loadScopedConfig,
 } from "../src/config/load";
+import { writeHomeLlmConfig } from "../src/config/persist";
 import { activeFirstPartyPlugins } from "../src/plugins/first-party/catalog";
 
 const tempPaths: string[] = [];
@@ -245,6 +246,59 @@ describe("loadConfig", () => {
     expect(config.llm.endpoints["openai-codex"]?.auth).toEqual({ type: "codex" });
   });
 
+  test("persists runtime endpoint defaults without schema-only fields", async () => {
+    const home = await createTempDir("sloppy-home-");
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    delete process.env.SLOPPY_LLM_REASONING_EFFORT;
+
+    await writeHomeLlmConfig(createDefaultConfig(originalCwd).llm);
+
+    const homeConfigPath = join(home, ".sloppy/config.yaml");
+    const persisted = await readFile(homeConfigPath, "utf8");
+    expect(persisted).not.toContain("defaultModel");
+
+    const config = await loadConfigFromLayerPaths([homeConfigPath], { cwd: originalCwd });
+    expect(config.llm.endpoints.openai?.models["gpt-5.4"]).toBeDefined();
+  });
+
+  test("loads endpoint configs persisted with runtime-only defaultModel", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  endpoints:",
+        "    openai:",
+        "      protocol: openai-chat",
+        "      defaultModel: gpt-5.4",
+        "      auth:",
+        "        type: env",
+        "        env: OPENAI_API_KEY",
+        "      models:",
+        "        gpt-5.4: {}",
+        "  defaultProfileId: openai-main",
+        "  profiles:",
+        "    - id: openai-main",
+        "      endpointId: openai",
+        "      model: gpt-5.4",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.endpoints.openai?.models["gpt-5.4"]).toBeDefined();
+  });
+
   test("applies env overrides for endpoint and model", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
@@ -269,6 +323,126 @@ describe("loadConfig", () => {
       },
     ]);
     expect(config.llm.endpoints.ollama?.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  test("applies model env overrides on the active native endpoint", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: openrouter-main",
+        "  profiles:",
+        "    - id: openrouter-main",
+        "      endpointId: openrouter",
+        "      model: openai/gpt-5.4",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    process.env.SLOPPY_MODEL = "openai/gpt-custom";
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("runtime");
+    expect(config.llm.profiles).toEqual([
+      {
+        kind: "native",
+        id: "runtime",
+        label: "Runtime Override",
+        endpointId: "openrouter",
+        model: "openai/gpt-custom",
+      },
+    ]);
+  });
+
+  test("normalizes legacy top-level LLM provider config", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: openrouter",
+        "  model: openai/gpt-5.4",
+        "  apiKeyEnv: OPENROUTER_API_KEY",
+        "  baseUrl: https://openrouter.ai/api/v1",
+        "  contextWindowTokens: 123456",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("default");
+    expect(config.llm.profiles[0]).toMatchObject({
+      kind: "native",
+      id: "default",
+      endpointId: "openrouter",
+      model: "openai/gpt-5.4",
+    });
+    expect(config.llm.endpoints.openrouter?.auth).toEqual({
+      type: "env",
+      env: "OPENROUTER_API_KEY",
+    });
+    expect(config.llm.endpoints.openrouter?.models["openai/gpt-5.4"]?.contextWindowTokens).toBe(
+      123456,
+    );
+  });
+
+  test("normalizes legacy LLM profile endpoint fields", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  provider: anthropic",
+        "  defaultProfileId: custom-openai",
+        "  profiles:",
+        "    - id: custom-openai",
+        "      label: Custom OpenAI",
+        "      provider: openai",
+        "      model: custom/gpt",
+        "      apiKeyEnv: CUSTOM_OPENAI_KEY",
+        "      baseUrl: https://llm.example.test/v1",
+        "      contextWindowTokens: 98765",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.defaultProfileId).toBe("custom-openai");
+    expect(config.llm.profiles[0]).toMatchObject({
+      kind: "native",
+      id: "custom-openai",
+      label: "Custom OpenAI",
+      endpointId: "custom-openai",
+      model: "custom/gpt",
+    });
+    expect(config.llm.endpoints["custom-openai"]).toMatchObject({
+      protocol: "openai-chat",
+      baseUrl: "https://llm.example.test/v1",
+      auth: { type: "env", env: "CUSTOM_OPENAI_KEY" },
+    });
+    expect(config.llm.endpoints["custom-openai"]?.models["custom/gpt"]?.contextWindowTokens).toBe(
+      98765,
+    );
   });
 
   test("loads custom endpoint auth env names", async () => {

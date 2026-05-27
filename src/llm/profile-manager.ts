@@ -389,6 +389,7 @@ export class LlmProfileManager {
       apiKey: credential.apiKey,
       authHint: buildEndpointAuthHint(targetProfile.endpointId, endpoint),
       baseUrl: endpoint.baseUrl,
+      headers: endpoint.headers,
       compat: metadata?.compat,
     });
     this.adapterCache.set(cacheKey, { fingerprint, adapter });

@@ -364,6 +364,45 @@ describe("OpenAICompatibleAdapter", () => {
     });
   });
 
+  test("passes configured endpoint headers to OpenAI-compatible requests", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>): Promise<Response> => {
+      const input = args[0];
+      const init = args[1];
+      capturedHeaders = new Headers(input instanceof Request ? input.headers : undefined);
+      new Headers(init?.headers).forEach((value, key) => {
+        capturedHeaders?.set(key, value);
+      });
+      return new Response(JSON.stringify(createCompletion()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const adapter = new OpenAICompatibleAdapter({
+        apiKey: "test-key",
+        model: "gpt-5.4",
+        provider: "openai",
+        baseUrl: "https://llm.example.test/v1",
+        headers: { "x-sloppy-route": "blue" },
+      });
+
+      await adapter.chat({
+        system: "system prompt",
+        messages: [{ role: "user", content: [{ type: "text", text: "Read the README." }] }],
+        tools: [READ_TOOL],
+        maxTokens: 256,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(capturedHeaders?.get("x-sloppy-route")).toBe("blue");
+    expect(capturedHeaders?.get("authorization")).toBe("Bearer test-key");
+  });
+
   test("leaves text token count unavailable for OpenAI-compatible providers without counters", async () => {
     const client = {
       chat: {
