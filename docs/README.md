@@ -15,6 +15,7 @@ This directory is split by whether a document is current operating guidance, fut
 - `13-meta-runtime.md` — optional topology/evaluation substrate and skill-led self-evolution boundary.
 - `16-tui-plan.md` — TypeScript/pi-tui TUI architecture and UX plan.
 - `17-operator-runbook.md` — production-style runtime checks, audit, recovery, and operational procedures.
+- `18-voice-plugin.md` — runtime-only speech-to-text/text-to-speech voice plugin (service layer, provider, autospeak contract).
 - `ui-design-system.md` — UI design system for first-party surfaces.
 
 ## Future Designs

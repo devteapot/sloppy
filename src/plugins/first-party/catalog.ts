@@ -5,6 +5,7 @@ import type { SloppyConfig } from "../../config/schema";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
 import { RuntimeServiceRegistry } from "../../runtime/services";
+import { VoiceProfileManager } from "../../voice/profile-manager";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
@@ -26,8 +27,23 @@ import { SkillsProvider } from "./skills/provider";
 import { SpecProvider } from "./spec/provider";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
+import { VoiceProvider } from "./voice/provider";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
+
+// One VoiceProfileManager per config so the provider (transcribe/synthesize +
+// /stt //tts state) and the session plugin (autospeak) share runtime profile
+// selection. Keyed by the config object the collectors pass through.
+const voiceManagers = new WeakMap<SloppyConfig, VoiceProfileManager>();
+
+function voiceManagerFor(config: SloppyConfig): VoiceProfileManager {
+  let manager = voiceManagers.get(config);
+  if (!manager) {
+    manager = new VoiceProfileManager(config.plugins.voice);
+    voiceManagers.set(config, manager);
+  }
+  return manager;
+}
 
 function registeredProvider(
   input: Omit<RegisteredProvider, "kind"> & { kind?: RegisteredProvider["kind"] },
@@ -451,6 +467,28 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
               "MCP compatibility is exposed through the mcp provider as SLOP state.",
               "Use /servers to inspect configured MCP servers, then call MCP tools through the relevant server or tool node.",
               "Prefer MCP for external ecosystem compatibility; keep runtime-native behavior SLOP-first.",
+            ].join("\n"),
+        }),
+      ];
+    },
+  },
+  {
+    ...firstPartyPluginMetadata("voice"),
+    createProviders: (config) => {
+      const provider = new VoiceProvider(voiceManagerFor(config));
+      return [
+        registeredProvider({
+          id: "voice",
+          name: "Voice",
+          transport: new InProcessTransport(provider.server),
+          transportLabel: "in-process",
+          stop: () => provider.stop(),
+          approvals: provider.approvals,
+          systemPromptFragment: () =>
+            [
+              "Voice services are exposed through the voice provider as SLOP state.",
+              "Observe /voice/tts before speaking; invoke /tts.synthesize to voice a concise reply only when speech output is appropriate.",
+              "/stt.transcribe converts caller audio to text. Sending audio or text to a non-local endpoint may require approval.",
             ].join("\n"),
         }),
       ];

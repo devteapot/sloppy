@@ -129,6 +129,13 @@ export const FIRST_PARTY_PLUGIN_MANIFEST = [
     description: "MCP compatibility provider.",
     providerIds: ["mcp"],
   },
+  {
+    id: "voice",
+    version: "1.0.0",
+    defaultEnabled: false,
+    description: "Speech-to-text and text-to-speech provider.",
+    providerIds: ["voice"],
+  },
 ] as const satisfies readonly FirstPartyPluginMetadata[];
 
 export const FIRST_PARTY_PLUGIN_BY_ID = new Map(
