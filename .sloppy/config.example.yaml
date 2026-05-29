@@ -80,6 +80,54 @@ plugins:
         protocolVersion: "1.0"
   workspaces:
     enabled: true
+  # Voice: speech-to-text + text-to-speech. Each modality is independent — you
+  # can configure STT only, TTS only, or both. Cloud endpoints authenticate via
+  # an env var (or a stored credential); local self-hosted servers need only a
+  # baseUrl plus `auth: { type: none }`, exactly like a local LLM endpoint.
+  voice:
+    enabled: true
+    stt:
+      endpoints:
+        # Local, OpenAI-compatible (faster-whisper-server / speaches).
+        faster-whisper:
+          protocol: openai-transcriptions
+          baseUrl: http://localhost:8000/v1
+          auth:
+            type: none
+          models:
+            Systran/faster-whisper-base: {}
+        # Cloud (uncomment and set OPENAI_API_KEY to use):
+        # openai-stt:
+        #   protocol: openai-transcriptions
+        #   auth: { type: env, env: OPENAI_API_KEY }
+      profiles:
+        - id: stt-local
+          label: Local Whisper
+          endpointId: faster-whisper
+          model: Systran/faster-whisper-base
+      defaultProfileId: stt-local
+    tts:
+      endpoints:
+        # Local, OpenAI-compatible (kokoro-fastapi / openedai-speech).
+        kokoro:
+          protocol: openai-speech
+          baseUrl: http://localhost:8880/v1
+          auth:
+            type: none
+          model: kokoro
+          voices:
+            af_bella: { format: wav }
+        # Cloud (uncomment and set ELEVENLABS_API_KEY to use):
+        # elevenlabs:
+        #   protocol: elevenlabs
+        #   auth: { type: env, env: ELEVENLABS_API_KEY }
+      profiles:
+        - id: tts-local
+          label: Kokoro (local)
+          endpointId: kokoro
+          voice: af_bella
+          autospeak: true # speak completed assistant turns (client plays the audio)
+      defaultProfileId: tts-local
 
 workspaces:
   activeWorkspaceId: sloppy

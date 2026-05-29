@@ -426,6 +426,113 @@ const a2aPluginConfigSchema = z
     agents: {},
   });
 
+// Voice plugin (STT + TTS). Endpoints mirror the LLM endpoint shape; local
+// self-hosted servers are configured exactly like the `ollama` LLM endpoint —
+// a `baseUrl` plus `auth: { type: "none" }`. `endpointAuthSchema` is the neutral
+// auth union shared by both modalities (no `codex` variant, which is LLM-only).
+export const endpointAuthSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("none") }).strict(),
+  z.object({ type: z.literal("env"), env: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal("secure_store") }).strict(),
+]);
+
+export const sttProtocolSchema = z.enum(["openai-transcriptions", "deepgram", "elevenlabs"]);
+export const ttsProtocolSchema = z.enum(["openai-speech", "elevenlabs", "piper"]);
+
+const voiceAudioFormatSchema = z.enum(["mp3", "wav", "opus", "pcm"]);
+
+const voiceSttModelSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    language: z.string().trim().min(1).optional(),
+    streaming: z.boolean().optional(),
+  })
+  .strict();
+
+const voiceTtsVoiceSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    format: voiceAudioFormatSchema.optional(),
+    streaming: z.boolean().optional(),
+  })
+  .strict();
+
+const voiceSttEndpointSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    protocol: sttProtocolSchema,
+    baseUrl: z.string().trim().min(1).optional(),
+    auth: endpointAuthSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    models: z.record(z.string().min(1), voiceSttModelSchema).default({}),
+  })
+  .strict();
+
+const voiceTtsEndpointSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    protocol: ttsProtocolSchema,
+    baseUrl: z.string().trim().min(1).optional(),
+    auth: endpointAuthSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    // Synthesis model (e.g. "gpt-4o-mini-tts", "eleven_multilingual_v2"). A
+    // profile may override it; Piper ignores it (voice is the model).
+    model: z.string().trim().min(1).optional(),
+    voices: z.record(z.string().min(1), voiceTtsVoiceSchema).default({}),
+  })
+  .strict();
+
+const voiceSttProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    endpointId: z.string().min(1),
+    model: z.string().min(1),
+    language: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const voiceTtsProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    endpointId: z.string().min(1),
+    voice: z.string().min(1),
+    model: z.string().min(1).optional(),
+    format: voiceAudioFormatSchema.optional(),
+    speed: z.number().min(0.25).max(4).optional(),
+    autospeak: z.boolean().default(false),
+  })
+  .strict();
+
+const voiceSttConfigSchema = z
+  .object({
+    endpoints: z.record(z.string().min(1), voiceSttEndpointSchema).default({}),
+    profiles: z.array(voiceSttProfileSchema).default([]),
+    defaultProfileId: z.string().min(1).optional(),
+  })
+  .default({ endpoints: {}, profiles: [] });
+
+const voiceTtsConfigSchema = z
+  .object({
+    endpoints: z.record(z.string().min(1), voiceTtsEndpointSchema).default({}),
+    profiles: z.array(voiceTtsProfileSchema).default([]),
+    defaultProfileId: z.string().min(1).optional(),
+  })
+  .default({ endpoints: {}, profiles: [] });
+
+const voicePluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    stt: voiceSttConfigSchema,
+    tts: voiceTtsConfigSchema,
+  })
+  .default({
+    enabled: false,
+    stt: { endpoints: {}, profiles: [] },
+    tts: { endpoints: {}, profiles: [] },
+  });
+
 const pluginsConfigSchema = z.preprocess(
   (value) => value ?? {},
   z.object({
@@ -446,6 +553,7 @@ const pluginsConfigSchema = z.preprocess(
     mcp: mcpPluginConfigSchema,
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,
+    voice: voicePluginConfigSchema,
   }),
 );
 
@@ -605,6 +713,16 @@ export type LlmEndpointConfig = {
 export type LlmEndpointInputConfig = Omit<LlmEndpointConfig, "auth"> & {
   auth?: LlmEndpointAuthConfig;
 };
+
+export type EndpointAuthConfig = z.infer<typeof endpointAuthSchema>;
+export type SttProtocol = z.infer<typeof sttProtocolSchema>;
+export type TtsProtocol = z.infer<typeof ttsProtocolSchema>;
+export type VoiceAudioFormat = z.infer<typeof voiceAudioFormatSchema>;
+export type VoiceSttEndpointConfig = z.infer<typeof voiceSttEndpointSchema>;
+export type VoiceTtsEndpointConfig = z.infer<typeof voiceTtsEndpointSchema>;
+export type VoiceSttProfileConfig = z.infer<typeof voiceSttProfileSchema>;
+export type VoiceTtsProfileConfig = z.infer<typeof voiceTtsProfileSchema>;
+export type VoicePluginConfig = z.infer<typeof voicePluginConfigSchema>;
 
 export interface LlmConfig {
   reasoningEffort?: LlmReasoningEffort;
