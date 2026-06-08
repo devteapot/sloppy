@@ -533,6 +533,60 @@ const voicePluginConfigSchema = z
     tts: { endpoints: {}, profiles: [] },
   });
 
+// Conversation loop on top of the voice provider: capture an utterance, transcribe
+// it via the voice provider's /stt, run a turn, synthesize the reply via /tts, and
+// play it back. Audio I/O is swappable: `host` uses the local mic/speaker (dev /
+// pre-hardware), `robot` routes capture/playback through the reachy provider's
+// affordances. STT/TTS profiles live in the `voice` plugin — not duplicated here.
+const voiceConversationAudioConfigSchema = z
+  .object({
+    backend: z.enum(["host", "robot"]).default("host"),
+    // Optional command overrides. Capture writes a WAV stream to stdout; playback
+    // receives the audio file path via a `{file}` token. Defaults target macOS
+    // (sox capture, afplay playback) and are built from silenceStopSeconds.
+    captureCommand: z.array(z.string().min(1)).min(1).optional(),
+    playbackCommand: z.array(z.string().min(1)).min(1).optional(),
+    silenceStopSeconds: z.number().min(0.2).max(10).default(1.2),
+    // sox VAD start/stop amplitude threshold as a percentage of full scale.
+    // Low by default — laptop/Studio mics are quiet; raise to reject background noise.
+    silenceThresholdPercent: z.number().min(0.1).max(50).default(1),
+    maxUtteranceSeconds: z.number().min(1).max(300).default(30),
+    // Provider id supplying mic/speaker affordances when backend === "robot".
+    providerId: z.string().min(1).default("reachy"),
+  })
+  .default({
+    backend: "host",
+    silenceStopSeconds: 1.2,
+    silenceThresholdPercent: 1,
+    maxUtteranceSeconds: 30,
+    providerId: "reachy",
+  });
+
+const voiceConversationEmbodimentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    providerId: z.string().min(1).default("reachy"),
+  })
+  .default({ enabled: true, providerId: "reachy" });
+
+const voiceConversationPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    audio: voiceConversationAudioConfigSchema,
+    embodiment: voiceConversationEmbodimentConfigSchema,
+  })
+  .default({
+    enabled: false,
+    audio: {
+      backend: "host",
+      silenceStopSeconds: 1.2,
+      silenceThresholdPercent: 1,
+      maxUtteranceSeconds: 30,
+      providerId: "reachy",
+    },
+    embodiment: { enabled: true, providerId: "reachy" },
+  });
+
 const pluginsConfigSchema = z.preprocess(
   (value) => value ?? {},
   z.object({
@@ -554,6 +608,7 @@ const pluginsConfigSchema = z.preprocess(
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,
     voice: voicePluginConfigSchema,
+    "voice-conversation": voiceConversationPluginConfigSchema,
   }),
 );
 
@@ -723,6 +778,7 @@ export type VoiceTtsEndpointConfig = z.infer<typeof voiceTtsEndpointSchema>;
 export type VoiceSttProfileConfig = z.infer<typeof voiceSttProfileSchema>;
 export type VoiceTtsProfileConfig = z.infer<typeof voiceTtsProfileSchema>;
 export type VoicePluginConfig = z.infer<typeof voicePluginConfigSchema>;
+export type VoiceConversationPluginConfig = z.infer<typeof voiceConversationPluginConfigSchema>;
 
 export interface LlmConfig {
   reasoningEffort?: LlmReasoningEffort;

@@ -38,6 +38,7 @@ import { VisionProvider } from "./vision/provider";
 import { voiceNetworkRule } from "./voice/policy";
 import { VoiceProvider } from "./voice/provider";
 import { createVoicePlugin } from "./voice/session";
+import { createVoiceConversationPlugin } from "./voice-conversation/session";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
 
@@ -593,6 +594,16 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
       ];
     },
     createSessionPlugin: (config) => createVoicePlugin(voiceManagerFor(config)),
+  },
+  {
+    id: "voice-conversation",
+    version: "1.0.0",
+    defaultEnabled: false,
+    description:
+      "Voice conversation loop (capture → STT → turn → TTS → playback) over the voice provider.",
+    providerIds: ["voice"],
+    createSessionPlugin: (config) =>
+      createVoiceConversationPlugin(config.plugins["voice-conversation"]),
   },
 ];
 
