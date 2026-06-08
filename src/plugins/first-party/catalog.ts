@@ -5,7 +5,6 @@ import type { SloppyConfig } from "../../config/schema";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
 import { RuntimeServiceRegistry } from "../../runtime/services";
-import { VoiceProfileManager } from "../../voice/profile-manager";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
@@ -28,22 +27,9 @@ import { SpecProvider } from "./spec/provider";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
 import { VoiceProvider } from "./voice/provider";
+import { voiceManagerFor } from "./voice/runtime";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
-
-// One VoiceProfileManager per config so the provider (transcribe/synthesize +
-// /stt //tts state) and the session plugin (autospeak) share runtime profile
-// selection. Keyed by the config object the collectors pass through.
-const voiceManagers = new WeakMap<SloppyConfig, VoiceProfileManager>();
-
-function voiceManagerFor(config: SloppyConfig): VoiceProfileManager {
-  let manager = voiceManagers.get(config);
-  if (!manager) {
-    manager = new VoiceProfileManager(config.plugins.voice);
-    voiceManagers.set(config, manager);
-  }
-  return manager;
-}
 
 function registeredProvider(
   input: Omit<RegisteredProvider, "kind"> & { kind?: RegisteredProvider["kind"] },
@@ -493,6 +479,9 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
         }),
       ];
     },
+  },
+  {
+    ...firstPartyPluginMetadata("voice-conversation"),
   },
 ];
 

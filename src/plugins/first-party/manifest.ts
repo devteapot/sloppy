@@ -135,6 +135,15 @@ export const FIRST_PARTY_PLUGIN_MANIFEST = [
     defaultEnabled: false,
     description: "Speech-to-text and text-to-speech provider.",
     providerIds: ["voice"],
+    extensionNamespaces: ["voice"],
+  },
+  {
+    id: "voice-conversation",
+    version: "1.0.0",
+    defaultEnabled: false,
+    description:
+      "Voice conversation loop (capture → STT → turn → TTS → playback) over the voice provider.",
+    providerIds: ["voice"],
   },
 ] as const satisfies readonly FirstPartyPluginMetadata[];
 

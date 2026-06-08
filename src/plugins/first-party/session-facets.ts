@@ -9,6 +9,9 @@ import {
   isFirstPartyPluginEnabled,
 } from "./manifest";
 import { createPersistentGoalPlugin } from "./persistent-goal/session";
+import { voiceManagerFor } from "./voice/runtime";
+import { createVoicePlugin } from "./voice/session";
+import { createVoiceConversationPlugin } from "./voice-conversation/session";
 
 export function metadataSessionPlugin(plugin: FirstPartyPluginMetadata): SessionRuntimePlugin {
   if (plugin.extensionNamespaces?.length) {
@@ -36,6 +39,12 @@ export function createFirstPartySessionPlugins(config: SloppyConfig): SessionRun
         ...metadataSessionPlugin(plugin),
         localTools: () => [createDelegationWaitTool()],
       };
+    }
+    if (plugin.id === "voice") {
+      return createVoicePlugin(voiceManagerFor(config));
+    }
+    if (plugin.id === "voice-conversation") {
+      return createVoiceConversationPlugin(config.plugins["voice-conversation"]);
     }
     return metadataSessionPlugin(plugin);
   });

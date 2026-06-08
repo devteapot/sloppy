@@ -160,6 +160,27 @@ plugins:
           voice: af_bella
           autospeak: true # speak completed assistant turns (client plays the audio)
       defaultProfileId: tts-local
+      # When using the voice-conversation loop below, set autospeak: false on the
+      # active profile — the loop synthesizes replies itself, so autospeak would
+      # double up the TTS call.
+
+  # Hands-free voice conversation loop layered on the voice provider:
+  # capture (VAD) → /stt → agent turn → /tts → playback, animating the robot head
+  # while it speaks. Prefer the LOCAL stt/tts endpoints above so the voice network
+  # policy auto-allows (a hands-free loop would otherwise block on approval each turn).
+  voice-conversation:
+    enabled: false
+    audio:
+      backend: host # `host` = laptop mic/speaker (dev / pre-hardware); `robot` = reachy mic/speaker
+      silenceStopSeconds: 1.2 # stop capture after this much trailing silence (host VAD)
+      maxUtteranceSeconds: 30
+      providerId: reachy # robot provider id used when backend: robot
+      # Optional command overrides (defaults target macOS: sox capture, afplay playback):
+      # captureCommand: ["sox", "-d", "-c", "1", "-r", "16000", "-t", "wav", "-", "silence", "1", "0.1", "3%", "1", "1.2", "3%"]
+      # playbackCommand: ["afplay", "{file}"]
+    embodiment:
+      enabled: true # runtime-driven head/antenna motion during the reply (visible in the MuJoCo sim)
+      providerId: reachy
 
 workspaces:
   activeWorkspaceId: sloppy
