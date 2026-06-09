@@ -8,6 +8,7 @@ import { listenUnix } from "@slop-ai/server/unix";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
 import { SessionSupervisorProvider, startSessionSupervisor } from "../src/session/supervisor";
+import { listenSessionSupervisor } from "../src/session/supervisor-listener";
 
 const tempPaths: string[] = [];
 const listeners: Array<{ close: () => void }> = [];
@@ -213,6 +214,33 @@ describe("SessionSupervisorProvider", () => {
     provider.stop();
     providers.splice(providers.indexOf(provider), 1);
     expect(existsSync(appSession.socketPath)).toBe(false);
+  });
+
+  test("client disconnect releases its lease and unblocks auto-close", async () => {
+    const home = await createTempDir("sloppy-supervisor-lease-home-");
+    const workspace = await createTempDir("sloppy-supervisor-lease-ws-");
+    await writeConfig(workspace, llmProfileConfigLines("lease-model").join("\n"));
+    process.env.HOME = home;
+
+    const provider = new SessionSupervisorProvider({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    providers.push(provider);
+    const socketPath = `/tmp/slop/sloppy-supervisor-lease-${crypto.randomUUID()}.sock`;
+    listeners.push(listenSessionSupervisor(provider, socketPath, { register: false }));
+
+    const client = new SessionSupervisorClient(socketPath);
+    await client.connect();
+    await client.registerClientLease();
+    expect(provider.canAutoClose()).toBe(false);
+
+    client.disconnect();
+    for (let attempt = 0; attempt < 40 && !provider.canAutoClose(); attempt += 1) {
+      await Bun.sleep(25);
+    }
+    expect(provider.canAutoClose()).toBe(true);
   });
 
   test("startSessionSupervisor cleans up supervisor and initial session sockets", async () => {

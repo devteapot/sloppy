@@ -721,6 +721,10 @@ function resumeToolExecutionState(
     (left, right) => left.toolCallIndex - right.toolCallIndex,
   );
 
+  // Invariant: deferred results were queued only for indices after the
+  // approval-blocked call, so after sorting they are contiguous from
+  // nextToolCallIndex. Splice them back in order and stop at the first gap —
+  // anything past a gap has not run yet and is re-executed from startIndex.
   for (const deferred of deferredToolResults) {
     if (deferred.toolCallIndex !== startIndex) break;
     toolResults.push(deferred.result);

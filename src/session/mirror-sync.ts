@@ -6,6 +6,18 @@ import type { ExternalAppSnapshot } from "./types";
 
 type ProviderSnapshotUpdate = Parameters<NonNullable<AgentCallbacks["onProviderSnapshot"]>>[0];
 
+/**
+ * Provider tree paths the session mirrors into its public snapshot. Single
+ * source of truth for mirror watching (runtime.ts mirrorProviderPaths), the
+ * snapshot dispatch below, and the auto-approval trigger.
+ */
+export const SESSION_MIRROR_PATHS = {
+  approvals: "/approvals",
+  tasks: "/tasks",
+} as const;
+
+export const SESSION_MIRROR_PATH_LIST: string[] = Object.values(SESSION_MIRROR_PATHS);
+
 export type PendingApprovalMirror = {
   turnId: string;
   invocation: AgentToolInvocation;
@@ -31,7 +43,7 @@ export function syncProviderSnapshotToSession(
     localProviderIds?: Iterable<string>;
   },
 ): void {
-  if (update.path === "/approvals") {
+  if (update.path === SESSION_MIRROR_PATHS.approvals) {
     const approvals = parseApprovalsTree(update.providerId, update.tree, pendingApproval, {
       localProviderIds: options?.localProviderIds,
     });
@@ -45,7 +57,7 @@ export function syncProviderSnapshotToSession(
     return;
   }
 
-  if (update.path === "/tasks") {
+  if (update.path === SESSION_MIRROR_PATHS.tasks) {
     store.syncProviderTasks(
       update.providerId,
       parseTasksTree(update.providerId, update.tree, {

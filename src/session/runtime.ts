@@ -37,7 +37,12 @@ import {
   toExternalAgentLlmState,
   toSessionLlmState,
 } from "./llm-state";
-import { syncExternalProviderStatesToSession, syncProviderSnapshotToSession } from "./mirror-sync";
+import {
+  SESSION_MIRROR_PATH_LIST,
+  SESSION_MIRROR_PATHS,
+  syncExternalProviderStatesToSession,
+  syncProviderSnapshotToSession,
+} from "./mirror-sync";
 import {
   type PluginRuntimeContext,
   SessionPluginManager,
@@ -368,7 +373,7 @@ function createDefaultSessionAgent(
     roleId: extras?.roleId,
     roleRegistry: extras?.roleRegistry,
     publishEvent: extras?.publishEvent,
-    mirrorProviderPaths: ["/approvals", "/tasks"],
+    mirrorProviderPaths: SESSION_MIRROR_PATH_LIST,
     policyRules: extras?.policyRules,
     localTools: extras?.localTools,
     callbacks,
@@ -519,7 +524,7 @@ export class SessionRuntime {
         syncProviderSnapshotToSession(this.store, update, this.turns.snapshot().pendingApproval, {
           localProviderIds: this.localProviderIds,
         });
-        if (update.path === "/approvals") {
+        if (update.path === SESSION_MIRROR_PATHS.approvals) {
           this.turns.scheduleAutoApprovals();
         }
       },

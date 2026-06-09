@@ -92,7 +92,8 @@ describe("ConsumerHub", () => {
         queryToolAfterRemoval?.function.parameters as QueryToolProviderSchema | undefined
       )?.properties?.provider;
 
-      expect(providerSchemaAfterRemoval?.enum).not.toContain("demo");
+      // With zero connected providers the enum constraint is omitted entirely.
+      expect(providerSchemaAfterRemoval?.enum).toBeUndefined();
     } finally {
       hub.shutdown();
     }

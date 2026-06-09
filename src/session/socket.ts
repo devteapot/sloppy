@@ -230,14 +230,24 @@ async function rejectWebSocketUpgrade(
   return new Response("Unauthorized", { status: 401 });
 }
 
+let warnedQueryParamToken = false;
+
 function tokenMatches(req: Request, url: URL, expected: string): boolean {
   const auth = req.headers.get("authorization");
   if (auth === `Bearer ${expected}`) {
     return true;
   }
-  return (
-    url.searchParams.get("token") === expected || url.searchParams.get("access_token") === expected
-  );
+  const queryMatch =
+    url.searchParams.get("token") === expected || url.searchParams.get("access_token") === expected;
+  if (queryMatch && !warnedQueryParamToken) {
+    // Query params are accepted because browser WebSocket clients cannot set
+    // headers, but URLs end up in proxy/server logs — prefer the Bearer header.
+    warnedQueryParamToken = true;
+    console.warn(
+      "[sloppy] WebSocket client authenticated with a query-param token; tokens in URLs can leak into logs. Prefer the Authorization: Bearer header.",
+    );
+  }
+  return queryMatch;
 }
 
 function isLoopbackAddress(address: string): boolean {
