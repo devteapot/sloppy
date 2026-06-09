@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+import { now } from "../shared/runtime-helpers";
 
 type SpecStatus = "draft" | "active" | "archived";
 type RequirementStatus = "active" | "changed" | "removed";
@@ -57,10 +58,6 @@ export interface SpecProviderOptions {
 }
 
 const SPECS_DIR = ".sloppy/specs";
-
-function now(): string {
-  return new Date().toISOString();
-}
 
 function readJson<T>(path: string): T | null {
   if (!existsSync(path)) return null;

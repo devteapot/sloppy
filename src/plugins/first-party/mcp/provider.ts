@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+import { errorMessage, now } from "../shared/runtime-helpers";
 
 export type McpStdioServerConfig = {
   name?: string;
@@ -135,14 +136,6 @@ type McpServerState = {
   prompts: McpPromptInfo[];
   client?: McpClientSession;
 };
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function nodeId(value: string): string {
   return encodeURIComponent(value);

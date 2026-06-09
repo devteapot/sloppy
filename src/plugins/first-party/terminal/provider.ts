@@ -4,6 +4,7 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 
 import { ProviderApprovalManager } from "../../../providers/approvals";
 import { isWithinRoot, safeRealpath } from "../../../providers/path-containment";
+import { prefixedId } from "../shared/runtime-helpers";
 
 type CommandRecord = {
   id: string;
@@ -38,7 +39,7 @@ function truncateOutput(text: string, maxChars = 1200): string {
 }
 
 function buildTaskId(): string {
-  return `task-${crypto.randomUUID()}`;
+  return prefixedId("task");
 }
 
 export class TerminalProvider {

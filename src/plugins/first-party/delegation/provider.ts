@@ -529,6 +529,9 @@ export class DelegationProvider {
       },
       summary: "Delegation session: subagent spawning and lifecycle management.",
       actions: {
+        // spawn_agent is intentionally NOT marked dangerous: frictionless
+        // spawning is the design, and the child session enforces its own
+        // approval gates on every dangerous affordance it invokes.
         spawn_agent: action(
           {
             name: {

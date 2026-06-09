@@ -21,10 +21,10 @@ import {
 } from "../providers/discovery";
 import { createFirstPartyProviders } from "../providers/registry";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
-import { bootstrapProviderRuntime } from "./bootstrap";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
-import { ConsumerHub, type ExternalProviderState, type ProviderLifecycleEvent } from "./consumer";
+import { bootstrapProviderRuntime } from "./bootstrap";
+import type { ConsumerHub, ExternalProviderState, ProviderLifecycleEvent } from "./consumer";
 import { buildSystemPrompt } from "./context";
 import { ConversationHistory } from "./history";
 import {
@@ -39,13 +39,7 @@ import {
 } from "./loop";
 import type { InvokePolicy } from "./policy";
 import { dangerousActionRule } from "./policy/rules";
-import {
-  defaultRole,
-  type RoleProfile,
-  RoleRegistry,
-  type RuntimeContext,
-  type RuntimeEvent,
-} from "./role";
+import { defaultRole, type RoleProfile, RoleRegistry, type RuntimeEvent } from "./role";
 import { parseUserMessageBlocks } from "./user-message";
 
 export type { AgentToolEvent, AgentToolInvocation, LocalRuntimeTool } from "./loop";

@@ -46,7 +46,15 @@ function registeredProvider(
   };
 }
 
-function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRuntimePlugin {
+export function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRuntimePlugin {
+  if (plugin.extensionNamespaces?.length) {
+    // A descriptor that owns extension namespaces needs runtime behavior
+    // (projection, recovery, event mapping); a metadata-only session plugin
+    // would silently no-op. Fail fast — this is a first-party catalog bug.
+    throw new Error(
+      `First-party plugin '${plugin.id}' declares extensionNamespaces but no createSessionPlugin.`,
+    );
+  }
   return {
     id: plugin.id,
     version: plugin.version,

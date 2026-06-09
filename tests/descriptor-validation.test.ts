@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import { createDefaultConfig } from "../src/config/load";
+import {
+  createFirstPartySessionPlugins,
+  metadataSessionPlugin,
+} from "../src/plugins/first-party/catalog";
 import { validateDescriptor } from "../src/providers/descriptor-validation";
 
 describe("validateDescriptor", () => {
@@ -110,5 +115,35 @@ describe("validateDescriptor", () => {
 
     const result = validateDescriptor(descriptor);
     expect(result).toEqual({ valid: true });
+  });
+});
+
+describe("first-party plugin catalog validation", () => {
+  test("metadata-only session plugins may not own extension namespaces", () => {
+    expect(() =>
+      metadataSessionPlugin({
+        id: "persistent-goal",
+        version: "1.0.0",
+        defaultEnabled: false,
+        description: "test descriptor",
+        extensionNamespaces: ["goal"],
+      }),
+    ).toThrow("declares extensionNamespaces but no createSessionPlugin");
+  });
+
+  test("metadata-only session plugins without namespaces are allowed", () => {
+    const plugin = metadataSessionPlugin({
+      id: "terminal",
+      version: "1.0.0",
+      defaultEnabled: true,
+      description: "test descriptor",
+    });
+    expect(plugin.id).toBe("terminal");
+  });
+
+  test("every catalog descriptor produces a session plugin", () => {
+    const config = createDefaultConfig();
+    const plugins = createFirstPartySessionPlugins(config);
+    expect(plugins.length).toBeGreaterThan(0);
   });
 });

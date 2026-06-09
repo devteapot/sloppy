@@ -3,6 +3,7 @@ import {
   createApprovalRequiredError,
   type ProviderApprovalManager,
 } from "../../../providers/approvals";
+import { now } from "../shared/runtime-helpers";
 import { createExperiment as buildExperiment, createEvaluation } from "./meta-runtime-experiments";
 import type {
   ExperimentEvaluation,
@@ -28,10 +29,6 @@ export type MetaRuntimeExperimentContext = {
   persist: (scope: MetaScope) => void;
   refresh: () => void;
 };
-
-function now(): string {
-  return new Date().toISOString();
-}
 
 export function createTopologyExperiment(
   context: MetaRuntimeExperimentContext,

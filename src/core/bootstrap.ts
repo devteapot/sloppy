@@ -6,7 +6,7 @@ import type { LlmProfileManager } from "../llm/profile-manager";
 import type { RegisteredProvider } from "../providers/registry";
 import { createFirstPartyProviders } from "../providers/registry";
 import { ConsumerHub } from "./consumer";
-import { type RuntimeContext, type RuntimeEvent, RoleRegistry } from "./role";
+import { RoleRegistry, type RuntimeContext, type RuntimeEvent } from "./role";
 
 export interface ProviderRuntimeBootstrap {
   hub: ConsumerHub;

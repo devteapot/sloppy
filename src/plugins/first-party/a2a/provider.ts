@@ -1,4 +1,5 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+import { errorMessage, now } from "../shared/runtime-helpers";
 
 export type A2AAgentConfig = {
   name?: string;
@@ -67,14 +68,6 @@ type A2AAgentState = {
 };
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function nodeId(value: string): string {
   return encodeURIComponent(value);
