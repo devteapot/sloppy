@@ -9,11 +9,10 @@ import {
   loadConfigFromPaths,
 } from "../config/load";
 import type { LlmProfileConfig, SloppyConfig } from "../config/schema";
-import { ConsumerHub } from "../core/consumer";
-import { RoleRegistry } from "../core/role";
+import { bootstrapProviderRuntime } from "../core/bootstrap";
+import type { ConsumerHub } from "../core/consumer";
 import { LlmConfigurationError, type LlmProfileManager } from "../llm/profile-manager";
 import { buildRuntimeSloppyConfig } from "../llm/runtime-config";
-import { createFirstPartyProviders, type RegisteredProvider } from "../providers/registry";
 import { type AgentEventBus, createAgentEventBus } from "../session/event-bus";
 
 export type RuntimeSmokeMode = "providers" | "native" | "acp";
@@ -141,27 +140,6 @@ function buildSmokeConfig(
       },
     },
   };
-}
-
-async function attachProviderRuntimes(
-  providers: RegisteredProvider[],
-  hub: ConsumerHub,
-  config: SloppyConfig,
-  llmProfileManager?: LlmProfileManager,
-  eventBus?: AgentEventBus,
-): Promise<Array<{ stop(): void }>> {
-  const stops: Array<{ stop(): void }> = [];
-  for (const provider of providers) {
-    const stop = provider.attachRuntime?.(hub, config, {
-      hub,
-      config,
-      publishEvent: eventBus?.publish ?? (() => undefined),
-      roleRegistry: new RoleRegistry(),
-      llmProfileManager,
-    });
-    if (stop) stops.push(stop);
-  }
-  return stops;
 }
 
 async function invokeOk(
@@ -375,8 +353,6 @@ export async function runRuntimeSmoke(
     acpAdapterId: options.acpAdapterId,
     timeoutMs: options.timeoutMs,
   });
-  const providers = createFirstPartyProviders(config);
-  const hub = new ConsumerHub(providers, config);
   const eventLogPath = options.eventLogPath ?? process.env.SLOPPY_EVENT_LOG;
   const eventBus = eventLogPath
     ? createAgentEventBus({
@@ -384,24 +360,28 @@ export async function runRuntimeSmoke(
         actor: { id: "runtime-smoke", name: "Runtime Smoke", kind: "smoke" },
       })
     : undefined;
-  const unsubscribeProviderStates = eventBus
-    ? hub.onExternalProviderStateChange((states) => {
-        eventBus.callbacks.onExternalProviderStates?.(states);
-      })
-    : undefined;
+  let unsubscribeProviderStates: (() => void) | undefined;
   let stops: Array<{ stop(): void }> = [];
+  let hub: ConsumerHub | undefined;
 
   try {
     log(`workspace: ${workspaceRoot}`);
-    await hub.connect();
-    eventBus?.callbacks.onExternalProviderStates?.(hub.getExternalProviderStates());
-    stops = await attachProviderRuntimes(
-      providers,
-      hub,
+    const bootstrap = await bootstrapProviderRuntime({
       config,
-      options.llmProfileManager,
-      eventBus,
-    );
+      onHubCreated: (createdHub) => {
+        hub = createdHub;
+        if (eventBus) {
+          unsubscribeProviderStates = createdHub.onExternalProviderStateChange((states) => {
+            eventBus.callbacks.onExternalProviderStates?.(states);
+          });
+        }
+      },
+      publishEvent: eventBus?.publish,
+      llmProfileManager: options.llmProfileManager,
+    });
+    hub = bootstrap.hub;
+    stops = bootstrap.runtimeStops;
+    eventBus?.callbacks.onExternalProviderStates?.(hub.getExternalProviderStates());
     log("providers connected");
     const channel = (await invokeOk(hub, "messaging", "/session", "add_channel", {
       name: "Runtime Smoke",
@@ -491,7 +471,7 @@ export async function runRuntimeSmoke(
         // best-effort
       }
     }
-    hub.shutdown();
+    hub?.shutdown();
     eventBus?.stop();
     if (tempRoot && !options.keepState) {
       await rm(tempRoot, { recursive: true, force: true });

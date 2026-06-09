@@ -21,6 +21,7 @@ import {
 } from "../providers/discovery";
 import { createFirstPartyProviders } from "../providers/registry";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
+import { bootstrapProviderRuntime } from "./bootstrap";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
 import { ConsumerHub, type ExternalProviderState, type ProviderLifecycleEvent } from "./consumer";
@@ -209,39 +210,31 @@ export class Agent {
       const provider = this.discovery.resolveDescriptor(descriptor);
       return provider ? [provider] : [];
     });
-    const hub = new ConsumerHub(firstPartyProviders, this.config);
-    this.hub = hub;
-    this.unsubscribeExternalProviderStateChanges = hub.onExternalProviderStateChange((states) => {
-      this.emitExternalProviderStates(states);
-    });
-    this.unsubscribeProviderLifecycleEvents = hub.onProviderLifecycleEvent((event) =>
-      this.handleProviderLifecycleEvent(event),
-    );
-    this.emitExternalProviderStates();
-    await hub.connect();
-    for (const provider of discoveredProviders) {
-      hub.registerProvider(provider);
-    }
-    this.emitExternalProviderStates(hub.getExternalProviderStates());
-
-    const runtimeCtx: RuntimeContext = {
-      hub,
+    const bootstrap = await bootstrapProviderRuntime({
       config: this.config,
+      providers: firstPartyProviders,
+      registerAfterConnect: discoveredProviders,
+      onHubCreated: (createdHub) => {
+        this.hub = createdHub;
+        this.unsubscribeExternalProviderStateChanges = createdHub.onExternalProviderStateChange(
+          (states) => {
+            this.emitExternalProviderStates(states);
+          },
+        );
+        this.unsubscribeProviderLifecycleEvents = createdHub.onProviderLifecycleEvent((event) =>
+          this.handleProviderLifecycleEvent(event),
+        );
+        this.emitExternalProviderStates();
+      },
       publishEvent: (event) => this.publishEventCallback?.(event),
       roleRegistry: this.roleRegistry,
       llmProfileManager: this.llmProfileManager,
-    };
-
-    for (const provider of firstPartyProviders) {
-      const runtimeStop = provider.attachRuntime?.(hub, this.config, runtimeCtx);
-      if (runtimeStop) {
-        this.runtimeStops.push(runtimeStop);
-      }
-      const fragment = provider.systemPromptFragment?.(this.config);
-      if (fragment) {
-        this.systemPromptFragments.push(fragment);
-      }
-    }
+      collectSystemPromptFragments: true,
+    });
+    const { hub, runtimeCtx } = bootstrap;
+    this.runtimeStops.push(...bootstrap.runtimeStops);
+    this.systemPromptFragments.push(...bootstrap.systemPromptFragments);
+    this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     // Resolve role lazily so that providers' attachRuntime hooks have a
     // chance to register role factories before resolution. If a RoleProfile
