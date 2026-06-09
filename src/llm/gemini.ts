@@ -462,6 +462,11 @@ export class GeminiAdapter implements LlmAdapter {
       const stream = await this.client.models.generateContentStream(parameters);
       const state = createGeminiStreamState();
       for await (const chunk of stream) {
+        // The SDK receives the abort signal but its async iterator does not
+        // reliably stop mid-stream; bail out between chunks ourselves.
+        if (options.signal?.aborted) {
+          throw new LlmAbortError();
+        }
         const delta = extractGeminiText(chunk);
         if (delta.length > 0) {
           options.onText(delta);

@@ -5,7 +5,7 @@ import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import { GeminiAdapter, toGeminiContents } from "../src/llm/gemini";
 import type { EffectiveThinkingConfig } from "../src/llm/thinking";
-import type { ConversationMessage } from "../src/llm/types";
+import { type ConversationMessage, LlmAbortError } from "../src/llm/types";
 
 const READ_TOOL: LlmTool = {
   type: "function",
@@ -199,6 +199,45 @@ describe("GeminiAdapter", () => {
         outputTokens: 4,
       },
     });
+  });
+
+  test("aborts mid-stream without consuming further chunks", async () => {
+    const controller = new AbortController();
+    let secondChunkYielded = false;
+    async function* createStream(): AsyncGenerator<GenerateContentResponse> {
+      yield createTextChunk("first");
+      secondChunkYielded = true;
+      yield createTextChunk("second");
+    }
+
+    const client = {
+      models: {
+        generateContent: async () => createTextChunk("unused"),
+        generateContentStream: async () => createStream(),
+      },
+    };
+
+    const adapter = new GeminiAdapter({
+      apiKey: "test-key",
+      model: "gemini-2.5-pro",
+      client,
+    });
+
+    let streamed = "";
+    await expect(
+      adapter.chat({
+        system: "system prompt",
+        messages: [{ role: "user", content: [{ type: "text", text: "Stream." }] }],
+        maxTokens: 256,
+        signal: controller.signal,
+        onText: (chunk) => {
+          streamed += chunk;
+          controller.abort();
+        },
+      }),
+    ).rejects.toBeInstanceOf(LlmAbortError);
+    expect(streamed).toBe("first");
+    expect(secondChunkYielded).toBe(true);
   });
 
   test("requests and surfaces Gemini thinking output", async () => {
