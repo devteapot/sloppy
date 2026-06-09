@@ -31,12 +31,25 @@ export function realpathOfPrefix(absolutePath: string): string {
   }
 }
 
+// Roots are few and long-lived (one per provider), so cache their resolution.
+// A cached entry can go stale if a symlink inside the root path is retargeted
+// mid-session; that matches the existing callers, which realpath their roots
+// once at construction.
+const rootRealpathCache = new Map<string, string>();
+
 /**
  * Returns true if `candidate` (after symlink resolution of its longest
- * existing prefix) is contained within `root` (which the caller should have
- * already realpath-resolved at construction time).
+ * existing prefix) is contained within `root`. The root is realpath-resolved
+ * here too (cached), so a root configured with a symlink or — on
+ * case-insensitive filesystems — different casing than on disk still compares
+ * against the same canonical form as the candidate.
  */
 export function isWithinRoot(root: string, candidate: string): boolean {
+  let realRoot = rootRealpathCache.get(root);
+  if (realRoot === undefined) {
+    realRoot = realpathOfPrefix(root);
+    rootRealpathCache.set(root, realRoot);
+  }
   const real = realpathOfPrefix(candidate);
-  return real === root || real.startsWith(`${root}/`);
+  return real === realRoot || real.startsWith(`${realRoot}/`);
 }

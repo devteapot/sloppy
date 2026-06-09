@@ -22,7 +22,7 @@ import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegat
 import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { checkWorkspacePaths } from "./filesystem/doctor";
 import { FilesystemProvider } from "./filesystem/provider";
-import { collectMcpSubprocessProbes } from "./mcp/doctor";
+import { checkMcpEnvironmentExposure, collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
@@ -517,6 +517,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "MCP compatibility provider.",
     providerIds: ["mcp"],
+    doctorChecks: () => [checkMcpEnvironmentExposure],
     doctorSubprocessProbes: () => [collectMcpSubprocessProbes],
     createProviders: (config) => {
       const plugin = config.plugins.mcp;

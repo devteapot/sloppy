@@ -6,6 +6,12 @@ const DESTRUCTIVE_COMMAND_RE =
   /(?:^|\s|&&|\|\||;)(rm\s|rmdir\s|mv\s|chmod\s|chown\s|chgrp\s|git\s+(?:reset|clean|checkout|restore)\s|sed\s+-i|truncate\s|dd\s|shred\s|rsync\s+[^;&|]*--delete\b|find\s+[^;&|]*\s-delete\b)/;
 const FILE_OUTPUT_REDIRECT_RE = /(?:^|[^>&])(?:\d?>{1,2}|&>{1,2})\s*("[^"]+"|'[^']+'|[^\s;&|>]+)/g;
 const TEE_WRITE_RE = /(?:^|[\s;&|])tee\b(?:\s+-[a-zA-Z]+)*\s+("[^"]+"|'[^']+'|[^\s;&|]+)/g;
+// Shell wrappers that can smuggle a destructive command past the pattern
+// checks above (`bash -c "rm x"`, `$(rm x)`, backticks, eval, xargs). We do
+// not parse shell; wrapper presence alone routes to approval — friction, not
+// denial, for legitimate uses.
+const SHELL_INDIRECTION_RE =
+  /(?:^|[\s;&|])(?:(?:ba|z|da|k)?sh\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*c[a-zA-Z]*\b|eval\b|xargs\b)|\$\(|`/;
 
 function writesToNonNullTarget(command: string, regex: RegExp): boolean {
   regex.lastIndex = 0;
@@ -38,6 +44,9 @@ function describeTerminalReason(command: string): string {
   if (usesTeeWrite(command)) {
     reasons.push("pipes to `tee` writing a file");
   }
+  if (SHELL_INDIRECTION_RE.test(command)) {
+    reasons.push("uses shell indirection (subshell, eval, xargs, or sh -c)");
+  }
   return `Shell command requires approval because it ${reasons.join(" and ")}.`;
 }
 
@@ -53,7 +62,8 @@ export const terminalSafetyRule: InvokePolicy = {
     if (
       !DESTRUCTIVE_COMMAND_RE.test(command) &&
       !usesFileOutputRedirection(command) &&
-      !usesTeeWrite(command)
+      !usesTeeWrite(command) &&
+      !SHELL_INDIRECTION_RE.test(command)
     ) {
       return ALLOW;
     }

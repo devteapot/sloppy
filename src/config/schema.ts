@@ -183,7 +183,12 @@ const mcpStdioServerConfigSchema = z.object({
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   envAllowlist: z.array(z.string().min(1)).optional(),
-  inheritEnv: z.boolean().optional(),
+  inheritEnv: z
+    .boolean()
+    .optional()
+    .describe(
+      "Pass the FULL parent environment (including shell secrets) to the server subprocess. Prefer envAllowlist; runtime doctor warns when inheritEnv is set without one.",
+    ),
   timeoutMs: z.number().int().min(1000).optional(),
   connectOnStart: z.boolean().optional(),
 });
