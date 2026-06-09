@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 
 import { DEFAULT_LLM_ENDPOINTS } from "../llm/catalog";
-import { getHomeConfigPath, readConfigFile } from "./load";
+import { getHomeConfigPath } from "./load";
 import type { LlmConfig, LlmEndpointConfig, LlmEndpointModelConfig } from "./schema";
 
 function definedFields<T extends Record<string, unknown>>(fields: T): Partial<T> {
@@ -72,9 +72,18 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
 
 export async function writeHomeLlmConfig(config: LlmConfig): Promise<void> {
   const homeConfigPath = getHomeConfigPath();
-  const nextConfig = await readConfigFile(homeConfigPath);
-  nextConfig.llm = toPersistedLlmConfig(config);
+  // Round-trip through a YAML document so user comments and formatting in
+  // sections outside `llm` survive the rewrite.
+  const file = Bun.file(homeConfigPath);
+  const rawConfig = (await file.exists()) ? await file.text() : "";
+  const document = YAML.parseDocument(rawConfig.trim() === "" ? "{}" : rawConfig);
+  if (document.errors.length > 0) {
+    throw new Error(
+      `Cannot update ${homeConfigPath}: existing YAML failed to parse: ${document.errors[0]?.message}`,
+    );
+  }
+  document.set("llm", toPersistedLlmConfig(config));
 
   await Bun.$`mkdir -p ${dirname(homeConfigPath)}`;
-  await Bun.write(homeConfigPath, YAML.stringify(nextConfig));
+  await Bun.write(homeConfigPath, document.toString());
 }

@@ -227,7 +227,10 @@ surface as the parent, so parent agents and UIs observe child transcript,
 approvals, activity, and lifecycle state through SLOP.
 
 `spawn_agent` is nonblocking: it creates a background child session and returns
-the child id. The parent remains responsible for strategy. It may continue
+the child id. It is intentionally not marked as a dangerous affordance:
+frictionless spawning is the design, and the child session enforces its own
+approval gates on every dangerous affordance it invokes. The parent remains
+responsible for strategy. It may continue
 independent work, then explicitly park the current turn with the runtime-local
 `slop_wait_for_delegation_event` tool. That wait tool watches delegation state
 through `ConsumerHub.waitForStateChange()` and returns a single wake payload
@@ -355,7 +358,11 @@ plugin id so future policy, dispatch, and telemetry can keep plugin boundaries
 visible. When enabled, `/goal` is a stable projection contributed by the bundled
 `persistent-goal` plugin over the `goal` extension record owned by the bundled
 `persistent-goal` skill; the plugin owns stale-turn goal recovery, while the
-runtime provides the generic durable snapshot envelope. The skill defines the
+runtime provides the generic durable snapshot envelope. The `goal` field on
+the public session snapshot is likewise plugin-derived: session plugins
+register snapshot projections that the store runs on every snapshot read, so
+goal-specific schema and serialization live entirely in the plugin
+(`persistent-goal/goal-schema.ts`) rather than in the session store. The skill defines the
 working procedure and completion evidence expectations. Extension-record cleanup
 is manual plus TTL, so missing or unloaded skills do not delete state automatically.
 
