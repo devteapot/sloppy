@@ -147,6 +147,7 @@ export function recoverPersistedSessionSnapshot(
     recoveryMessage: RECOVERY_MESSAGE,
   };
 
+  // goal is a projection recomputed from extensions["goal"]; never persisted.
   if (!hadInFlightTurn) {
     restored.goal = null;
     return applySnapshotRecoverers(restored, recoveryContext, hooks.recoverers);
@@ -207,6 +208,7 @@ export function persistSessionSnapshot(path: string, snapshot: AgentSessionSnaps
   serializable.session.clientCount = 0;
   serializable.session.connectedClients = [];
   serializable.session.persistencePath = path;
+  // goal is a projection recomputed from extensions["goal"]; never persisted.
   serializable.goal = null;
   const envelope: PersistedSessionSnapshotEnvelope = {
     kind: SESSION_SNAPSHOT_KIND,

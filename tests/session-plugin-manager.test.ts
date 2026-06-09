@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { createDefaultConfig } from "../src/config/load";
 import type { LocalRuntimeTool } from "../src/core/agent";
+import { goalSnapshotToExtension } from "../src/plugins/first-party/persistent-goal/goal-schema";
 import { createPersistentGoalPlugin } from "../src/plugins/first-party/persistent-goal/session";
 import { SessionPluginManager } from "../src/session/plugins";
 import type { PluginRuntimeContext, SessionRuntimePlugin } from "../src/session/plugins/types";
 import { SessionStore } from "../src/session/store";
-import { goalSnapshotToExtension } from "../src/session/store/goal";
 
 function createStore(): SessionStore {
   const plugin = createPersistentGoalPlugin();
@@ -16,6 +16,7 @@ function createStore(): SessionStore {
     model: "gpt-5.4",
     snapshotMigrators: plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
     snapshotRecoverers: plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+    snapshotProjections: plugin.snapshotProjections ?? [],
     extensionEventTypes: plugin.extensionEvents ?? {},
   });
 }

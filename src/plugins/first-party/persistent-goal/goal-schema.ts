@@ -1,11 +1,15 @@
+// Public goal extension schema owned by the persistent-goal plugin. The
+// session runtime knows nothing about goals beyond the generic extension
+// envelope and the `snapshot.goal` projection this module supplies via
+// `goalSnapshotProjection`.
 import type {
   JsonValue,
   SessionExtensionRecord,
   SessionGoalSnapshot,
   SessionGoalStatus,
   SessionGoalUpdateSource,
-} from "../types";
-import { getExtension } from "./extensions";
+  SessionSnapshotProjector,
+} from "../../../session/types";
 
 export const GOAL_EXTENSION_NAMESPACE = "goal";
 export const GOAL_EXTENSION_SCHEMA_VERSION = 1;
@@ -20,7 +24,7 @@ export function selectGoalSnapshot(snapshot: {
   goal?: SessionGoalSnapshot | null;
   extensions?: Record<string, SessionExtensionRecord>;
 }): SessionGoalSnapshot | null {
-  const extension = getExtension(snapshot, GOAL_EXTENSION_NAMESPACE);
+  const extension = snapshot.extensions?.[GOAL_EXTENSION_NAMESPACE] ?? null;
   if (extension) {
     return goalFromExtension(extension);
   }
@@ -28,6 +32,11 @@ export function selectGoalSnapshot(snapshot: {
     ? { ...snapshot.goal, evidence: snapshot.goal.evidence?.map((item) => item) }
     : null;
 }
+
+/** Store-registered projector deriving `snapshot.goal` from the goal extension record. */
+export const goalSnapshotProjection: SessionSnapshotProjector = (snapshot) => ({
+  goal: selectGoalSnapshot(snapshot),
+});
 
 export function goalFromExtension(
   record: SessionExtensionRecord | null,

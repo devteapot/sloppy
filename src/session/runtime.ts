@@ -459,6 +459,7 @@ export class SessionRuntime {
         snapshotRecoverers: sessionPlugins.flatMap((plugin) =>
           plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
         ),
+        snapshotProjections: sessionPlugins.flatMap((plugin) => plugin.snapshotProjections ?? []),
         extensionEventTypes: mergePluginExtensionEventTypes(sessionPlugins),
       });
     if (options?.approvalMode) {

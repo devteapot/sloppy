@@ -7,10 +7,10 @@ import { join } from "node:path";
 import type { SloppyConfig } from "../src/config/schema";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import { goalSnapshotToExtension } from "../src/plugins/first-party/persistent-goal/goal-schema";
 import { createPersistentGoalPlugin } from "../src/plugins/first-party/persistent-goal/session";
 import { SessionService } from "../src/session/service";
 import { buildMirroredItemId, SessionStore } from "../src/session/store";
-import { goalSnapshotToExtension } from "../src/session/store/goal";
 import type {
   AgentSessionSnapshot,
   ApprovalItem,
@@ -26,6 +26,7 @@ function persistentGoalSnapshotHooks() {
   return {
     snapshotMigrators: plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
     snapshotRecoverers: plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+    snapshotProjections: plugin.snapshotProjections ?? [],
     extensionEventTypes: plugin.extensionEvents ?? {},
   };
 }
