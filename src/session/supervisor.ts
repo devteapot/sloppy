@@ -20,9 +20,9 @@ import {
   snapshotPathForSession,
 } from "./registry";
 import { SessionService } from "./service";
-import type { UnixListener } from "./socket";
+import type { Listener, WebSocketListenOptions } from "./socket";
 import { loadPersistedSessionSnapshot } from "./store/persistence";
-import { listenSessionSupervisor } from "./supervisor-listener";
+import { listenSessionSupervisor, listenSessionSupervisorWebSocket } from "./supervisor-listener";
 import type { ApprovalMode } from "./types";
 
 export type SessionScopeInput = {
@@ -37,6 +37,7 @@ export type SessionRecord = {
   sessionId: string;
   providerId: string;
   socketPath: string;
+  webSocketUrl?: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
@@ -56,6 +57,7 @@ type PublicSessionRecord = {
   sessionId: string;
   providerId: string;
   socketPath?: string;
+  webSocketUrl?: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
@@ -68,6 +70,8 @@ type PublicSessionRecord = {
   session_id: string;
   provider_id: string;
   socket_path?: string;
+  web_socket_url?: string;
+  ws_url?: string;
   runtime_status: "live" | "dormant";
   workspace_root?: string;
   workspace_id?: string;
@@ -447,6 +451,7 @@ export class SessionSupervisorProvider {
     this.stopLiveRecord(record);
     record.runtimeStatus = "dormant";
     record.socketPath = "";
+    record.webSocketUrl = undefined;
     record.service = undefined;
     record.unsubscribe = undefined;
     this.persistRegistry();
@@ -468,6 +473,7 @@ export class SessionSupervisorProvider {
         sessionId: record.sessionId,
         providerId: record.providerId,
         socketPath: record.socketPath,
+        webSocketUrl: record.webSocketUrl,
         runtimeStatus: "live",
         workspaceRoot: snapshot.session.workspaceRoot,
         workspaceId: snapshot.session.workspaceId,
@@ -480,6 +486,8 @@ export class SessionSupervisorProvider {
         session_id: record.sessionId,
         provider_id: record.providerId,
         socket_path: record.socketPath,
+        web_socket_url: record.webSocketUrl,
+        ws_url: record.webSocketUrl,
         runtime_status: "live",
         workspace_root: snapshot.session.workspaceRoot,
         workspace_id: snapshot.session.workspaceId,
@@ -705,12 +713,14 @@ export class SessionSupervisorProvider {
         sessionId: snapshot.session.sessionId,
         providerId: service.providerId,
         socketPath: service.socketPath,
+        webSocketUrl: service.webSocketUrl,
         runtimeStatus: "live",
         createdAt: options.createdAt,
         lastActivityAt: snapshot.session.lastActivityAt,
       } satisfies SessionRecord);
     record.providerId = service.providerId;
     record.socketPath = service.socketPath;
+    record.webSocketUrl = service.webSocketUrl;
     record.runtimeStatus = "live";
     record.service = service;
     record.snapshotPath =
@@ -972,6 +982,8 @@ export class SessionSupervisorProvider {
         session_id: record.sessionId,
         provider_id: record.providerId,
         socket_path: publicRecord.socket_path ?? null,
+        web_socket_url: publicRecord.web_socket_url ?? null,
+        ws_url: publicRecord.ws_url ?? null,
         runtime_status: publicRecord.runtime_status,
         workspace_root: publicRecord.workspace_root ?? null,
         workspace_id: publicRecord.workspace_id ?? null,
@@ -1079,6 +1091,7 @@ export class SessionSupervisorProvider {
 
 export async function startSessionSupervisor(options: {
   socketPath: string;
+  webSocket?: WebSocketListenOptions;
   initial?: SessionScopeInput | false;
   cwd?: string;
   launchScope?: LaunchScope;
@@ -1090,7 +1103,8 @@ export async function startSessionSupervisor(options: {
   };
 }): Promise<{
   provider: SessionSupervisorProvider;
-  listener: UnixListener;
+  listener: Listener;
+  webSocketUrl?: string;
   initialSession?: SessionRecord;
 }> {
   const provider = new SessionSupervisorProvider({
@@ -1134,18 +1148,24 @@ export async function startSessionSupervisor(options: {
     provider.stop();
     throw error;
   }
-  const listener = listenSessionSupervisor(provider, options.socketPath, {
+  const unixListener = listenSessionSupervisor(provider, options.socketPath, {
     register: options.register ?? true,
   });
+  const webSocketListener = options.webSocket
+    ? listenSessionSupervisorWebSocket(provider, options.webSocket)
+    : undefined;
+  const listener: Listener = {
+    close: () => {
+      clearAutoCloseTimer();
+      webSocketListener?.close();
+      unixListener.close();
+    },
+  };
   scheduleAutoClose();
   return {
     provider,
-    listener: {
-      close: () => {
-        clearAutoCloseTimer();
-        listener.close();
-      },
-    },
+    listener,
+    webSocketUrl: webSocketListener?.url,
     initialSession,
   };
 }

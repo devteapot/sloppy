@@ -94,7 +94,7 @@ export class SessionClient {
     );
 
     try {
-      const consumer = new SlopConsumer(new NodeSocketClientTransport(this.socketPath));
+      const consumer = new SlopConsumer(createTransportFromEndpoint(this.socketPath));
       this.consumer = consumer;
       const hello = await consumer.connect();
       this.updateSnapshot(
@@ -459,7 +459,7 @@ export class SessionClient {
         id: "session",
         name: this.snapshot.connection.providerName ?? "Session",
         transport: this.snapshot.connection.socketPath
-          ? `unix:${this.snapshot.connection.socketPath}`
+          ? endpointTransportLabel(this.snapshot.connection.socketPath)
           : undefined,
         consumer: await this.ensureConsumer(),
       };
@@ -585,4 +585,17 @@ function createTransportFromLabel(label: string) {
   }
 
   throw new Error(`Unsupported inspect transport: ${label}`);
+}
+
+function createTransportFromEndpoint(endpoint: string) {
+  if (endpoint.startsWith("ws://") || endpoint.startsWith("wss://")) {
+    return new WebSocketClientTransport(endpoint);
+  }
+  return new NodeSocketClientTransport(endpoint);
+}
+
+function endpointTransportLabel(endpoint: string): string {
+  return endpoint.startsWith("ws://") || endpoint.startsWith("wss://")
+    ? `ws:${endpoint}`
+    : `unix:${endpoint}`;
 }

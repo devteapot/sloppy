@@ -326,6 +326,30 @@ workspace/project config layers by default. You can pin a scope explicitly:
 bun run session:serve -- --workspace-id sloppy --project-id runtime
 ```
 
+The session server always opens its local Unix socket. Add an opt-in WebSocket
+listener for remote SLOP clients:
+
+```sh
+SLOPPY_WS_TOKEN="$(openssl rand -hex 24)" \
+  bun run session:serve -- \
+    --ws-host 0.0.0.0 \
+    --ws-port 8787 \
+    --ws-token-env SLOPPY_WS_TOKEN
+```
+
+WebSocket listeners bind to `127.0.0.1` by default. Non-loopback connections are
+rejected unless `--ws-token-env <name>` or `--ws-token <token>` is configured;
+clients can pass the token as `?token=...` or an `Authorization: Bearer ...`
+header. Browser clients must also match an explicit `--ws-allow-origin
+<origin>` allowlist. Use `--ws-path <path>` to change the default `/slop`, and
+`--ws-public-url <ws-or-wss-url>` when publishing behind a proxy.
+
+The TUI client can attach directly to either transport:
+
+```sh
+bun run tui -- --socket ws://runtime.example.test:8787/slop?token=...
+```
+
 Run a public session supervisor, which exposes session creation/switching while
 each managed session still has its own ordinary session-provider socket:
 
@@ -338,6 +362,11 @@ For the packaged CLI, the equivalent operator command is:
 ```sh
 sloppy session supervisor --socket /tmp/slop/sloppy-supervisor.sock
 ```
+
+The same `--ws-*` flags expose the supervisor provider itself over WebSocket.
+Ordinary supervised sessions still expose their own per-session endpoint; use a
+standalone `session serve --ws-port ...` when a remote client needs to attach
+directly to one running session.
 
 Add `--managed --no-initial-session --auto-close-enabled` when you want the
 same launch-scope supervisor shape used by the TUI launcher.
@@ -391,11 +420,15 @@ To attach to an existing session provider socket directly, use:
 bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock
 ```
 
+`--socket` also accepts `ws://` and `wss://` session provider URLs.
+
 To attach through an existing supervisor socket, use:
 
 ```sh
 bun run tui -- --supervisor-socket /tmp/slop/sloppy-supervisor.sock
 ```
+
+`--supervisor-socket` also accepts a WebSocket supervisor URL.
 
 Managed TUI sessions accept the same workspace/project scope flags. The command
 palette and slash commands can create, switch, and stop additional scoped

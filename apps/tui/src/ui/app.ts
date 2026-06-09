@@ -259,7 +259,7 @@ export class AppUi {
     if (command.type === "session_new") {
       const session = await this.options.supervisor?.createSession(command);
       if (session) {
-        await this.options.onSwitchSocket?.(session.socketPath);
+        await this.options.onSwitchSocket?.(this.endpointForSession(session));
       }
       return;
     }
@@ -332,8 +332,17 @@ export class AppUi {
   private async switchSession(sessionId: string): Promise<void> {
     const session = await this.options.supervisor?.switchSession(sessionId);
     if (session) {
-      await this.options.onSwitchSocket?.(session.socketPath);
+      await this.options.onSwitchSocket?.(this.endpointForSession(session));
     }
+  }
+
+  private endpointForSession(session: { socketPath: string; wsUrl?: string }): string {
+    const supervisorEndpoint = this.supervisorSnapshot?.connection.socketPath ?? "";
+    const supervisorIsWebSocket =
+      supervisorEndpoint.startsWith("ws://") || supervisorEndpoint.startsWith("wss://");
+    return supervisorIsWebSocket
+      ? (session.wsUrl ?? session.socketPath)
+      : session.socketPath || (session.wsUrl ?? "");
   }
 
   private showPalette(): void {

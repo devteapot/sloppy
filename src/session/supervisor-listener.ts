@@ -4,7 +4,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Connection } from "@slop-ai/server";
-
+import {
+  listenWebSocketConnections,
+  type WebSocketListener,
+  type WebSocketListenOptions,
+} from "./socket";
 import type { SessionSupervisorProvider } from "./supervisor";
 
 const DESCRIPTOR_FILENAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -56,6 +60,28 @@ export function listenSessionSupervisor(
   };
 }
 
+export function listenSessionSupervisorWebSocket(
+  provider: SessionSupervisorProvider,
+  options: WebSocketListenOptions,
+): WebSocketListener {
+  return listenWebSocketConnections({
+    providerId: provider.server.id,
+    providerName: provider.server.name,
+    options,
+    handleConnection: (conn) => provider.server.handleConnection(conn),
+    handleMessage: async (conn, msg) => {
+      if (await handleSupervisorInvoke(provider, conn, msg)) {
+        return;
+      }
+      await provider.server.handleMessage(conn, msg);
+    },
+    handleDisconnect: (conn) => {
+      provider.removeConnection(conn);
+      provider.server.handleDisconnect(conn);
+    },
+  });
+}
+
 interface NdjsonConnection extends Connection {
   onMessage(handler: (msg: Record<string, unknown>) => void | Promise<void>): void;
   onClose(handler: () => void): void;
@@ -63,7 +89,7 @@ interface NdjsonConnection extends Connection {
 
 async function handleSupervisorInvoke(
   provider: SessionSupervisorProvider,
-  conn: NdjsonConnection,
+  conn: Connection,
   msg: Record<string, unknown>,
 ): Promise<boolean> {
   if (msg.type !== "invoke") {

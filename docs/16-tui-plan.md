@@ -6,7 +6,7 @@
 `@earendil-works/pi-tui`. It is a SLOP consumer of the public session provider
 and optional public session supervisor. The default launcher behavior starts or
 reuses a launch-scope managed supervisor for the current working directory, then
-connects to an ordinary session-provider socket. It does not use OpenTUI,
+connects to an ordinary session-provider endpoint. It does not use OpenTUI,
 Solid, an alternate screen, or privileged in-process runtime access.
 
 The UI model is intentionally scrollback-preserving:
@@ -32,9 +32,9 @@ Implemented:
   launch-scope resume session
 - `--yolo` launch flag for setting the selected session's approval mode to
   `auto` before interaction
-- attach mode via `bun run tui -- --socket <session.sock>`
-- supervisor mode via `bun run tui -- --supervisor <supervisor.sock>` or
-  `--supervisor-socket <supervisor.sock>`
+- attach mode via `bun run tui -- --socket <session.sock-or-ws-url>`
+- supervisor mode via `bun run tui -- --supervisor <supervisor.sock-or-ws-url>` or
+  `--supervisor-socket <supervisor.sock-or-ws-url>`
 - public session subscriptions for `/session`, `/llm`, `/usage`, `/turn`,
   `/composer`, `/transcript`, `/activity`, `/approvals`, `/tasks`, `/apps`,
   `/plugins`, and `/queue`
@@ -112,19 +112,20 @@ Still deferred:
 ### Session Client
 
 `apps/tui/src/backend/session-client.ts` owns the public session connection. It
-uses `@slop-ai/consumer` with `NodeSocketClientTransport`, subscribes to public
-session state, keeps a typed `SessionViewSnapshot`, follows v2 plugin manifest
-subscriptions, and invokes public affordances such as composer send, turn cancel,
-goal controls, approval resolution, task cancel, LLM profile controls, and
-inspect query/invoke.
+uses `@slop-ai/consumer` with Unix socket or WebSocket transports, subscribes to
+public session state, keeps a typed `SessionViewSnapshot`, follows v2 plugin
+manifest subscriptions, and invokes public affordances such as composer send,
+turn cancel, goal controls, approval resolution, task cancel, LLM profile
+controls, and inspect query/invoke.
 
 ### Supervisor Client
 
 `apps/tui/src/backend/supervisor-client.ts` talks to the public session supervisor
-in managed mode or when launched with `--supervisor`. It exposes the
+in managed mode or when launched with `--supervisor`. It supports Unix socket
+and WebSocket supervisor endpoints. It exposes the
 launch-scope resume session, the session list, and scope list state, plus
 create/select/stop affordances. Managed mode switches the same `SessionClient`
-between ordinary session-provider sockets.
+between ordinary session-provider endpoints.
 
 The supervisor does not own one global active session. Each connected TUI
 registers a supervisor client lease and updates that lease when its selected

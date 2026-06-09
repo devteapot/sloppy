@@ -3,6 +3,7 @@ import {
   type ResultMessage,
   SlopConsumer,
   type SlopNode,
+  WebSocketClientTransport,
 } from "@slop-ai/consumer";
 
 import type { ApprovalMode } from "./slop-types";
@@ -11,6 +12,7 @@ export type SupervisorSessionItem = {
   id: string;
   title?: string;
   socketPath: string;
+  wsUrl?: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
@@ -165,6 +167,10 @@ function mapSessionRecord(
     id: overrides.id,
     title: optionalStringProp(data, "title"),
     socketPath: stringProp(data, "socketPath", stringProp(data, "socket_path")),
+    wsUrl:
+      optionalStringProp(data, "webSocketUrl") ??
+      optionalStringProp(data, "web_socket_url") ??
+      optionalStringProp(data, "ws_url"),
     runtimeStatus:
       stringProp(data, "runtimeStatus", stringProp(data, "runtime_status")) === "dormant"
         ? "dormant"
@@ -350,7 +356,7 @@ export class SessionSupervisorClient {
     });
 
     try {
-      const consumer = new SlopConsumer(new NodeSocketClientTransport(this.socketPath));
+      const consumer = new SlopConsumer(createTransportFromEndpoint(this.socketPath));
       this.consumer = consumer;
       await consumer.connect();
       this.updateSnapshot({
@@ -467,4 +473,11 @@ export class SessionSupervisorClient {
       listener(event);
     }
   }
+}
+
+function createTransportFromEndpoint(endpoint: string) {
+  if (endpoint.startsWith("ws://") || endpoint.startsWith("wss://")) {
+    return new WebSocketClientTransport(endpoint);
+  }
+  return new NodeSocketClientTransport(endpoint);
 }

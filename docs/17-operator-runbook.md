@@ -73,6 +73,26 @@ bun run runtime:smoke -- --mode acp --acp-adapter <adapter-id>
 Provider smoke verifies meta-runtime routing through SLOP providers without a
 live model. Native and ACP modes verify the selected model path.
 
+## Remote WebSocket Clients
+
+Unix sockets are the default local session transport. For remote SLOP clients,
+start an additional WebSocket listener explicitly:
+
+```sh
+SLOPPY_WS_TOKEN=<random-token> \
+  sloppy session serve \
+    --ws-host 0.0.0.0 \
+    --ws-port 8787 \
+    --ws-token-env SLOPPY_WS_TOKEN
+```
+
+The listener defaults to `127.0.0.1`. Non-loopback upgrades are rejected unless
+a token is configured, and browser upgrades also require at least one
+`--ws-allow-origin <origin>` entry. Prefer `--ws-token-env` over `--ws-token`
+for shared systems so the token is not exposed in process arguments. If a proxy
+terminates TLS or rewrites host/path, set `--ws-public-url` to the externally
+reachable `wss://...` URL.
+
 ## Managed TUI Supervisor
 
 The packaged interactive entrypoint is:
@@ -89,7 +109,7 @@ bun run tui
 
 The launcher resolves `realpath(process.cwd())` into a launch scope, starts or
 reuses that scope's managed supervisor, creates a fresh session by default, and
-attaches the TUI to that session's ordinary provider socket. Use `sloppy
+attaches the TUI to that session's ordinary provider endpoint. Use `sloppy
 --continue` to select the launch-scope resume session instead. In a clean launch
 scope with no previous session, `--continue` fails at the CLI level.
 

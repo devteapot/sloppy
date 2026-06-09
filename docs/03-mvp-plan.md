@@ -21,7 +21,8 @@ Checked in now:
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
-- session provider and headless session server
+- session provider and headless session server with local Unix socket and
+  opt-in WebSocket transports
 - public session supervisor for scoped session creation, per-client session
   selection, launch-scope resume metadata, stopping/restoring sessions, and
   keeping each session on its own provider socket
@@ -35,7 +36,7 @@ Checked in now:
   session plugin for persistent objective controls, usage accounting, cleanup
   retention, and automatic continuation while active
 - TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
-  agent-session provider socket, starts or reuses a launch-scope managed
+  agent-session provider endpoint, starts or reuses a launch-scope managed
   supervisor by default, can attach through an explicit session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert
 - ACP-backed delegated child sessions behind the same session-provider boundary,

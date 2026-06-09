@@ -32,6 +32,19 @@ function supervisorSocketArg(args: string[]): string | null {
   return readArg(args, "--supervisor") ?? readArg(args, "--supervisor-socket");
 }
 
+function endpointIsWebSocket(endpoint: string | null | undefined): boolean {
+  return endpoint?.startsWith("ws://") === true || endpoint?.startsWith("wss://") === true;
+}
+
+function endpointForSession(
+  session: SupervisorSessionItem,
+  supervisorEndpoint: string | null | undefined,
+): string {
+  return endpointIsWebSocket(supervisorEndpoint)
+    ? (session.wsUrl ?? session.socketPath)
+    : session.socketPath || (session.wsUrl ?? "");
+}
+
 async function connectSupervisor(socketPath: string): Promise<SessionSupervisorClient> {
   const supervisor = new SessionSupervisorClient(socketPath);
   await supervisor.connect();
@@ -171,10 +184,11 @@ export async function runTui(args = process.argv.slice(2)): Promise<number> {
     const session = supervisorSocketPath
       ? await initialSessionForExplicitSupervisor(supervisor, args)
       : await chooseManagedSession(supervisor, args);
-    if (!session.socketPath) {
-      throw new Error(`Session ${session.id} did not provide a live socket.`);
+    const sessionEndpoint = endpointForSession(session, supervisorSocketPath);
+    if (!sessionEndpoint) {
+      throw new Error(`Session ${session.id} did not provide a live endpoint.`);
     }
-    initialSocketPath = session.socketPath;
+    initialSocketPath = sessionEndpoint;
   }
 
   const client = new SessionClient(initialSocketPath);
