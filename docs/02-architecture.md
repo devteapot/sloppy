@@ -53,6 +53,11 @@ providers and/or a session plugin. Optional plugins include `persistent-goal`,
 `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`,
 `delegation`, `spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
 
+Public session providers use the same SLOP message protocol over local Unix
+sockets and optional WebSocket listeners. Unix sockets remain the default local
+transport; WebSocket listeners are opt-in for remote clients and keep the same
+state tree, affordance, query, invoke, subscription, and patch semantics.
+
 ## MCP Compatibility
 
 MCP support is an optional provider, not a second runtime architecture. The
@@ -132,8 +137,8 @@ can select different sessions concurrently.
 Managed TUI launch is implemented above this agnostic supervisor. The launcher
 resolves the real current working directory into a launch scope, starts or
 reuses that scope's managed supervisor, creates a fresh session by default, and
-attaches to the selected session's public provider socket. Switching sessions
-changes the TUI's socket; it does not collapse multiple sessions into one
+attaches to the selected session's public provider endpoint. Switching sessions
+changes the TUI's session endpoint; it does not collapse multiple sessions into one
 provider tree. Stopping a session ends its live process while keeping its
 snapshot and registry record restorable. Selecting a dormant session restores it
 through the normal session snapshot recovery path. Each supervised session still

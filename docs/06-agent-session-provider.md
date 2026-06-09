@@ -42,7 +42,9 @@ connection-bound supervisor client lease. Its `/sessions` items include runtime
 status plus compact live turn, goal, queue, pending approval, running task, and
 last-activity summary fields, plus each session's approval mode (`normal` or
 `auto`), so UIs can compare supervised sessions without reading runtime
-internals. Supervisor session items expose approval mode for visibility only;
+internals. Live session records include `socket_path` for the local Unix
+transport and may include `web_socket_url`/`ws_url` when a session WebSocket
+listener is active. Supervisor session items expose approval mode for visibility only;
 approval-mode mutation stays on the selected Session provider's `/approvals`
 affordance. When
 `create_session` omits `approval_mode`, the supervisor propagates the current
