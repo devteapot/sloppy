@@ -27,10 +27,9 @@ import { SpecProvider } from "./spec/provider";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
 import { VoiceProvider } from "./voice/provider";
-import { voiceManagerFor } from "./voice/runtime";
+import { speechManagerFor } from "./voice/runtime";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
-
 function registeredProvider(
   input: Omit<RegisteredProvider, "kind"> & { kind?: RegisteredProvider["kind"] },
 ): RegisteredProvider {
@@ -461,7 +460,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {
     ...firstPartyPluginMetadata("voice"),
     createProviders: (config) => {
-      const provider = new VoiceProvider(voiceManagerFor(config));
+      const provider = new VoiceProvider(speechManagerFor(config));
       return [
         registeredProvider({
           id: "voice",
@@ -469,12 +468,11 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transport: new InProcessTransport(provider.server),
           transportLabel: "in-process",
           stop: () => provider.stop(),
-          approvals: provider.approvals,
           systemPromptFragment: () =>
             [
-              "Voice services are exposed through the voice provider as SLOP state.",
-              "Observe /voice/tts before speaking; invoke /tts.synthesize to voice a concise reply only when speech output is appropriate.",
-              "/stt.transcribe converts caller audio to text. Sending audio or text to a non-local endpoint may require approval.",
+              "Speech configuration is exposed through the voice provider as SLOP state.",
+              "Observe /voice/stt and /voice/tts for profile readiness; invoke set_profile to switch profiles.",
+              "Speaking happens through the session's /conversation node (voice-conversation plugin), not through this provider.",
             ].join("\n"),
         }),
       ];

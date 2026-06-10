@@ -563,24 +563,23 @@ export const endpointAuthSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("secure_store") }).strict(),
 ]);
 
-export const sttProtocolSchema = z.enum(["openai-transcriptions", "deepgram", "elevenlabs"]);
-export const ttsProtocolSchema = z.enum(["openai-speech", "elevenlabs", "piper"]);
-
-const voiceAudioFormatSchema = z.enum(["mp3", "wav", "opus", "pcm"]);
+// Speech protocols are plain strings validated against the runtime's speech
+// protocol registry at profile resolution (an unknown protocol surfaces as the
+// profile's invalidReason, not a config-load crash). A closed enum here would
+// prevent plugins from registering new protocols.
+export const sttProtocolSchema = z.string().trim().min(1);
+export const ttsProtocolSchema = z.string().trim().min(1);
 
 const voiceSttModelSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
     language: z.string().trim().min(1).optional(),
-    streaming: z.boolean().optional(),
   })
   .strict();
 
 const voiceTtsVoiceSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
-    format: voiceAudioFormatSchema.optional(),
-    streaming: z.boolean().optional(),
   })
   .strict();
 
@@ -588,9 +587,13 @@ const voiceSttEndpointSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
     protocol: sttProtocolSchema,
+    // Wire-format variant within the protocol family (realtime-stt: openai | vllm).
+    dialect: z.string().trim().min(1).default("openai"),
     baseUrl: z.string().trim().min(1).optional(),
     auth: endpointAuthSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
+    // PCM16 input rate the service expects (OpenAI realtime requires 24000).
+    sampleRate: z.number().int().min(8000).max(48000).default(16000),
     models: z.record(z.string().min(1), voiceSttModelSchema).default({}),
   })
   .strict();
@@ -602,9 +605,10 @@ const voiceTtsEndpointSchema = z
     baseUrl: z.string().trim().min(1).optional(),
     auth: endpointAuthSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
-    // Synthesis model (e.g. "gpt-4o-mini-tts", "eleven_multilingual_v2"). A
-    // profile may override it; Piper ignores it (voice is the model).
+    // Synthesis model (e.g. "gpt-4o-mini-tts", "kokoro"). A profile may override it.
     model: z.string().trim().min(1).optional(),
+    // PCM16 rate of the service's `response_format: "pcm"` output.
+    pcmSampleRate: z.number().int().min(8000).max(48000).default(24000),
     voices: z.record(z.string().min(1), voiceTtsVoiceSchema).default({}),
   })
   .strict();
@@ -626,9 +630,7 @@ const voiceTtsProfileSchema = z
     endpointId: z.string().min(1),
     voice: z.string().min(1),
     model: z.string().min(1).optional(),
-    format: voiceAudioFormatSchema.optional(),
     speed: z.number().min(0.25).max(4).optional(),
-    autospeak: z.boolean().default(false),
   })
   .strict();
 
@@ -660,32 +662,30 @@ const voicePluginConfigSchema = z
     tts: { endpoints: {}, profiles: [] },
   });
 
-// Conversation loop on top of the voice provider: capture an utterance, transcribe
-// it via the voice provider's /stt, run a turn, synthesize the reply via /tts, and
-// play it back. Audio I/O is swappable: `host` uses the local mic/speaker (dev /
-// pre-hardware), `robot` routes capture/playback through the reachy provider's
-// affordances. STT/TTS profiles live in the `voice` plugin — not duplicated here.
+// Streaming voice conversation loop: mic PCM → realtime STT session → agent
+// turn → streamed TTS → streamed playback. Audio I/O is swappable: `host` uses
+// the local mic/speaker (dev / pre-hardware), `robot` routes audio through the
+// reachy provider's affordances. STT/TTS profiles live in the `voice` plugin —
+// not duplicated here.
 const voiceConversationAudioConfigSchema = z
   .object({
     backend: z.enum(["host", "robot"]).default("host"),
-    // Optional command overrides. Capture writes a WAV stream to stdout; playback
-    // receives the audio file path via a `{file}` token. Defaults target macOS
-    // (sox capture, afplay playback) and are built from silenceStopSeconds.
-    captureCommand: z.array(z.string().min(1)).min(1).optional(),
-    playbackCommand: z.array(z.string().min(1)).min(1).optional(),
-    silenceStopSeconds: z.number().min(0.2).max(10).default(1.2),
-    // sox VAD start/stop amplitude threshold as a percentage of full scale.
-    // Low by default — laptop/Studio mics are quiet; raise to reject background noise.
-    silenceThresholdPercent: z.number().min(0.1).max(50).default(1),
-    maxUtteranceSeconds: z.number().min(1).max(300).default(30),
+    // Optional command overrides; both support a `{rate}` token (sample rate in
+    // Hz). streamCommand must write mono signed 16-bit LE PCM to stdout at the
+    // active STT endpoint's rate; playStreamCommand must play the same framing
+    // from stdin. Defaults target macOS (sox `sox -d` capture / `play` output).
+    streamCommand: z.array(z.string().min(1)).min(1).optional(),
+    playStreamCommand: z.array(z.string().min(1)).min(1).optional(),
+    streamChunkMs: z.number().min(10).max(1000).default(40),
     // Provider id supplying mic/speaker affordances when backend === "robot".
     providerId: z.string().min(1).default("reachy"),
   })
+  // Strict so removed batch-era fields (captureCommand, silence*, …) fail
+  // loudly instead of being silently ignored.
+  .strict()
   .default({
     backend: "host",
-    silenceStopSeconds: 1.2,
-    silenceThresholdPercent: 1,
-    maxUtteranceSeconds: 30,
+    streamChunkMs: 40,
     providerId: "reachy",
   });
 
@@ -696,22 +696,29 @@ const voiceConversationEmbodimentConfigSchema = z
   })
   .default({ enabled: true, providerId: "reachy" });
 
+const voiceConversationRealtimeConfigSchema = z
+  .object({
+    autoStartMode: z.enum(["off", "continuous"]).default("off"),
+    defaultStartMode: z.enum(["single_turn", "continuous"]).default("single_turn"),
+  })
+  .default({ autoStartMode: "off", defaultStartMode: "single_turn" });
+
 const voiceConversationPluginConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     audio: voiceConversationAudioConfigSchema,
     embodiment: voiceConversationEmbodimentConfigSchema,
+    realtime: voiceConversationRealtimeConfigSchema,
   })
   .default({
     enabled: false,
     audio: {
       backend: "host",
-      silenceStopSeconds: 1.2,
-      silenceThresholdPercent: 1,
-      maxUtteranceSeconds: 30,
+      streamChunkMs: 40,
       providerId: "reachy",
     },
     embodiment: { enabled: true, providerId: "reachy" },
+    realtime: { autoStartMode: "off", defaultStartMode: "single_turn" },
   });
 
 const pluginsConfigSchema = z.preprocess(
@@ -925,7 +932,6 @@ export type LlmEndpointInputConfig = Omit<LlmEndpointConfig, "auth"> & {
 export type EndpointAuthConfig = z.infer<typeof endpointAuthSchema>;
 export type SttProtocol = z.infer<typeof sttProtocolSchema>;
 export type TtsProtocol = z.infer<typeof ttsProtocolSchema>;
-export type VoiceAudioFormat = z.infer<typeof voiceAudioFormatSchema>;
 export type VoiceSttEndpointConfig = z.infer<typeof voiceSttEndpointSchema>;
 export type VoiceTtsEndpointConfig = z.infer<typeof voiceTtsEndpointSchema>;
 export type VoiceSttProfileConfig = z.infer<typeof voiceSttProfileSchema>;

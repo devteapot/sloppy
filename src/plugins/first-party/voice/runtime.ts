@@ -1,13 +1,13 @@
 import type { SloppyConfig } from "../../../config/schema";
-import { VoiceProfileManager } from "../../../voice/profile-manager";
+import { SpeechProfileManager } from "../../../speech/profile-manager";
 
-const voiceManagers = new WeakMap<SloppyConfig, VoiceProfileManager>();
+const speechManagers = new WeakMap<SloppyConfig, SpeechProfileManager>();
 
-export function voiceManagerFor(config: SloppyConfig): VoiceProfileManager {
-  let manager = voiceManagers.get(config);
+export function speechManagerFor(config: SloppyConfig): SpeechProfileManager {
+  let manager = speechManagers.get(config);
   if (!manager) {
-    manager = new VoiceProfileManager(config.plugins.voice);
-    voiceManagers.set(config, manager);
+    manager = new SpeechProfileManager(config.plugins.voice);
+    speechManagers.set(config, manager);
   }
   return manager;
 }
