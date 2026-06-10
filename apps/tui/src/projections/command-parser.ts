@@ -1,8 +1,5 @@
-import type {
-  PluginActionContribution,
-  SessionViewSnapshot,
-  TuiRoute,
-} from "../backend/slop-types";
+import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
+import { readActionSlash } from "./action-slash";
 import {
   parseCommandOptions,
   parseParams,
@@ -341,38 +338,5 @@ function parsePluginSlashName(rawName: string): ParsedPluginSlashName | null {
   return {
     pluginId: rawName.slice(0, separator).toLowerCase(),
     command: rawName.slice(separator + 1).toLowerCase(),
-  };
-}
-
-// Parked here until the shared action-slash extraction module exists; the
-// identical logic currently also lives inline in slash-catalog.ts.
-type ActionSlashPresentation = {
-  name: string;
-  aliases?: string[];
-  signature?: string;
-};
-
-function readActionSlash(action: PluginActionContribution): ActionSlashPresentation | null {
-  const tui = action.presentation?.tui;
-  const slash =
-    tui && typeof tui === "object" && !Array.isArray(tui)
-      ? (tui as Record<string, unknown>).slash
-      : undefined;
-  if (!slash || typeof slash !== "object" || Array.isArray(slash)) {
-    return null;
-  }
-
-  const slashRecord = slash as Record<string, unknown>;
-  const name = slashRecord.name;
-  if (typeof name !== "string" || name.length === 0) {
-    return null;
-  }
-
-  return {
-    name,
-    aliases: Array.isArray(slashRecord.aliases)
-      ? slashRecord.aliases.filter((alias): alias is string => typeof alias === "string")
-      : undefined,
-    signature: typeof slashRecord.signature === "string" ? slashRecord.signature : undefined,
   };
 }

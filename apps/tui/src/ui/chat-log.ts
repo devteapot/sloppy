@@ -3,7 +3,6 @@ import {
   Container,
   Markdown,
   Text,
-  visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
@@ -17,6 +16,7 @@ import {
   renderableMessageText,
   type ThinkingRenderMode,
 } from "../projections/stream-assembler";
+import { padToWidth } from "./format";
 import { safeMarkdownText, safePlainText } from "./render-safety";
 import { PlainTranscriptText, SafeMarkdown, StreamingMarkdown } from "./streaming-markdown";
 import { markdownTheme, orange } from "./theme";
@@ -288,11 +288,6 @@ function blockRendererKey(message: RenderableMessage, block: RenderableBlock): s
     return "final-markdown";
   }
   return "plain";
-}
-
-function padToWidth(line: string, width: number): string {
-  const visible = visibleWidth(line);
-  return `${line}${" ".repeat(Math.max(0, width - visible))}`;
 }
 
 export type ChatLogRenderMode =

@@ -3,6 +3,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { SessionViewSnapshot } from "../backend/slop-types";
 import { projectIndicators } from "../projections/manifest-projection";
 import { formatHomePath } from "./display-path";
+import { formatCompact } from "./format";
 import { sanitizeTerminalText } from "./render-safety";
 import { dim } from "./theme";
 
@@ -132,8 +133,4 @@ function formatTokenCount(value: number): string {
     return `${formatCompact(value / 1_000)}k`;
   }
   return String(Math.round(value));
-}
-
-function formatCompact(value: number): string {
-  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
 }

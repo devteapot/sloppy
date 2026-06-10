@@ -501,6 +501,63 @@ describe("TUI v2 manifest mapping", () => {
     expect(detectInlineSecret([])).toBeUndefined();
   });
 
+  test("slash catalog and command parser agree on plugin slash presentations", () => {
+    const withPlugin = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
+      id: "plugins",
+      type: "collection",
+      properties: { count: 1, ui_manifest_version: 2 },
+      children: [
+        {
+          id: "demo",
+          type: "item",
+          properties: {
+            id: "demo",
+            status: "active",
+            ui: {
+              actions: [
+                {
+                  id: "demo:deploy",
+                  label: "Deploy",
+                  description: "Deploy a target",
+                  invoke: { path: "/deploy", action: "run_deploy" },
+                  argument: { name: "target", required: true, param: "target" },
+                  presentation: {
+                    tui: { slash: { name: "deploy", aliases: ["ship"], signature: "<target>" } },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const snapshot = applyPathSnapshot(withPlugin, "/deploy", {
+      id: "deploy",
+      type: "control",
+      properties: {},
+      affordances: [{ action: "run_deploy" }],
+    });
+
+    const entry = buildSlashEntries(snapshot.plugins, {
+      actionsByPath: snapshot.actionsByPath,
+    }).find((candidate) => candidate.name === "demo:deploy");
+    expect(entry).toMatchObject({
+      name: "demo:deploy",
+      aliases: ["demo:ship"],
+      signature: "<target>",
+    });
+
+    const expected = {
+      type: "plugin_action",
+      pluginId: "demo",
+      path: "/deploy",
+      action: "run_deploy",
+      params: { target: "prod" },
+    };
+    expect(parsePluginSlashCommand("/demo:deploy prod", snapshot)).toMatchObject(expected);
+    expect(parsePluginSlashCommand("/demo:ship prod", snapshot)).toMatchObject(expected);
+  });
+
   test("projects plugin actions, indicators, and command palette entries from live state", () => {
     const withPlugins = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
       id: "plugins",

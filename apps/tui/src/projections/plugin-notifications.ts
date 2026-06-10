@@ -1,4 +1,5 @@
 import type { PluginNotificationContribution, SessionViewSnapshot } from "../backend/slop-types";
+import { readObjectPath, readObjectProperty } from "./object-path";
 
 export type RuntimePluginNotification = PluginNotificationContribution & {
   pluginId: string;
@@ -7,18 +8,6 @@ export type RuntimePluginNotification = PluginNotificationContribution & {
 export type TriggeredPluginNotification = RuntimePluginNotification & {
   key: string;
 };
-
-function toCamelCase(value: string): string {
-  return value.replace(/[-_]([a-zA-Z0-9])/g, (_, char: string) => char.toUpperCase());
-}
-
-function readObjectProperty(source: unknown, key: string): unknown {
-  if (!source || typeof source !== "object" || Array.isArray(source)) {
-    return undefined;
-  }
-  const record = source as Record<string, unknown>;
-  return record[key] ?? record[toCamelCase(key)];
-}
 
 function collectPluginNotifications(snapshot: SessionViewSnapshot): RuntimePluginNotification[] {
   return snapshot.plugins.flatMap((plugin) =>
@@ -35,13 +24,9 @@ export function readPluginNotificationValue(
   path: string,
   prop: string,
 ): string | undefined {
-  const segments = path.split("/").filter(Boolean);
-  let current: unknown = snapshot;
-  for (const segment of segments) {
-    current = readObjectProperty(current, segment);
-    if (current === undefined) {
-      return undefined;
-    }
+  const current = readObjectPath(snapshot, path);
+  if (current === undefined) {
+    return undefined;
   }
 
   const value = readObjectProperty(current, prop);

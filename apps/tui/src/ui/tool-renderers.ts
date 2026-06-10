@@ -1,5 +1,6 @@
 import type { ToolCallResult } from "../backend/slop-types";
 import type { Verbosity } from "../projections/command-types";
+import { formatCompact } from "./format";
 import { sanitizeTerminalText } from "./render-safety";
 import { bgAdd, bgRemove, bold, dim, red } from "./theme";
 
@@ -244,10 +245,6 @@ function formatBytes(bytes: number): string {
     return `${formatCompact(bytes / 1_000)}KB`;
   }
   return `${bytes}B`;
-}
-
-function formatCompact(value: number): string {
-  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
 }
 
 type RenderHunk = {

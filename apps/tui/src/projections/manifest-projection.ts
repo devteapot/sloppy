@@ -4,6 +4,7 @@ import type {
   PluginItem,
   SessionViewSnapshot,
 } from "../backend/slop-types";
+import { readObjectPath, readObjectProperty } from "./object-path";
 
 export type ProjectedPluginAction = {
   pluginId: string;
@@ -31,25 +32,6 @@ export function projectPluginActions(snapshot: SessionViewSnapshot): ProjectedPl
       available: actionAvailable(snapshot, action),
     })),
   );
-}
-
-function readObjectProperty(source: unknown, key: string): unknown {
-  if (!source || typeof source !== "object" || Array.isArray(source)) {
-    return undefined;
-  }
-  const record = source as Record<string, unknown>;
-  return record[key] ?? record[key.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase())];
-}
-
-function readSnapshotPath(snapshot: SessionViewSnapshot, path: string): unknown {
-  let current: unknown = snapshot;
-  for (const segment of path.split("/").filter(Boolean)) {
-    current = readObjectProperty(current, segment);
-    if (current === undefined) {
-      return undefined;
-    }
-  }
-  return current;
 }
 
 function formatValue(value: unknown, format: string | undefined): string {
@@ -95,7 +77,7 @@ function indicatorVisible(indicator: PluginIndicatorContribution, source: unknow
 export function projectIndicators(snapshot: SessionViewSnapshot): ProjectedIndicator[] {
   return snapshot.plugins.flatMap((plugin: PluginItem) =>
     (plugin.ui.indicators ?? []).flatMap((indicator): ProjectedIndicator[] => {
-      const source = readSnapshotPath(snapshot, indicator.path);
+      const source = readObjectPath(snapshot, indicator.path);
       if (!source || !indicatorVisible(indicator, source)) {
         return [];
       }

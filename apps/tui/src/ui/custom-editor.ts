@@ -1,14 +1,9 @@
-import {
-  CURSOR_MARKER,
-  Editor,
-  type TUI,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { ApprovalMode } from "../backend/slop-types";
 import type { SlashEntry } from "../projections/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
+import { padToWidth } from "./format";
 import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
 
 type ComposerSigilKind = "default" | "slash" | "shell";
@@ -197,11 +192,6 @@ function splitEditorRender(lines: string[]): { inputLines: string[]; extraLines:
 function isEditorBorderLine(line: string): boolean {
   const plain = stripAnsi(line).trimEnd();
   return /^─+$/.test(plain) || /^─── [↑↓] \d+ more ─*$/.test(plain);
-}
-
-function padToWidth(line: string, width: number): string {
-  const clipped = visibleWidth(line) > width ? truncateToWidth(line, width, "", true) : line;
-  return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
 function composerSigilTrigger(kind: ComposerSigilKind): "/" | "$" | null {
