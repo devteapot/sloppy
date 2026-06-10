@@ -1,6 +1,12 @@
 import type { Affordance, ResultMessage, SlopNode } from "@slop-ai/consumer";
 
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "disconnected" | "error";
+export type ConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "reconnecting"
+  | "connected"
+  | "disconnected"
+  | "error";
 
 export type TuiRoute =
   | "chat"
@@ -342,6 +348,7 @@ export type SessionViewSnapshot = {
     providerId?: string;
     providerName?: string;
     error?: string;
+    reconnectAttempt?: number;
   };
   session: SessionMeta;
   llm: LlmState;

@@ -10,16 +10,11 @@ import {
 import type { SessionClient } from "../backend/session-client";
 import type { ApprovalMode, SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
-import { submitMessage } from "../handlers/submit";
-import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
-import {
-  type LocalCommand,
-  parseLocalCommand,
-  parsePluginSlashCommand,
-  type Verbosity,
-} from "../state/commands";
-import { evaluatePluginNotifications } from "../state/plugin-notifications";
-import { buildSlashEntries } from "../state/slash-catalog";
+import { parseLocalCommand, parsePluginSlashCommand } from "../projections/command-parser";
+import type { LocalCommand, Verbosity } from "../projections/command-types";
+import { buildCommandPaletteCommands, type PaletteCommand } from "../projections/palette-items";
+import { evaluatePluginNotifications } from "../projections/plugin-notifications";
+import { buildSlashEntries } from "../projections/slash-catalog";
 import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
@@ -165,7 +160,8 @@ export class AppUi {
   private headerText(snapshot: SessionViewSnapshot): string {
     const sessionCount = this.supervisorSnapshot?.sessions.length;
     const suffix = sessionCount ? ` | ${sessionCount} sessions` : "";
-    return `sloppy ${snapshot.connection.status}${suffix}`;
+    const attempt = snapshot.connection.reconnectAttempt;
+    return `sloppy ${snapshot.connection.status}${attempt ? ` (${attempt})` : ""}${suffix}`;
   }
 
   private async submit(text: string): Promise<void> {
@@ -178,7 +174,10 @@ export class AppUi {
       await this.executeCommand(command);
       return;
     }
-    await submitMessage(this.client, this.editor.prepareSubmission(text));
+    const prepared = this.editor.prepareSubmission(text).trim();
+    if (prepared) {
+      await this.client.sendMessage(prepared);
+    }
   }
 
   private async executeCommand(command: LocalCommand): Promise<void> {

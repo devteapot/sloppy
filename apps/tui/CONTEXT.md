@@ -2,6 +2,12 @@
 
 The first-party terminal UI under `apps/tui/`: a scrollback-preserving human UI that consumes public Session provider and Session supervisor sockets.
 
+## Boundaries
+
+**Launcher bootstrap surface**:
+`apps/tui/src/index.ts` may import exactly `resolveLaunchScope`, `supervisorRuntimePaths`, `ensureRuntimeRoot`, `assertRemovableSocketPath` (and `type LaunchScope`) from `src/session` (the public index). Managed launch is TUI launcher behavior layered on the public supervisor; sharing the launch-scope path derivation keeps socket discovery from drifting between core and TUI.
+_Avoid_: importing `src/session/launch-scope` (or any other `src/**` module) directly from the TUI; runtime internals stay behind the public sockets.
+
 ## Language
 
 ### Composer Input

@@ -1,4 +1,5 @@
 import type { PluginItem } from "../backend/slop-types";
+import { readActionSlash } from "./action-slash";
 
 // Catalog of built-in slash commands surfaced in the autocomplete popover.
 // Keep entries terse — `name` is the canonical form (no leading slash);
@@ -101,22 +102,9 @@ export function buildSlashEntries(
   const seenPluginNames = new Set<string>();
   const pluginEntries = plugins.flatMap((plugin) =>
     (plugin.ui.actions ?? []).flatMap((action): SlashEntry[] => {
-      const tui = action.presentation?.tui;
-      const slash =
-        tui && typeof tui === "object" && !Array.isArray(tui)
-          ? (tui as Record<string, unknown>).slash
-          : undefined;
-      if (!slash || typeof slash !== "object" || Array.isArray(slash)) {
-        return [];
-      }
-      const slashRecord = slash as Record<string, unknown>;
-      const name = slashRecord.name;
-      const aliases = Array.isArray(slashRecord.aliases)
-        ? slashRecord.aliases.filter((alias): alias is string => typeof alias === "string")
-        : undefined;
+      const slash = readActionSlash(action);
       if (
-        typeof name !== "string" ||
-        name.length === 0 ||
+        !slash ||
         !validPluginSlashNamespace(plugin.id) ||
         !slashActionAvailable(
           options,
@@ -127,8 +115,10 @@ export function buildSlashEntries(
         return [];
       }
 
-      const qualifiedName = qualifyPluginSlashName(plugin.id, name);
-      const qualifiedAliases = aliases?.map((alias) => qualifyPluginSlashName(plugin.id, alias));
+      const qualifiedName = qualifyPluginSlashName(plugin.id, slash.name);
+      const qualifiedAliases = slash.aliases?.map((alias) =>
+        qualifyPluginSlashName(plugin.id, alias),
+      );
       const candidateNames = [qualifiedName, ...(qualifiedAliases ?? [])].map((candidate) =>
         candidate.toLowerCase(),
       );
@@ -143,7 +133,7 @@ export function buildSlashEntries(
         {
           name: qualifiedName,
           aliases: qualifiedAliases,
-          signature: typeof slashRecord.signature === "string" ? slashRecord.signature : undefined,
+          signature: slash.signature,
           description: action.description,
         },
       ];

@@ -34,6 +34,10 @@ export class StreamingMarkdown implements Component {
     this.cachedText = undefined;
     this.cachedWidth = undefined;
     this.cachedLines = undefined;
+    // Stable units from the old text/width are dead weight; recomputing the
+    // still-stable prefix once per invalidation is cheaper than holding every
+    // (width, unit) pair for the lifetime of the component.
+    this.unitCache.clear();
   }
 
   render(width: number): string[] {

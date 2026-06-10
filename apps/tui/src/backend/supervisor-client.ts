@@ -6,7 +6,13 @@ import {
   WebSocketClientTransport,
 } from "@slop-ai/consumer";
 
-import type { ApprovalMode } from "./slop-types";
+import {
+  connectWithTimeout,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  type ReconnectOptions,
+  ReconnectScheduler,
+} from "./connect-support";
+import type { ApprovalMode, ConnectionStatus } from "./slop-types";
 
 export type SupervisorSessionItem = {
   id: string;
@@ -47,9 +53,10 @@ export type SupervisorScopeItem = {
 
 export type SupervisorSnapshot = {
   connection: {
-    status: "idle" | "connecting" | "connected" | "disconnected" | "error";
+    status: ConnectionStatus;
     socketPath: string;
     error?: string;
+    reconnectAttempt?: number;
   };
   resumeSessionId?: string;
   resumeSocketPath?: string;
@@ -65,6 +72,12 @@ export type SupervisorClientEvent =
   | { type: "error"; message: string };
 
 export type SupervisorClientListener = (event: SupervisorClientEvent) => void;
+
+export type SessionSupervisorClientOptions = {
+  leaseLabel?: string;
+  connectTimeoutMs?: number;
+  reconnect?: ReconnectOptions | false;
+};
 
 const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
   { path: "/session", depth: 1 },
@@ -214,7 +227,18 @@ export class SessionSupervisorClient {
   private listeners = new Set<SupervisorClientListener>();
   private pathBySubscriptionId = new Map<string, string>();
 
-  constructor(readonly socketPath: string) {
+  private readonly leaseLabel: string;
+  private readonly connectTimeoutMs: number;
+  private readonly reconnect: ReconnectScheduler | null;
+  private suppressReconnect = false;
+
+  constructor(
+    readonly socketPath: string,
+    options: SessionSupervisorClientOptions = {},
+  ) {
+    this.leaseLabel = options.leaseLabel ?? "tui";
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.reconnect = options.reconnect === false ? null : new ReconnectScheduler(options.reconnect);
     this.snapshot = emptySnapshot(socketPath);
   }
 
@@ -224,7 +248,7 @@ export class SessionSupervisorClient {
 
   on(listener: SupervisorClientListener): () => void {
     this.listeners.add(listener);
-    listener({ type: "snapshot", snapshot: this.snapshot });
+    this.dispatch(listener, { type: "snapshot", snapshot: this.snapshot });
     return () => {
       this.listeners.delete(listener);
     };
@@ -241,6 +265,8 @@ export class SessionSupervisorClient {
   }
 
   disconnect(): void {
+    this.suppressReconnect = true;
+    this.reconnect?.reset();
     this.consumer?.disconnect();
     this.consumer = null;
     this.pathBySubscriptionId.clear();
@@ -326,14 +352,14 @@ export class SessionSupervisorClient {
 
   async registerClientLease(selectedSessionId?: string): Promise<ResultMessage> {
     return this.invoke("/session", "register_client_lease", {
-      label: "tui",
+      label: this.leaseLabel,
       ...(selectedSessionId && { selected_session_id: selectedSessionId }),
     });
   }
 
   async updateClientLease(selectedSessionId?: string): Promise<ResultMessage> {
     return this.invoke("/session", "update_client_lease", {
-      label: "tui",
+      label: this.leaseLabel,
       ...(selectedSessionId && { selected_session_id: selectedSessionId }),
     });
   }
@@ -358,13 +384,15 @@ export class SessionSupervisorClient {
     try {
       const consumer = new SlopConsumer(createTransportFromEndpoint(this.socketPath));
       this.consumer = consumer;
-      await consumer.connect();
+      await connectWithTimeout(consumer, this.connectTimeoutMs, this.socketPath);
+      this.reconnect?.reset();
       this.updateSnapshot({
         ...this.snapshot,
         connection: {
           ...this.snapshot.connection,
           status: "connected",
           error: undefined,
+          reconnectAttempt: undefined,
         },
       });
 
@@ -381,13 +409,17 @@ export class SessionSupervisorClient {
         }
         this.consumer = null;
         this.pathBySubscriptionId.clear();
-        this.updateSnapshot({
-          ...this.snapshot,
-          connection: {
-            ...this.snapshot.connection,
-            status: "disconnected",
-          },
-        });
+        if (this.suppressReconnect || !this.reconnect) {
+          this.updateSnapshot({
+            ...this.snapshot,
+            connection: {
+              ...this.snapshot.connection,
+              status: "disconnected",
+            },
+          });
+          return;
+        }
+        this.scheduleReconnect();
       });
       consumer.onError((error) => {
         this.emit({ type: "error", message: error.message });
@@ -468,9 +500,62 @@ export class SessionSupervisorClient {
     this.emit({ type: "snapshot", snapshot });
   }
 
+  private scheduleReconnect(): void {
+    if (!this.reconnect) {
+      return;
+    }
+    const scheduled = this.reconnect.schedule(() => {
+      this.connect().catch(() => {
+        // connectInternal already published status "error"; keep retrying
+        // until the budget runs out.
+        if (!this.suppressReconnect) {
+          this.scheduleReconnect();
+        }
+      });
+    });
+    if (!scheduled) {
+      const attempts = this.reconnect.attemptCount;
+      this.reconnect.reset();
+      this.updateSnapshot({
+        ...this.snapshot,
+        connection: {
+          ...this.snapshot.connection,
+          status: "disconnected",
+          reconnectAttempt: undefined,
+        },
+      });
+      this.emit({
+        type: "error",
+        message: `Lost connection to ${this.socketPath}; gave up after ${attempts} attempts.`,
+      });
+      return;
+    }
+    this.updateSnapshot({
+      ...this.snapshot,
+      connection: {
+        ...this.snapshot.connection,
+        status: "reconnecting",
+        reconnectAttempt: this.reconnect.attemptCount,
+      },
+    });
+  }
+
   private emit(event: SupervisorClientEvent): void {
     for (const listener of this.listeners) {
+      this.dispatch(listener, event);
+    }
+  }
+
+  private dispatch(listener: SupervisorClientListener, event: SupervisorClientEvent): void {
+    try {
       listener(event);
+    } catch {
+      // Deliberately swallowed: a throwing UI listener must not break event
+      // fan-out or crash the client, and stderr writes would corrupt the
+      // TUI screen. Set SLOPPY_TUI_DEBUG=1 and redirect stderr to inspect.
+      if (process.env.SLOPPY_TUI_DEBUG) {
+        console.error("[sloppy-tui] supervisor listener threw on event:", event.type);
+      }
     }
   }
 }

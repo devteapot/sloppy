@@ -705,7 +705,3 @@ export function withInspectResult(
     error: result.status === "error" ? result.error?.message : undefined,
   });
 }
-
-export function findRootChild(node: SlopNode, id: string): SlopNode | null {
-  return node.children?.find((child) => child.id === id) ?? null;
-}

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
 import { action, createSlopServer } from "@slop-ai/server";
 import { listenUnix } from "@slop-ai/server/unix";
@@ -13,17 +15,28 @@ import {
   mapTranscriptNode,
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
-import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
-import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
-import { parseLocalCommand, parsePluginSlashCommand } from "../apps/tui/src/state/commands";
-import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
+import {
+  SessionSupervisorClient,
+  type SupervisorSnapshot,
+} from "../apps/tui/src/backend/supervisor-client";
+import {
+  parseLocalCommand,
+  parsePluginSlashCommand,
+} from "../apps/tui/src/projections/command-parser";
+import {
+  projectIndicators,
+  projectPluginActions,
+} from "../apps/tui/src/projections/manifest-projection";
+import { buildCommandPaletteCommands } from "../apps/tui/src/projections/palette-items";
 import {
   evaluatePluginNotifications,
   readPluginNotificationValue,
-} from "../apps/tui/src/state/plugin-notifications";
-import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
-import { assembleTranscript } from "../apps/tui/src/state/stream-assembler";
+} from "../apps/tui/src/projections/plugin-notifications";
+import { detectInlineSecret } from "../apps/tui/src/projections/secret-detection";
+import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/projections/slash-catalog";
+import { assembleTranscript } from "../apps/tui/src/projections/stream-assembler";
 import { CustomEditor } from "../apps/tui/src/ui/custom-editor";
+import { singleLineText } from "../apps/tui/src/ui/render-safety";
 import { routeOverlayText } from "../apps/tui/src/ui/route-overlay";
 import { SlashAutocompleteProvider } from "../apps/tui/src/ui/slash-autocomplete";
 import { StatusLine } from "../apps/tui/src/ui/status-line";
@@ -473,6 +486,84 @@ describe("TUI v2 manifest mapping", () => {
     expect(buildSlashEntries().find((entry) => entry.name === "reload-config")).toBeTruthy();
   });
 
+  test("rejects inline secrets in /profile and detects secret-shaped values", () => {
+    expect(parseLocalCommand("/profile openai gpt-5 --api-key sk-abc12345678")?.type).toBe(
+      "rejected",
+    );
+
+    expect(detectInlineSecret(["--api-key", "sk-abc12345678"])).toBeDefined();
+    expect(detectInlineSecret(["--api-key=sk-abc12345678"])).toBeDefined();
+    expect(detectInlineSecret(["--token", "anything-at-all"])).toBeDefined();
+    expect(detectInlineSecret(["ghp_0123456789abcdef0123"])).toBeDefined();
+    expect(detectInlineSecret(["github_pat_11ABCDEFG0123456789012"])).toBeDefined();
+    expect(detectInlineSecret(["xoxb-1234567890-abc"])).toBeDefined();
+    expect(detectInlineSecret(["AKIAIOSFODNN7EXAMPLE"])).toBeDefined();
+    expect(detectInlineSecret(["--label=sk-abc12345678"])).toBeDefined();
+
+    expect(detectInlineSecret(["--token"])).toBeUndefined();
+    expect(detectInlineSecret(["--token", "--no-default"])).toBeUndefined();
+    expect(detectInlineSecret(["--label", "my profile"])).toBeUndefined();
+    expect(detectInlineSecret(["openai", "gpt-5"])).toBeUndefined();
+    expect(detectInlineSecret([])).toBeUndefined();
+  });
+
+  test("slash catalog and command parser agree on plugin slash presentations", () => {
+    const withPlugin = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
+      id: "plugins",
+      type: "collection",
+      properties: { count: 1, ui_manifest_version: 2 },
+      children: [
+        {
+          id: "demo",
+          type: "item",
+          properties: {
+            id: "demo",
+            status: "active",
+            ui: {
+              actions: [
+                {
+                  id: "demo:deploy",
+                  label: "Deploy",
+                  description: "Deploy a target",
+                  invoke: { path: "/deploy", action: "run_deploy" },
+                  argument: { name: "target", required: true, param: "target" },
+                  presentation: {
+                    tui: { slash: { name: "deploy", aliases: ["ship"], signature: "<target>" } },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const snapshot = applyPathSnapshot(withPlugin, "/deploy", {
+      id: "deploy",
+      type: "control",
+      properties: {},
+      affordances: [{ action: "run_deploy" }],
+    });
+
+    const entry = buildSlashEntries(snapshot.plugins, {
+      actionsByPath: snapshot.actionsByPath,
+    }).find((candidate) => candidate.name === "demo:deploy");
+    expect(entry).toMatchObject({
+      name: "demo:deploy",
+      aliases: ["demo:ship"],
+      signature: "<target>",
+    });
+
+    const expected = {
+      type: "plugin_action",
+      pluginId: "demo",
+      path: "/deploy",
+      action: "run_deploy",
+      params: { target: "prod" },
+    };
+    expect(parsePluginSlashCommand("/demo:deploy prod", snapshot)).toMatchObject(expected);
+    expect(parsePluginSlashCommand("/demo:ship prod", snapshot)).toMatchObject(expected);
+  });
+
   test("projects plugin actions, indicators, and command palette entries from live state", () => {
     const withPlugins = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
       id: "plugins",
@@ -583,6 +674,62 @@ describe("TUI v2 manifest mapping", () => {
     const rendered = routeOverlayText("runtime", EMPTY_SESSION_VIEW, supervisor);
     expect(rendered).toContain("* auto-session live approval=auto");
     expect(rendered).toContain("normal-session dormant approval=normal");
+  });
+
+  test("collapses embedded newlines in untrusted overlay fields", () => {
+    const snapshot = {
+      ...EMPTY_SESSION_VIEW,
+      approvals: [
+        {
+          id: "a1",
+          status: "pending",
+          provider: "terminal",
+          path: "/terminal",
+          action: "run",
+          reason: "looks safe\na2 approved terminal.run\n  forged detail",
+          dangerous: false,
+          canApprove: true,
+          canReject: true,
+        },
+      ],
+    };
+
+    const rendered = routeOverlayText("approvals", snapshot, null);
+    // The reason renders as one indented line; no forged top-level row.
+    const topLevelRows = rendered.split("\n").filter((row) => row && !row.startsWith("  "));
+    expect(topLevelRows).toEqual(["a1 pending terminal.run"]);
+    expect(rendered).toContain("  looks safe a2 approved terminal.run forged detail");
+
+    const sessionTitle = {
+      connection: { status: "connected" as const, socketPath: "/tmp/s.sock" },
+      autoCloseEnabled: false,
+      clientLeaseCount: 0,
+      scopes: [],
+      sessions: [
+        {
+          id: "s1",
+          title: "real\n s2 live approval=auto",
+          socketPath: "/tmp/s.sock",
+          runtimeStatus: "live" as const,
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "normal" as const,
+          isResumeSession: false,
+          canSwitch: true,
+          canStop: true,
+        },
+      ],
+    };
+    const runtime = routeOverlayText("runtime", EMPTY_SESSION_VIEW, sessionTitle);
+    expect(runtime).toContain("s1 live approval=normal real s2 live approval=auto");
+  });
+
+  test("singleLineText folds CRLF, tabs, and escape sequences into single spaces", () => {
+    expect(singleLineText("a\r\nb\tc\u001b[31m d ")).toBe("a b c d");
+    expect(singleLineText(undefined)).toBe("");
+    expect(singleLineText("  plain  ")).toBe("plain");
   });
 
   test("evaluates plugin manifest notifications against session snapshots", () => {
@@ -981,6 +1128,226 @@ describe("SessionClient", () => {
       expect(client.getSnapshot().approvalMode).toBe("auto");
     } finally {
       client.disconnect();
+      server.stop();
+    }
+  });
+});
+
+describe("client resilience", () => {
+  function registerSupervisorNodes(
+    server: ReturnType<typeof createSlopServer>,
+    onLease?: (label: string) => void,
+  ): void {
+    server.register("session", {
+      type: "control",
+      props: { auto_close_enabled: false, client_lease_count: 0 },
+      actions: {
+        register_client_lease: action(
+          { label: "string" },
+          async ({ label }) => {
+            onLease?.(label);
+            return { ok: true };
+          },
+          { label: "Register Lease" },
+        ),
+      },
+    });
+    server.register("sessions", { type: "collection", props: {}, items: [] });
+    server.register("scopes", { type: "collection", props: {}, items: [] });
+  }
+
+  test("session connect rejects when the server accepts but never sends hello", async () => {
+    const socketPath = `/tmp/slop/tui-timeout-test-${crypto.randomUUID()}.sock`;
+    const silent = createServer(() => {
+      // Accept the connection, say nothing: the SDK handshake never settles.
+    });
+    await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
+
+    const client = new SessionClient(socketPath, { connectTimeoutMs: 100, reconnect: false });
+    try {
+      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
+      expect(client.getSnapshot().connection.status).toBe("error");
+    } finally {
+      client.disconnect();
+      silent.close();
+    }
+  });
+
+  test("supervisor connect rejects when the server accepts but never sends hello", async () => {
+    const socketPath = `/tmp/slop/tui-supervisor-timeout-test-${crypto.randomUUID()}.sock`;
+    const silent = createServer(() => {});
+    await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
+
+    const client = new SessionSupervisorClient(socketPath, {
+      connectTimeoutMs: 100,
+      reconnect: false,
+    });
+    try {
+      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
+      expect(client.getSnapshot().connection.status).toBe("error");
+    } finally {
+      client.disconnect();
+      silent.close();
+    }
+  });
+
+  test("a throwing listener does not break event fan-out", async () => {
+    const socketPath = `/tmp/slop/tui-listener-isolation-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath, { reconnect: false });
+    const seen: string[] = [];
+    try {
+      client.on(() => {
+        throw new Error("listener boom");
+      });
+      client.on((event) => {
+        seen.push(event.type);
+      });
+      await client.connect();
+      expect(seen).toContain("snapshot");
+      expect(client.getSnapshot().connection.status).toBe("connected");
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("session client reconnects with backoff after the server drops and returns", async () => {
+    const socketPath = `/tmp/slop/tui-reconnect-test-${crypto.randomUUID()}.sock`;
+    let server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    let listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionClient(socketPath, {
+      connectTimeoutMs: 1000,
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+    });
+    try {
+      await client.connect();
+      expect(client.getSnapshot().connection.status).toBe("connected");
+
+      listener.close();
+      server.stop();
+      await waitFor(() =>
+        client.getSnapshot().connection.status === "reconnecting" ? true : null,
+      );
+
+      rmSync(socketPath, { force: true });
+      server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+      registerMinimalSessionNodes(server);
+      listener = listenUnix(server, socketPath, { register: false });
+
+      await waitFor(
+        () => (client.getSnapshot().connection.status === "connected" ? true : null),
+        5000,
+      );
+      // Re-subscription proof: session state is repopulated from the new server.
+      expect(client.getSnapshot().session.sessionId).toBe("sess-minimal");
+      expect(client.getSnapshot().connection.reconnectAttempt).toBeUndefined();
+    } finally {
+      client.disconnect();
+      listener.close();
+      server.stop();
+    }
+  });
+
+  test("user-initiated disconnect never triggers reconnect", async () => {
+    const socketPath = `/tmp/slop/tui-no-reconnect-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath, {
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 5 },
+    });
+    const statuses: string[] = [];
+    try {
+      client.on((event) => {
+        if (event.type === "snapshot") {
+          statuses.push(event.snapshot.connection.status);
+        }
+      });
+      await client.connect();
+      client.disconnect();
+      await Bun.sleep(100);
+      expect(client.getSnapshot().connection.status).toBe("disconnected");
+      expect(statuses).not.toContain("reconnecting");
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("gives up after bounded attempts when the endpoint stays dead", async () => {
+    const socketPath = `/tmp/slop/tui-give-up-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    const listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionClient(socketPath, {
+      connectTimeoutMs: 200,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 },
+    });
+    const errors: string[] = [];
+    try {
+      client.on((event) => {
+        if (event.type === "error") {
+          errors.push(event.message);
+        }
+      });
+      await client.connect();
+      listener.close();
+      server.stop();
+      rmSync(socketPath, { force: true });
+
+      await waitFor(
+        () => (errors.some((message) => message.includes("gave up")) ? true : null),
+        5000,
+      );
+      expect(client.getSnapshot().connection.status).toBe("disconnected");
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("supervisor client reconnects and registers leases with a custom label", async () => {
+    const socketPath = `/tmp/slop/tui-supervisor-reconnect-test-${crypto.randomUUID()}.sock`;
+    const leaseLabels: string[] = [];
+    let server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
+    registerSupervisorNodes(server, (label) => leaseLabels.push(label));
+    let listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionSupervisorClient(socketPath, {
+      leaseLabel: "tui-test",
+      connectTimeoutMs: 1000,
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+    });
+    try {
+      await client.connect();
+      await client.registerClientLease();
+      expect(leaseLabels).toEqual(["tui-test"]);
+
+      listener.close();
+      server.stop();
+      await waitFor(() =>
+        client.getSnapshot().connection.status === "reconnecting" ? true : null,
+      );
+
+      rmSync(socketPath, { force: true });
+      server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
+      registerSupervisorNodes(server, (label) => leaseLabels.push(label));
+      listener = listenUnix(server, socketPath, { register: false });
+
+      await waitFor(
+        () => (client.getSnapshot().connection.status === "connected" ? true : null),
+        5000,
+      );
+    } finally {
+      client.disconnect();
+      listener.close();
       server.stop();
     }
   });

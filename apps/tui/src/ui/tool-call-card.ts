@@ -1,5 +1,5 @@
 import type { ActivityItem } from "../backend/slop-types";
-import type { Verbosity } from "../state/commands";
+import type { Verbosity } from "../projections/command-types";
 import { sanitizeTerminalText } from "./render-safety";
 import { bold, dim, green, red } from "./theme";
 import { renderToolContent } from "./tool-renderers";
