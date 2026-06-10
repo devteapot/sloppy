@@ -1,6 +1,9 @@
 import { lstatSync, unlinkSync } from "node:fs";
 import type { Connection, SlopServer } from "@slop-ai/server";
 
+import { createDefaultAuthorizer } from "../gateway/auth";
+import { formatWebSocketUrl, normalizeWebSocketPath, requirePort } from "../gateway/server";
+
 export type Listener = {
   close: () => void;
 };
@@ -86,8 +89,12 @@ export function listenWebSocketSlop(
 
 export function listenWebSocketConnections(hooks: WebSocketHooks): WebSocketListener {
   const host = hooks.options.host ?? DEFAULT_WS_HOST;
-  const path = normalizeWebSocketPath(hooks.options.path);
+  const path = normalizeWebSocketPath(hooks.options.path, DEFAULT_WS_PATH);
   const connections = new WeakMap<Bun.ServerWebSocket<undefined>, Connection>();
+  const authorize = createDefaultAuthorizer({
+    token: hooks.options.token,
+    allowedOrigins: hooks.options.allowedOrigins,
+  });
 
   const server: Bun.Server<undefined> = Bun.serve({
     hostname: host,
@@ -96,7 +103,7 @@ export function listenWebSocketConnections(hooks: WebSocketHooks): WebSocketList
       const url = new URL(req.url);
 
       if (url.pathname === path && req.headers.get("upgrade") === "websocket") {
-        const rejected = await rejectWebSocketUpgrade(req, url, bunServer, hooks.options);
+        const rejected = await authorize(req, bunServer);
         if (rejected) {
           return rejected;
         }
@@ -110,7 +117,10 @@ export function listenWebSocketConnections(hooks: WebSocketHooks): WebSocketList
           id: hooks.providerId,
           name: hooks.providerName,
           slop_version: "0.1",
-          transport: { type: "ws", url: webSocketUrl(hooks.options, requirePort(bunServer.port)) },
+          transport: {
+            type: "ws",
+            url: webSocketUrl(hooks.options, requirePort(bunServer.port)),
+          },
           capabilities: WS_CAPABILITIES,
         });
       }
@@ -171,90 +181,13 @@ export function listenWebSocketConnections(hooks: WebSocketHooks): WebSocketList
   };
 }
 
-function normalizeWebSocketPath(path: string | undefined): string {
-  if (!path || path === "/") {
-    return DEFAULT_WS_PATH;
-  }
-  return path.startsWith("/") ? path : `/${path}`;
-}
-
 function webSocketUrl(options: WebSocketListenOptions, actualPort: number): string {
-  if (options.publicUrl) {
-    return options.publicUrl;
-  }
-  const host = options.host ?? DEFAULT_WS_HOST;
-  const displayHost = host === "0.0.0.0" || host === "::" || host === "[::]" ? "localhost" : host;
-  const bracketedHost =
-    displayHost.includes(":") && !displayHost.startsWith("[") ? `[${displayHost}]` : displayHost;
-  return `ws://${bracketedHost}:${actualPort}${normalizeWebSocketPath(options.path)}`;
-}
-
-function requirePort(port: number | undefined): number {
-  if (port === undefined) {
-    throw new Error("WebSocket listener did not expose a port.");
-  }
-  return port;
-}
-
-async function rejectWebSocketUpgrade(
-  req: Request,
-  url: URL,
-  server: Bun.Server<undefined>,
-  options: WebSocketListenOptions,
-): Promise<Response | null> {
-  const origin = req.headers.get("origin");
-  if (origin !== null) {
-    if (!options.allowedOrigins) {
-      console.warn("[sloppy] refusing browser WebSocket upgrade: no allowed origins configured.");
-      return new Response("Forbidden", { status: 403 });
-    }
-    if (!options.allowedOrigins.includes(origin)) {
-      return new Response("Forbidden", { status: 403 });
-    }
-  }
-
-  if (options.token) {
-    return tokenMatches(req, url, options.token)
-      ? null
-      : new Response("Unauthorized", { status: 401 });
-  }
-
-  const remote = server.requestIP(req)?.address ?? "";
-  if (isLoopbackAddress(remote)) {
-    return null;
-  }
-
-  console.warn(
-    "[sloppy] refusing non-loopback WebSocket upgrade: configure --ws-token-env or --ws-token.",
-  );
-  return new Response("Unauthorized", { status: 401 });
-}
-
-let warnedQueryParamToken = false;
-
-function tokenMatches(req: Request, url: URL, expected: string): boolean {
-  const auth = req.headers.get("authorization");
-  if (auth === `Bearer ${expected}`) {
-    return true;
-  }
-  const queryMatch =
-    url.searchParams.get("token") === expected || url.searchParams.get("access_token") === expected;
-  if (queryMatch && !warnedQueryParamToken) {
-    // Query params are accepted because browser WebSocket clients cannot set
-    // headers, but URLs end up in proxy/server logs — prefer the Bearer header.
-    warnedQueryParamToken = true;
-    console.warn(
-      "[sloppy] WebSocket client authenticated with a query-param token; tokens in URLs can leak into logs. Prefer the Authorization: Bearer header.",
-    );
-  }
-  return queryMatch;
-}
-
-function isLoopbackAddress(address: string): boolean {
-  return (
-    address === "127.0.0.1" ||
-    address === "::1" ||
-    address === "::ffff:127.0.0.1" ||
-    address === "localhost"
+  return formatWebSocketUrl(
+    {
+      host: options.host,
+      publicUrl: options.publicUrl,
+      path: normalizeWebSocketPath(options.path, DEFAULT_WS_PATH),
+    },
+    actualPort,
   );
 }

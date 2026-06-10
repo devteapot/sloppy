@@ -3,6 +3,7 @@
 import { runTui } from "../../apps/tui/src/index";
 import { runHeadlessSingleShot } from "../cli-headless";
 import { loadConfig, loadScopedConfig } from "../config/load";
+import { runGateway } from "../gateway/cli";
 import { resolveLaunchScope } from "../session/launch-scope";
 import { SessionService } from "../session/service";
 import { startSessionSupervisor } from "../session/supervisor";
@@ -156,6 +157,7 @@ function usage(): string {
     '  sloppy -p "<prompt>" [--yolo]',
     "  sloppy session serve [--socket <path>] [--ws-port <port>] [--yolo]",
     "  sloppy session supervisor --socket <path> [--ws-port <port>] [--yolo]",
+    "  sloppy gateway --port <port> [--host <host>] [--token-env <name>] [--supervisor-socket <path>]",
     "",
   ].join("\n");
 }
@@ -174,6 +176,9 @@ async function main(args: string[]): Promise<number> {
     }
     writeStderr(`[error] unknown session command: ${args[1] ?? ""}\n${usage()}`);
     return 1;
+  }
+  if (args[0] === "gateway") {
+    return runGateway(args.slice(1));
   }
   if (args[0] === "tui") {
     return runTui(args.slice(1));
