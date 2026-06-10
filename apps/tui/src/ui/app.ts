@@ -9,7 +9,11 @@ import {
 
 import type { SessionClient } from "../backend/session-client";
 import type { ApprovalMode, SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
-import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
+import {
+  endpointForSession,
+  type SessionSupervisorClient,
+  type SupervisorSnapshot,
+} from "../backend/supervisor-client";
 import { parseLocalCommand, parsePluginSlashCommand } from "../projections/command-parser";
 import type { LocalCommand, Verbosity } from "../projections/command-types";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../projections/palette-items";
@@ -335,13 +339,8 @@ export class AppUi {
     }
   }
 
-  private endpointForSession(session: { socketPath: string; wsUrl?: string }): string {
-    const supervisorEndpoint = this.supervisorSnapshot?.connection.socketPath ?? "";
-    const supervisorIsWebSocket =
-      supervisorEndpoint.startsWith("ws://") || supervisorEndpoint.startsWith("wss://");
-    return supervisorIsWebSocket
-      ? (session.wsUrl ?? session.socketPath)
-      : session.socketPath || (session.wsUrl ?? "");
+  private endpointForSession(session: { id: string; socketPath: string }): string {
+    return endpointForSession(session, this.supervisorSnapshot?.connection.socketPath);
   }
 
   private showPalette(): void {

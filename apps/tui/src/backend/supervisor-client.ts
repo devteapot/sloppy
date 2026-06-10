@@ -18,7 +18,6 @@ export type SupervisorSessionItem = {
   id: string;
   title?: string;
   socketPath: string;
-  wsUrl?: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
@@ -180,10 +179,6 @@ function mapSessionRecord(
     id: overrides.id,
     title: optionalStringProp(data, "title"),
     socketPath: stringProp(data, "socketPath", stringProp(data, "socket_path")),
-    wsUrl:
-      optionalStringProp(data, "webSocketUrl") ??
-      optionalStringProp(data, "web_socket_url") ??
-      optionalStringProp(data, "ws_url"),
     runtimeStatus:
       stringProp(data, "runtimeStatus", stringProp(data, "runtime_status")) === "dormant"
         ? "dormant"
@@ -565,4 +560,27 @@ function createTransportFromEndpoint(endpoint: string) {
     return new WebSocketClientTransport(endpoint);
   }
   return new NodeSocketClientTransport(endpoint);
+}
+
+/**
+ * Derives the endpoint a session should be dialed at. Local supervisors hand
+ * out unix socket paths directly. When the supervisor itself was reached over
+ * the WS gateway, session endpoints are sibling paths on the same gateway:
+ * ws://host:port/<prefix>/supervisor -> ws://host:port/<prefix>/sessions/<id>,
+ * preserving any proxy prefix and auth query parameters (e.g. ?token=...).
+ */
+export function endpointForSession(
+  session: { id: string; socketPath: string },
+  supervisorEndpoint: string | null | undefined,
+): string {
+  const isWebSocket =
+    supervisorEndpoint?.startsWith("ws://") === true ||
+    supervisorEndpoint?.startsWith("wss://") === true;
+  if (!isWebSocket || !supervisorEndpoint) {
+    return session.socketPath;
+  }
+  const url = new URL(supervisorEndpoint);
+  const base = url.pathname.replace(/\/[^/]*$/, "");
+  url.pathname = `${base}/sessions/${encodeURIComponent(session.id)}`;
+  return url.toString();
 }

@@ -21,8 +21,8 @@ Checked in now:
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
-- session provider and headless session server with local Unix socket and
-  opt-in WebSocket transports
+- session provider and headless session server on local Unix sockets, with the
+  standalone WS gateway (`sloppy gateway`) for remote WebSocket clients
 - public session supervisor for scoped session creation, per-client session
   selection, launch-scope resume metadata, stopping/restoring sessions, and
   keeping each session on its own provider socket

@@ -73,32 +73,51 @@ bun run runtime:smoke -- --mode acp --acp-adapter <adapter-id>
 Provider smoke verifies meta-runtime routing through SLOP providers without a
 live model. Native and ACP modes verify the selected model path.
 
-## Remote WebSocket Clients
+## WS Gateway
 
-Unix sockets are the default local session transport. For remote SLOP clients,
-start an additional WebSocket listener explicitly:
+Unix sockets are the only core session transport. Remote SLOP clients go
+through the standalone WS gateway, which relays the supervisor's unix socket
+and each session's unix socket over a single WebSocket port:
 
 ```sh
 SLOPPY_WS_TOKEN=<random-token> \
-  sloppy session serve \
-    --ws-host 0.0.0.0 \
-    --ws-port 8787 \
-    --ws-token-env SLOPPY_WS_TOKEN
+  sloppy gateway --host 0.0.0.0 --port 8787 --token-env SLOPPY_WS_TOKEN
 ```
 
-The listener defaults to `127.0.0.1`. Non-loopback upgrades are rejected unless
-a token is configured, and browser upgrades also require at least one
-`--ws-allow-origin <origin>` entry. Prefer `--ws-token-env` over `--ws-token`
-for shared systems so the token is not exposed in process arguments. If a proxy
-terminates TLS or rewrites host/path, set `--ws-public-url` to the externally
+By default the gateway relays the managed supervisor of the current launch
+scope (the same socket `sloppy` uses when started in that directory). Pass
+`--supervisor-socket <path>` to relay a different supervisor; registered
+sockets are listed in `~/.slop/providers/*.json`. If the supervisor socket
+does not exist yet the gateway warns and keeps retrying, so start order does
+not matter.
+
+The path scheme is `/supervisor` for the supervisor itself (override with
+`--supervisor-path`) and `/sessions/<session-id>` for individual sessions.
+Dialing a dormant session closes the connection with code `4503` — invoke
+`select_session` through the supervisor first, then redial. The relay is
+protocol-blind (one WebSocket frame per NDJSON line), so state, affordances,
+and subscriptions behave exactly as over the unix socket. Each remote client
+holds its own upstream unix connection, so client-lease semantics are
+preserved and remote client count maps one-to-one onto unix connections.
+
+The listener defaults to `127.0.0.1`. Non-loopback upgrades are rejected
+unless a token is configured, and browser upgrades also require at least one
+`--allow-origin <origin>` entry. Prefer `--token-env` over `--token` for
+shared systems so the token is not exposed in process arguments. If a proxy
+terminates TLS or rewrites host/path, set `--public-url` to the externally
 reachable `wss://...` URL.
 
 A configured token is matched three ways: the `Authorization: Bearer <token>`
 header, or the `token` / `access_token` query parameters. The query-parameter
 forms exist for browser WebSocket clients, which cannot set headers, but URLs
 end up in proxy and server logs — prefer the Bearer header wherever the client
-allows it. The runtime logs a one-time warning when a query-parameter token is
+allows it. The gateway logs a one-time warning when a query-parameter token is
 used.
+
+All remote-exposure policy lives in the gateway, not the session core.
+Embedders can replace the token/origin/loopback policy entirely with
+`startWsGateway({ authorize })`, which receives the raw upgrade `Request` and
+returns a rejection `Response` or `null` to allow.
 
 ## Managed TUI Supervisor
 

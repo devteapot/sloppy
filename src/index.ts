@@ -18,6 +18,8 @@ export { sloppyConfigSchema } from "./config/schema";
 export { Agent } from "./core/agent";
 export type { RoleProfile } from "./core/role";
 export { defaultRole } from "./core/role";
+export type { GatewayAuthorizer, WsGateway, WsGatewayOptions } from "./gateway";
+export { createDefaultAuthorizer, RELAY_CLOSE, startWsGateway } from "./gateway";
 export { OpenAICodexAdapter } from "./llm/openai-codex";
 export { LlmConfigurationError, LlmProfileManager } from "./llm/profile-manager";
 export {
@@ -78,7 +80,7 @@ export {
 } from "./providers/registry";
 export type { AcpAdapterConfig, AcpSessionAgentOptions } from "./runtime/acp";
 export { AcpSessionAgent } from "./runtime/acp";
-export type { AgentSessionSnapshot, WebSocketListenOptions } from "./session";
+export type { AgentSessionSnapshot } from "./session";
 export {
   AgentSessionProvider,
   SessionRuntime,

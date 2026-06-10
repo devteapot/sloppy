@@ -9,7 +9,11 @@ import {
 } from "../../../src/session";
 import { SessionClient } from "./backend/session-client";
 import type { ApprovalMode } from "./backend/slop-types";
-import { SessionSupervisorClient, type SupervisorSessionItem } from "./backend/supervisor-client";
+import {
+  endpointForSession,
+  SessionSupervisorClient,
+  type SupervisorSessionItem,
+} from "./backend/supervisor-client";
 import { handleSessionEvent, handleSupervisorEvent } from "./handlers/event-handlers";
 import { AppUi } from "./ui/app";
 
@@ -31,19 +35,6 @@ function initialApprovalMode(args: string[]): ApprovalMode | undefined {
 
 function supervisorSocketArg(args: string[]): string | null {
   return readArg(args, "--supervisor") ?? readArg(args, "--supervisor-socket");
-}
-
-function endpointIsWebSocket(endpoint: string | null | undefined): boolean {
-  return endpoint?.startsWith("ws://") === true || endpoint?.startsWith("wss://") === true;
-}
-
-function endpointForSession(
-  session: SupervisorSessionItem,
-  supervisorEndpoint: string | null | undefined,
-): string {
-  return endpointIsWebSocket(supervisorEndpoint)
-    ? (session.wsUrl ?? session.socketPath)
-    : session.socketPath || (session.wsUrl ?? "");
 }
 
 async function connectSupervisor(socketPath: string): Promise<SessionSupervisorClient> {

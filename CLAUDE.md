@@ -22,6 +22,7 @@ src/            — Source code (TypeScript)
   core/         — Agent loop, SLOP consumer, context builder
   providers/    — Provider registry + built-in providers
   llm/          — LLM provider adapters
+  gateway/      — First-party WS gateway: relays unix sockets over WebSocket; owns remote auth
 ```
 
 ## Conventions
