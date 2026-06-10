@@ -53,10 +53,13 @@ providers and/or a session plugin. Optional plugins include `persistent-goal`,
 `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`,
 `delegation`, `spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
 
-Public session providers use the same SLOP message protocol over local Unix
-sockets and optional WebSocket listeners. Unix sockets remain the default local
-transport; WebSocket listeners are opt-in for remote clients and keep the same
-state tree, affordance, query, invoke, subscription, and patch semantics.
+Public session providers speak the SLOP message protocol over local Unix
+sockets — the only core transport. Remote clients connect through the
+first-party WS gateway (`sloppy gateway`, `src/gateway/`), a standalone
+process that relays the supervisor and per-session unix sockets over a single
+WebSocket port. The relay is protocol-blind (one frame per NDJSON line), so
+state tree, affordance, query, invoke, subscription, and patch semantics are
+unchanged; auth and exposure policy live entirely in the gateway.
 
 ## MCP Compatibility
 
