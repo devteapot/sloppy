@@ -4,7 +4,7 @@ import type { SessionViewSnapshot } from "../backend/slop-types";
 import { projectIndicators } from "../projections/manifest-projection";
 import { formatHomePath } from "./display-path";
 import { formatCompact } from "./format";
-import { sanitizeTerminalText } from "./render-safety";
+import { singleLineText } from "./render-safety";
 import { dim } from "./theme";
 
 export type InteractionMode = "default" | "plan";
@@ -19,16 +19,16 @@ export class StatusLine implements Component {
 
   update(snapshot: SessionViewSnapshot, _mode: InteractionMode): void {
     const workspace = snapshot.session.workspaceRoot
-      ? formatHomePath(sanitizeTerminalText(snapshot.session.workspaceRoot))
+      ? formatHomePath(singleLineText(snapshot.session.workspaceRoot))
       : "workspace";
     const model = [
-      sanitizeTerminalText(snapshot.session.modelProvider ?? ""),
-      sanitizeTerminalText(snapshot.session.model ?? ""),
+      singleLineText(snapshot.session.modelProvider ?? ""),
+      singleLineText(snapshot.session.model ?? ""),
     ]
       .filter(Boolean)
       .join("/");
     const indicators = projectIndicators(snapshot)
-      .map((indicator) => sanitizeTerminalText(indicator.text))
+      .map((indicator) => singleLineText(indicator.text))
       .filter(Boolean);
 
     this.leftText = [dim(workspace), dim(model || "model unset"), ...indicators]

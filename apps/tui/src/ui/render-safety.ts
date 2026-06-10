@@ -32,6 +32,17 @@ export function safePlainText(value: string | undefined): string {
   return sanitizeTerminalText(value ?? "");
 }
 
+// Collapse an untrusted field to one visual line: terminal-sanitize, then fold
+// whitespace runs (newlines, tabs, spaces) into single spaces. Use at every
+// interpolation site where dynamic text is embedded inside a structured list
+// row, so embedded newlines cannot forge fake rows. Not for transcript or
+// Markdown content, where newlines are intentional.
+export function singleLineText(value: string | undefined): string {
+  return sanitizeTerminalText(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function safeMarkdownText(value: string | undefined): string {
   return escapeMarkdownText(safePlainText(value));
 }

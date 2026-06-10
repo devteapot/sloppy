@@ -4,23 +4,35 @@ import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SupervisorSnapshot } from "../backend/supervisor-client";
 import { projectIndicators } from "../projections/manifest-projection";
 import { buildSlashEntries } from "../projections/slash-catalog";
-import { sanitizeTerminalText } from "./render-safety";
+import { sanitizeTerminalText, singleLineText } from "./render-safety";
+
+// Untrusted fields embedded in list rows go through singleLineText so an
+// embedded newline cannot forge an extra row (e.g. an approval reason that
+// mimics another approval's status line). The outer sanitizeTerminalText in
+// routeOverlayText stays as defense-in-depth for the intentional layout.
 
 function line(value: string | undefined): string {
-  return value && value.length > 0 ? value : "-";
+  const collapsed = singleLineText(value);
+  return collapsed.length > 0 ? collapsed : "-";
 }
 
 function renderApprovals(snapshot: SessionViewSnapshot): string {
   if (snapshot.approvals.length === 0) return "No approvals.";
   return snapshot.approvals
-    .map((item) => `${item.id} ${item.status} ${item.provider}.${item.action}\n  ${item.reason}`)
+    .map(
+      (item) =>
+        `${singleLineText(item.id)} ${singleLineText(item.status)} ${singleLineText(item.provider)}.${singleLineText(item.action)}\n  ${singleLineText(item.reason)}`,
+    )
     .join("\n\n");
 }
 
 function renderTasks(snapshot: SessionViewSnapshot): string {
   if (snapshot.tasks.length === 0) return "No tasks.";
   return snapshot.tasks
-    .map((item) => `${item.id} ${item.status} ${item.providerTaskId}\n  ${item.message}`)
+    .map(
+      (item) =>
+        `${singleLineText(item.id)} ${singleLineText(item.status)} ${singleLineText(item.providerTaskId)}\n  ${singleLineText(item.message)}`,
+    )
     .join("\n\n");
 }
 
@@ -29,7 +41,7 @@ function renderApps(snapshot: SessionViewSnapshot): string {
   return snapshot.apps
     .map(
       (item) =>
-        `${item.id} ${item.status} ${item.transport}${item.lastError ? `\n  ${item.lastError}` : ""}`,
+        `${singleLineText(item.id)} ${singleLineText(item.status)} ${singleLineText(item.transport)}${item.lastError ? `\n  ${singleLineText(item.lastError)}` : ""}`,
     )
     .join("\n\n");
 }
@@ -38,14 +50,14 @@ function renderSetup(snapshot: SessionViewSnapshot): string {
   const profiles = snapshot.llm.profiles
     .map((profile) => {
       const thinking = profile.thinkingEffectiveReason
-        ? ` thinking=${profile.thinkingEffectiveEnabled ? "on" : "off"}/${profile.thinkingDisplay ?? "visible"}/${profile.thinkingEffort ?? "-"}`
+        ? ` thinking=${profile.thinkingEffectiveEnabled ? "on" : "off"}/${singleLineText(profile.thinkingDisplay ?? "visible")}/${singleLineText(profile.thinkingEffort ?? "-")}`
         : "";
-      const route = profile.endpointId ?? profile.adapterId ?? profile.kind;
-      return `${profile.id}${profile.isDefault ? " *" : ""} ${route}/${profile.model} ${profile.ready ? "ready" : "not ready"}${thinking}`;
+      const route = singleLineText(profile.endpointId ?? profile.adapterId ?? profile.kind);
+      return `${singleLineText(profile.id)}${profile.isDefault ? " *" : ""} ${route}/${singleLineText(profile.model)} ${profile.ready ? "ready" : "not ready"}${thinking}`;
     })
     .join("\n");
   return [
-    `LLM: ${snapshot.llm.status}`,
+    `LLM: ${singleLineText(snapshot.llm.status)}`,
     line(snapshot.llm.message),
     "",
     profiles || "No profiles.",
@@ -57,17 +69,17 @@ function renderRuntime(
   supervisor: SupervisorSnapshot | null,
 ): string {
   const indicators = projectIndicators(snapshot)
-    .map((indicator) => indicator.text)
+    .map((indicator) => singleLineText(indicator.text))
     .join("\n");
   const sessions = (supervisor?.sessions ?? [])
     .map((session) => {
       const prefix = session.isResumeSession ? "*" : " ";
       return [
         prefix,
-        session.id,
-        session.runtimeStatus,
-        `approval=${session.approvalMode}`,
-        session.title,
+        singleLineText(session.id),
+        singleLineText(session.runtimeStatus),
+        `approval=${singleLineText(session.approvalMode)}`,
+        session.title ? singleLineText(session.title) : undefined,
       ]
         .filter(Boolean)
         .join(" ");
@@ -85,15 +97,20 @@ function renderInspect(snapshot: SessionViewSnapshot): string {
     snapshot.inspect.result?.status === "error"
       ? snapshot.inspect.result.error?.message
       : JSON.stringify(snapshot.inspect.tree ?? {}, null, 2);
-  return [`${snapshot.inspect.targetName} ${snapshot.inspect.path}`, result ?? ""].join("\n\n");
+  return [
+    `${singleLineText(snapshot.inspect.targetName)} ${singleLineText(snapshot.inspect.path)}`,
+    result ?? "",
+  ].join("\n\n");
 }
 
 function renderHelp(snapshot: SessionViewSnapshot): string {
   const commands = buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath })
     .map((entry) => {
-      const aliases = entry.aliases?.length ? ` (${entry.aliases.join(", ")})` : "";
-      const signature = entry.signature ? ` ${entry.signature}` : "";
-      return `/${entry.name}${signature}${aliases}\n  ${entry.description}`;
+      const aliases = entry.aliases?.length
+        ? ` (${entry.aliases.map((alias) => singleLineText(alias)).join(", ")})`
+        : "";
+      const signature = entry.signature ? ` ${singleLineText(entry.signature)}` : "";
+      return `/${singleLineText(entry.name)}${signature}${aliases}\n  ${singleLineText(entry.description)}`;
     })
     .join("\n\n");
   return [

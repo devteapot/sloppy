@@ -31,6 +31,7 @@ import { detectInlineSecret } from "../apps/tui/src/projections/secret-detection
 import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/projections/slash-catalog";
 import { assembleTranscript } from "../apps/tui/src/projections/stream-assembler";
 import { CustomEditor } from "../apps/tui/src/ui/custom-editor";
+import { singleLineText } from "../apps/tui/src/ui/render-safety";
 import { routeOverlayText } from "../apps/tui/src/ui/route-overlay";
 import { SlashAutocompleteProvider } from "../apps/tui/src/ui/slash-autocomplete";
 import { StatusLine } from "../apps/tui/src/ui/status-line";
@@ -668,6 +669,62 @@ describe("TUI v2 manifest mapping", () => {
     const rendered = routeOverlayText("runtime", EMPTY_SESSION_VIEW, supervisor);
     expect(rendered).toContain("* auto-session live approval=auto");
     expect(rendered).toContain("normal-session dormant approval=normal");
+  });
+
+  test("collapses embedded newlines in untrusted overlay fields", () => {
+    const snapshot = {
+      ...EMPTY_SESSION_VIEW,
+      approvals: [
+        {
+          id: "a1",
+          status: "pending",
+          provider: "terminal",
+          path: "/terminal",
+          action: "run",
+          reason: "looks safe\na2 approved terminal.run\n  forged detail",
+          dangerous: false,
+          canApprove: true,
+          canReject: true,
+        },
+      ],
+    };
+
+    const rendered = routeOverlayText("approvals", snapshot, null);
+    // The reason renders as one indented line; no forged top-level row.
+    const topLevelRows = rendered.split("\n").filter((row) => row && !row.startsWith("  "));
+    expect(topLevelRows).toEqual(["a1 pending terminal.run"]);
+    expect(rendered).toContain("  looks safe a2 approved terminal.run forged detail");
+
+    const sessionTitle = {
+      connection: { status: "connected" as const, socketPath: "/tmp/s.sock" },
+      autoCloseEnabled: false,
+      clientLeaseCount: 0,
+      scopes: [],
+      sessions: [
+        {
+          id: "s1",
+          title: "real\n s2 live approval=auto",
+          socketPath: "/tmp/s.sock",
+          runtimeStatus: "live" as const,
+          queuedCount: 0,
+          pendingApprovalCount: 0,
+          runningTaskCount: 0,
+          goalTotalTokens: 0,
+          approvalMode: "normal" as const,
+          isResumeSession: false,
+          canSwitch: true,
+          canStop: true,
+        },
+      ],
+    };
+    const runtime = routeOverlayText("runtime", EMPTY_SESSION_VIEW, sessionTitle);
+    expect(runtime).toContain("s1 live approval=normal real s2 live approval=auto");
+  });
+
+  test("singleLineText folds CRLF, tabs, and escape sequences into single spaces", () => {
+    expect(singleLineText("a\r\nb\tc\u001b[31m d ")).toBe("a b c d");
+    expect(singleLineText(undefined)).toBe("");
+    expect(singleLineText("  plain  ")).toBe("plain");
   });
 
   test("evaluates plugin manifest notifications against session snapshots", () => {
