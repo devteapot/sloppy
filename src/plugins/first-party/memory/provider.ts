@@ -1,6 +1,7 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
 
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
+import { now, prefixedId } from "../shared/runtime-helpers";
 
 type MemoryItem = {
   id: string;
@@ -23,12 +24,8 @@ type SearchResult = {
   score: number;
 };
 
-function now(): string {
-  return new Date().toISOString();
-}
-
 function buildMemoryId(): string {
-  return `mem-${crypto.randomUUID()}`;
+  return prefixedId("mem");
 }
 
 function contentPreview(content: string, maxChars = 120): string {

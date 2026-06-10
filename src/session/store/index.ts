@@ -7,6 +7,7 @@ import type {
   LlmStateSnapshot,
   QueuedSessionMessage,
   SessionExtensionRecord,
+  SessionSnapshotProjector,
   SessionStoreChangeListener,
   SessionStoreEventType,
   SessionStoreGranularListener,
@@ -47,6 +48,7 @@ export class SessionStore {
   private registry = new ListenerRegistry();
   private persistencePath?: string;
   private readonly extensionEventTypes: Record<string, SessionStoreEventType[]>;
+  private readonly snapshotProjections: readonly SessionSnapshotProjector[];
 
   constructor(options: {
     sessionId: string;
@@ -63,9 +65,16 @@ export class SessionStore {
     persistencePath?: string;
     snapshotMigrators?: readonly SessionSnapshotMigrator[];
     snapshotRecoverers?: readonly SessionSnapshotRecoverer[];
+    /**
+     * Plugin-registered projectors that derive projected snapshot fields
+     * (e.g. `goal`) on every snapshot read. Callers constructing a store
+     * outside SessionRuntime must register projections themselves.
+     */
+    snapshotProjections?: readonly SessionSnapshotProjector[];
     extensionEventTypes?: Record<string, readonly SessionStoreEventType[]>;
   }) {
     this.persistencePath = options.persistencePath;
+    this.snapshotProjections = options.snapshotProjections ?? [];
     this.extensionEventTypes = Object.fromEntries(
       Object.entries(options.extensionEventTypes ?? {}).map(([namespace, eventTypes]) => [
         namespace,
@@ -82,6 +91,7 @@ export class SessionStore {
           recoverPersistedSessionSnapshot(persisted, options.persistencePath ?? "", {
             recoverers: options.snapshotRecoverers,
           }),
+          this.snapshotProjections,
         )
       : createInitialState({ ...options, startedAt: now() });
     if (this.persistencePath && !persisted) {
@@ -91,7 +101,7 @@ export class SessionStore {
   }
 
   getSnapshot(): AgentSessionSnapshot {
-    return cloneSnapshot(this.state.snapshot);
+    return cloneSnapshot(this.state.snapshot, this.snapshotProjections);
   }
 
   getApproval(approvalId: string): ApprovalItem | undefined {

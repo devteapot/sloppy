@@ -5,8 +5,23 @@ import type { SloppyConfig } from "../../config/schema";
 import type { AgentRunResult, LocalRuntimeTool } from "../../core/agent";
 import type { SessionStore } from "../store";
 import type { SessionSnapshotMigrator, SessionSnapshotRecoverer } from "../store/persistence";
-import type { AgentSessionSnapshot, QueuedSessionMessage, SessionStoreEventType } from "../types";
+import type {
+  AgentSessionSnapshot,
+  QueuedSessionMessage,
+  SessionSnapshotProjector,
+  SessionStoreEventType,
+} from "../types";
 import type { UiContributionManifest } from "./ui-contributions";
+
+// Public type surface for session plugins. Plugins import these from
+// `../session/plugins` (or `./types`), never from store internals.
+export type { LocalRuntimeTool } from "../../core/agent";
+export type {
+  SessionSnapshotMigrator,
+  SessionSnapshotRecoverer,
+  SessionSnapshotRecoveryContext,
+} from "../store/persistence";
+export type { SessionSnapshotProjector } from "../types";
 
 export type PluginTurnRequest = {
   pluginId: string;
@@ -95,6 +110,7 @@ export type SessionRuntimePlugin = {
   extensionNamespaces?: string[];
   extensionEvents?: Record<string, readonly SessionStoreEventType[]>;
   sessionNodes?: (ctx: PluginRuntimeContext) => SessionNodeContribution[];
+  snapshotProjections?: readonly SessionSnapshotProjector[];
   migrateSnapshot?: SessionSnapshotMigrator;
   recoverSnapshot?: SessionSnapshotRecoverer;
   onStartup?: (ctx: PluginRuntimeContext) => void | Promise<void>;

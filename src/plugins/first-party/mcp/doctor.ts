@@ -1,9 +1,44 @@
 import { resolve } from "node:path";
 
 import type {
+  RuntimeDoctorCheck,
   RuntimeDoctorContext,
   RuntimeDoctorSubprocessProbe,
 } from "../../../runtime/doctor-types";
+
+export function checkMcpEnvironmentExposure({ config }: RuntimeDoctorContext): RuntimeDoctorCheck {
+  const mcpConfig = config.plugins.mcp;
+  if (!mcpConfig.enabled) {
+    return {
+      id: "mcp-environment-exposure",
+      status: "skipped",
+      summary: "MCP plugin disabled.",
+    };
+  }
+
+  const exposed = Object.entries(mcpConfig.servers)
+    .filter(
+      ([, server]) =>
+        server.transport === "stdio" && server.inheritEnv === true && !server.envAllowlist?.length,
+    )
+    .map(([serverId]) => serverId);
+
+  if (exposed.length > 0) {
+    return {
+      id: "mcp-environment-exposure",
+      status: "warning",
+      summary: `MCP server(s) inherit the full environment: ${exposed.join(", ")}.`,
+      detail:
+        "inheritEnv: true passes every environment variable (including shell secrets) to the server subprocess. Prefer envAllowlist with the specific variables the server needs.",
+    };
+  }
+
+  return {
+    id: "mcp-environment-exposure",
+    status: "ok",
+    summary: "No MCP server inherits the full environment without an allowlist.",
+  };
+}
 
 function shouldMcpServerConnectOnStart(
   serverConnectOnStart: boolean | undefined,

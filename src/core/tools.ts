@@ -125,7 +125,13 @@ function withParameterContractDescription(description: string, parameters: JsonO
 }
 
 function buildObservationTools(providerIds: string[]): LlmTool[] {
-  const providerEnum = providerIds.length > 0 ? providerIds : ["terminal", "filesystem"];
+  // With zero connected providers there is nothing to enumerate; omit the
+  // enum constraint instead of inventing capability names in the kernel.
+  const providerProperty = (description: string) => ({
+    type: "string",
+    ...(providerIds.length > 0 ? { enum: providerIds } : {}),
+    description,
+  });
 
   return [
     {
@@ -137,11 +143,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
         parameters: {
           type: "object",
           properties: {
-            provider: {
-              type: "string",
-              enum: providerEnum,
-              description: "Provider id to query.",
-            },
+            provider: providerProperty("Provider id to query."),
             path: {
               type: "string",
               description: "Absolute SLOP path like /workspace or /tasks.",
@@ -173,11 +175,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
         parameters: {
           type: "object",
           properties: {
-            provider: {
-              type: "string",
-              enum: providerEnum,
-              description: "Provider id to focus.",
-            },
+            provider: providerProperty("Provider id to focus."),
             path: {
               type: "string",
               description: "Absolute SLOP path to keep in detailed focus.",
@@ -201,11 +199,7 @@ function buildObservationTools(providerIds: string[]): LlmTool[] {
         parameters: {
           type: "object",
           properties: {
-            provider: {
-              type: "string",
-              enum: providerEnum,
-              description: "Provider id to unfocus.",
-            },
+            provider: providerProperty("Provider id to unfocus."),
             path: {
               type: "string",
               description: "Exact absolute SLOP path to remove from the focus set.",

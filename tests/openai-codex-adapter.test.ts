@@ -7,7 +7,7 @@ import type { LlmTool } from "@slop-ai/consumer/browser";
 
 import { OpenAICodexAdapter } from "../src/llm/openai-codex";
 import type { EffectiveThinkingConfig } from "../src/llm/thinking";
-import type { ConversationMessage } from "../src/llm/types";
+import { type ConversationMessage, LlmAbortError } from "../src/llm/types";
 
 const originalCodexAuthPath = process.env.SLOPPY_CODEX_AUTH_PATH;
 
@@ -174,6 +174,52 @@ describe("OpenAICodexAdapter", () => {
           outputTokens: 4,
         },
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts mid-stream between SSE reads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-codex-abort-"));
+    try {
+      const authPath = await writeAuthFile(root);
+      const encoder = new TextEncoder();
+      const controller = new AbortController();
+      const fetchFn = async (): Promise<Response> =>
+        new Response(
+          new ReadableStream({
+            start(streamController) {
+              streamController.enqueue(
+                encoder.encode('data: {"type":"response.output_text.delta","delta":"first"}\n\n'),
+              );
+              streamController.enqueue(
+                encoder.encode('data: {"type":"response.output_text.delta","delta":"second"}\n\n'),
+              );
+              streamController.close();
+            },
+          }),
+          { status: 200 },
+        );
+      const adapter = new OpenAICodexAdapter({
+        model: "gpt-5.5",
+        authPath,
+        fetchFn,
+      });
+
+      let streamed = "";
+      await expect(
+        adapter.chat({
+          system: "system prompt",
+          messages: [{ role: "user", content: [{ type: "text", text: "Say hello." }] }],
+          maxTokens: 256,
+          signal: controller.signal,
+          onText: (chunk) => {
+            streamed += chunk;
+            controller.abort();
+          },
+        }),
+      ).rejects.toBeInstanceOf(LlmAbortError);
+      expect(streamed).toBe("first");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

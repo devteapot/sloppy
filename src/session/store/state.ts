@@ -1,7 +1,10 @@
-import type { AgentSessionSnapshot, SessionStoreEventType } from "../types";
+import type {
+  AgentSessionSnapshot,
+  SessionSnapshotProjector,
+  SessionStoreEventType,
+} from "../types";
 import { normalizeApprovalPolicy } from "./approval-policy";
 import { cloneExtensions } from "./extensions";
-import { selectGoalSnapshot } from "./goal";
 import { emptyUsage, normalizeUsage } from "./usage";
 
 export interface SessionStoreState {
@@ -117,8 +120,11 @@ export function createInitialState(options: {
   };
 }
 
-export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnapshot {
-  return {
+export function cloneSnapshot(
+  snapshot: AgentSessionSnapshot,
+  projections?: readonly SessionSnapshotProjector[],
+): AgentSessionSnapshot {
+  const clone: AgentSessionSnapshot = {
     session: {
       ...snapshot.session,
       connectedClients: snapshot.session.connectedClients.map((client) => ({ ...client })),
@@ -129,7 +135,9 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
       profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
     },
     turn: { ...snapshot.turn },
-    goal: selectGoalSnapshot(snapshot),
+    goal: snapshot.goal
+      ? { ...snapshot.goal, evidence: snapshot.goal.evidence?.map((item) => item) }
+      : null,
     approvalPolicy: normalizeApprovalPolicy(
       snapshot.approvalPolicy,
       snapshot.session.updatedAt ?? snapshot.session.startedAt,
@@ -145,10 +153,17 @@ export function cloneSnapshot(snapshot: AgentSessionSnapshot): AgentSessionSnaps
     tasks: snapshot.tasks.map((task) => ({ ...task })),
     apps: snapshot.apps.map((app) => ({ ...app })),
   };
+  for (const project of projections ?? []) {
+    Object.assign(clone, project(clone));
+  }
+  return clone;
 }
 
-export function createStateFromSnapshot(snapshot: AgentSessionSnapshot): SessionStoreState {
-  const restored = cloneSnapshot(snapshot);
+export function createStateFromSnapshot(
+  snapshot: AgentSessionSnapshot,
+  projections?: readonly SessionSnapshotProjector[],
+): SessionStoreState {
+  const restored = cloneSnapshot(snapshot, projections);
   const nextSeq = normalizeSnapshotSeqs(restored);
   return {
     snapshot: restored,

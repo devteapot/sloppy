@@ -93,6 +93,13 @@ for shared systems so the token is not exposed in process arguments. If a proxy
 terminates TLS or rewrites host/path, set `--ws-public-url` to the externally
 reachable `wss://...` URL.
 
+A configured token is matched three ways: the `Authorization: Bearer <token>`
+header, or the `token` / `access_token` query parameters. The query-parameter
+forms exist for browser WebSocket clients, which cannot set headers, but URLs
+end up in proxy and server logs — prefer the Bearer header wherever the client
+allows it. The runtime logs a one-time warning when a query-parameter token is
+used.
+
 ## Managed TUI Supervisor
 
 The packaged interactive entrypoint is:
@@ -128,6 +135,28 @@ disconnect, a managed supervisor auto-closes only when no live session has a
 core or plugin-provided auto-close blocker. Core blockers are active turns,
 approval waits, queued messages, pending approvals, and running tasks; plugin
 blockers must be declared by the session plugin.
+
+## Headless Single-Shot
+
+`sloppy -p "<prompt>"` runs one prompt through an in-process session and
+exits. `--yolo` sets the session approval mode to `auto`, so approval-capable
+pending approvals (dangerous terminal commands, persistent writes, and the
+like) resolve automatically instead of cancelling the turn. Use it only for
+workloads where every affordance the model may invoke is acceptable
+unattended.
+
+## Config Layers
+
+Session config merges `global` (`~/.sloppy/config.yaml`), `workspace`, and
+`project` layers in that order; later layers override earlier ones. Nested
+records merge key-by-key, but **arrays replace wholesale** — a project-level
+list (for example a `command` array or `envAllowlist`) replaces the workspace
+list rather than appending to it. Keyed records such as `plugins.mcp.servers`
+merge per server id, so adding a server in a project layer keeps the workspace
+servers.
+
+Profile saves rewrite only the `llm` section of the home config; comments and
+unrelated sections are preserved.
 
 ## Live Headless E2E
 

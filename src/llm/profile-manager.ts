@@ -5,17 +5,18 @@ import type {
   LlmConfig,
   LlmEndpointConfig,
   LlmEndpointModelConfig,
-  LlmProfileConfig,
   LlmReasoningEffort,
   LlmSessionAgentProfileConfig,
   LlmThinkingDisplay,
   SloppyConfig,
 } from "../config/schema";
+import { endpointRequiresCredential, getDefaultEndpointModel } from "./catalog";
 import {
-  endpointRequiresCredential,
-  endpointUsesCodexAuth,
-  getDefaultEndpointModel,
-} from "./catalog";
+  CredentialResolver,
+  type LlmKeySource,
+  normalizeApiKey,
+  validateApiKey,
+} from "./credential-resolver";
 import {
   type CredentialStore,
   type CredentialStoreKind,
@@ -23,13 +24,12 @@ import {
   createCredentialStore,
 } from "./credential-store";
 import { createLlmAdapter } from "./factory";
-import { getCodexAuthStatus } from "./openai-codex";
 import { type EffectiveThinkingConfig, resolveEffectiveThinkingConfig } from "./thinking";
 import type { LlmAdapter } from "./types";
 
 const DEFAULT_CONFIG = createDefaultConfig();
 
-export type LlmKeySource = "env" | "secure_store" | "missing" | "not_required" | "external_auth";
+export type { LlmKeySource } from "./credential-resolver";
 export type LlmProfileOrigin = "managed" | "environment" | "fallback";
 export type LlmProfileKind = "native" | "session-agent";
 
@@ -90,28 +90,6 @@ export type SaveProfileInput = {
   makeDefault?: boolean;
 };
 
-type ResolvedCredential = {
-  keySource: LlmKeySource;
-  ready: boolean;
-  hasKey: boolean;
-  apiKey?: string;
-  invalidReason?: string;
-};
-
-function normalizeApiKey(value: string): string {
-  return value.trim();
-}
-
-function validateApiKey(endpointId: string, apiKey: string): string | null {
-  if (endpointId === "openrouter") {
-    if (!apiKey.startsWith("sk-or-v1-") && !apiKey.startsWith("sk-or-")) {
-      return "The configured OpenRouter API key does not look valid. OpenRouter keys usually start with sk-or-v1-.";
-    }
-  }
-
-  return null;
-}
-
 function trimOptional(value?: string): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -162,7 +140,9 @@ function buildFallbackProfile(config: LlmConfig): ResolvedProfile {
     id: "default",
     label: "Default",
     endpointId,
-    model: endpoint ? defaultModelForEndpoint(endpointId, endpoint) : "claude-sonnet-4-20250514",
+    model: endpoint
+      ? defaultModelForEndpoint(endpointId, endpoint)
+      : (getDefaultEndpointModel(endpointId) ?? "default"),
     reasoningEffort: config.reasoningEffort,
     thinking: config.thinking,
     managed: false,
@@ -265,6 +245,7 @@ export class LlmProfileManager {
   private config: SloppyConfig;
   private adapterCache = new Map<string, { fingerprint: string; adapter: LlmAdapter }>();
   private readonly credentialStore: CredentialStore;
+  private readonly credentials: CredentialResolver;
   private readonly writeConfig: (config: LlmConfig) => Promise<void>;
 
   constructor(options?: {
@@ -274,6 +255,7 @@ export class LlmProfileManager {
   }) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     this.credentialStore = options?.credentialStore ?? createCredentialStore();
+    this.credentials = new CredentialResolver(this.credentialStore);
     this.writeConfig = options?.writeConfig ?? writeHomeLlmConfig;
   }
 
@@ -353,7 +335,7 @@ export class LlmProfileManager {
       );
     }
 
-    const credential = await this.resolveCredential(targetProfile, endpoint);
+    const credential = await this.credentials.resolve(targetProfile, endpoint);
     if (!credential.ready) {
       throw new LlmConfigurationError((await this.getState()).message);
     }
@@ -374,7 +356,11 @@ export class LlmProfileManager {
       JSON.stringify(endpoint.headers ?? {}),
       JSON.stringify(metadata?.compat ?? {}),
       credential.keySource,
-      credential.apiKey ?? "",
+      // Hash the key so rotation still invalidates the cache without
+      // retaining raw key material in the fingerprint string.
+      credential.apiKey
+        ? new Bun.CryptoHasher("sha256").update(credential.apiKey).digest("hex")
+        : "",
     ].join(":");
     const cacheKey = `${targetProfile.id}::${modelOverride ?? ""}`;
     const cached = this.adapterCache.get(cacheKey);
@@ -492,12 +478,9 @@ export class LlmProfileManager {
       }
       const endpoint = this.config.llm.endpoints[profile.endpointId];
       if (endpoint.auth.type === "none" || endpoint.auth.type === "codex") {
-        await this.deleteStoredCredentialKeys(profile);
+        await this.credentials.deleteStoredKeys(profile);
       } else {
-        await this.credentialStore.set(profile.endpointId, normalizedApiKey);
-        if (profile.id !== profile.endpointId) {
-          await this.credentialStore.delete(profile.id);
-        }
+        await this.credentials.storeKey(profile, normalizedApiKey);
       }
     }
 
@@ -523,7 +506,7 @@ export class LlmProfileManager {
 
     const nextProfiles = this.config.llm.profiles.filter((profile) => profile.id !== profileId);
     if (deletedProfile.kind === "native") {
-      await this.deleteStoredCredentialKeysForProfileRemoval(deletedProfile, nextProfiles);
+      await this.credentials.deleteStoredKeysForProfileRemoval(deletedProfile, nextProfiles);
     }
 
     const nextDefaultProfileId =
@@ -548,7 +531,7 @@ export class LlmProfileManager {
       throw new Error(`Cannot delete stored endpoint credentials for profile: ${profileId}`);
     }
 
-    await this.deleteStoredCredentialKeys(profile);
+    await this.credentials.deleteStoredKeys(profile);
     this.adapterCache.clear();
     return this.getState();
   }
@@ -563,7 +546,7 @@ export class LlmProfileManager {
       return this.resolveMissingEndpointProfileState(profile);
     }
 
-    const credential = await this.resolveCredential(profile, endpoint);
+    const credential = await this.credentials.resolve(profile, endpoint);
     const metadata = endpoint.models[profile.model];
     const reasoningEffort = resolveProfileReasoningEffort(this.config.llm, profile);
     return {
@@ -673,143 +656,6 @@ export class LlmProfileManager {
       llm: nextLlmConfig,
     };
     this.adapterCache.clear();
-  }
-
-  private async getStoredCredentialKey(
-    profile: Pick<ResolvedProfile, "id">,
-    endpointId: string,
-  ): Promise<string | null> {
-    const endpointKey = await this.credentialStore.get(endpointId);
-    if (endpointKey || profile.id === endpointId) {
-      return endpointKey;
-    }
-
-    return this.credentialStore.get(profile.id);
-  }
-
-  private async deleteStoredCredentialKeys(
-    profile: Pick<ResolvedProfile, "id"> & { endpointId: string },
-  ): Promise<void> {
-    await this.credentialStore.delete(profile.endpointId);
-    if (profile.id !== profile.endpointId) {
-      await this.credentialStore.delete(profile.id);
-    }
-  }
-
-  private async deleteStoredCredentialKeysForProfileRemoval(
-    profile: LlmProfileConfig,
-    remainingProfiles: AnyLlmProfileConfig[],
-  ): Promise<void> {
-    const hasRemainingEndpointProfile = remainingProfiles.some(
-      (candidate) => candidate.kind === "native" && candidate.endpointId === profile.endpointId,
-    );
-
-    if (profile.id !== profile.endpointId) {
-      await this.credentialStore.delete(profile.id);
-    }
-    if (!hasRemainingEndpointProfile) {
-      await this.credentialStore.delete(profile.endpointId);
-    }
-  }
-
-  private async resolveCredential(
-    profile: Pick<ResolvedProfile, "kind" | "id"> & {
-      endpointId?: string;
-      origin?: LlmProfileOrigin;
-    },
-    endpoint: LlmEndpointConfig,
-  ): Promise<ResolvedCredential> {
-    if (endpointUsesCodexAuth(endpoint)) {
-      const status = await getCodexAuthStatus();
-      return {
-        keySource: status.available ? "external_auth" : "missing",
-        ready: status.available,
-        hasKey: status.available,
-        invalidReason: status.reason,
-      };
-    }
-
-    if (!endpointRequiresCredential(endpoint)) {
-      return {
-        keySource: "not_required",
-        ready: true,
-        hasKey: false,
-      };
-    }
-
-    const endpointId = profile.endpointId;
-    if (profile.origin === "environment" && endpoint.auth.type === "env") {
-      const envKey = Bun.env[endpoint.auth.env];
-      if (envKey && endpointId) {
-        const normalizedApiKey = normalizeApiKey(envKey);
-        const invalidReason = validateApiKey(endpointId, normalizedApiKey);
-        if (invalidReason) {
-          return {
-            keySource: "env",
-            ready: false,
-            hasKey: true,
-            invalidReason,
-          };
-        }
-
-        return {
-          keySource: "env",
-          ready: true,
-          hasKey: true,
-          apiKey: normalizedApiKey,
-        };
-      }
-    }
-
-    const storedKey = endpointId ? await this.getStoredCredentialKey(profile, endpointId) : null;
-    if (storedKey && endpointId) {
-      const normalizedApiKey = normalizeApiKey(storedKey);
-      const invalidReason = validateApiKey(endpointId, normalizedApiKey);
-      if (invalidReason) {
-        return {
-          keySource: "secure_store",
-          ready: false,
-          hasKey: true,
-          invalidReason,
-        };
-      }
-
-      return {
-        keySource: "secure_store",
-        ready: true,
-        hasKey: true,
-        apiKey: normalizedApiKey,
-      };
-    }
-
-    if (endpoint.auth.type === "env") {
-      const envKey = Bun.env[endpoint.auth.env];
-      if (envKey && endpointId) {
-        const normalizedApiKey = normalizeApiKey(envKey);
-        const invalidReason = validateApiKey(endpointId, normalizedApiKey);
-        if (invalidReason) {
-          return {
-            keySource: "env",
-            ready: false,
-            hasKey: true,
-            invalidReason,
-          };
-        }
-
-        return {
-          keySource: "env",
-          ready: true,
-          hasKey: true,
-          apiKey: normalizedApiKey,
-        };
-      }
-    }
-
-    return {
-      keySource: "missing",
-      ready: false,
-      hasKey: false,
-    };
   }
 
   private buildStatusMessage(

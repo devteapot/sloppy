@@ -9,6 +9,9 @@ export type BuiltInLlmEndpoint = LlmEndpointConfig & {
   defaultModel: string;
 };
 
+// Maintained by hand; there is no auto-fetch of provider specs. When vendors
+// ship new defaults, update the model ids and context/output limits here and
+// in tests/llm-provider-defaults.test.ts together.
 export const DEFAULT_LLM_ENDPOINTS: Record<string, BuiltInLlmEndpoint> = {
   anthropic: {
     label: "Anthropic",

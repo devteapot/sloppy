@@ -22,7 +22,7 @@ import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegat
 import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { checkWorkspacePaths } from "./filesystem/doctor";
 import { FilesystemProvider } from "./filesystem/provider";
-import { collectMcpSubprocessProbes } from "./mcp/doctor";
+import { checkMcpEnvironmentExposure, collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
@@ -46,7 +46,15 @@ function registeredProvider(
   };
 }
 
-function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRuntimePlugin {
+export function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRuntimePlugin {
+  if (plugin.extensionNamespaces?.length) {
+    // A descriptor that owns extension namespaces needs runtime behavior
+    // (projection, recovery, event mapping); a metadata-only session plugin
+    // would silently no-op. Fail fast — this is a first-party catalog bug.
+    throw new Error(
+      `First-party plugin '${plugin.id}' declares extensionNamespaces but no createSessionPlugin.`,
+    );
+  }
   return {
     id: plugin.id,
     version: plugin.version,
@@ -509,6 +517,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     defaultEnabled: false,
     description: "MCP compatibility provider.",
     providerIds: ["mcp"],
+    doctorChecks: () => [checkMcpEnvironmentExposure],
     doctorSubprocessProbes: () => [collectMcpSubprocessProbes],
     createProviders: (config) => {
       const plugin = config.plugins.mcp;

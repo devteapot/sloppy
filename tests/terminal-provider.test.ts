@@ -191,6 +191,39 @@ describe("TerminalProvider", () => {
     }
   });
 
+  test("requires approval for shell indirection that can smuggle destructive commands", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
+    tempPaths.push(cwd);
+
+    const provider = new TerminalProvider({
+      cwd,
+      historyLimit: 10,
+      syncTimeoutMs: 5000,
+    });
+    const { hub } = await attachTerminalToHub(provider);
+
+    try {
+      for (const command of [
+        'bash -c "rm -rf important"',
+        "sh -c 'rm file.txt'",
+        'zsh -ec "rm file.txt"',
+        "echo $(rm file.txt)",
+        "echo `rm file.txt`",
+        'eval "rm file.txt"',
+        "ls *.tmp | xargs rm",
+      ]) {
+        const result = await hub.invoke("terminal", "/session", "execute", {
+          command,
+          background: false,
+        });
+        expect(result.status).toBe("error");
+        expect(result.error?.code).toBe("approval_required");
+      }
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("rejecting a hub-mediated approval leaves state unchanged", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "sloppy-terminal-"));
     tempPaths.push(cwd);

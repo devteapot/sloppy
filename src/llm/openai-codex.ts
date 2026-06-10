@@ -621,6 +621,7 @@ async function parseStreamingResponse(
   onThinking?: LlmChatOptions["onThinking"],
   thinking?: EffectiveThinkingConfig,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<{
   response: CodexResponse;
   text: string;
@@ -706,6 +707,11 @@ async function parseStreamingResponse(
 
   try {
     while (true) {
+      // The fetch carries the abort signal, but bail out between reads too so
+      // cancellation does not wait on the next network chunk.
+      if (signal?.aborted) {
+        throw new LlmAbortError();
+      }
       const { done, value } = await reader.read();
       if (done) {
         break;
@@ -784,6 +790,7 @@ export class OpenAICodexAdapter implements LlmAdapter {
         options.onThinking,
         this.thinking,
         this.model,
+        options.signal,
       );
       const content = normalizeCodexOutput(codexResponse.response, {
         text: codexResponse.text,

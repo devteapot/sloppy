@@ -358,6 +358,15 @@ export type AgentSessionSnapshot = {
   apps: ExternalAppSnapshot[];
 };
 
+/**
+ * Derives plugin-owned projected snapshot fields (e.g. `goal`) from durable
+ * snapshot state. Projectors run on every snapshot clone; returned fields are
+ * merged over the cloned snapshot. Projected fields are never persisted.
+ */
+export type SessionSnapshotProjector = (
+  snapshot: AgentSessionSnapshot,
+) => Partial<AgentSessionSnapshot>;
+
 export type SessionStoreEventType =
   | "turn"
   | "transcript"

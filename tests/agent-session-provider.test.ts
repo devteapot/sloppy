@@ -16,13 +16,13 @@ import {
   type LlmChatOptions,
   type LlmResponse,
 } from "../src/llm/types";
+import { goalSnapshotToExtension } from "../src/plugins/first-party/persistent-goal/goal-schema";
 import { createPersistentGoalPlugin } from "../src/plugins/first-party/persistent-goal/session";
 import { InProcessTransport } from "../src/providers/in-process";
 import { AgentSessionProvider } from "../src/session/provider";
 import type { SessionAgent, SessionAgentFactory } from "../src/session/runtime";
 import { SessionRuntime } from "../src/session/runtime";
 import { SessionStore } from "../src/session/store";
-import { goalSnapshotToExtension } from "../src/session/store/goal";
 import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig({
@@ -49,6 +49,7 @@ function persistentGoalStoreOptions() {
   return {
     snapshotMigrators: plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
     snapshotRecoverers: plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
+    snapshotProjections: plugin.snapshotProjections ?? [],
     extensionEventTypes: plugin.extensionEvents ?? {},
   };
 }

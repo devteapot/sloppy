@@ -3,32 +3,34 @@ import { join } from "node:path";
 
 import { action, type NodeDescriptor } from "@slop-ai/server";
 
-import type { LocalRuntimeTool } from "../../../core/agent";
-import type {
-  ActivePluginTurn,
-  PluginRuntimeContext,
-  PluginTurnCompleteEvent,
-  PluginTurnFailureEvent,
-  PluginTurnRequest,
-  SessionRuntimePlugin,
-} from "../../../session/plugins/types";
-import { createExtensionRecord } from "../../../session/store/extensions";
 import {
-  GOAL_EXTENSION_NAMESPACE,
-  GOAL_EXTENSION_OWNER,
-  GOAL_EXTENSION_RETENTION_MS,
-  GOAL_EXTENSION_SCHEMA_VERSION,
-  goalFromExtension,
-  selectGoalSnapshot,
-} from "../../../session/store/goal";
-import { buildId, now } from "../../../session/store/helpers";
-import type { SessionSnapshotRecoveryContext } from "../../../session/store/persistence";
+  type ActivePluginTurn,
+  buildId,
+  createExtensionRecord,
+  type LocalRuntimeTool,
+  now,
+  type PluginRuntimeContext,
+  type PluginTurnCompleteEvent,
+  type PluginTurnFailureEvent,
+  type PluginTurnRequest,
+  type SessionRuntimePlugin,
+  type SessionSnapshotRecoveryContext,
+} from "../../../session/plugins";
 import type {
   AgentSessionSnapshot,
   JsonObject,
   SessionGoalStatus,
   SessionGoalUpdateSource,
 } from "../../../session/types";
+import {
+  GOAL_EXTENSION_NAMESPACE,
+  GOAL_EXTENSION_OWNER,
+  GOAL_EXTENSION_RETENTION_MS,
+  GOAL_EXTENSION_SCHEMA_VERSION,
+  goalFromExtension,
+  goalSnapshotProjection,
+  selectGoalSnapshot,
+} from "./goal-schema";
 
 const PERSISTENT_GOAL_PLUGIN_ID = "persistent-goal";
 const PERSISTENT_GOAL_SKILL_NAME = "persistent-goal";
@@ -821,6 +823,7 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
     version: "1.0.0",
     description: "Persistent long-running session objective controls.",
     recoverSnapshot: recoverGoalSnapshot,
+    snapshotProjections: [goalSnapshotProjection],
     extensionEvents: {
       [GOAL_EXTENSION_NAMESPACE]: ["goal"],
     },

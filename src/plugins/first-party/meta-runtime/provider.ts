@@ -5,6 +5,7 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 import type { ProviderRuntimeHub } from "../../../core/hub";
 import type { RuntimeEvent } from "../../../core/role";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
+import { now } from "../shared/runtime-helpers";
 import { dispatchMetaRuntimeRoute } from "./meta-runtime-dispatch";
 import {
   createTopologyExperiment,
@@ -77,10 +78,6 @@ export type {
   TopologyExperiment,
   TopologyPattern,
 } from "./meta-runtime-model";
-
-function now(): string {
-  return new Date().toISOString();
-}
 
 function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
