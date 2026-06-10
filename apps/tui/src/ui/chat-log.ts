@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { ActivityItem, SessionViewSnapshot } from "../backend/slop-types";
-import type { Verbosity } from "../state/commands";
+import type { Verbosity } from "../projections/command-types";
 import {
   assembleTranscript,
   type RenderableBlock,
@@ -16,7 +16,7 @@ import {
   renderableBlockText,
   renderableMessageText,
   type ThinkingRenderMode,
-} from "../state/stream-assembler";
+} from "../projections/stream-assembler";
 import { safeMarkdownText, safePlainText } from "./render-safety";
 import { PlainTranscriptText, SafeMarkdown, StreamingMarkdown } from "./streaming-markdown";
 import { markdownTheme, orange } from "./theme";

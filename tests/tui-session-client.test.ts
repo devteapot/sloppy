@@ -14,15 +14,22 @@ import {
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
-import { buildCommandPaletteCommands } from "../apps/tui/src/state/command-palette";
-import { parseLocalCommand, parsePluginSlashCommand } from "../apps/tui/src/state/commands";
-import { projectIndicators, projectPluginActions } from "../apps/tui/src/state/manifest-projection";
+import {
+  parseLocalCommand,
+  parsePluginSlashCommand,
+} from "../apps/tui/src/projections/command-parser";
+import {
+  projectIndicators,
+  projectPluginActions,
+} from "../apps/tui/src/projections/manifest-projection";
+import { buildCommandPaletteCommands } from "../apps/tui/src/projections/palette-items";
 import {
   evaluatePluginNotifications,
   readPluginNotificationValue,
-} from "../apps/tui/src/state/plugin-notifications";
-import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/state/slash-catalog";
-import { assembleTranscript } from "../apps/tui/src/state/stream-assembler";
+} from "../apps/tui/src/projections/plugin-notifications";
+import { detectInlineSecret } from "../apps/tui/src/projections/secret-detection";
+import { buildSlashEntries, matchSlashEntries } from "../apps/tui/src/projections/slash-catalog";
+import { assembleTranscript } from "../apps/tui/src/projections/stream-assembler";
 import { CustomEditor } from "../apps/tui/src/ui/custom-editor";
 import { routeOverlayText } from "../apps/tui/src/ui/route-overlay";
 import { SlashAutocompleteProvider } from "../apps/tui/src/ui/slash-autocomplete";
@@ -471,6 +478,27 @@ describe("TUI v2 manifest mapping", () => {
       name: "/reload-config all",
     });
     expect(buildSlashEntries().find((entry) => entry.name === "reload-config")).toBeTruthy();
+  });
+
+  test("rejects inline secrets in /profile and detects secret-shaped values", () => {
+    expect(parseLocalCommand("/profile openai gpt-5 --api-key sk-abc12345678")?.type).toBe(
+      "rejected",
+    );
+
+    expect(detectInlineSecret(["--api-key", "sk-abc12345678"])).toBeDefined();
+    expect(detectInlineSecret(["--api-key=sk-abc12345678"])).toBeDefined();
+    expect(detectInlineSecret(["--token", "anything-at-all"])).toBeDefined();
+    expect(detectInlineSecret(["ghp_0123456789abcdef0123"])).toBeDefined();
+    expect(detectInlineSecret(["github_pat_11ABCDEFG0123456789012"])).toBeDefined();
+    expect(detectInlineSecret(["xoxb-1234567890-abc"])).toBeDefined();
+    expect(detectInlineSecret(["AKIAIOSFODNN7EXAMPLE"])).toBeDefined();
+    expect(detectInlineSecret(["--label=sk-abc12345678"])).toBeDefined();
+
+    expect(detectInlineSecret(["--token"])).toBeUndefined();
+    expect(detectInlineSecret(["--token", "--no-default"])).toBeUndefined();
+    expect(detectInlineSecret(["--label", "my profile"])).toBeUndefined();
+    expect(detectInlineSecret(["openai", "gpt-5"])).toBeUndefined();
+    expect(detectInlineSecret([])).toBeUndefined();
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {

@@ -4,7 +4,7 @@ import type {
   AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
 
-import { BUILTIN_SLASH_ENTRIES, type SlashEntry } from "../state/slash-catalog";
+import { BUILTIN_SLASH_ENTRIES, type SlashEntry } from "../projections/slash-catalog";
 import { FileAutocompleteProvider } from "./file-autocomplete";
 import { SlashAutocompleteProvider } from "./slash-autocomplete";
 

@@ -1,7 +1,7 @@
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { SessionViewSnapshot } from "../backend/slop-types";
-import { projectIndicators } from "../state/manifest-projection";
+import { projectIndicators } from "../projections/manifest-projection";
 import { formatHomePath } from "./display-path";
 import { sanitizeTerminalText } from "./render-safety";
 import { dim } from "./theme";

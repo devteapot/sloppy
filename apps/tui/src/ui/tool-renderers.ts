@@ -1,5 +1,5 @@
 import type { ToolCallResult } from "../backend/slop-types";
-import type { Verbosity } from "../state/commands";
+import type { Verbosity } from "../projections/command-types";
 import { sanitizeTerminalText } from "./render-safety";
 import { bgAdd, bgRemove, bold, dim, red } from "./theme";
 

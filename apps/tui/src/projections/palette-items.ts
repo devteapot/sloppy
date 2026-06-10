@@ -1,6 +1,6 @@
 import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SupervisorSnapshot } from "../backend/supervisor-client";
-import type { LocalCommand } from "./commands";
+import type { LocalCommand } from "./command-types";
 import { projectPluginActions } from "./manifest-projection";
 
 export type PaletteCommand = {

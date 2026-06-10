@@ -2,8 +2,8 @@ import { Text } from "@earendil-works/pi-tui";
 
 import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SupervisorSnapshot } from "../backend/supervisor-client";
-import { projectIndicators } from "../state/manifest-projection";
-import { buildSlashEntries } from "../state/slash-catalog";
+import { projectIndicators } from "../projections/manifest-projection";
+import { buildSlashEntries } from "../projections/slash-catalog";
 import { sanitizeTerminalText } from "./render-safety";
 
 function line(value: string | undefined): string {

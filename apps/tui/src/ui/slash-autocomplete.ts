@@ -4,7 +4,7 @@ import type {
   AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
 
-import { matchSlashEntryList, type SlashEntry } from "../state/slash-catalog";
+import { matchSlashEntryList, type SlashEntry } from "../projections/slash-catalog";
 import { sanitizeTerminalText } from "./render-safety";
 import { accent, bold, dim } from "./theme";
 

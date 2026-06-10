@@ -1,6 +1,6 @@
 import { type SelectItem, SelectList, type TUI } from "@earendil-works/pi-tui";
 
-import type { PaletteCommand } from "../state/command-palette";
+import type { PaletteCommand } from "../projections/palette-items";
 import { sanitizeTerminalText } from "./render-safety";
 import { selectListTheme } from "./theme";
 

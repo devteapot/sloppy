@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { ApprovalMode } from "../backend/slop-types";
-import type { SlashEntry } from "../state/slash-catalog";
+import type { SlashEntry } from "../projections/slash-catalog";
 import { ComposerAutocompleteProvider } from "./composer-autocomplete";
 import { dim, editorTheme, green, orange, red, redOrange, teal } from "./theme";
 

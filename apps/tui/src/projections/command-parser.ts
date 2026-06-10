@@ -1,95 +1,20 @@
 import type {
-  ApprovalMode,
   PluginActionContribution,
   SessionViewSnapshot,
   TuiRoute,
 } from "../backend/slop-types";
-
-export type Verbosity = "compact" | "verbose";
-
-export type LocalCommand =
-  | { type: "route"; route: TuiRoute }
-  | { type: "inspect_open" }
-  | { type: "help" }
-  | { type: "clear" }
-  | { type: "quit" }
-  | { type: "verbosity"; mode: Verbosity | "show" }
-  | { type: "approval_mode"; mode: ApprovalMode | "show" | "toggle" }
-  | {
-      type: "goal";
-      action: "show" | "create" | "pause" | "resume" | "complete" | "clear";
-      objective?: string;
-      tokenBudget?: number;
-      message?: string;
-    }
-  | {
-      type: "runtime";
-      action: "refresh" | "export" | "inspect" | "apply" | "revert";
-      proposalId?: string;
-    }
-  | {
-      type: "query";
-      path: string;
-      depth: number;
-      targetId: string;
-      window?: [number, number];
-      maxNodes?: number;
-    }
-  | {
-      type: "invoke";
-      path: string;
-      action: string;
-      params?: Record<string, unknown>;
-      targetId: string;
-    }
-  | {
-      type: "plugin_action";
-      pluginId: string;
-      actionId: string;
-      label: string;
-      path: string;
-      action: string;
-      params?: Record<string, unknown>;
-    }
-  | {
-      type: "profile";
-      profileId?: string;
-      label?: string;
-      kind?: "native" | "session-agent";
-      endpointId?: string;
-      model?: string;
-      reasoningEffort?: string;
-      thinkingEnabled?: boolean;
-      thinkingDisplay?: "visible" | "hidden";
-      adapterId?: string;
-      makeDefault: boolean;
-    }
-  | {
-      type: "profile_secret";
-      profileId?: string;
-      label?: string;
-      kind?: "native" | "session-agent";
-      endpointId?: string;
-      model?: string;
-      reasoningEffort?: string;
-      thinkingEnabled?: boolean;
-      thinkingDisplay?: "visible" | "hidden";
-      adapterId?: string;
-      makeDefault: boolean;
-    }
-  | { type: "rejected"; reason: string }
-  | { type: "queue_cancel"; target: string | number }
-  | { type: "config_reload"; target: "session" | "supervisor" }
-  | {
-      type: "session_new";
-      workspaceId?: string;
-      projectId?: string;
-      title?: string;
-      sessionId?: string;
-    }
-  | { type: "session_switch"; sessionId: string }
-  | { type: "session_stop"; sessionId: string }
-  | { type: "unknown"; name: string };
+import {
+  parseCommandOptions,
+  parseParams,
+  parsePositiveInteger,
+  parseProfileKind,
+  parseTargetPath,
+  parseThinkingDisplay,
+  parseThinkingEnabled,
+  parseWindow,
+} from "./command-options";
+import type { LocalCommand } from "./command-types";
+import { detectInlineSecret } from "./secret-detection";
 
 const ROUTE_NAMES = new Set<TuiRoute>(["chat", "setup", "approvals", "tasks", "apps"]);
 
@@ -403,231 +328,6 @@ export function parseLocalCommand(input: string): LocalCommand | null {
   return { type: "unknown", name: trimmed };
 }
 
-const SECRET_KEY_NAMES = new Set([
-  "api-key",
-  "api_key",
-  "apikey",
-  "key",
-  "secret",
-  "token",
-  "auth",
-  "authorization",
-  "bearer",
-  "password",
-]);
-
-const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /^sk[-_][A-Za-z0-9_-]{8,}$/i,
-  /^pk[-_][A-Za-z0-9_-]{8,}$/i,
-  /^rk[-_][A-Za-z0-9_-]{8,}$/i,
-  /^sess[-_][A-Za-z0-9_-]{8,}$/i,
-  /^ghp_[A-Za-z0-9]{16,}$/,
-  /^gho_[A-Za-z0-9]{16,}$/,
-  /^ghs_[A-Za-z0-9]{16,}$/,
-  /^ghr_[A-Za-z0-9]{16,}$/,
-  /^github_pat_[A-Za-z0-9_]{20,}$/,
-  /^xox[abprs]-[A-Za-z0-9-]{10,}$/i,
-  /^aws_/i,
-  /^AKIA[0-9A-Z]{8,}$/,
-  /^Bearer\s+\S{8,}$/i,
-];
-
-function looksLikeSecretValue(value: string): boolean {
-  for (const pattern of SECRET_VALUE_PATTERNS) {
-    if (pattern.test(value)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function detectInlineSecret(args: string[]): string | undefined {
-  const REJECT =
-    "Use /profile-secret <provider> [model] for API keys — secrets must not be passed inline.";
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-
-    if (arg.startsWith("--")) {
-      const eq = arg.indexOf("=");
-      const flagName = (eq === -1 ? arg.slice(2) : arg.slice(2, eq)).toLowerCase();
-      const inlineValue = eq === -1 ? undefined : arg.slice(eq + 1);
-
-      if (SECRET_KEY_NAMES.has(flagName)) {
-        if (inlineValue !== undefined && inlineValue.length > 0) {
-          return REJECT;
-        }
-        const next = args[index + 1];
-        if (next !== undefined && !next.startsWith("--")) {
-          return REJECT;
-        }
-      }
-
-      if (inlineValue !== undefined && looksLikeSecretValue(inlineValue)) {
-        return REJECT;
-      }
-      continue;
-    }
-
-    if (looksLikeSecretValue(arg)) {
-      return REJECT;
-    }
-  }
-
-  return undefined;
-}
-
-function parseCommandOptions(args: string[]): {
-  positionals: string[];
-  values: Record<string, string>;
-  flags: Set<string>;
-} {
-  const positionals: string[] = [];
-  const values: Record<string, string> = {};
-  const flags = new Set<string>();
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg.startsWith("--")) {
-      positionals.push(arg);
-      continue;
-    }
-
-    const key = arg.slice(2);
-    const next = args[index + 1];
-    if (!next || next.startsWith("--")) {
-      flags.add(key);
-      continue;
-    }
-
-    values[key] = next;
-    index += 1;
-  }
-
-  return { positionals, values, flags };
-}
-
-function parseTargetPath(
-  rawPath: string,
-  explicitTarget?: string,
-): { targetId: string; path: string } {
-  if (explicitTarget) {
-    return {
-      targetId: explicitTarget,
-      path: rawPath,
-    };
-  }
-
-  if (rawPath.startsWith("/")) {
-    return {
-      targetId: "session",
-      path: rawPath,
-    };
-  }
-
-  const separator = rawPath.indexOf(":/");
-  if (separator === -1) {
-    return {
-      targetId: "session",
-      path: rawPath,
-    };
-  }
-
-  return {
-    targetId: rawPath.slice(0, separator),
-    path: rawPath.slice(separator + 1),
-  };
-}
-
-function parseWindow(raw: string | undefined): [number, number] | undefined {
-  if (!raw) {
-    return undefined;
-  }
-
-  const [startRaw, endRaw] = raw.split(":");
-  const start = Number(startRaw);
-  const end = Number(endRaw);
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start) {
-    throw new Error("Window must use start:end with non-negative integer bounds.");
-  }
-
-  return [start, end];
-}
-
-function parsePositiveInteger(raw: string | undefined): number | undefined {
-  if (!raw) {
-    return undefined;
-  }
-
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error("Expected a positive integer.");
-  }
-
-  return value;
-}
-
-function parseProfileKind(
-  raw: string | undefined,
-  adapterId: string | undefined,
-): "native" | "session-agent" | undefined {
-  if (!raw) {
-    return adapterId ? "session-agent" : undefined;
-  }
-  if (raw === "native" || raw === "session-agent") {
-    return raw;
-  }
-  throw new Error("profile kind must be native or session-agent.");
-}
-
-function parseThinkingEnabled(parsed: {
-  values: Record<string, string>;
-  flags: Set<string>;
-}): boolean | undefined {
-  if (parsed.flags.has("thinking")) {
-    return true;
-  }
-  if (parsed.flags.has("no-thinking")) {
-    return false;
-  }
-  const raw = parsed.values.thinking ?? parsed.values["thinking-enabled"];
-  if (!raw) {
-    return undefined;
-  }
-  if (raw === "true" || raw === "on" || raw === "enabled") {
-    return true;
-  }
-  if (raw === "false" || raw === "off" || raw === "disabled") {
-    return false;
-  }
-  throw new Error("thinking must be true/false, on/off, or enabled/disabled.");
-}
-
-function parseThinkingDisplay(parsed: {
-  values: Record<string, string>;
-}): "visible" | "hidden" | undefined {
-  const raw = parsed.values["thinking-display"] ?? parsed.values.display;
-  if (!raw) {
-    return undefined;
-  }
-  if (raw === "visible" || raw === "hidden") {
-    return raw;
-  }
-  throw new Error("thinking display must be visible or hidden.");
-}
-
-function parseParams(json: string): Record<string, unknown> | undefined {
-  if (!json) {
-    return undefined;
-  }
-
-  const parsed: unknown = JSON.parse(json);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invoke params must be a JSON object.");
-  }
-  return parsed as Record<string, unknown>;
-}
-
 type ParsedPluginSlashName = {
   pluginId: string;
   command: string;
@@ -644,6 +344,8 @@ function parsePluginSlashName(rawName: string): ParsedPluginSlashName | null {
   };
 }
 
+// Parked here until the shared action-slash extraction module exists; the
+// identical logic currently also lives inline in slash-catalog.ts.
 type ActionSlashPresentation = {
   name: string;
   aliases?: string[];

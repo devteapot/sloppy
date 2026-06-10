@@ -10,15 +10,11 @@ import {
 import type { SessionClient } from "../backend/session-client";
 import type { ApprovalMode, SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
-import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
-import {
-  type LocalCommand,
-  parseLocalCommand,
-  parsePluginSlashCommand,
-  type Verbosity,
-} from "../state/commands";
-import { evaluatePluginNotifications } from "../state/plugin-notifications";
-import { buildSlashEntries } from "../state/slash-catalog";
+import { parseLocalCommand, parsePluginSlashCommand } from "../projections/command-parser";
+import type { LocalCommand, Verbosity } from "../projections/command-types";
+import { buildCommandPaletteCommands, type PaletteCommand } from "../projections/palette-items";
+import { evaluatePluginNotifications } from "../projections/plugin-notifications";
+import { buildSlashEntries } from "../projections/slash-catalog";
 import { ChatLog } from "./chat-log";
 import { CommandPalette } from "./command-palette";
 import { CustomEditor } from "./custom-editor";
