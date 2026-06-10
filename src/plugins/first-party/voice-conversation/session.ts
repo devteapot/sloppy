@@ -1,47 +1,98 @@
-import type { NodeDescriptor } from "@slop-ai/server";
+import { action, type NodeDescriptor } from "@slop-ai/server";
 
 import type { VoiceConversationPluginConfig } from "../../../config/schema";
+import { createExtensionRecord, now } from "../../../session/plugins";
 import type {
   PluginRuntimeContext,
   PluginTurnCompleteEvent,
   PluginTurnFailureEvent,
   SessionRuntimePlugin,
 } from "../../../session/plugins/types";
-import { type AudioBackend, type CapturedAudio, createAudioBackend } from "./audio-backend";
+import type { JsonObject } from "../../../session/types";
+import type { SpeechProfileManager } from "../../../speech/profile-manager";
+import type { SttSession, SttSessionEvent, TtsStream } from "../../../speech/types";
+import { endpointIsLocal } from "../voice/policy";
+import { type AudioBackend, type AudioStreamSource, createAudioBackend } from "./audio-backend";
 
 const PLUGIN_ID = "voice-conversation";
-type Phase = "idle" | "listening" | "thinking" | "speaking";
+export const CONVERSATION_EXTENSION_NAMESPACE = "voice-conversation";
+const EXTENSION_INSTANCE_ID = "live";
+const EXTENSION_SCHEMA_VERSION = 2;
 
-// Stop the capture loop after this many consecutive capture failures (e.g. the
-// recorder binary is missing) instead of spinning hot on the error.
-const MAX_CONSECUTIVE_CAPTURE_FAILURES = 3;
+type Phase =
+  | "idle"
+  | "needs_approval"
+  | "connecting"
+  | "listening"
+  | "thinking"
+  | "speaking"
+  | "restarting";
+type ListenMode = "single_turn" | "continuous";
+
+// Restart backoff for unexpected session closes in continuous mode.
+const RESTART_BASE_DELAY_MS = 500;
+const RESTART_MAX_DELAY_MS = 30000;
+// Partial transcripts publish at most ~6/s (with a trailing flush) so live
+// captions don't spam the session store.
+const PARTIAL_PUBLISH_INTERVAL_MS = 150;
 // Head-animation cadence and amplitudes (degrees / radians) while speaking.
 const ANIMATE_INTERVAL_MS = 100;
 const HEAD_PITCH_DEG = 6;
 const HEAD_YAW_DEG = 10;
 const ANTENNA_RAD = 0.25;
 
+export type VoiceConversationPluginOptions = {
+  /** Injectable delay for restart-backoff tests. */
+  delayFn?: (ms: number) => Promise<void>;
+};
+
 /**
- * Half-duplex voice conversation loop layered on the voice provider. Drives:
- * mic capture (VAD-endpointed) → voice /stt transcribe → agent turn → voice /tts
- * synthesize → playback, animating the robot head during the reply. Audio I/O is
- * a swappable backend (host machine now, robot when hardware arrives); STT/TTS
- * profiles live in the `voice` plugin. The loop is event-driven — armed in
- * onStartup and re-armed in onTurnComplete — because `nextTurn` is synchronous
- * and cannot block for capture.
+ * Streaming voice conversation loop: mic PCM → realtime STT session (provider
+ * VAD; final transcripts start plugin turns) → streamed TTS → streamed
+ * playback. Live state (phase, partial transcripts, connection health) is
+ * published through a session extension record so the /conversation node
+ * actually refreshes — closure state alone never would.
+ *
+ * The privacy boundary is the session provider's start_listening action:
+ * `createSpeechNetworkRule` requires approval when either speech endpoint is
+ * non-local, and continuous auto-start only proceeds for local endpoints
+ * (otherwise the loop parks in `needs_approval` until start_listening is
+ * invoked through the hub).
  */
 export function createVoiceConversationPlugin(
   config: VoiceConversationPluginConfig,
+  voiceProfiles?: SpeechProfileManager,
+  options?: VoiceConversationPluginOptions,
 ): SessionRuntimePlugin {
+  const enabled = config.enabled;
+  const delayFn = options?.delayFn ?? ((ms: number) => delay(ms));
+
   let backend: AudioBackend | null = null;
   let running = false;
-  let listening = false;
-  let turnInFlight = false;
   let phase: Phase = "idle";
+  let listenMode: ListenMode | null = null;
+  let startInProgress = false;
+  let turnInFlight = false;
+  let stopRequested = false;
   let runSeq = 0;
-  let speakAbort: AbortController | null = null;
+  let sessionGen = 0;
+  let connected = false;
+  let partialTranscript = "";
+  let lastTranscript = "";
+  let lastError = "";
+  let restartAttempt = 0;
+  let restartScheduled = false;
+  let selectedSttProfile: string | undefined;
+  let selectedTtsProfile: string | undefined;
 
-  const enabled = config.enabled;
+  let listenAbort: AbortController | null = null;
+  let sttSession: SttSession | null = null;
+  let audioStream: AudioStreamSource | null = null;
+  let speakAbort: AbortController | null = null;
+  let ttsStream: TtsStream | null = null;
+
+  let lastPartialPublishAt = 0;
+  let partialFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   function logError(ctx: PluginRuntimeContext, where: string, error: unknown): void {
     ctx.audit({
@@ -51,123 +102,358 @@ export function createVoiceConversationPlugin(
     });
   }
 
-  /**
-   * Capture one real utterance (skipping silence/empty captures), transcribe it,
-   * and start an agent turn. Returns once a turn is started or the loop stops;
-   * re-arming happens in onTurnComplete.
-   */
-  async function listen(ctx: PluginRuntimeContext): Promise<void> {
-    if (!running || listening || turnInFlight || !backend) {
+  function liveState(): JsonObject {
+    return {
+      phase,
+      mode: listenMode,
+      connected,
+      partial_transcript: partialTranscript,
+      last_transcript: lastTranscript,
+      restart_attempt: restartAttempt,
+      error: lastError || undefined,
+      stt_profile: selectedSttProfile,
+      tts_profile: selectedTtsProfile,
+      updated_at: now(),
+    } as JsonObject;
+  }
+
+  function publish(ctx: PluginRuntimeContext): void {
+    if (!ctx.snapshot().extensions[CONVERSATION_EXTENSION_NAMESPACE]) {
+      ctx.store.upsertExtension(
+        createExtensionRecord({
+          namespace: CONVERSATION_EXTENSION_NAMESPACE,
+          instanceId: EXTENSION_INSTANCE_ID,
+          schemaVersion: EXTENSION_SCHEMA_VERSION,
+          owner: { kind: "runtime", id: PLUGIN_ID, version: "2.0.0" },
+          state: liveState(),
+          cleanupPolicy: {
+            mode: "manual",
+            description: "Live conversation-loop state; rewritten in place while the loop runs.",
+          },
+        }),
+      );
       return;
     }
-    listening = true;
-    phase = "listening";
-    let failures = 0;
-    try {
-      while (running && !turnInFlight) {
-        let audio: CapturedAudio | null;
-        try {
-          audio = await backend.captureUtterance();
-          failures = 0;
-        } catch (error) {
-          logError(ctx, "capture", error);
-          if (++failures >= MAX_CONSECUTIVE_CAPTURE_FAILURES) {
-            running = false;
-            ctx.audit({
-              kind: "voice_conversation_stopped",
-              reason: "capture failed repeatedly",
-            });
-            return;
-          }
-          continue;
-        }
-        if (!audio || !running) {
-          continue;
-        }
+    ctx.store.patchExtension(CONVERSATION_EXTENSION_NAMESPACE, (record) => {
+      record.state = liveState();
+      return record;
+    });
+  }
 
-        const transcript = await transcribe(ctx, audio);
-        if (!transcript) {
-          continue; // nothing intelligible — keep listening
-        }
-
-        phase = "thinking";
-        turnInFlight = true;
-        try {
-          ctx.startTurn({
-            pluginId: PLUGIN_ID,
-            runId: `vc-${++runSeq}`,
-            text: transcript,
-            author: "reachy-voice",
-            role: "user",
-          });
-        } catch (error) {
-          // Coordinator busy (e.g. an interleaved user turn); drop this utterance.
-          turnInFlight = false;
-          phase = "listening";
-          logError(ctx, "start_turn", error);
-          continue;
-        }
-        return; // turn running; onTurnComplete re-arms the loop
-      }
-    } finally {
-      listening = false;
+  function publishPartial(ctx: PluginRuntimeContext): void {
+    const nowMs = Date.now();
+    const elapsed = nowMs - lastPartialPublishAt;
+    if (elapsed >= PARTIAL_PUBLISH_INTERVAL_MS) {
+      lastPartialPublishAt = nowMs;
+      publish(ctx);
+      return;
+    }
+    if (!partialFlushTimer) {
+      partialFlushTimer = setTimeout(() => {
+        partialFlushTimer = null;
+        lastPartialPublishAt = Date.now();
+        publish(ctx);
+      }, PARTIAL_PUBLISH_INTERVAL_MS - elapsed);
     }
   }
 
-  async function transcribe(
+  function clearPartialTimer(): void {
+    if (partialFlushTimer) {
+      clearTimeout(partialFlushTimer);
+      partialFlushTimer = null;
+    }
+  }
+
+  async function bothEndpointsLocal(): Promise<boolean> {
+    if (!voiceProfiles) {
+      return false;
+    }
+    const [stt, tts] = await Promise.all([
+      voiceProfiles.activeSttEndpoint(),
+      voiceProfiles.activeTtsEndpoint(),
+    ]);
+    const sttLocal = stt ? endpointIsLocal(stt.config.auth, stt.config.baseUrl) : true;
+    const ttsLocal = tts ? endpointIsLocal(tts.config.auth, tts.config.baseUrl) : true;
+    return sttLocal && ttsLocal;
+  }
+
+  function startListening(
     ctx: PluginRuntimeContext,
-    audio: CapturedAudio,
-  ): Promise<string | null> {
+    requestedMode?: ListenMode,
+  ): Record<string, unknown> {
+    if (!enabled || !running || !backend) {
+      return { status: "disabled", phase };
+    }
+    if (
+      startInProgress ||
+      turnInFlight ||
+      phase === "connecting" ||
+      phase === "listening" ||
+      phase === "restarting" ||
+      phase === "speaking"
+    ) {
+      return { status: "already_active", phase, mode: listenMode };
+    }
+
+    // Synchronous guard: a second start_listening invoke racing this one must
+    // see it before the first await.
+    startInProgress = true;
     try {
-      const result = await ctx.invokeProvider("voice", "/stt", "transcribe", {
-        audio: audio.audioBase64,
-        mime_type: audio.mimeType,
-      });
-      if (result.status !== "ok" || !result.data) {
-        return null;
+      const mode = requestedMode ?? config.realtime.defaultStartMode;
+      listenMode = mode;
+      stopRequested = false;
+      restartAttempt = 0;
+      partialTranscript = "";
+      lastError = "";
+      void listenLoop(ctx, mode);
+      return { status: "started", phase, mode };
+    } finally {
+      startInProgress = false;
+    }
+  }
+
+  function stopListening(ctx: PluginRuntimeContext): Record<string, unknown> {
+    listenMode = null;
+    if (turnInFlight) {
+      stopRequested = true;
+    }
+    closeActiveAudio();
+    speakAbort?.abort();
+    ttsStream?.abort();
+    if (!turnInFlight) {
+      phase = "idle";
+    }
+    publish(ctx);
+    return { status: "stopped", phase };
+  }
+
+  /** One listening run: connect a realtime STT session and pump mic frames. */
+  async function listenLoop(ctx: PluginRuntimeContext, mode: ListenMode): Promise<void> {
+    if (!running || !backend || listenMode !== mode || turnInFlight) {
+      return;
+    }
+    if (!voiceProfiles) {
+      logError(ctx, "listen_start", new Error("No speech profile manager available."));
+      phase = "idle";
+      publish(ctx);
+      return;
+    }
+
+    phase = "connecting";
+    connected = false;
+    publish(ctx);
+
+    const controller = new AbortController();
+    listenAbort = controller;
+    const gen = ++sessionGen;
+
+    try {
+      await refreshSelectedProfiles();
+      const adapter = await voiceProfiles.createSttAdapter();
+      if (bail()) {
+        return;
       }
-      const text = (result.data as { text?: string }).text?.trim();
-      return text ? text : null;
+      const session = await adapter.startSession({
+        signal: controller.signal,
+        onEvent: (event) => handleSttEvent(ctx, gen, mode, event),
+      });
+      sttSession = session;
+      if (bail()) {
+        session.close();
+        return;
+      }
+      phase = "listening";
+      connected = true;
+      publish(ctx);
+
+      audioStream = backend.openStream?.(controller.signal, adapter.inputFormat.sampleRate) ?? null;
+      if (!audioStream) {
+        throw new Error("Audio backend does not support PCM streaming.");
+      }
+      for await (const frame of audioStream.frames(controller.signal)) {
+        if (bail()) {
+          break;
+        }
+        await session.appendAudio(frame);
+        // A first healthy frame exchange resets the restart backoff.
+        restartAttempt = 0;
+      }
     } catch (error) {
-      logError(ctx, "transcribe", error);
-      return null;
+      if (!controller.signal.aborted) {
+        lastError = error instanceof Error ? error.message : String(error);
+        logError(ctx, "realtime_stream", error);
+        scheduleRestartOrIdle(ctx, mode);
+      }
+    } finally {
+      if (listenAbort === controller) {
+        listenAbort = null;
+      }
+      if (!controller.signal.aborted) {
+        closeActiveAudio({ keepMode: true });
+      }
+    }
+
+    function bail(): boolean {
+      return (
+        controller.signal.aborted ||
+        !running ||
+        listenMode !== mode ||
+        turnInFlight ||
+        stopRequested
+      );
+    }
+  }
+
+  function handleSttEvent(
+    ctx: PluginRuntimeContext,
+    gen: number,
+    mode: ListenMode,
+    event: SttSessionEvent,
+  ): void {
+    if (gen !== sessionGen) {
+      return; // stale session
+    }
+    switch (event.type) {
+      case "partial":
+        partialTranscript = event.text;
+        publishPartial(ctx);
+        break;
+      case "final": {
+        const transcript = event.text.trim();
+        partialTranscript = "";
+        if (!transcript) {
+          publish(ctx);
+          return;
+        }
+        lastTranscript = transcript;
+        closeActiveAudio({ keepMode: true });
+        startPluginTurn(ctx, mode, transcript);
+        break;
+      }
+      case "error":
+        lastError = event.message;
+        logError(ctx, "realtime_event", new Error(event.message));
+        break;
+      case "closed":
+        connected = false;
+        if (
+          event.cause !== "local" &&
+          running &&
+          !turnInFlight &&
+          listenMode === mode &&
+          (phase === "listening" || phase === "connecting")
+        ) {
+          lastError = event.reason ?? `session closed (${event.cause})`;
+          logError(ctx, "realtime_closed", new Error(lastError));
+          scheduleRestartOrIdle(ctx, mode);
+        } else {
+          publish(ctx);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Unexpected session loss: back off and reconnect (continuous) or go idle. */
+  function scheduleRestartOrIdle(ctx: PluginRuntimeContext, mode: ListenMode): void {
+    if (restartScheduled) {
+      return;
+    }
+    closeActiveAudio({ keepMode: true });
+    if (!running || listenMode !== mode || mode !== "continuous") {
+      phase = "idle";
+      if (mode !== "continuous") {
+        listenMode = null;
+      }
+      publish(ctx);
+      return;
+    }
+    restartScheduled = true;
+    restartAttempt += 1;
+    phase = "restarting";
+    publish(ctx);
+    const delayMs = Math.min(
+      RESTART_BASE_DELAY_MS * 2 ** (restartAttempt - 1),
+      RESTART_MAX_DELAY_MS,
+    );
+    void (async () => {
+      try {
+        await delayFn(delayMs);
+      } finally {
+        restartScheduled = false;
+      }
+      if (running && listenMode === mode && phase === "restarting") {
+        void listenLoop(ctx, mode);
+      }
+    })();
+  }
+
+  function startPluginTurn(ctx: PluginRuntimeContext, mode: ListenMode, transcript: string): void {
+    phase = "thinking";
+    turnInFlight = true;
+    publish(ctx);
+    try {
+      ctx.startTurn({
+        pluginId: PLUGIN_ID,
+        runId: `vc-${++runSeq}`,
+        text: transcript,
+        author: "reachy-voice",
+        role: "user",
+      });
+    } catch (error) {
+      // Coordinator busy (e.g. an interleaved user turn); drop this utterance
+      // and resume listening.
+      turnInFlight = false;
+      logError(ctx, "start_turn", error);
+      phase = "idle";
+      publish(ctx);
+      if (running && listenMode === mode) {
+        void listenLoop(ctx, mode);
+      }
     }
   }
 
   async function speak(ctx: PluginRuntimeContext, text: string): Promise<void> {
     const trimmed = text.trim();
-    if (!trimmed || !backend) {
+    if (!trimmed || !backend || !voiceProfiles) {
       return;
     }
-    let audio: CapturedAudio | null = null;
+    const controller = new AbortController();
+    speakAbort = controller;
+    let stream: TtsStream | null = null;
     try {
-      const result = await ctx.invokeProvider("voice", "/tts", "synthesize", { text: trimmed });
-      if (result.status === "ok" && result.data) {
-        const data = result.data as { audio_base64?: string; mime_type?: string };
-        if (data.audio_base64) {
-          audio = { audioBase64: data.audio_base64, mimeType: data.mime_type ?? "audio/mpeg" };
-        }
+      await refreshSelectedProfiles();
+      const adapter = await voiceProfiles.createTtsAdapter();
+      if (controller.signal.aborted) {
+        return;
+      }
+      stream = adapter.openStream({ signal: controller.signal });
+      ttsStream = stream;
+      stream.appendText(trimmed);
+      stream.end();
+
+      // Animate the head for the duration of playback; stop the moment it ends.
+      const animateController = new AbortController();
+      const animation = animateHead(ctx, animateController.signal);
+      try {
+        await backend.playStream(stream.format, stream.chunks(), controller.signal);
+      } finally {
+        animateController.abort();
+        await animation;
       }
     } catch (error) {
-      logError(ctx, "synthesize", error);
-    }
-    if (!audio) {
-      return;
-    }
-
-    // Play the reply and animate the head for its duration; stop animation the
-    // moment playback resolves.
-    const animateController = new AbortController();
-    speakAbort = animateController;
-    const animation = animateHead(ctx, animateController.signal);
-    try {
-      await backend.play(audio);
-    } catch (error) {
-      logError(ctx, "playback", error);
+      if (!controller.signal.aborted) {
+        logError(ctx, "speak", error);
+      }
     } finally {
-      animateController.abort();
-      await animation;
-      speakAbort = null;
+      stream?.abort();
+      if (ttsStream === stream) {
+        ttsStream = null;
+      }
+      if (speakAbort === controller) {
+        speakAbort = null;
+      }
     }
   }
 
@@ -200,25 +486,75 @@ export function createVoiceConversationPlugin(
     }
   }
 
+  async function refreshSelectedProfiles(): Promise<void> {
+    if (!voiceProfiles) {
+      return;
+    }
+    const [stt, tts] = await Promise.all([
+      voiceProfiles.getSttState(),
+      voiceProfiles.getTtsState(),
+    ]);
+    selectedSttProfile = stt.activeProfileId;
+    selectedTtsProfile = tts.activeProfileId;
+  }
+
+  function closeActiveAudio(options: { keepMode?: boolean } = {}): void {
+    listenAbort?.abort();
+    listenAbort = null;
+    audioStream?.close();
+    audioStream = null;
+    sttSession?.close();
+    sttSession = null;
+    connected = false;
+    if (!options.keepMode) {
+      listenMode = null;
+    }
+  }
+
   return {
     id: PLUGIN_ID,
-    version: "1.0.0",
-    description: "Voice conversation loop (capture → STT → turn → TTS → playback).",
+    version: "2.0.0",
+    description:
+      "Streaming voice conversation loop (mic PCM → realtime STT → turn → streamed TTS → playback).",
     defaultEnabled: false,
     providerIds: config.embodiment.enabled ? ["voice", config.embodiment.providerId] : ["voice"],
-    sessionNodes: () => [
+    extensionNamespaces: [CONVERSATION_EXTENSION_NAMESPACE],
+    sessionNodes: (ctx) => [
       {
         path: "/conversation",
-        build: () => buildConversationNode({ enabled, phase, config }),
+        build: () =>
+          buildConversationNode({
+            enabled,
+            config,
+            snapshotState: ctx.snapshot().extensions[CONVERSATION_EXTENSION_NAMESPACE]?.state,
+            startListening: (mode) => startListening(ctx, mode),
+            stopListening: () => stopListening(ctx),
+          }),
       },
     ],
-    onStartup: (ctx) => {
+    onStartup: async (ctx) => {
       if (!enabled) {
         return;
       }
       backend = createAudioBackend(config.audio, ctx.invokeProvider);
       running = true;
-      void listen(ctx);
+      await refreshSelectedProfiles().catch(() => {});
+      publish(ctx);
+      if (config.realtime.autoStartMode === "continuous") {
+        if (await bothEndpointsLocal()) {
+          startListening(ctx, "continuous");
+        } else {
+          // Non-local endpoint: starting would stream mic audio off-machine
+          // without the policy gate, so park until start_listening is invoked
+          // through the hub (where the approval flow runs).
+          phase = "needs_approval";
+          publish(ctx);
+          ctx.audit({
+            kind: "voice_conversation_needs_approval",
+            reason: "continuous auto-start skipped: non-local speech endpoint",
+          });
+        }
+      }
     },
     onTurnComplete: (event: PluginTurnCompleteEvent, ctx) => {
       if (event.pluginTurn.pluginId !== PLUGIN_ID) {
@@ -228,13 +564,24 @@ export function createVoiceConversationPlugin(
       if (!running) {
         return;
       }
+      if (stopRequested) {
+        stopRequested = false;
+        phase = "idle";
+        listenMode = null;
+        publish(ctx);
+        return;
+      }
       const reply = event.result.status === "completed" ? event.result.response : "";
       phase = "speaking";
+      publish(ctx);
       void (async () => {
         await speak(ctx, reply);
         phase = "idle";
-        if (running) {
-          void listen(ctx);
+        publish(ctx);
+        if (running && listenMode === "continuous") {
+          startListening(ctx, "continuous");
+        } else if (listenMode !== "continuous") {
+          listenMode = null;
         }
       })();
     },
@@ -243,41 +590,89 @@ export function createVoiceConversationPlugin(
         return;
       }
       turnInFlight = false;
+      stopRequested = false;
       phase = "idle";
-      if (running) {
-        void listen(ctx);
+      publish(ctx);
+      if (running && listenMode === "continuous") {
+        startListening(ctx, "continuous");
+      } else if (listenMode !== "continuous") {
+        listenMode = null;
       }
     },
-    onShutdown: () => {
+    onShutdown: (ctx) => {
       running = false;
+      clearPartialTimer();
+      closeActiveAudio();
       speakAbort?.abort();
+      ttsStream?.abort();
       backend?.dispose();
       backend = null;
       phase = "idle";
+      publish(ctx);
     },
   };
 }
 
 function buildConversationNode(input: {
   enabled: boolean;
-  phase: Phase;
   config: VoiceConversationPluginConfig;
+  snapshotState: JsonObject | undefined;
+  startListening: (mode?: ListenMode) => Record<string, unknown>;
+  stopListening: () => Record<string, unknown>;
 }): NodeDescriptor {
+  const live = input.snapshotState ?? {};
   return {
     type: "context",
     props: {
       enabled: input.enabled,
-      phase: input.phase,
       audio_backend: input.config.audio.backend,
+      phase: live.phase ?? "idle",
+      listening_mode: live.mode ?? null,
+      connected: live.connected ?? false,
+      partial_transcript: (live.partial_transcript as string) || undefined,
+      last_transcript: (live.last_transcript as string) || undefined,
+      restart_attempt: live.restart_attempt ?? 0,
+      error: (live.error as string) || undefined,
+      stt_profile: live.stt_profile,
+      tts_profile: live.tts_profile,
       embodiment: input.config.embodiment.enabled,
       embodiment_provider: input.config.embodiment.enabled
         ? input.config.embodiment.providerId
         : undefined,
     },
     summary:
-      "Voice conversation loop state: listen → think → speak. Audio capture/playback and head " +
-      "animation are driven by the runtime against the voice and robot providers.",
+      "Streaming voice conversation loop: listen → think → speak. Mic PCM streams to the " +
+      "active realtime STT profile (provider VAD); final transcripts start turns; replies " +
+      "stream back through TTS. Starting a non-local pipeline requires approval.",
+    actions: {
+      start_listening: action(
+        {
+          mode: {
+            type: "string",
+            description: "Listening mode: single_turn or continuous.",
+            optional: true,
+          },
+        },
+        async ({ mode }) =>
+          input.startListening(normalizeListenMode(mode, input.config.realtime.defaultStartMode)),
+        {
+          label: "Start Listening",
+          description:
+            "Open the microphone stream and start realtime transcription. Requires approval when a speech endpoint is non-local.",
+          estimate: "instant",
+        },
+      ),
+      stop_listening: action(async () => input.stopListening(), {
+        label: "Stop Listening",
+        description: "Stop voice capture, transcription, and any in-progress speech.",
+        estimate: "instant",
+      }),
+    },
   };
+}
+
+function normalizeListenMode(value: unknown, fallback: ListenMode): ListenMode {
+  return value === "continuous" || value === "single_turn" ? value : fallback;
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

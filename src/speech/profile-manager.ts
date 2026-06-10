@@ -1,83 +1,146 @@
-import type {
-  EndpointAuthConfig,
-  TtsProtocol,
-  VoicePluginConfig,
-  VoiceSttEndpointConfig,
-  VoiceSttProfileConfig,
-  VoiceTtsEndpointConfig,
-  VoiceTtsProfileConfig,
-} from "../config/schema";
+import { createHash } from "node:crypto";
+
+import type { EndpointAuthConfig } from "../config/schema";
 import {
   type CredentialStore,
   type CredentialStoreKind,
   type CredentialStoreStatus,
   createCredentialStore,
 } from "../llm/credential-store";
-import { mergeSttEndpoints } from "../stt/catalog";
-import { createSttAdapter } from "../stt/factory";
-import type { SttAdapter } from "../stt/types";
-import { mergeTtsEndpoints } from "../tts/catalog";
-import { createTtsAdapter } from "../tts/factory";
-import type { TtsAdapter } from "../tts/types";
+import { mergeSttEndpoints, mergeTtsEndpoints } from "./catalog";
+import { speechRegistry } from "./register";
+import type { SttProtocolAdapter, TtsProtocolAdapter } from "./types";
 
-// Voice credentials live in the same secure store as LLM keys but under a
+// Speech credentials live in the same secure store as LLM keys but under a
 // dedicated `voice:` account prefix so they never collide with LLM endpoint ids.
 const CREDENTIAL_PREFIX = "voice:";
 
-export type VoiceKeySource = "env" | "secure_store" | "not_required" | "missing";
+const DEFAULT_STT_SAMPLE_RATE = 16000;
+const DEFAULT_TTS_SAMPLE_RATE = 24000;
 
-export type VoiceProfileState = {
+// Structural config types. The zod-inferred plugin config satisfies these;
+// keeping them structural lets the manager (and plugin-registered protocols)
+// avoid depending on the closed schema shape.
+export type SpeechSttEndpointConfig = {
+  label?: string;
+  protocol: string;
+  dialect?: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  auth?: EndpointAuthConfig;
+  sampleRate?: number;
+  models?: Record<string, { label?: string }>;
+};
+
+export type SpeechTtsEndpointConfig = {
+  label?: string;
+  protocol: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  auth?: EndpointAuthConfig;
+  model?: string;
+  pcmSampleRate?: number;
+  voices?: Record<string, { label?: string }>;
+};
+
+export type SpeechSttProfileConfig = {
+  id: string;
+  label?: string;
+  endpointId: string;
+  model: string;
+  language?: string;
+};
+
+export type SpeechTtsProfileConfig = {
+  id: string;
+  label?: string;
+  endpointId: string;
+  model?: string;
+  voice: string;
+  speed?: number;
+};
+
+export type SpeechPluginConfig = {
+  enabled: boolean;
+  stt: {
+    endpoints: Record<string, SpeechSttEndpointConfig>;
+    profiles: SpeechSttProfileConfig[];
+    defaultProfileId?: string;
+  };
+  tts: {
+    endpoints: Record<string, SpeechTtsEndpointConfig>;
+    profiles: SpeechTtsProfileConfig[];
+    defaultProfileId?: string;
+  };
+};
+
+export type SpeechKeySource = "env" | "secure_store" | "not_required" | "missing";
+
+export type SpeechProfileState = {
   id: string;
   label?: string;
   endpointId: string;
   protocol: string;
+  dialect?: string;
   model: string;
   voice?: string;
   ready: boolean;
-  keySource: VoiceKeySource;
+  keySource: SpeechKeySource;
   isDefault: boolean;
   invalidReason?: string;
 };
 
-export type VoiceModalityStateSnapshot = {
+export type SpeechModalityStateSnapshot = {
   status: "ready" | "needs_credentials" | "not_configured";
   activeProfileId?: string;
   selectedEndpointId?: string;
   selectedProtocol?: string;
+  selectedDialect?: string;
   selectedModel?: string;
   selectedVoice?: string;
-  autospeak: boolean;
+  selectedSampleRate?: number;
   secureStoreKind: CredentialStoreKind;
   secureStoreStatus: CredentialStoreStatus;
-  profiles: VoiceProfileState[];
+  profiles: SpeechProfileState[];
 };
 
 type ResolvedCredential = {
   ready: boolean;
-  keySource: VoiceKeySource;
+  keySource: SpeechKeySource;
   apiKey?: string;
   invalidReason?: string;
 };
 
 /**
- * Resolves voice STT/TTS profiles to ready-to-use adapters, mirroring
- * `LlmProfileManager`: profile → endpoint → credential → adapter. Reuses the
- * shared `CredentialStore`; reports per-modality readiness so a partial pipeline
- * (STT-only or TTS-only) is a first-class state, not an error.
+ * Resolves speech STT/TTS profiles to ready-to-use streaming adapters,
+ * mirroring `LlmProfileManager`: profile → endpoint → credential → adapter
+ * (via the speech protocol registry). Reuses the shared `CredentialStore`;
+ * reports per-modality readiness so a partial pipeline (STT-only or TTS-only)
+ * is a first-class state, not an error.
  */
-export class VoiceProfileManager {
-  private config: VoicePluginConfig;
+export class SpeechProfileManager {
+  private config: SpeechPluginConfig;
   private readonly credentialStore: CredentialStore;
   private sttSelected?: string;
   private ttsSelected?: string;
+  private readonly sttAdapters = new Map<
+    string,
+    { fingerprint: string; adapter: SttProtocolAdapter }
+  >();
+  private readonly ttsAdapters = new Map<
+    string,
+    { fingerprint: string; adapter: TtsProtocolAdapter }
+  >();
 
-  constructor(config: VoicePluginConfig, options?: { credentialStore?: CredentialStore }) {
+  constructor(config: SpeechPluginConfig, options?: { credentialStore?: CredentialStore }) {
     this.config = config;
     this.credentialStore = options?.credentialStore ?? createCredentialStore();
   }
 
-  updateConfig(config: VoicePluginConfig): void {
+  updateConfig(config: SpeechPluginConfig): void {
     this.config = config;
+    this.sttAdapters.clear();
+    this.ttsAdapters.clear();
   }
 
   setSttProfile(profileId: string): void {
@@ -88,15 +151,15 @@ export class VoiceProfileManager {
     this.ttsSelected = profileId;
   }
 
-  sttEndpoints(): Record<string, VoiceSttEndpointConfig> {
+  sttEndpoints(): Record<string, SpeechSttEndpointConfig> {
     return mergeSttEndpoints(this.config.stt.endpoints);
   }
 
-  ttsEndpoints(): Record<string, VoiceTtsEndpointConfig> {
+  ttsEndpoints(): Record<string, SpeechTtsEndpointConfig> {
     return mergeTtsEndpoints(this.config.tts.endpoints);
   }
 
-  async getSttState(): Promise<VoiceModalityStateSnapshot> {
+  async getSttState(): Promise<SpeechModalityStateSnapshot> {
     const endpoints = this.sttEndpoints();
     const profiles = this.config.stt.profiles;
     const secureStoreStatus = await this.credentialStore.getStatus();
@@ -106,21 +169,23 @@ export class VoiceProfileManager {
     const activeId = this.selectActive("stt", states);
     const profileStates = states.map((state) => ({ ...state, isDefault: state.id === activeId }));
     const active = profileStates.find((state) => state.id === activeId);
+    const activeEndpoint = active ? endpoints[active.endpointId] : undefined;
     return {
       status:
         profiles.length === 0 ? "not_configured" : active?.ready ? "ready" : "needs_credentials",
       activeProfileId: active?.id,
       selectedEndpointId: active?.endpointId,
       selectedProtocol: active?.protocol,
+      selectedDialect: active?.dialect,
       selectedModel: active?.model,
-      autospeak: false,
+      selectedSampleRate: activeEndpoint?.sampleRate ?? DEFAULT_STT_SAMPLE_RATE,
       secureStoreKind: this.credentialStore.kind,
       secureStoreStatus,
       profiles: profileStates,
     };
   }
 
-  async getTtsState(): Promise<VoiceModalityStateSnapshot> {
+  async getTtsState(): Promise<SpeechModalityStateSnapshot> {
     const endpoints = this.ttsEndpoints();
     const profiles = this.config.tts.profiles;
     const secureStoreStatus = await this.credentialStore.getStatus();
@@ -130,7 +195,7 @@ export class VoiceProfileManager {
     const activeId = this.selectActive("tts", states);
     const profileStates = states.map((state) => ({ ...state, isDefault: state.id === activeId }));
     const active = profileStates.find((state) => state.id === activeId);
-    const activeProfile = profiles.find((profile) => profile.id === activeId);
+    const activeEndpoint = active ? endpoints[active.endpointId] : undefined;
     return {
       status:
         profiles.length === 0 ? "not_configured" : active?.ready ? "ready" : "needs_credentials",
@@ -139,20 +204,37 @@ export class VoiceProfileManager {
       selectedProtocol: active?.protocol,
       selectedModel: active?.model,
       selectedVoice: active?.voice,
-      autospeak: Boolean(activeProfile?.autospeak),
+      selectedSampleRate: activeEndpoint?.pcmSampleRate ?? DEFAULT_TTS_SAMPLE_RATE,
       secureStoreKind: this.credentialStore.kind,
       secureStoreStatus,
       profiles: profileStates,
     };
   }
 
-  /** True when the active TTS profile is ready and has autospeak enabled. */
-  async activeTtsAutospeak(): Promise<boolean> {
-    const state = await this.getTtsState();
-    return state.status === "ready" && state.autospeak;
+  /**
+   * The endpoint the next createSttAdapter() call will hit — same selection
+   * logic, exported so policy decisions can never diverge from what actually
+   * runs.
+   */
+  async activeSttEndpoint(): Promise<{ id: string; config: SpeechSttEndpointConfig } | null> {
+    const state = await this.getSttState();
+    if (!state.selectedEndpointId) {
+      return null;
+    }
+    const config = this.sttEndpoints()[state.selectedEndpointId];
+    return config ? { id: state.selectedEndpointId, config } : null;
   }
 
-  async createSttAdapter(profileId?: string): Promise<SttAdapter> {
+  async activeTtsEndpoint(): Promise<{ id: string; config: SpeechTtsEndpointConfig } | null> {
+    const state = await this.getTtsState();
+    if (!state.selectedEndpointId) {
+      return null;
+    }
+    const config = this.ttsEndpoints()[state.selectedEndpointId];
+    return config ? { id: state.selectedEndpointId, config } : null;
+  }
+
+  async createSttAdapter(profileId?: string): Promise<SttProtocolAdapter> {
     const state = await this.getSttState();
     const targetId = profileId ?? state.activeProfileId;
     if (!targetId) {
@@ -175,18 +257,37 @@ export class VoiceProfileManager {
       );
     }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
-    return createSttAdapter({
+    const sampleRate = endpoint.sampleRate ?? DEFAULT_STT_SAMPLE_RATE;
+    const fingerprint = fingerprintOf([
+      endpoint.protocol,
+      endpoint.dialect,
+      endpoint.baseUrl,
+      endpoint.headers,
+      profile.model,
+      profile.language,
+      sampleRate,
+      credential.apiKey,
+    ]);
+    const cached = this.sttAdapters.get(targetId);
+    if (cached && cached.fingerprint === fingerprint) {
+      return cached.adapter;
+    }
+    const adapter = speechRegistry.createSttAdapter({
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
+      dialect: endpoint.dialect,
       model: profile.model,
       apiKey: credential.apiKey,
       baseUrl: endpoint.baseUrl,
       headers: endpoint.headers,
       language: profile.language,
+      sampleRate,
     });
+    this.sttAdapters.set(targetId, { fingerprint, adapter });
+    return adapter;
   }
 
-  async createTtsAdapter(profileId?: string): Promise<TtsAdapter> {
+  async createTtsAdapter(profileId?: string): Promise<TtsProtocolAdapter> {
     const state = await this.getTtsState();
     const targetId = profileId ?? state.activeProfileId;
     if (!targetId) {
@@ -209,23 +310,41 @@ export class VoiceProfileManager {
       );
     }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
-    return createTtsAdapter({
+    const pcmSampleRate = endpoint.pcmSampleRate ?? DEFAULT_TTS_SAMPLE_RATE;
+    const model = profile.model ?? endpoint.model ?? "";
+    const fingerprint = fingerprintOf([
+      endpoint.protocol,
+      endpoint.baseUrl,
+      endpoint.headers,
+      model,
+      profile.voice,
+      profile.speed,
+      pcmSampleRate,
+      credential.apiKey,
+    ]);
+    const cached = this.ttsAdapters.get(targetId);
+    if (cached && cached.fingerprint === fingerprint) {
+      return cached.adapter;
+    }
+    const adapter = speechRegistry.createTtsAdapter({
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
-      model: resolveTtsModel(endpoint.protocol, endpoint, profile),
+      model,
       apiKey: credential.apiKey,
       baseUrl: endpoint.baseUrl,
       headers: endpoint.headers,
       voice: profile.voice,
-      format: profile.format,
       speed: profile.speed,
+      pcmSampleRate,
     });
+    this.ttsAdapters.set(targetId, { fingerprint, adapter });
+    return adapter;
   }
 
   private async resolveSttProfile(
-    profile: VoiceSttProfileConfig,
-    endpoints: Record<string, VoiceSttEndpointConfig>,
-  ): Promise<VoiceProfileState> {
+    profile: SpeechSttProfileConfig,
+    endpoints: Record<string, SpeechSttEndpointConfig>,
+  ): Promise<SpeechProfileState> {
     const endpoint = endpoints[profile.endpointId];
     if (!endpoint) {
       return {
@@ -240,12 +359,27 @@ export class VoiceProfileManager {
         invalidReason: `Unknown endpoint '${profile.endpointId}'.`,
       };
     }
+    if (!speechRegistry.hasSttProtocol(endpoint.protocol)) {
+      return {
+        id: profile.id,
+        label: profile.label,
+        endpointId: profile.endpointId,
+        protocol: endpoint.protocol,
+        dialect: endpoint.dialect,
+        model: profile.model,
+        ready: false,
+        keySource: "missing",
+        isDefault: false,
+        invalidReason: `Unknown STT protocol '${endpoint.protocol}'. Registered: ${speechRegistry.sttProtocols().join(", ")}.`,
+      };
+    }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
     return {
       id: profile.id,
       label: profile.label,
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
+      dialect: endpoint.dialect,
       model: profile.model,
       ready: credential.ready,
       keySource: credential.keySource,
@@ -255,9 +389,9 @@ export class VoiceProfileManager {
   }
 
   private async resolveTtsProfile(
-    profile: VoiceTtsProfileConfig,
-    endpoints: Record<string, VoiceTtsEndpointConfig>,
-  ): Promise<VoiceProfileState> {
+    profile: SpeechTtsProfileConfig,
+    endpoints: Record<string, SpeechTtsEndpointConfig>,
+  ): Promise<SpeechProfileState> {
     const endpoint = endpoints[profile.endpointId];
     if (!endpoint) {
       return {
@@ -273,13 +407,27 @@ export class VoiceProfileManager {
         invalidReason: `Unknown endpoint '${profile.endpointId}'.`,
       };
     }
+    if (!speechRegistry.hasTtsProtocol(endpoint.protocol)) {
+      return {
+        id: profile.id,
+        label: profile.label,
+        endpointId: profile.endpointId,
+        protocol: endpoint.protocol,
+        model: profile.model ?? endpoint.model ?? "",
+        voice: profile.voice,
+        ready: false,
+        keySource: "missing",
+        isDefault: false,
+        invalidReason: `Unknown TTS protocol '${endpoint.protocol}'. Registered: ${speechRegistry.ttsProtocols().join(", ")}.`,
+      };
+    }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
     return {
       id: profile.id,
       label: profile.label,
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
-      model: resolveTtsModel(endpoint.protocol, endpoint, profile),
+      model: profile.model ?? endpoint.model ?? "",
       voice: profile.voice,
       ready: credential.ready,
       keySource: credential.keySource,
@@ -288,7 +436,7 @@ export class VoiceProfileManager {
     };
   }
 
-  private selectActive(modality: "stt" | "tts", states: VoiceProfileState[]): string | undefined {
+  private selectActive(modality: "stt" | "tts", states: SpeechProfileState[]): string | undefined {
     const selected = modality === "stt" ? this.sttSelected : this.ttsSelected;
     const defaultId =
       modality === "stt" ? this.config.stt.defaultProfileId : this.config.tts.defaultProfileId;
@@ -343,25 +491,8 @@ export class VoiceProfileManager {
   }
 }
 
-function resolveTtsModel(
-  protocol: TtsProtocol,
-  endpoint: VoiceTtsEndpointConfig,
-  profile: VoiceTtsProfileConfig,
-): string {
-  if (profile.model) {
-    return profile.model;
-  }
-  if (endpoint.model) {
-    return endpoint.model;
-  }
-  switch (protocol) {
-    case "piper":
-      return profile.voice;
-    case "elevenlabs":
-      return "eleven_multilingual_v2";
-    case "openai-speech":
-      return "gpt-4o-mini-tts";
-  }
+function fingerprintOf(parts: unknown[]): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
 function normalizeKey(value: string | undefined): string | undefined {

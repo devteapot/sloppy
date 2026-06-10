@@ -11,7 +11,7 @@ import type {
 } from "../../runtime/doctor-types";
 import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
-import { VoiceProfileManager } from "../../voice/profile-manager";
+import { SpeechProfileManager } from "../../speech/profile-manager";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
@@ -35,23 +35,23 @@ import { SpecProvider } from "./spec/provider";
 import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
-import { voiceNetworkRule } from "./voice/policy";
+import { createSpeechNetworkRule } from "./voice/policy";
 import { VoiceProvider } from "./voice/provider";
-import { createVoicePlugin } from "./voice/session";
 import { createVoiceConversationPlugin } from "./voice-conversation/session";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
 
-// One VoiceProfileManager per config so the provider (transcribe/synthesize +
-// /stt //tts state) and the session plugin (autospeak) share runtime profile
-// selection. Keyed by the config object the collectors pass through.
-const voiceManagers = new WeakMap<SloppyConfig, VoiceProfileManager>();
+// One SpeechProfileManager per config so the voice provider (profile state +
+// set_profile), the conversation loop (adapter creation), and the network
+// policy rule (endpoint locality) share runtime profile selection. Keyed by
+// the config object the collectors pass through.
+const speechManagers = new WeakMap<SloppyConfig, SpeechProfileManager>();
 
-function voiceManagerFor(config: SloppyConfig): VoiceProfileManager {
-  let manager = voiceManagers.get(config);
+function speechManagerFor(config: SloppyConfig): SpeechProfileManager {
+  let manager = speechManagers.get(config);
   if (!manager) {
-    manager = new VoiceProfileManager(config.plugins.voice);
-    voiceManagers.set(config, manager);
+    manager = new SpeechProfileManager(config.plugins.voice);
+    speechManagers.set(config, manager);
   }
   return manager;
 }
@@ -569,13 +569,13 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
   {
     id: "voice",
-    version: "1.0.0",
+    version: "2.0.0",
     defaultEnabled: false,
-    description: "Speech-to-text and text-to-speech provider.",
+    description: "Speech profile configuration provider (streaming STT/TTS).",
     providerIds: ["voice"],
-    policyRules: () => [voiceNetworkRule],
+    policyRules: (config) => [createSpeechNetworkRule(speechManagerFor(config))],
     createProviders: (config) => {
-      const provider = new VoiceProvider(voiceManagerFor(config));
+      const provider = new VoiceProvider(speechManagerFor(config));
       return [
         registeredProvider({
           id: "voice",
@@ -583,27 +583,25 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transport: new InProcessTransport(provider.server),
           transportLabel: "in-process",
           stop: () => provider.stop(),
-          approvals: provider.approvals,
           systemPromptFragment: () =>
             [
-              "Voice services are exposed through the voice provider as SLOP state.",
-              "Observe /voice/tts before speaking; invoke /tts.synthesize to voice a concise reply only when speech output is appropriate.",
-              "/stt.transcribe converts caller audio to text. Sending audio or text to a non-local endpoint may require approval.",
+              "Speech configuration is exposed through the voice provider as SLOP state.",
+              "Observe /voice/stt and /voice/tts for profile readiness; invoke set_profile to switch profiles.",
+              "Speaking happens through the session's /conversation node (voice-conversation plugin), not through this provider.",
             ].join("\n"),
         }),
       ];
     },
-    createSessionPlugin: (config) => createVoicePlugin(voiceManagerFor(config)),
   },
   {
     id: "voice-conversation",
-    version: "1.0.0",
+    version: "2.0.0",
     defaultEnabled: false,
     description:
-      "Voice conversation loop (capture → STT → turn → TTS → playback) over the voice provider.",
+      "Streaming voice conversation loop (mic PCM → realtime STT → turn → streamed TTS → playback).",
     providerIds: ["voice"],
     createSessionPlugin: (config) =>
-      createVoiceConversationPlugin(config.plugins["voice-conversation"]),
+      createVoiceConversationPlugin(config.plugins["voice-conversation"], speechManagerFor(config)),
   },
 ];
 

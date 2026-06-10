@@ -1,16 +1,18 @@
-import { unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 
-import type { VoiceConversationPluginConfig } from "../../../config/schema";
+import { toBase64, wavFromPcm16 } from "../../../speech/audio";
+import type { PcmFormat } from "../../../speech/types";
 
-/** A captured/synthesized audio clip carried across the loop as base64. */
+/** A synthesized audio clip carried to the robot speaker as base64. */
 export type CapturedAudio = {
   audioBase64: string;
   mimeType: string;
 };
+
+export interface AudioStreamSource {
+  frames(signal?: AbortSignal): AsyncIterable<Uint8Array>;
+  close(): void;
+}
 
 /**
  * Where the conversation loop's audio comes from and goes to. Both ends are
@@ -18,13 +20,14 @@ export type CapturedAudio = {
  * the local machine (dev / pre-hardware) or the robot's mic and speaker.
  */
 export interface AudioBackend {
-  /**
-   * Record one utterance, ending on silence (VAD). Resolves to the clip, or
-   * null when nothing was captured (timeout / empty) so the caller can re-arm.
-   */
-  captureUtterance(signal?: AbortSignal): Promise<CapturedAudio | null>;
-  /** Play a clip to completion (so callers can animate for its duration). */
-  play(audio: CapturedAudio, signal?: AbortSignal): Promise<void>;
+  /** Open a continuous PCM16LE mono stream for realtime STT (default 16 kHz). */
+  openStream?(signal?: AbortSignal, sampleRate?: number): AudioStreamSource;
+  /** Play a PCM chunk stream as it arrives (streamed synthesis playback). */
+  playStream(
+    format: PcmFormat,
+    chunks: AsyncIterable<Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /** Tear down any in-flight subprocess / resources. */
   dispose(): void;
 }
@@ -37,103 +40,115 @@ export type InvokeProvider = (
   params?: Record<string, unknown>,
 ) => Promise<ResultMessage>;
 
-const MIME_EXTENSIONS: Record<string, string> = {
-  "audio/wav": "wav",
-  "audio/x-wav": "wav",
-  "audio/mpeg": "mp3",
-  "audio/mp3": "mp3",
-  "audio/ogg": "ogg",
-  "audio/opus": "opus",
-  "audio/webm": "webm",
+const DEFAULT_STREAM_SAMPLE_RATE = 16000;
+
+// Structural so the zod plugin config satisfies it and tests can pass plain
+// objects. Command templates support a `{rate}` token (sample rate in Hz).
+type HostAudioConfig = {
+  streamCommand?: string[];
+  playStreamCommand?: string[];
+  streamChunkMs: number;
 };
 
-function extensionForMime(mimeType: string): string {
-  return MIME_EXTENSIONS[mimeType.split(";")[0]?.trim() ?? mimeType] ?? "audio";
-}
-
-// A WAV header alone is 44 bytes; anything at or below that is effectively empty
-// (sox emitted a header but captured no samples).
-const MIN_CAPTURE_BYTES = 64;
-
-type HostAudioConfig = VoiceConversationPluginConfig["audio"];
-
 /**
- * Local-machine audio via subprocesses. Capture shells out to a recorder that
- * self-terminates on trailing silence (the host-side VAD); playback writes the
- * clip to a temp file and hands it to a player. Commands are config-overridable;
- * the defaults target macOS (sox + afplay).
+ * Local-machine audio via subprocesses. The mic streams raw PCM from a capture
+ * command's stdout; playback pipes PCM into a player's stdin. Commands are
+ * config-overridable; the defaults target macOS (sox `sox -d` / `play`).
  */
 export class HostAudioBackend implements AudioBackend {
-  private readonly captureCommand: string[];
-  private readonly playbackCommand: string[];
+  private readonly streamCommand: string[] | undefined;
+  private readonly playStreamCommand: string[] | undefined;
+  private readonly streamChunkMs: number;
   private active: ReturnType<typeof Bun.spawn> | null = null;
 
   constructor(config: HostAudioConfig) {
-    this.captureCommand =
-      config.captureCommand ??
-      defaultCaptureCommand(config.silenceStopSeconds, config.silenceThresholdPercent);
-    this.playbackCommand = config.playbackCommand ?? ["afplay", "{file}"];
-  }
-
-  async captureUtterance(signal?: AbortSignal): Promise<CapturedAudio | null> {
-    const proc = Bun.spawn(this.captureCommand, {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    this.active = proc;
-    const onAbort = () => proc.kill();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      const bytes = new Uint8Array(await new Response(proc.stdout).arrayBuffer());
-      const exitCode = await proc.exited;
-      if (signal?.aborted) {
-        return null;
-      }
-      if (exitCode !== 0) {
-        throw new Error(
-          `capture command exited ${exitCode}: ${(await stderrText(proc)).slice(0, 500)}`,
-        );
-      }
-      if (bytes.byteLength <= MIN_CAPTURE_BYTES) {
-        return null;
-      }
-      return { audioBase64: Buffer.from(bytes).toString("base64"), mimeType: "audio/wav" };
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-      this.active = null;
-    }
-  }
-
-  async play(audio: CapturedAudio, signal?: AbortSignal): Promise<void> {
-    const bytes = Buffer.from(audio.audioBase64, "base64");
-    const file = join(
-      tmpdir(),
-      `sloppy-voice-${process.pid}-${bytes.byteLength}.${extensionForMime(audio.mimeType)}`,
-    );
-    await Bun.write(file, bytes);
-    const command = this.playbackCommand.map((part) => part.replace("{file}", file));
-    const proc = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    this.active = proc;
-    const onAbort = () => proc.kill();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      const exitCode = await proc.exited;
-      if (exitCode !== 0 && !signal?.aborted) {
-        throw new Error(
-          `playback command exited ${exitCode}: ${(await stderrText(proc)).slice(0, 500)}`,
-        );
-      }
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-      this.active = null;
-      await unlink(file).catch(() => {});
-    }
+    this.streamCommand = config.streamCommand;
+    this.playStreamCommand = config.playStreamCommand;
+    this.streamChunkMs = config.streamChunkMs;
   }
 
   dispose(): void {
     this.active?.kill();
     this.active = null;
+  }
+
+  openStream(signal?: AbortSignal, sampleRate?: number): AudioStreamSource {
+    const rate = sampleRate ?? DEFAULT_STREAM_SAMPLE_RATE;
+    const command = substituteRate(this.streamCommand ?? defaultStreamCommand(), rate);
+    const proc = Bun.spawn(command, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    this.active = proc;
+    const chunkBytes = Math.max(2, Math.floor((rate * 2 * this.streamChunkMs) / 1000));
+    const source = new HostCommandAudioStreamSource(proc, chunkBytes, () => {
+      if (this.active === proc) {
+        this.active = null;
+      }
+    });
+    signal?.addEventListener("abort", () => source.close(), { once: true });
+    return source;
+  }
+
+  /**
+   * Pipe PCM chunks into a long-lived player process as they arrive. One
+   * process per reply (not per sentence) so there are no startup gaps between
+   * synthesis units.
+   */
+  async playStream(
+    format: PcmFormat,
+    chunks: AsyncIterable<Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const command = substituteRate(
+      this.playStreamCommand ?? defaultPlayStreamCommand(),
+      format.sampleRate,
+    );
+    const proc = Bun.spawn(command, { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+    this.active = proc;
+    const onAbort = () => proc.kill();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const stdin = proc.stdin;
+    try {
+      try {
+        for await (const chunk of chunks) {
+          if (signal?.aborted) {
+            break;
+          }
+          try {
+            stdin.write(chunk);
+            await stdin.flush();
+          } catch (error) {
+            // EPIPE after the player was killed/aborted is expected teardown.
+            if (signal?.aborted) {
+              break;
+            }
+            throw error;
+          }
+        }
+      } catch (error) {
+        proc.kill();
+        throw error;
+      } finally {
+        try {
+          await stdin.end();
+        } catch {
+          // Already closed by kill/exit.
+        }
+      }
+      const exitCode = await proc.exited;
+      if (exitCode !== 0 && !signal?.aborted) {
+        throw new Error(
+          `play stream command exited ${exitCode}: ${(await stderrText(proc)).slice(0, 500)}`,
+        );
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      if (this.active === proc) {
+        this.active = null;
+      }
+    }
   }
 }
 
@@ -148,18 +163,6 @@ export class RobotAudioBackend implements AudioBackend {
     private readonly invoke: InvokeProvider,
   ) {}
 
-  async captureUtterance(): Promise<CapturedAudio | null> {
-    const result = await this.invoke(this.providerId, "/mic", "capture_utterance");
-    if (result.status !== "ok" || !result.data) {
-      return null;
-    }
-    const data = result.data as { audio_base64?: string; mime_type?: string };
-    if (!data.audio_base64) {
-      return null;
-    }
-    return { audioBase64: data.audio_base64, mimeType: data.mime_type ?? "audio/wav" };
-  }
-
   async play(audio: CapturedAudio): Promise<void> {
     const result = await this.invoke(this.providerId, "/speaker", "play", {
       audio_base64: audio.audioBase64,
@@ -170,40 +173,139 @@ export class RobotAudioBackend implements AudioBackend {
     }
   }
 
+  /**
+   * Robot playback collects the stream into one WAV clip and issues a single
+   * /speaker invoke — per-chunk affordance calls would push ~25 base64 frames
+   * a second through the hub for no latency benefit until hardware exists.
+   */
+  async playStream(
+    format: PcmFormat,
+    chunks: AsyncIterable<Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const parts: Uint8Array[] = [];
+    for await (const chunk of chunks) {
+      if (signal?.aborted) {
+        return;
+      }
+      parts.push(chunk);
+    }
+    if (signal?.aborted || parts.length === 0) {
+      return;
+    }
+    const pcm = parts.reduce((merged, part) => concatBytes(merged, part), new Uint8Array(0));
+    await this.play({ audioBase64: toBase64(wavFromPcm16(format, pcm)), mimeType: "audio/wav" });
+  }
+
   dispose(): void {}
 }
 
-/**
- * Default macOS capture: record from the default input as 16 kHz mono **16-bit**
- * PCM WAV to stdout, starting on sound and stopping after `silenceStopSeconds` of
- * silence. `-b 16 -e signed-integer` forces a plain PCM WAV — without it sox
- * inherits the coreaudio 32-bit format and writes WAVE_FORMAT_EXTENSIBLE, which
- * many decoders reject. The threshold gates start/stop on amplitude.
- */
-function defaultCaptureCommand(silenceStopSeconds: number, thresholdPercent: number): string[] {
-  const threshold = `${thresholdPercent}%`;
+class HostCommandAudioStreamSource implements AudioStreamSource {
+  private closed = false;
+
+  constructor(
+    private readonly proc: ReturnType<typeof Bun.spawn>,
+    private readonly chunkBytes: number,
+    private readonly onClose: () => void,
+  ) {}
+
+  async *frames(signal?: AbortSignal): AsyncIterable<Uint8Array> {
+    const reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader();
+    let pending: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+    let exitError: Error | undefined;
+    try {
+      while (!this.closed && !signal?.aborted) {
+        const { done, value } = await reader.read();
+        if (done || !value) {
+          break;
+        }
+        pending = concatBytes(pending, value);
+        while (pending.byteLength >= this.chunkBytes) {
+          const frame = pending.slice(0, this.chunkBytes);
+          pending = pending.slice(this.chunkBytes);
+          yield frame;
+        }
+      }
+      if (!this.closed && !signal?.aborted && pending.byteLength > 0) {
+        yield pending;
+      }
+    } finally {
+      reader.releaseLock();
+      this.close();
+      const exitCode = await this.proc.exited.catch(() => 0);
+      if (exitCode !== 0 && !signal?.aborted) {
+        exitError = new Error(
+          `stream command exited ${exitCode}: ${(await stderrText(this.proc)).slice(0, 500)}`,
+        );
+      }
+    }
+    if (exitError) {
+      throw exitError;
+    }
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.proc.kill();
+    this.onClose();
+  }
+}
+
+// Default macOS mic stream: record from the default input as mono 16-bit
+// signed PCM at the requested rate. `-b 16 -e signed-integer` forces plain
+// PCM — without it sox inherits the coreaudio 32-bit format.
+function defaultStreamCommand(): string[] {
   return [
     "sox",
     "-d",
     "-c",
     "1",
     "-r",
-    "16000",
+    "{rate}",
     "-b",
     "16",
     "-e",
     "signed-integer",
     "-t",
-    "wav",
+    "raw",
     "-",
-    "silence",
-    "1",
-    "0.1",
-    threshold,
-    "1",
-    String(silenceStopSeconds),
-    threshold,
   ];
+}
+
+/** Default streamed playback: sox `play` reading raw PCM from stdin. */
+function defaultPlayStreamCommand(): string[] {
+  return [
+    "play",
+    "-q",
+    "-t",
+    "raw",
+    "-r",
+    "{rate}",
+    "-e",
+    "signed-integer",
+    "-b",
+    "16",
+    "-c",
+    "1",
+    "-",
+  ];
+}
+
+function substituteRate(command: string[], rate: number): string[] {
+  return command.map((part) => part.replaceAll("{rate}", String(rate)));
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.byteLength === 0) {
+    return right;
+  }
+  const merged = new Uint8Array(left.byteLength + right.byteLength);
+  merged.set(left, 0);
+  merged.set(right, left.byteLength);
+  return merged;
 }
 
 async function stderrText(proc: ReturnType<typeof Bun.spawn>): Promise<string> {
@@ -216,7 +318,7 @@ async function stderrText(proc: ReturnType<typeof Bun.spawn>): Promise<string> {
 
 /** Build the configured audio backend. `robot` requires an invoke function. */
 export function createAudioBackend(
-  config: VoiceConversationPluginConfig["audio"],
+  config: HostAudioConfig & { backend: "host" | "robot"; providerId: string },
   invoke: InvokeProvider,
 ): AudioBackend {
   if (config.backend === "robot") {
