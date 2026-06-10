@@ -1,11 +1,12 @@
 import { existsSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   assertRemovableSocketPath,
   ensureRuntimeRoot,
   resolveLaunchScope,
   supervisorRuntimePaths,
-} from "../../../src/session/launch-scope";
+} from "../../../src/session";
 import { SessionClient } from "./backend/session-client";
 import type { ApprovalMode } from "./backend/slop-types";
 import { SessionSupervisorClient, type SupervisorSessionItem } from "./backend/supervisor-client";
@@ -51,8 +52,13 @@ async function connectSupervisor(socketPath: string): Promise<SessionSupervisorC
   return supervisor;
 }
 
-function supervisorCommand(socketPath: string): string[] {
-  const script = process.argv[1] ?? "";
+// Exported for tests: pure argv builder for the managed supervisor process.
+export function supervisorLaunchArgv(input: {
+  execPath: string;
+  script: string;
+  devEntry: string;
+  socketPath: string;
+}): string[] {
   const common = [
     "session",
     "supervisor",
@@ -62,13 +68,26 @@ function supervisorCommand(socketPath: string): string[] {
     "--idle-timeout-ms",
     "5000",
     "--socket",
-    socketPath,
+    input.socketPath,
     "--no-register",
   ];
-  if (import.meta.path.includes("/apps/tui/src/") || import.meta.path.includes("/src/")) {
-    return [process.execPath, "run", "src/bin/sloppy.ts", ...common];
+  // Built output is a bundled dist/bin/sloppy.js; a .ts entry means we are
+  // running from source under `bun run`.
+  if (input.script.endsWith(".ts")) {
+    return [input.execPath, "run", input.devEntry, ...common];
   }
-  return [process.execPath, script, ...common];
+  return [input.execPath, input.script, ...common];
+}
+
+function supervisorCommand(socketPath: string): string[] {
+  return supervisorLaunchArgv({
+    execPath: process.execPath,
+    script: process.argv[1] ?? "",
+    // Anchored to this module, not cwd: the supervisor is spawned with
+    // cwd=scope.root, which is usually not the sloppy repo root.
+    devEntry: fileURLToPath(new URL("../../../src/bin/sloppy.ts", import.meta.url)),
+    socketPath,
+  });
 }
 
 async function ensureManagedSupervisor(): Promise<SessionSupervisorClient> {
