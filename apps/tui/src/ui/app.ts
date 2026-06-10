@@ -160,7 +160,8 @@ export class AppUi {
   private headerText(snapshot: SessionViewSnapshot): string {
     const sessionCount = this.supervisorSnapshot?.sessions.length;
     const suffix = sessionCount ? ` | ${sessionCount} sessions` : "";
-    return `sloppy ${snapshot.connection.status}${suffix}`;
+    const attempt = snapshot.connection.reconnectAttempt;
+    return `sloppy ${snapshot.connection.status}${attempt ? ` (${attempt})` : ""}${suffix}`;
   }
 
   private async submit(text: string): Promise<void> {

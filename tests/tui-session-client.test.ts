@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
 import { action, createSlopServer } from "@slop-ai/server";
 import { listenUnix } from "@slop-ai/server/unix";
@@ -13,7 +15,10 @@ import {
   mapTranscriptNode,
 } from "../apps/tui/src/backend/node-mappers";
 import { SessionClient } from "../apps/tui/src/backend/session-client";
-import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
+import {
+  SessionSupervisorClient,
+  type SupervisorSnapshot,
+} from "../apps/tui/src/backend/supervisor-client";
 import {
   parseLocalCommand,
   parsePluginSlashCommand,
@@ -1123,6 +1128,226 @@ describe("SessionClient", () => {
       expect(client.getSnapshot().approvalMode).toBe("auto");
     } finally {
       client.disconnect();
+      server.stop();
+    }
+  });
+});
+
+describe("client resilience", () => {
+  function registerSupervisorNodes(
+    server: ReturnType<typeof createSlopServer>,
+    onLease?: (label: string) => void,
+  ): void {
+    server.register("session", {
+      type: "control",
+      props: { auto_close_enabled: false, client_lease_count: 0 },
+      actions: {
+        register_client_lease: action(
+          { label: "string" },
+          async ({ label }) => {
+            onLease?.(label);
+            return { ok: true };
+          },
+          { label: "Register Lease" },
+        ),
+      },
+    });
+    server.register("sessions", { type: "collection", props: {}, items: [] });
+    server.register("scopes", { type: "collection", props: {}, items: [] });
+  }
+
+  test("session connect rejects when the server accepts but never sends hello", async () => {
+    const socketPath = `/tmp/slop/tui-timeout-test-${crypto.randomUUID()}.sock`;
+    const silent = createServer(() => {
+      // Accept the connection, say nothing: the SDK handshake never settles.
+    });
+    await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
+
+    const client = new SessionClient(socketPath, { connectTimeoutMs: 100, reconnect: false });
+    try {
+      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
+      expect(client.getSnapshot().connection.status).toBe("error");
+    } finally {
+      client.disconnect();
+      silent.close();
+    }
+  });
+
+  test("supervisor connect rejects when the server accepts but never sends hello", async () => {
+    const socketPath = `/tmp/slop/tui-supervisor-timeout-test-${crypto.randomUUID()}.sock`;
+    const silent = createServer(() => {});
+    await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
+
+    const client = new SessionSupervisorClient(socketPath, {
+      connectTimeoutMs: 100,
+      reconnect: false,
+    });
+    try {
+      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
+      expect(client.getSnapshot().connection.status).toBe("error");
+    } finally {
+      client.disconnect();
+      silent.close();
+    }
+  });
+
+  test("a throwing listener does not break event fan-out", async () => {
+    const socketPath = `/tmp/slop/tui-listener-isolation-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath, { reconnect: false });
+    const seen: string[] = [];
+    try {
+      client.on(() => {
+        throw new Error("listener boom");
+      });
+      client.on((event) => {
+        seen.push(event.type);
+      });
+      await client.connect();
+      expect(seen).toContain("snapshot");
+      expect(client.getSnapshot().connection.status).toBe("connected");
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("session client reconnects with backoff after the server drops and returns", async () => {
+    const socketPath = `/tmp/slop/tui-reconnect-test-${crypto.randomUUID()}.sock`;
+    let server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    let listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionClient(socketPath, {
+      connectTimeoutMs: 1000,
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+    });
+    try {
+      await client.connect();
+      expect(client.getSnapshot().connection.status).toBe("connected");
+
+      listener.close();
+      server.stop();
+      await waitFor(() =>
+        client.getSnapshot().connection.status === "reconnecting" ? true : null,
+      );
+
+      rmSync(socketPath, { force: true });
+      server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+      registerMinimalSessionNodes(server);
+      listener = listenUnix(server, socketPath, { register: false });
+
+      await waitFor(
+        () => (client.getSnapshot().connection.status === "connected" ? true : null),
+        5000,
+      );
+      // Re-subscription proof: session state is repopulated from the new server.
+      expect(client.getSnapshot().session.sessionId).toBe("sess-minimal");
+      expect(client.getSnapshot().connection.reconnectAttempt).toBeUndefined();
+    } finally {
+      client.disconnect();
+      listener.close();
+      server.stop();
+    }
+  });
+
+  test("user-initiated disconnect never triggers reconnect", async () => {
+    const socketPath = `/tmp/slop/tui-no-reconnect-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    listeners.push(listenUnix(server, socketPath, { register: false }));
+
+    const client = new SessionClient(socketPath, {
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 5 },
+    });
+    const statuses: string[] = [];
+    try {
+      client.on((event) => {
+        if (event.type === "snapshot") {
+          statuses.push(event.snapshot.connection.status);
+        }
+      });
+      await client.connect();
+      client.disconnect();
+      await Bun.sleep(100);
+      expect(client.getSnapshot().connection.status).toBe("disconnected");
+      expect(statuses).not.toContain("reconnecting");
+    } finally {
+      client.disconnect();
+      server.stop();
+    }
+  });
+
+  test("gives up after bounded attempts when the endpoint stays dead", async () => {
+    const socketPath = `/tmp/slop/tui-give-up-test-${crypto.randomUUID()}.sock`;
+    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+    registerMinimalSessionNodes(server);
+    const listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionClient(socketPath, {
+      connectTimeoutMs: 200,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 },
+    });
+    const errors: string[] = [];
+    try {
+      client.on((event) => {
+        if (event.type === "error") {
+          errors.push(event.message);
+        }
+      });
+      await client.connect();
+      listener.close();
+      server.stop();
+      rmSync(socketPath, { force: true });
+
+      await waitFor(
+        () => (errors.some((message) => message.includes("gave up")) ? true : null),
+        5000,
+      );
+      expect(client.getSnapshot().connection.status).toBe("disconnected");
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("supervisor client reconnects and registers leases with a custom label", async () => {
+    const socketPath = `/tmp/slop/tui-supervisor-reconnect-test-${crypto.randomUUID()}.sock`;
+    const leaseLabels: string[] = [];
+    let server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
+    registerSupervisorNodes(server, (label) => leaseLabels.push(label));
+    let listener = listenUnix(server, socketPath, { register: false });
+
+    const client = new SessionSupervisorClient(socketPath, {
+      leaseLabel: "tui-test",
+      connectTimeoutMs: 1000,
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+    });
+    try {
+      await client.connect();
+      await client.registerClientLease();
+      expect(leaseLabels).toEqual(["tui-test"]);
+
+      listener.close();
+      server.stop();
+      await waitFor(() =>
+        client.getSnapshot().connection.status === "reconnecting" ? true : null,
+      );
+
+      rmSync(socketPath, { force: true });
+      server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
+      registerSupervisorNodes(server, (label) => leaseLabels.push(label));
+      listener = listenUnix(server, socketPath, { register: false });
+
+      await waitFor(
+        () => (client.getSnapshot().connection.status === "connected" ? true : null),
+        5000,
+      );
+    } finally {
+      client.disconnect();
+      listener.close();
       server.stop();
     }
   });

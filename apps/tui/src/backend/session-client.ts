@@ -7,6 +7,12 @@ import {
 } from "@slop-ai/consumer";
 
 import {
+  connectWithTimeout,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  type ReconnectOptions,
+  ReconnectScheduler,
+} from "./connect-support";
+import {
   applyPathSnapshot,
   EMPTY_SESSION_VIEW,
   withConnectionState,
@@ -42,6 +48,11 @@ const SUBSCRIPTIONS: SessionSubscription[] = [
 
 const STATIC_SUBSCRIPTION_PATHS = new Set(SUBSCRIPTIONS.map((subscription) => subscription.path));
 
+export type SessionClientOptions = {
+  connectTimeoutMs?: number;
+  reconnect?: ReconnectOptions | false;
+};
+
 export class SessionClient {
   private consumer: SlopConsumer | null = null;
   private connectPromise: Promise<SessionViewSnapshot> | null = null;
@@ -51,8 +62,16 @@ export class SessionClient {
   private subscriptionByPath = new Map<string, { id: string; depth: number; dynamic: boolean }>();
   private pluginSubscriptionSync: Promise<void> = Promise.resolve();
   private inspectConsumers = new Map<string, SlopConsumer>();
+  private readonly connectTimeoutMs: number;
+  private readonly reconnect: ReconnectScheduler | null;
+  private suppressReconnect = false;
 
-  constructor(private socketPath: string) {
+  constructor(
+    private socketPath: string,
+    options: SessionClientOptions = {},
+  ) {
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.reconnect = options.reconnect === false ? null : new ReconnectScheduler(options.reconnect);
     this.snapshot = withConnectionState(EMPTY_SESSION_VIEW, {
       socketPath,
     });
@@ -64,7 +83,7 @@ export class SessionClient {
 
   on(listener: SessionClientListener): () => void {
     this.listeners.add(listener);
-    listener({ type: "snapshot", snapshot: this.snapshot });
+    this.dispatch(listener, { type: "snapshot", snapshot: this.snapshot });
     return () => {
       this.listeners.delete(listener);
     };
@@ -96,13 +115,15 @@ export class SessionClient {
     try {
       const consumer = new SlopConsumer(createTransportFromEndpoint(this.socketPath));
       this.consumer = consumer;
-      const hello = await consumer.connect();
+      const hello = await connectWithTimeout(consumer, this.connectTimeoutMs, this.socketPath);
+      this.reconnect?.reset();
       this.updateSnapshot(
         withConnectionState(this.snapshot, {
           status: "connected",
           providerId: hello.provider.id,
           providerName: hello.provider.name,
           error: undefined,
+          reconnectAttempt: undefined,
         }),
       );
 
@@ -124,11 +145,15 @@ export class SessionClient {
         this.pathBySubscriptionId.clear();
         this.subscriptionByPath.clear();
         this.pluginSubscriptionSync = Promise.resolve();
-        this.updateSnapshot(
-          withConnectionState(this.snapshot, {
-            status: "disconnected",
-          }),
-        );
+        if (this.suppressReconnect || !this.reconnect) {
+          this.updateSnapshot(
+            withConnectionState(this.snapshot, {
+              status: "disconnected",
+            }),
+          );
+          return;
+        }
+        this.scheduleReconnect();
       });
       consumer.onError((error) => {
         this.emit({
@@ -162,6 +187,8 @@ export class SessionClient {
   }
 
   disconnect(): void {
+    this.suppressReconnect = true;
+    this.reconnect?.reset();
     this.consumer?.disconnect();
     this.consumer = null;
     for (const consumer of this.inspectConsumers.values()) {
@@ -179,6 +206,10 @@ export class SessionClient {
   }
 
   async switchSocket(socketPath: string): Promise<SessionViewSnapshot> {
+    // Suppress and cancel any pending retry BEFORE swapping the path, so a
+    // stale timer can never reconnect to the old socket; re-arm afterwards.
+    this.suppressReconnect = true;
+    this.reconnect?.reset();
     this.consumer?.disconnect();
     this.consumer = null;
     for (const consumer of this.inspectConsumers.values()) {
@@ -195,7 +226,44 @@ export class SessionClient {
         status: "idle",
       }),
     );
+    this.suppressReconnect = false;
     return this.connect();
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.reconnect) {
+      return;
+    }
+    const scheduled = this.reconnect.schedule(() => {
+      this.connect().catch(() => {
+        // connectInternal already published status "error"; keep retrying
+        // until the budget runs out.
+        if (!this.suppressReconnect) {
+          this.scheduleReconnect();
+        }
+      });
+    });
+    if (!scheduled) {
+      const attempts = this.reconnect.attemptCount;
+      this.reconnect.reset();
+      this.updateSnapshot(
+        withConnectionState(this.snapshot, {
+          status: "disconnected",
+          reconnectAttempt: undefined,
+        }),
+      );
+      this.emit({
+        type: "error",
+        message: `Lost connection to ${this.socketPath}; gave up after ${attempts} attempts.`,
+      });
+      return;
+    }
+    this.updateSnapshot(
+      withConnectionState(this.snapshot, {
+        status: "reconnecting",
+        reconnectAttempt: this.reconnect.attemptCount,
+      }),
+    );
   }
 
   async sendMessage(text: string): Promise<ResultMessage> {
@@ -570,7 +638,20 @@ export class SessionClient {
 
   private emit(event: SessionClientEvent): void {
     for (const listener of this.listeners) {
+      this.dispatch(listener, event);
+    }
+  }
+
+  private dispatch(listener: SessionClientListener, event: SessionClientEvent): void {
+    try {
       listener(event);
+    } catch {
+      // Deliberately swallowed: a throwing UI listener must not break event
+      // fan-out or crash the client, and stderr writes would corrupt the
+      // TUI screen. Set SLOPPY_TUI_DEBUG=1 and redirect stderr to inspect.
+      if (process.env.SLOPPY_TUI_DEBUG) {
+        console.error("[sloppy-tui] session listener threw on event:", event.type);
+      }
     }
   }
 }
