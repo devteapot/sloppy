@@ -4,13 +4,7 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { AgentSessionProvider } from "./provider";
 import { SessionRuntime } from "./runtime";
-import {
-  closeUnixListener,
-  listenWebSocketSlop,
-  type UnixListener,
-  type WebSocketListener,
-  type WebSocketListenOptions,
-} from "./socket";
+import { closeUnixListener, type UnixListener } from "./socket";
 import type { ApprovalMode } from "./types";
 
 function sanitizeSegment(value: string): string {
@@ -28,11 +22,8 @@ export class SessionService {
   readonly provider: AgentSessionProvider;
   readonly providerId: string;
   readonly socketPath: string;
-  webSocketUrl: string | undefined;
 
   private unixListener: UnixListener | null = null;
-  private webSocketListener: WebSocketListener | null = null;
-  private readonly webSocketOptions: WebSocketListenOptions | undefined;
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -41,7 +32,6 @@ export class SessionService {
     providerId?: string;
     providerName?: string;
     socketPath?: string;
-    webSocket?: WebSocketListenOptions;
     llmProfileManager?: LlmProfileManager;
     sessionPersistencePath?: string | false;
     approvalMode?: ApprovalMode;
@@ -72,7 +62,6 @@ export class SessionService {
       providerName: options?.providerName,
     });
     this.socketPath = options?.socketPath ?? defaultSocketPath(this.providerId);
-    this.webSocketOptions = options?.webSocket;
 
     SessionService.sessions.set(sessionId, this);
   }
@@ -81,7 +70,6 @@ export class SessionService {
     sessionId: string;
     providerId: string;
     socketPath: string;
-    webSocketUrl?: string;
     title?: string;
     workspaceRoot?: string;
     workspaceId?: string;
@@ -93,7 +81,6 @@ export class SessionService {
         sessionId: snapshot.session.sessionId,
         providerId: s.providerId,
         socketPath: s.socketPath,
-        webSocketUrl: s.webSocketUrl,
         title: snapshot.session.title,
         workspaceRoot: snapshot.session.workspaceRoot,
         workspaceId: snapshot.session.workspaceId,
@@ -122,10 +109,6 @@ export class SessionService {
       this.unixListener = listenUnix(this.provider.server, this.socketPath, {
         register: options?.register ?? true,
       });
-      if (this.webSocketOptions) {
-        this.webSocketListener = listenWebSocketSlop(this.provider.server, this.webSocketOptions);
-        this.webSocketUrl = this.webSocketListener.url;
-      }
     } catch (error) {
       this.stop();
       throw error;
@@ -139,9 +122,6 @@ export class SessionService {
       closeUnixListener(this.unixListener, this.socketPath);
     }
     this.unixListener = null;
-    this.webSocketListener?.close();
-    this.webSocketListener = null;
-    this.webSocketUrl = undefined;
     this.provider.stop();
     this.runtime.shutdown();
   }

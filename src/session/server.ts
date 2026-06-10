@@ -4,7 +4,6 @@ import { loadScopedConfig } from "../config/load";
 import { resolveLaunchScope } from "./launch-scope";
 import { SessionService } from "./service";
 import { startSessionSupervisor } from "./supervisor";
-import { parseWebSocketListenOptions } from "./websocket-cli";
 
 const stdout = Bun.stdout.writer();
 
@@ -28,7 +27,6 @@ const managed = Bun.argv.includes("--managed");
 const noInitialSession = Bun.argv.includes("--no-initial-session");
 const autoCloseEnabled = Bun.argv.includes("--auto-close-enabled");
 const idleTimeoutMs = Number(readOption("--idle-timeout-ms") ?? 5000);
-const webSocket = parseWebSocketListenOptions(Bun.argv);
 
 if (supervisor) {
   if (!socketPath) {
@@ -36,7 +34,6 @@ if (supervisor) {
   }
   const running = await startSessionSupervisor({
     socketPath,
-    webSocket,
     register: !noRegister,
     cwd: process.cwd(),
     launchScope: managed ? resolveLaunchScope(process.cwd()) : undefined,
@@ -58,8 +55,8 @@ if (supervisor) {
   });
   stdout.write(
     `[sloppy] session supervisor listening on ${socketPath}${
-      running.webSocketUrl ? ` and ${running.webSocketUrl}` : ""
-    }${running.initialSession ? `; initial session ${running.initialSession.socketPath}` : ""}\n`,
+      running.initialSession ? `; initial session ${running.initialSession.socketPath}` : ""
+    }\n`,
   );
   await stdout.flush();
 
@@ -85,7 +82,6 @@ const service = new SessionService({
   sessionId,
   title,
   socketPath,
-  webSocket,
   configReloader: () =>
     loadScopedConfig({
       workspaceId,
@@ -95,9 +91,7 @@ const service = new SessionService({
 
 await service.start({ register: !noRegister });
 stdout.write(
-  `[sloppy] session provider listening on ${service.socketPath}${
-    service.webSocketUrl ? ` and ${service.webSocketUrl}` : ""
-  } (${config.plugins.filesystem.root})\n`,
+  `[sloppy] session provider listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
 );
 await stdout.flush();
 

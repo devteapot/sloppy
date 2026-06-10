@@ -8,7 +8,6 @@ export {
 export { AgentSessionProvider } from "./provider";
 export { SessionRuntime } from "./runtime";
 export { SessionService } from "./service";
-export type { WebSocketListenOptions } from "./socket";
 export { SessionStore } from "./store";
 export type { SessionRecord, SessionScopeInput } from "./supervisor";
 export { SessionSupervisorProvider, startSessionSupervisor } from "./supervisor";

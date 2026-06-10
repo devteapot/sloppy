@@ -7,7 +7,6 @@ import { runGateway } from "../gateway/cli";
 import { resolveLaunchScope } from "../session/launch-scope";
 import { SessionService } from "../session/service";
 import { startSessionSupervisor } from "../session/supervisor";
-import { parseWebSocketListenOptions } from "../session/websocket-cli";
 
 const stdout = Bun.stdout.writer();
 const stderr = Bun.stderr.writer();
@@ -72,10 +71,8 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
     return 1;
   }
   const idleTimeoutMs = Number(readOption(args, "--idle-timeout-ms") ?? 5000);
-  const webSocket = parseWebSocketListenOptions(args);
   const running = await startSessionSupervisor({
     socketPath,
-    webSocket,
     cwd: process.cwd(),
     register: !hasFlag(args, "--no-register"),
     launchScope: hasFlag(args, "--managed") ? resolveLaunchScope(process.cwd()) : undefined,
@@ -98,8 +95,8 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
   });
   writeStdout(
     `[sloppy] session supervisor listening on ${socketPath}${
-      running.webSocketUrl ? ` and ${running.webSocketUrl}` : ""
-    }${running.initialSession ? `; initial session ${running.initialSession.socketPath}` : ""}\n`,
+      running.initialSession ? `; initial session ${running.initialSession.socketPath}` : ""
+    }\n`,
   );
   await stdout.flush();
 
@@ -126,15 +123,12 @@ async function runSessionServe(args: string[]): Promise<number> {
     sessionId: readOption(args, "--session-id"),
     title: readOption(args, "--title"),
     socketPath: readOption(args, "--socket"),
-    webSocket: parseWebSocketListenOptions(args),
     approvalMode: approvalModeFromArgs(args),
     configReloader: () => loadScopedConfig({ workspaceId, projectId }),
   });
   await service.start({ register: !hasFlag(args, "--no-register") });
   writeStdout(
-    `[sloppy] session provider listening on ${service.socketPath}${
-      service.webSocketUrl ? ` and ${service.webSocketUrl}` : ""
-    } (${config.plugins.filesystem.root})\n`,
+    `[sloppy] session provider listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
   );
   await stdout.flush();
 
@@ -155,8 +149,8 @@ function usage(): string {
     "  sloppy --yolo",
     "  sloppy --continue",
     '  sloppy -p "<prompt>" [--yolo]',
-    "  sloppy session serve [--socket <path>] [--ws-port <port>] [--yolo]",
-    "  sloppy session supervisor --socket <path> [--ws-port <port>] [--yolo]",
+    "  sloppy session serve [--socket <path>] [--yolo]",
+    "  sloppy session supervisor --socket <path> [--yolo]",
     "  sloppy gateway --port <port> [--host <host>] [--token-env <name>] [--supervisor-socket <path>]",
     "",
   ].join("\n");

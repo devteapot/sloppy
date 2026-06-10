@@ -80,7 +80,7 @@ export {
 } from "./providers/registry";
 export type { AcpAdapterConfig, AcpSessionAgentOptions } from "./runtime/acp";
 export { AcpSessionAgent } from "./runtime/acp";
-export type { AgentSessionSnapshot, WebSocketListenOptions } from "./session";
+export type { AgentSessionSnapshot } from "./session";
 export {
   AgentSessionProvider,
   SessionRuntime,
