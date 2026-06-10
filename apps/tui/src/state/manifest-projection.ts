@@ -41,7 +41,7 @@ function readObjectProperty(source: unknown, key: string): unknown {
   return record[key] ?? record[key.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase())];
 }
 
-export function readSnapshotPath(snapshot: SessionViewSnapshot, path: string): unknown {
+function readSnapshotPath(snapshot: SessionViewSnapshot, path: string): unknown {
   let current: unknown = snapshot;
   for (const segment of path.split("/").filter(Boolean)) {
     current = readObjectProperty(current, segment);

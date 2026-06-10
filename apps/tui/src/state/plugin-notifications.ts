@@ -20,7 +20,7 @@ function readObjectProperty(source: unknown, key: string): unknown {
   return record[key] ?? record[toCamelCase(key)];
 }
 
-export function collectPluginNotifications(
+function collectPluginNotifications(
   snapshot: SessionViewSnapshot,
 ): RuntimePluginNotification[] {
   return snapshot.plugins.flatMap((plugin) =>
@@ -31,6 +31,7 @@ export function collectPluginNotifications(
   );
 }
 
+// exported for tests
 export function readPluginNotificationValue(
   snapshot: SessionViewSnapshot,
   path: string,

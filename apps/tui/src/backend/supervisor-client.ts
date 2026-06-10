@@ -66,6 +66,10 @@ export type SupervisorClientEvent =
 
 export type SupervisorClientListener = (event: SupervisorClientEvent) => void;
 
+export type SessionSupervisorClientOptions = {
+  leaseLabel?: string;
+};
+
 const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
   { path: "/session", depth: 1 },
   { path: "/sessions", depth: 2 },
@@ -214,7 +218,13 @@ export class SessionSupervisorClient {
   private listeners = new Set<SupervisorClientListener>();
   private pathBySubscriptionId = new Map<string, string>();
 
-  constructor(readonly socketPath: string) {
+  private readonly leaseLabel: string;
+
+  constructor(
+    readonly socketPath: string,
+    options: SessionSupervisorClientOptions = {},
+  ) {
+    this.leaseLabel = options.leaseLabel ?? "tui";
     this.snapshot = emptySnapshot(socketPath);
   }
 
@@ -326,14 +336,14 @@ export class SessionSupervisorClient {
 
   async registerClientLease(selectedSessionId?: string): Promise<ResultMessage> {
     return this.invoke("/session", "register_client_lease", {
-      label: "tui",
+      label: this.leaseLabel,
       ...(selectedSessionId && { selected_session_id: selectedSessionId }),
     });
   }
 
   async updateClientLease(selectedSessionId?: string): Promise<ResultMessage> {
     return this.invoke("/session", "update_client_lease", {
-      label: "tui",
+      label: this.leaseLabel,
       ...(selectedSessionId && { selected_session_id: selectedSessionId }),
     });
   }

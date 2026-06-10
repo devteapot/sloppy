@@ -10,7 +10,6 @@ import {
 import type { SessionClient } from "../backend/session-client";
 import type { ApprovalMode, SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
 import type { SessionSupervisorClient, SupervisorSnapshot } from "../backend/supervisor-client";
-import { submitMessage } from "../handlers/submit";
 import { buildCommandPaletteCommands, type PaletteCommand } from "../state/command-palette";
 import {
   type LocalCommand,
@@ -178,7 +177,10 @@ export class AppUi {
       await this.executeCommand(command);
       return;
     }
-    await submitMessage(this.client, this.editor.prepareSubmission(text));
+    const prepared = this.editor.prepareSubmission(text).trim();
+    if (prepared) {
+      await this.client.sendMessage(prepared);
+    }
   }
 
   private async executeCommand(command: LocalCommand): Promise<void> {
