@@ -7,8 +7,7 @@ import {
   type CredentialStoreStatus,
   createCredentialStore,
 } from "../llm/credential-store";
-import { mergeSttEndpoints, mergeTtsEndpoints } from "./catalog";
-import { speechRegistry } from "./register";
+import { type SpeechProtocolRegistry, speechRegistry } from "./registry";
 import type { SttProtocolAdapter, TtsProtocolAdapter } from "./types";
 
 // Speech credentials live in the same secure store as LLM keys but under a
@@ -74,6 +73,11 @@ export type SpeechPluginConfig = {
   };
 };
 
+export type SpeechEndpointDefaults = {
+  stt?: Record<string, SpeechSttEndpointConfig>;
+  tts?: Record<string, SpeechTtsEndpointConfig>;
+};
+
 export type SpeechKeySource = "env" | "secure_store" | "not_required" | "missing";
 
 export type SpeechProfileState = {
@@ -121,6 +125,8 @@ type ResolvedCredential = {
 export class SpeechProfileManager {
   private config: SpeechPluginConfig;
   private readonly credentialStore: CredentialStore;
+  private readonly registry: SpeechProtocolRegistry;
+  private readonly defaults: SpeechEndpointDefaults;
   private sttSelected?: string;
   private ttsSelected?: string;
   private readonly sttAdapters = new Map<
@@ -132,9 +138,24 @@ export class SpeechProfileManager {
     { fingerprint: string; adapter: TtsProtocolAdapter }
   >();
 
-  constructor(config: SpeechPluginConfig, options?: { credentialStore?: CredentialStore }) {
+  constructor(
+    config: SpeechPluginConfig,
+    options?: {
+      credentialStore?: CredentialStore;
+      /** Protocol registry to resolve adapters from; defaults to the shared singleton. */
+      registry?: SpeechProtocolRegistry;
+      /** Built-in endpoints overlaid under the user's configured ones. */
+      defaults?: SpeechEndpointDefaults;
+    },
+  ) {
     this.config = config;
     this.credentialStore = options?.credentialStore ?? createCredentialStore();
+    // The registry defaults to the shared singleton, which starts EMPTY —
+    // protocols are registered by the plugin layer (see voice/protocols).
+    // Construct managers through catalog.ts's speechManagerFor, or register
+    // protocols / inject a registry yourself.
+    this.registry = options?.registry ?? speechRegistry;
+    this.defaults = options?.defaults ?? {};
   }
 
   updateConfig(config: SpeechPluginConfig): void {
@@ -152,11 +173,11 @@ export class SpeechProfileManager {
   }
 
   sttEndpoints(): Record<string, SpeechSttEndpointConfig> {
-    return mergeSttEndpoints(this.config.stt.endpoints);
+    return { ...this.defaults.stt, ...this.config.stt.endpoints };
   }
 
   ttsEndpoints(): Record<string, SpeechTtsEndpointConfig> {
-    return mergeTtsEndpoints(this.config.tts.endpoints);
+    return { ...this.defaults.tts, ...this.config.tts.endpoints };
   }
 
   async getSttState(): Promise<SpeechModalityStateSnapshot> {
@@ -272,7 +293,7 @@ export class SpeechProfileManager {
     if (cached && cached.fingerprint === fingerprint) {
       return cached.adapter;
     }
-    const adapter = speechRegistry.createSttAdapter({
+    const adapter = this.registry.createSttAdapter({
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
       dialect: endpoint.dialect,
@@ -326,7 +347,7 @@ export class SpeechProfileManager {
     if (cached && cached.fingerprint === fingerprint) {
       return cached.adapter;
     }
-    const adapter = speechRegistry.createTtsAdapter({
+    const adapter = this.registry.createTtsAdapter({
       endpointId: profile.endpointId,
       protocol: endpoint.protocol,
       model,
@@ -359,7 +380,7 @@ export class SpeechProfileManager {
         invalidReason: `Unknown endpoint '${profile.endpointId}'.`,
       };
     }
-    if (!speechRegistry.hasSttProtocol(endpoint.protocol)) {
+    if (!this.registry.hasSttProtocol(endpoint.protocol)) {
       return {
         id: profile.id,
         label: profile.label,
@@ -370,7 +391,7 @@ export class SpeechProfileManager {
         ready: false,
         keySource: "missing",
         isDefault: false,
-        invalidReason: `Unknown STT protocol '${endpoint.protocol}'. Registered: ${speechRegistry.sttProtocols().join(", ")}.`,
+        invalidReason: `Unknown STT protocol '${endpoint.protocol}'. Registered: ${this.registry.sttProtocols().join(", ")}.`,
       };
     }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
@@ -407,7 +428,7 @@ export class SpeechProfileManager {
         invalidReason: `Unknown endpoint '${profile.endpointId}'.`,
       };
     }
-    if (!speechRegistry.hasTtsProtocol(endpoint.protocol)) {
+    if (!this.registry.hasTtsProtocol(endpoint.protocol)) {
       return {
         id: profile.id,
         label: profile.label,
@@ -418,7 +439,7 @@ export class SpeechProfileManager {
         ready: false,
         keySource: "missing",
         isDefault: false,
-        invalidReason: `Unknown TTS protocol '${endpoint.protocol}'. Registered: ${speechRegistry.ttsProtocols().join(", ")}.`,
+        invalidReason: `Unknown TTS protocol '${endpoint.protocol}'. Registered: ${this.registry.ttsProtocols().join(", ")}.`,
       };
     }
     const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);

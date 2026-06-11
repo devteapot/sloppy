@@ -32,10 +32,16 @@ the semantic contract (`src/speech/types.ts`) and protocol adapters translate:
 **plain strings in config**, validated at registry lookup — an unknown protocol
 surfaces as the profile's `invalidReason`, not a config-load crash — so plugins
 can register new providers (ElevenLabs, Cartesia, vendor WS dialects) without
-touching the runtime. First-party registrations (`src/speech/register.ts`):
+touching the runtime. The registry singleton starts **empty**: `src/speech/`
+contains zero protocol/vendor knowledge (contract, registry, profile manager,
+segmenter, and generic streaming helpers in `src/speech/streaming.ts` —
+`waitForOpen`, a closed-once guard, `AsyncChunkQueue`). The first-party
+bindings live in the voice plugin
+(`src/plugins/first-party/voice/protocols/`) and are registered idempotently
+by `registerSpeechProtocols` when `speechManagerFor` (catalog.ts) first runs:
 
-- **`realtime-stt`** (`src/speech/realtime-stt/`) — one WebSocket session core
-  plus per-endpoint `dialect` maps:
+- **`realtime-stt`** (`voice/protocols/realtime-stt/`) — one WebSocket session
+  core plus per-endpoint `dialect` maps:
   - `openai` (default): GA transcription sessions — `?intent=transcription`,
     `session: { type: "transcription", audio: { input: { format, transcription,
     turn_detection } } }`, `conversation.item.input_audio_transcription.delta/
@@ -46,7 +52,7 @@ touching the runtime. First-party registrations (`src/speech/register.ts`):
   A dialect owns only naming and payload shapes (~40 lines); the session core
   owns the socket lifecycle, auth, base64 audio framing, and closed-event
   semantics. New dialects (NVIDIA NIM, DashScope) are additive map entries.
-- **`openai-speech`** (`src/speech/openai-speech.ts`) — streaming TTS over
+- **`openai-speech`** (`voice/protocols/openai-speech.ts`) — streaming TTS over
   `POST /v1/audio/speech` with `response_format: "pcm"`. Replies are normalized
   for speech (markdown stripped, code fences dropped — `src/speech/segment.ts`)
   and split into sentences; sentence N+1's request is prefetched while N's
@@ -69,7 +75,10 @@ registry), with per-profile fingerprint caching. It reuses the shared
 readiness (`ready | needs_credentials | not_configured`) — STT-only or
 TTS-only is a first-class state. `activeSttEndpoint()`/`activeTtsEndpoint()`
 expose the exact endpoint the next adapter will use, so the network policy
-can never diverge from what actually receives audio.
+can never diverge from what actually receives audio. The registry and default
+endpoints are constructor-injected; construct managers through
+`speechManagerFor` (catalog.ts) — a bare `new SpeechProfileManager(...)` sees
+the empty singleton and resolves every profile to `Unknown protocol`.
 
 **`VoiceProvider`** (`src/plugins/first-party/voice/provider.ts`) is the SLOP
 surface for configuration only: `/session`, `/stt`, `/tts` readiness state and
@@ -120,8 +129,9 @@ endpoints are local; otherwise the loop parks in `needs_approval` until
 Nested under `plugins.voice` (`stt`/`tts` × `endpoints`/`profiles`/
 `defaultProfileId`) and `plugins.voice-conversation` (audio commands, autostart
 mode, embodiment). See `.sloppy/config.example.yaml`. Built-in endpoint
-catalogs (`src/speech/catalog.ts`): `dgx-nemotron`, `openai-realtime`,
-`vllm-realtime`, `openai-tts`, `kokoro`.
+defaults (`src/plugins/first-party/voice/endpoints.ts`): `openai-realtime`,
+`vllm-realtime`, `openai-tts`, `kokoro`. Site-specific endpoints (e.g. a DGX
+node) are user config, fully defined in YAML — there is no built-in for them.
 
 ## Deferred (follow-ups, not built)
 

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
+import {
+  DEFAULT_STT_ENDPOINTS,
+  DEFAULT_TTS_ENDPOINTS,
+} from "../src/plugins/first-party/voice/endpoints";
+import { registerSpeechProtocols } from "../src/plugins/first-party/voice/protocols";
 import { type SpeechPluginConfig, SpeechProfileManager } from "../src/speech/profile-manager";
+import { SpeechProtocolRegistry } from "../src/speech/registry";
 import { FakeCredentialStore } from "./helpers/fake-credential-store";
 
 const ENV_VAR = "SPEECH_PROFILE_MANAGER_TEST_KEY";
@@ -26,9 +32,25 @@ const LOCAL_STT_ENDPOINT = {
   sampleRate: 16000,
 };
 
+// Mirrors what catalog.ts's speechManagerFor wires at runtime: a registry with
+// the first-party protocols plus the voice plugin's endpoint defaults (the
+// core singleton starts empty).
+function makeManager(
+  config: SpeechPluginConfig,
+  store: FakeCredentialStore = new FakeCredentialStore(),
+): SpeechProfileManager {
+  const registry = new SpeechProtocolRegistry();
+  registerSpeechProtocols(registry);
+  return new SpeechProfileManager(config, {
+    credentialStore: store,
+    registry,
+    defaults: { stt: DEFAULT_STT_ENDPOINTS, tts: DEFAULT_TTS_ENDPOINTS },
+  });
+}
+
 describe("SpeechProfileManager — STT", () => {
   test("local endpoint resolves ready with not_required key source", async () => {
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         stt: {
           endpoints: { local: LOCAL_STT_ENDPOINT },
@@ -36,7 +58,6 @@ describe("SpeechProfileManager — STT", () => {
           defaultProfileId: "stt-local",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
 
     const state = await manager.getSttState();
@@ -51,7 +72,7 @@ describe("SpeechProfileManager — STT", () => {
 
   test("credential resolution prefers env, falls back to secure store", async () => {
     const store = new FakeCredentialStore({ "voice:cloud": "stored-key" });
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         stt: {
           endpoints: {
@@ -61,7 +82,7 @@ describe("SpeechProfileManager — STT", () => {
           defaultProfileId: "stt-cloud",
         },
       }),
-      { credentialStore: store },
+      store,
     );
 
     let state = await manager.getSttState();
@@ -73,7 +94,7 @@ describe("SpeechProfileManager — STT", () => {
   });
 
   test("unknown protocol surfaces invalidReason listing registered protocols", async () => {
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         stt: {
           endpoints: { legacy: { ...LOCAL_STT_ENDPOINT, protocol: "deepgram" } },
@@ -81,7 +102,6 @@ describe("SpeechProfileManager — STT", () => {
           defaultProfileId: "stt-legacy",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
 
     const state = await manager.getSttState();
@@ -93,26 +113,27 @@ describe("SpeechProfileManager — STT", () => {
     await expect(manager.createSttAdapter()).rejects.toThrow(/Unknown STT protocol 'deepgram'/);
   });
 
-  test("built-in catalog endpoints are available without user config", async () => {
-    const manager = new SpeechProfileManager(
+  test("built-in default endpoints are available without user config", async () => {
+    const manager = makeManager(
       speechConfig({
         stt: {
           endpoints: {},
-          profiles: [{ id: "dgx", endpointId: "dgx-nemotron", model: "/models/nemotron" }],
-          defaultProfileId: "dgx",
+          profiles: [
+            { id: "voxtral", endpointId: "vllm-realtime", model: "mistralai/Voxtral-Mini-4B" },
+          ],
+          defaultProfileId: "voxtral",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
 
     const state = await manager.getSttState();
     expect(state.status).toBe("ready");
     expect(state.selectedProtocol).toBe("realtime-stt");
-    expect(state.selectedDialect).toBe("openai");
+    expect(state.selectedDialect).toBe("vllm");
   });
 
   test("activeSttEndpoint matches selection incl. set_profile override", async () => {
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         stt: {
           endpoints: {
@@ -126,7 +147,6 @@ describe("SpeechProfileManager — STT", () => {
           defaultProfileId: "stt-local",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
 
     expect((await manager.activeSttEndpoint())?.id).toBe("local");
@@ -145,9 +165,7 @@ describe("SpeechProfileManager — STT", () => {
         defaultProfileId: "stt-local",
       },
     });
-    const manager = new SpeechProfileManager(config, {
-      credentialStore: new FakeCredentialStore(),
-    });
+    const manager = makeManager(config);
 
     const first = await manager.createSttAdapter();
     const second = await manager.createSttAdapter();
@@ -170,7 +188,7 @@ describe("SpeechProfileManager — STT", () => {
 
 describe("SpeechProfileManager — TTS", () => {
   test("kokoro catalog endpoint resolves a streaming adapter with endpoint model", async () => {
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         tts: {
           endpoints: {},
@@ -178,7 +196,6 @@ describe("SpeechProfileManager — TTS", () => {
           defaultProfileId: "tts-local",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
 
     const state = await manager.getTtsState();
@@ -192,7 +209,7 @@ describe("SpeechProfileManager — TTS", () => {
   });
 
   test("missing credential yields needs_credentials with actionable reason", async () => {
-    const manager = new SpeechProfileManager(
+    const manager = makeManager(
       speechConfig({
         tts: {
           endpoints: {},
@@ -200,7 +217,6 @@ describe("SpeechProfileManager — TTS", () => {
           defaultProfileId: "tts-cloud",
         },
       }),
-      { credentialStore: new FakeCredentialStore() },
     );
     const previous = Bun.env.OPENAI_API_KEY;
     delete Bun.env.OPENAI_API_KEY;
