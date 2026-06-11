@@ -6,8 +6,9 @@
 // waits on HTTP latency between sentences. Output is raw PCM
 // (`response_format: "pcm"`) at the endpoint's configured rate.
 
-import { trimBaseUrl } from "./audio";
-import { normalizeForSpeech, SentenceAssembler } from "./segment";
+import { trimBaseUrl } from "../../../../speech/audio";
+import { normalizeForSpeech, SentenceAssembler } from "../../../../speech/segment";
+import { AsyncChunkQueue } from "../../../../speech/streaming";
 import {
   type FetchLike,
   type PcmFormat,
@@ -15,7 +16,7 @@ import {
   type TtsAdapterConfig,
   type TtsProtocolAdapter,
   type TtsStream,
-} from "./types";
+} from "../../../../speech/types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_VOICE = "alloy";
@@ -220,59 +221,6 @@ class OpenAISpeechStream implements TtsStream {
       }
     } finally {
       reader.releaseLock();
-    }
-  }
-}
-
-/** Single-consumer async chunk queue backing TtsStream.chunks(). */
-class AsyncChunkQueue implements AsyncIterable<Uint8Array> {
-  private readonly buffered: Uint8Array[] = [];
-  private done = false;
-  private error: Error | null = null;
-  private wake: (() => void) | null = null;
-
-  push(chunk: Uint8Array): void {
-    if (this.done) {
-      return;
-    }
-    this.buffered.push(chunk);
-    this.wake?.();
-  }
-
-  close(options?: { discard?: boolean }): void {
-    if (options?.discard) {
-      this.buffered.length = 0;
-    }
-    this.done = true;
-    this.wake?.();
-  }
-
-  fail(error: Error): void {
-    if (this.done) {
-      return;
-    }
-    this.error = error;
-    this.done = true;
-    this.wake?.();
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    for (;;) {
-      const chunk = this.buffered.shift();
-      if (chunk) {
-        yield chunk;
-        continue;
-      }
-      if (this.done) {
-        if (this.error) {
-          throw this.error;
-        }
-        return;
-      }
-      await new Promise<void>((resolve) => {
-        this.wake = resolve;
-      });
-      this.wake = null;
     }
   }
 }

@@ -4,8 +4,8 @@
 // shapes: connect URL, session.update body, commit message, and the mapping
 // from server events to runtime `SttSessionEvent`s.
 
-import { trimBaseUrl } from "../audio";
-import { SpeechError, type SttSessionEvent } from "../types";
+import { trimBaseUrl } from "../../../../../speech/audio";
+import { SpeechError, type SttSessionEvent } from "../../../../../speech/types";
 
 /** Loosely-typed server event; dialects pick the fields they understand. */
 export type RealtimeServerEvent = {

@@ -12,6 +12,7 @@ import type {
 import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
 import { SpeechProfileManager } from "../../speech/profile-manager";
+import { speechRegistry } from "../../speech/registry";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
@@ -35,7 +36,9 @@ import { SpecProvider } from "./spec/provider";
 import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
+import { DEFAULT_STT_ENDPOINTS, DEFAULT_TTS_ENDPOINTS } from "./voice/endpoints";
 import { createSpeechNetworkRule } from "./voice/policy";
+import { registerSpeechProtocols } from "./voice/protocols";
 import { VoiceProvider } from "./voice/provider";
 import { createVoiceConversationPlugin } from "./voice-conversation/session";
 import { WebProvider } from "./web/provider";
@@ -44,13 +47,18 @@ import { WorkspacesProvider } from "./workspaces/provider";
 // One SpeechProfileManager per config so the voice provider (profile state +
 // set_profile), the conversation loop (adapter creation), and the network
 // policy rule (endpoint locality) share runtime profile selection. Keyed by
-// the config object the collectors pass through.
+// the config object the collectors pass through. This is also where the
+// first-party speech protocols get registered — all consumers obtain the
+// manager here, so registration always precedes adapter resolution.
 const speechManagers = new WeakMap<SloppyConfig, SpeechProfileManager>();
 
 function speechManagerFor(config: SloppyConfig): SpeechProfileManager {
   let manager = speechManagers.get(config);
   if (!manager) {
-    manager = new SpeechProfileManager(config.plugins.voice);
+    registerSpeechProtocols(speechRegistry);
+    manager = new SpeechProfileManager(config.plugins.voice, {
+      defaults: { stt: DEFAULT_STT_ENDPOINTS, tts: DEFAULT_TTS_ENDPOINTS },
+    });
     speechManagers.set(config, manager);
   }
   return manager;

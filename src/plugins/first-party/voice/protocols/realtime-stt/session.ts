@@ -4,7 +4,8 @@
 // framing, and the guarantee that every session emits exactly one `closed`
 // event — a consumer can never keep pumping audio into a dead socket unknowingly.
 
-import { toBase64 } from "../audio";
+import { toBase64 } from "../../../../../speech/audio";
+import { once, waitForOpen } from "../../../../../speech/streaming";
 import {
   SpeechError,
   type SttAdapterConfig,
@@ -14,7 +15,7 @@ import {
   type SttSessionOptions,
   type WebSocketConstructorLike,
   type WebSocketLike,
-} from "../types";
+} from "../../../../../speech/types";
 import {
   type RealtimeServerEvent,
   type RealtimeSttDialect,
@@ -22,7 +23,6 @@ import {
 } from "./dialects";
 
 const DEFAULT_BASE_URL = "wss://api.openai.com/v1/realtime";
-const WS_OPEN = 1;
 
 export class RealtimeSttAdapter implements SttProtocolAdapter {
   readonly inputFormat;
@@ -67,7 +67,9 @@ export class RealtimeSttAdapter implements SttProtocolAdapter {
 class RealtimeSttSession implements SttSession {
   private readonly state = { text: "" };
   private closed = false;
-  private closedEmitted = false;
+  private readonly emitClosed = once((event: Extract<SttSessionEvent, { type: "closed" }>) =>
+    this.onEvent(event),
+  );
 
   constructor(
     private readonly socket: WebSocketLike,
@@ -122,14 +124,6 @@ class RealtimeSttSession implements SttSession {
     this.socket.removeEventListener("error", this.handleError);
   }
 
-  private emitClosed(event: Extract<SttSessionEvent, { type: "closed" }>): void {
-    if (this.closedEmitted) {
-      return;
-    }
-    this.closedEmitted = true;
-    this.onEvent(event);
-  }
-
   private handleMessage = (event: MessageEvent): void => {
     let data: RealtimeServerEvent;
     try {
@@ -160,41 +154,4 @@ class RealtimeSttSession implements SttSession {
     this.emitClosed({ type: "closed", cause: "error" });
     this.detach();
   };
-}
-
-function waitForOpen(socket: WebSocketLike, signal?: AbortSignal): Promise<void> {
-  if (socket.readyState === WS_OPEN) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    const onOpen = () => {
-      cleanup();
-      resolve();
-    };
-    const onClose = (event: CloseEvent) => {
-      cleanup();
-      reject(
-        new SpeechError(`Realtime transcription socket closed before opening (${event.code}).`),
-      );
-    };
-    const onError = () => {
-      cleanup();
-      reject(new SpeechError("Realtime transcription socket failed to open."));
-    };
-    const onAbort = () => {
-      cleanup();
-      socket.close();
-      reject(new SpeechError("Realtime transcription start was cancelled."));
-    };
-    const cleanup = () => {
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("close", onClose);
-      socket.removeEventListener("error", onError);
-      signal?.removeEventListener("abort", onAbort);
-    };
-    socket.addEventListener("open", onOpen);
-    socket.addEventListener("close", onClose);
-    socket.addEventListener("error", onError);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

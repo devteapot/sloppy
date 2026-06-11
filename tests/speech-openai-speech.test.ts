@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { OpenAISpeechStreamAdapter } from "../src/speech/openai-speech";
+import { OpenAISpeechStreamAdapter } from "../src/plugins/first-party/voice/protocols/openai-speech";
 import type { FetchLike, TtsAdapterConfig } from "../src/speech/types";
 
 type Call = { url: string; body: Record<string, unknown>; signal?: AbortSignal };

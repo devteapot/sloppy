@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { RealtimeSttAdapter } from "../src/speech/realtime-stt/session";
+import { RealtimeSttAdapter } from "../src/plugins/first-party/voice/protocols/realtime-stt/session";
 import type { SttSessionEvent, WebSocketConstructorLike } from "../src/speech/types";
 import { FakeWebSocket } from "./helpers/fake-websocket";
 

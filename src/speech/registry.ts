@@ -70,8 +70,9 @@ export class SpeechProtocolRegistry {
 }
 
 /**
- * Shared registry instance. First-party protocols ("realtime-stt",
- * "openai-speech") self-register via the imports in `register.ts`; import
- * `speechRegistry` from there (or via profile-manager) to get them.
+ * Shared registry instance. It starts EMPTY: core has no protocol knowledge.
+ * The voice plugin registers the first-party protocols ("realtime-stt",
+ * "openai-speech") via `registerSpeechProtocols` when `speechManagerFor`
+ * first runs; other plugins add theirs the same way.
  */
 export const speechRegistry = new SpeechProtocolRegistry();

@@ -1,30 +1,14 @@
-import type { SpeechSttEndpointConfig, SpeechTtsEndpointConfig } from "./profile-manager";
+import type {
+  SpeechSttEndpointConfig,
+  SpeechTtsEndpointConfig,
+} from "../../../speech/profile-manager";
 
-// Built-in speech endpoints. Local vs cloud is config, not protocol: local
+// Built-in speech endpoints shipped with the voice plugin, overlaid under the
+// user's configured ones. Local vs cloud is config, not protocol: self-hosted
 // services ride the same protocols and differ only by baseUrl + auth none.
-// Suggested default model/voice per endpoint for UI/profile bootstrapping.
-export const DEFAULT_STT_MODELS: Record<string, string> = {
-  "dgx-nemotron": "/models/nemotron-3.5-asr-streaming",
-  "openai-realtime": "gpt-4o-mini-transcribe",
-  "vllm-realtime": "mistralai/Voxtral-Mini-4B-Realtime-2602",
-};
-
-export const DEFAULT_TTS_VOICES: Record<string, string> = {
-  "openai-tts": "alloy",
-  kokoro: "af_bella",
-};
-
+// Site-specific endpoints (e.g. a DGX node) belong in user config — see
+// .sloppy/config.example.yaml.
 export const DEFAULT_STT_ENDPOINTS: Record<string, SpeechSttEndpointConfig> = {
-  // Self-hosted OpenAI-Realtime-compatible ASR (the DGX Spark Nemotron
-  // service). The model field is passed through, so local model paths work.
-  "dgx-nemotron": {
-    label: "DGX Nemotron ASR (realtime)",
-    protocol: "realtime-stt",
-    dialect: "openai",
-    baseUrl: "ws://dgx-spark.local:8000/v1/realtime",
-    auth: { type: "none" },
-    sampleRate: 16000,
-  },
   "openai-realtime": {
     label: "OpenAI Realtime Transcription",
     protocol: "realtime-stt",
@@ -77,17 +61,3 @@ export const DEFAULT_TTS_ENDPOINTS: Record<string, SpeechTtsEndpointConfig> = {
     },
   },
 };
-
-/** Overlay user-configured STT endpoints on top of the built-in defaults. */
-export function mergeSttEndpoints(
-  user: Record<string, SpeechSttEndpointConfig>,
-): Record<string, SpeechSttEndpointConfig> {
-  return { ...DEFAULT_STT_ENDPOINTS, ...user };
-}
-
-/** Overlay user-configured TTS endpoints on top of the built-in defaults. */
-export function mergeTtsEndpoints(
-  user: Record<string, SpeechTtsEndpointConfig>,
-): Record<string, SpeechTtsEndpointConfig> {
-  return { ...DEFAULT_TTS_ENDPOINTS, ...user };
-}
