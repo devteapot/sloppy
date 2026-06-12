@@ -56,9 +56,9 @@ describe("parseUserMessageBlocks", () => {
       };
 
       expect(parseUserMessageBlocks(`[Image #1](${uri})`)).toEqual([inline]);
-      expect(
-        parseUserMessageBlocks(`[Image #1](${uri})`, { registerImage: () => null }),
-      ).toEqual([inline]);
+      expect(parseUserMessageBlocks(`[Image #1](${uri})`, { registerImage: () => null })).toEqual([
+        inline,
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

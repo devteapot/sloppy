@@ -764,10 +764,7 @@ describe("runLoop tool execution", () => {
 });
 
 describe("runLoop content_ref images", () => {
-  const JPEG_BYTES = Buffer.concat([
-    Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-    Buffer.alloc(64, 0x42),
-  ]);
+  const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 0x42)]);
 
   function captureServer(uri: string) {
     const server = createSlopServer({ id: "demo", name: "Demo" });
@@ -818,11 +815,7 @@ describe("runLoop content_ref images", () => {
     }
   }
 
-  async function runCapture(
-    uri: string,
-    config = TEST_CONFIG,
-    imageRegistry?: ImageRegistry,
-  ) {
+  async function runCapture(uri: string, config = TEST_CONFIG, imageRegistry?: ImageRegistry) {
     const server = captureServer(uri);
     const hub = new ConsumerHub(
       [

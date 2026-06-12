@@ -151,7 +151,9 @@ export class ImagesProvider {
     loaded: boolean;
     path: string;
   }): string {
-    const described = image.description ? `${image.summary} — "${image.description}"` : image.summary;
+    const described = image.description
+      ? `${image.summary} — "${image.description}"`
+      : image.summary;
     return image.loaded
       ? `${described} — attached this turn as "image ${image.path}".`
       : image.description

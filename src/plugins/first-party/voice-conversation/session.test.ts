@@ -40,7 +40,7 @@ function config(
       streamChunkMs: 10,
       providerId: "reachy",
     },
-    embodiment: { enabled: false, providerId: "reachy" },
+    embodiment: { enabled: false, providerId: "reachy", emotes: false },
     realtime: { autoStartMode: "continuous", defaultStartMode: "single_turn" },
     ...overrides,
   };
@@ -200,6 +200,11 @@ function makeCtx(overrides: Partial<PluginRuntimeContext> = {}) {
 
   const ctx = {
     invokeProvider: async () => ok(),
+    queryProvider: async () => ({
+      id: "behavior",
+      type: "control",
+      properties: { emotions: ["cheerful1", "curious1", "fear1"] },
+    }),
     startTurn: (request: { text: string }) => {
       turns.push(request.text);
       return { status: "started" as const, turnId: `t${turns.length}` };
@@ -253,6 +258,50 @@ function conversationActions(
     stop: () =>
       Promise.resolve(actions.stop_listening.handler({})) as Promise<Record<string, unknown>>,
   };
+}
+
+const EMBODIED = { enabled: true, providerId: "reachy", emotes: true };
+
+function recordingInvoker(
+  result: (path: string, action: string) => ResultMessage | Promise<ResultMessage> = () => ok(),
+) {
+  const invokes: Array<{ path: string; action: string; params?: Record<string, unknown> }> = [];
+  const invokeProvider = async (
+    _providerId: string,
+    path: string,
+    action: string,
+    params?: Record<string, unknown>,
+  ) => {
+    invokes.push({ path, action, params });
+    return result(path, action);
+  };
+  return { invokes, invokeProvider };
+}
+
+/** Emit a final transcript (starts the plugin turn) and complete it with `response`. */
+async function driveTurn(
+  plugin: ReturnType<typeof createVoiceConversationPlugin>,
+  ctx: PluginRuntimeContext,
+  session: FakeSttSession,
+  response: string,
+): Promise<void> {
+  await new Promise((r) => setTimeout(r, 20));
+  session.emit({ type: "final", text: "user utterance" });
+  plugin.onTurnComplete?.(
+    {
+      turnId: "t1",
+      pluginTurn: {
+        pluginId: "voice-conversation",
+        runId: "vc-1",
+        author: "reachy-voice",
+        continuation: false,
+      },
+      result: { status: "completed", response },
+      elapsedMs: 5,
+      usedTools: false,
+    },
+    ctx,
+  );
 }
 
 describe("voice-conversation streaming loop", () => {
@@ -520,6 +569,21 @@ describe("voice-conversation streaming loop", () => {
     expect(extensions[CONVERSATION_EXTENSION_NAMESPACE]).toBeUndefined();
   });
 
+  test("no-marker reply with embodiment still streams once", async () => {
+    const { manager, ttsStreams, waitForSession } = fakeManager();
+    const { ctx } = makeCtx();
+    const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+    await plugin.onStartup?.(ctx);
+
+    await driveTurn(plugin, ctx, await waitForSession(0), "Nothing special here.");
+    await waitForSession(1);
+
+    expect(ttsStreams).toHaveLength(1);
+    expect(ttsStreams[0]?.texts).toEqual(["Nothing special here."]);
+
+    plugin.onShutdown?.(ctx);
+  });
+
   test("ignores turn-complete events from other plugins", async () => {
     const { manager, ttsStreams } = fakeManager();
     const { ctx } = makeCtx();
@@ -544,4 +608,240 @@ describe("voice-conversation streaming loop", () => {
 
     plugin.onShutdown?.(ctx);
   });
+});
+
+describe("inline emote markers", () => {
+  test(
+    "marker reply splits TTS segments and fires the emotion muted",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(
+        plugin,
+        ctx,
+        await waitForSession(0),
+        "Bad news. [emote:fear1] But it's fine!",
+      );
+      await waitForSession(1); // speak finished; continuous loop re-armed
+
+      expect(ttsStreams).toHaveLength(2);
+      expect(ttsStreams[0]?.texts).toEqual(["Bad news."]);
+      expect(ttsStreams[1]?.texts).toEqual(["But it's fine!"]);
+      const emotes = invokes.filter((call) => call.action === "play_emotion");
+      expect(emotes).toEqual([
+        { path: "/behavior", action: "play_emotion", params: { name: "fear1", sound: false } },
+      ]);
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "unknown emotion name is stripped without firing",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "Hello [emote:bogus] world.");
+      await waitForSession(1);
+
+      expect(ttsStreams).toHaveLength(1);
+      expect(ttsStreams[0]?.texts).toEqual(["Hello world."]);
+      expect(invokes.filter((call) => call.action === "play_emotion")).toHaveLength(0);
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "vocabulary unavailable: markers fire unvalidated",
+    async () => {
+      const { manager, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({
+        invokeProvider,
+        queryProvider: async () => {
+          throw new Error("provider down");
+        },
+      } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "Hi [emote:bogus] there.");
+      await waitForSession(1);
+
+      const emotes = invokes.filter((call) => call.action === "play_emotion");
+      expect(emotes).toHaveLength(1);
+      expect(emotes[0]?.params).toEqual({ name: "bogus", sound: false });
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "barge-in mid-speech stops the fired emotion",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager({ blockingTts: true });
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "[emote:cheerful1] A long reply.");
+
+      const start = Date.now();
+      while (ttsStreams.length === 0 && Date.now() - start < 2000) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const actions = conversationActions(plugin, ctx);
+      await actions.stop();
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(invokes.some((call) => call.path === "/behavior" && call.action === "stop")).toBe(
+        true,
+      );
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "no barge-in: a finished reply does not stop the emotion",
+    async () => {
+      const { manager, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "[emote:cheerful1] Short.");
+      await waitForSession(1);
+
+      expect(invokes.some((call) => call.action === "stop")).toBe(false);
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "emotes disabled: markers stripped, nothing fires",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(
+        config({ embodiment: { ...EMBODIED, emotes: false } }),
+        manager,
+      );
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "Bad news. [emote:fear1] It's fine!");
+      await waitForSession(1);
+
+      expect(ttsStreams).toHaveLength(1);
+      expect(ttsStreams[0]?.texts).toEqual(["Bad news. It's fine!"]);
+      expect(invokes.filter((call) => call.action === "play_emotion")).toHaveLength(0);
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "markers-only reply fires the emotion without opening TTS",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager();
+      const { invokes, invokeProvider } = recordingInvoker();
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "[emote:cheerful1]");
+      await waitForSession(1);
+
+      expect(ttsStreams).toHaveLength(0);
+      expect(invokes.filter((call) => call.action === "play_emotion")).toHaveLength(1);
+
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "head wobble skips ticks on error results instead of dying",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager({ blockingTts: true });
+      const { invokes, invokeProvider } = recordingInvoker((path, action) =>
+        path === "/head" && action === "set_pose"
+          ? {
+              type: "result",
+              id: "1",
+              status: "error",
+              error: { code: "conflict", message: "Robot is busy" },
+            }
+          : ok(),
+      );
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "A long blocked reply.");
+      const start = Date.now();
+      while (ttsStreams.length === 0 && Date.now() - start < 2000) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 350)); // several wobble ticks
+
+      const poses = invokes.filter((call) => call.action === "set_pose");
+      expect(poses.length).toBeGreaterThanOrEqual(2); // loop kept going
+      expect(invokes.filter((call) => call.action === "set_antennas")).toHaveLength(0);
+
+      const actions = conversationActions(plugin, ctx);
+      await actions.stop();
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "head wobble stops on thrown transport errors",
+    async () => {
+      const { manager, ttsStreams, waitForSession } = fakeManager({ blockingTts: true });
+      const { invokes, invokeProvider } = recordingInvoker((path) => {
+        if (path === "/head") {
+          throw new Error("provider gone");
+        }
+        return ok();
+      });
+      const { ctx } = makeCtx({ invokeProvider } as Partial<PluginRuntimeContext>);
+      const plugin = createVoiceConversationPlugin(config({ embodiment: EMBODIED }), manager);
+      await plugin.onStartup?.(ctx);
+
+      await driveTurn(plugin, ctx, await waitForSession(0), "A long blocked reply.");
+      const start = Date.now();
+      while (ttsStreams.length === 0 && Date.now() - start < 2000) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 350));
+
+      expect(invokes.filter((call) => call.action === "set_pose")).toHaveLength(1);
+
+      const actions = conversationActions(plugin, ctx);
+      await actions.stop();
+      plugin.onShutdown?.(ctx);
+    },
+    { timeout: 5000 },
+  );
 });

@@ -270,12 +270,8 @@ export class ImageRegistry {
   }
 
   /** Keep at most maxLoaded attached; LRU-unload unpinned, never `keep`. */
-  private evictLoadedOverflow(
-    keep: RegisteredImage,
-    options: { bestEffort?: boolean } = {},
-  ): void {
-    const loaded = () =>
-      [...this.images.values()].filter((image) => image.loaded);
+  private evictLoadedOverflow(keep: RegisteredImage, options: { bestEffort?: boolean } = {}): void {
+    const loaded = () => [...this.images.values()].filter((image) => image.loaded);
     while (loaded().length > this.options.maxLoaded) {
       const victim = loaded()
         .filter((image) => !image.pinned && image.id !== keep.id)

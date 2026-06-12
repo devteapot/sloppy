@@ -31,6 +31,7 @@ import { VoiceProvider } from "./voice/provider";
 import { speechManagerFor } from "./voice/runtime";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
+
 function registeredProvider(
   input: Omit<RegisteredProvider, "kind"> & { kind?: RegisteredProvider["kind"] },
 ): RegisteredProvider {

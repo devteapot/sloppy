@@ -13,6 +13,7 @@ import type { SpeechProfileManager } from "../../../speech/profile-manager";
 import type { SttSession, SttSessionEvent, TtsStream } from "../../../speech/types";
 import { endpointIsLocal } from "../voice/policy";
 import { type AudioBackend, type AudioStreamSource, createAudioBackend } from "./audio-backend";
+import { type EmoteSegment, hasEmoteMarkers, parseEmoteMarkers } from "./emote-markers";
 
 const PLUGIN_ID = "voice-conversation";
 export const CONVERSATION_EXTENSION_NAMESPACE = "voice-conversation";
@@ -415,45 +416,104 @@ export function createVoiceConversationPlugin(
   }
 
   async function speak(ctx: PluginRuntimeContext, text: string): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed || !backend || !voiceProfiles) {
+    if (!backend || !voiceProfiles) {
+      return;
+    }
+    const emotesActive = config.embodiment.enabled && config.embodiment.emotes;
+    let segments: EmoteSegment[];
+    if (hasEmoteMarkers(text)) {
+      segments = parseEmoteMarkers(text, emotesActive ? await fetchEmotionNames(ctx) : null);
+      if (!emotesActive) {
+        // Markers are stripped regardless (they must never be spoken), but
+        // with emotes off nothing fires and the reply stays one segment.
+        const joined = segments
+          .map((segment) => segment.text)
+          .filter(Boolean)
+          .join(" ");
+        segments = [{ text: joined }];
+      }
+    } else {
+      segments = [{ text: text.trim() }];
+    }
+    if (!segments.some((segment) => segment.emotion || segment.text)) {
       return;
     }
     const controller = new AbortController();
     speakAbort = controller;
-    let stream: TtsStream | null = null;
+    let firedEmotion = false;
+    // Animate the head for the duration of the whole reply; the wobble skips
+    // its ticks while an emotion move has the robot busy and resumes after.
+    const animateController = new AbortController();
+    const animation = animateHead(ctx, animateController.signal);
     try {
       await refreshSelectedProfiles();
       const adapter = await voiceProfiles.createTtsAdapter();
-      if (controller.signal.aborted) {
-        return;
-      }
-      stream = adapter.openStream({ signal: controller.signal });
-      ttsStream = stream;
-      stream.appendText(trimmed);
-      stream.end();
-
-      // Animate the head for the duration of playback; stop the moment it ends.
-      const animateController = new AbortController();
-      const animation = animateHead(ctx, animateController.signal);
-      try {
-        await backend.playStream(stream.format, stream.chunks(), controller.signal);
-      } finally {
-        animateController.abort();
-        await animation;
+      for (const segment of segments) {
+        if (controller.signal.aborted) {
+          break;
+        }
+        if (segment.emotion && emotesActive) {
+          // Fire-and-forget: play_emotion answers "accepted" immediately and
+          // the move runs while this segment speaks. A conflict result (the
+          // previous emotion is still playing) is the intended skip-if-busy
+          // policy, so error results are ignored.
+          firedEmotion = true;
+          void ctx
+            .invokeProvider(config.embodiment.providerId, "/behavior", "play_emotion", {
+              name: segment.emotion,
+              sound: false,
+            })
+            .catch(() => {});
+        }
+        if (!segment.text) {
+          continue;
+        }
+        const stream = adapter.openStream({ signal: controller.signal });
+        ttsStream = stream;
+        try {
+          stream.appendText(segment.text);
+          stream.end();
+          await backend.playStream(stream.format, stream.chunks(), controller.signal);
+        } finally {
+          stream.abort();
+          if (ttsStream === stream) {
+            ttsStream = null;
+          }
+        }
       }
     } catch (error) {
       if (!controller.signal.aborted) {
         logError(ctx, "speak", error);
       }
     } finally {
-      stream?.abort();
-      if (ttsStream === stream) {
-        ttsStream = null;
+      animateController.abort();
+      await animation;
+      if (controller.signal.aborted && firedEmotion) {
+        // Barge-in: don't keep emoting after the user cut the reply short.
+        // stop is idempotent; an error result (nothing playing) is fine.
+        void ctx.invokeProvider(config.embodiment.providerId, "/behavior", "stop").catch(() => {});
       }
       if (speakAbort === controller) {
         speakAbort = null;
       }
+    }
+  }
+
+  /** Emotion vocabulary from the provider's /behavior props; null = unknown
+   * (provider down or prefetch not finished) — markers then fire unvalidated
+   * and the provider's own invalid_params rejection absorbs bad names. */
+  async function fetchEmotionNames(ctx: PluginRuntimeContext): Promise<string[] | null> {
+    try {
+      const node = await ctx.queryProvider(config.embodiment.providerId, "/behavior", {
+        depth: 1,
+      });
+      const names = (node as { properties?: Record<string, unknown> }).properties?.emotions;
+      if (!Array.isArray(names)) {
+        return null;
+      }
+      return names.filter((name): name is string => typeof name === "string");
+    } catch {
+      return null;
     }
   }
 
@@ -467,16 +527,20 @@ export function createVoiceConversationPlugin(
     while (!signal.aborted) {
       const t = (Date.now() - start) / 1000;
       try {
-        await ctx.invokeProvider(providerId, "/head", "set_pose", {
+        const pose = await ctx.invokeProvider(providerId, "/head", "set_pose", {
           pitch: HEAD_PITCH_DEG * Math.sin(t * 6),
           roll: 0,
           yaw: HEAD_YAW_DEG * Math.sin(t * 2.3),
           z: 0,
         });
-        await ctx.invokeProvider(providerId, "/head", "set_antennas", {
-          right: ANTENNA_RAD * Math.sin(t * 7),
-          left: ANTENNA_RAD * Math.sin(t * 7 + Math.PI / 2),
-        });
+        // An error result (e.g. "conflict" while an emotion move has the
+        // robot busy) just skips this tick; the wobble resumes once free.
+        if (pose.status !== "error") {
+          await ctx.invokeProvider(providerId, "/head", "set_antennas", {
+            right: ANTENNA_RAD * Math.sin(t * 7),
+            left: ANTENNA_RAD * Math.sin(t * 7 + Math.PI / 2),
+          });
+        }
       } catch (error) {
         // Provider not connected (e.g. host-only dev) — stop animating quietly.
         logError(ctx, "animate", error);
@@ -621,6 +685,7 @@ function buildConversationNode(input: {
   stopListening: () => Record<string, unknown>;
 }): NodeDescriptor {
   const live = input.snapshotState ?? {};
+  const emotes = input.config.embodiment.enabled && input.config.embodiment.emotes;
   return {
     type: "context",
     props: {
@@ -639,11 +704,20 @@ function buildConversationNode(input: {
       embodiment_provider: input.config.embodiment.enabled
         ? input.config.embodiment.providerId
         : undefined,
+      emotes: emotes || undefined,
     },
     summary:
       "Streaming voice conversation loop: listen → think → speak. Mic PCM streams to the " +
       "active realtime STT profile (provider VAD); final transcripts start turns; replies " +
-      "stream back through TTS. Starting a non-local pipeline requires approval.",
+      "stream back through TTS. Starting a non-local pipeline requires approval." +
+      (emotes
+        ? " When replying to a voice conversation turn, you may embed inline [emote:name] " +
+          "markers (multiple allowed) where the mood of your reply shifts; each marker is " +
+          "stripped from speech and plays the matching robot emotion silently while you " +
+          `keep talking. Valid names are listed in the ${input.config.embodiment.providerId} ` +
+          "provider's /behavior props.emotions. Voice turns only — never use markers in " +
+          "plain text replies."
+        : ""),
     actions: {
       start_listening: action(
         {

@@ -6,10 +6,7 @@ import { InProcessTransport } from "../src/providers/in-process";
 
 const OPTIONS = { maxLoaded: 2, defaultTtlTurns: 3, maxStored: 4 };
 
-const JPEG_BYTES = Buffer.concat([
-  Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-  Buffer.alloc(64, 0x42),
-]);
+const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 0x42)]);
 
 function createHarness() {
   const provider = new ImagesProvider(OPTIONS);

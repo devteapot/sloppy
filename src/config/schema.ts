@@ -710,8 +710,9 @@ const voiceConversationEmbodimentConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
     providerId: z.string().min(1).default("reachy"),
+    emotes: z.boolean().default(true),
   })
-  .default({ enabled: true, providerId: "reachy" });
+  .default({ enabled: true, providerId: "reachy", emotes: true });
 
 const voiceConversationRealtimeConfigSchema = z
   .object({
@@ -734,7 +735,7 @@ const voiceConversationPluginConfigSchema = z
       streamChunkMs: 40,
       providerId: "reachy",
     },
-    embodiment: { enabled: true, providerId: "reachy" },
+    embodiment: { enabled: true, providerId: "reachy", emotes: true },
     realtime: { autoStartMode: "off", defaultStartMode: "single_turn" },
   });
 

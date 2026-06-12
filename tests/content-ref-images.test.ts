@@ -6,10 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { findImageContentRefs, loadContentRefImages } from "../src/core/loop/content-ref-images";
 
-const JPEG_BYTES = Buffer.concat([
-  Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-  Buffer.alloc(64, 0x42),
-]);
+const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 0x42)]);
 
 let dir: string;
 let jpegPath: string;
@@ -76,10 +73,7 @@ describe("loadContentRefImages", () => {
   });
 
   test("skips files over the size cap", async () => {
-    const images = await loadContentRefImages(
-      { content_ref: imageRef(jpegUri) },
-      { maxBytes: 16 },
-    );
+    const images = await loadContentRefImages({ content_ref: imageRef(jpegUri) }, { maxBytes: 16 });
     expect(images).toEqual([]);
   });
 
