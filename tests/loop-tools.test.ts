@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import { action, createSlopServer } from "@slop-ai/server";
 
 import { ConsumerHub } from "../src/core/consumer";
@@ -10,7 +15,9 @@ import {
   truncateToolResult,
 } from "../src/core/loop";
 import { createLlmAdapter } from "../src/llm/factory";
+import { ImageRegistry } from "../src/core/images";
 import type {
+  ConversationMessage,
   LlmAdapter,
   LlmChatOptions,
   LlmResponse,
@@ -752,6 +759,171 @@ describe("runLoop tool execution", () => {
       ]);
     } finally {
       hub.shutdown();
+    }
+  });
+});
+
+describe("runLoop content_ref images", () => {
+  const JPEG_BYTES = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+    Buffer.alloc(64, 0x42),
+  ]);
+
+  function captureServer(uri: string) {
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("camera", () => ({
+      type: "sensor",
+      actions: {
+        capture: action(
+          async () => ({
+            ok: true,
+            content_ref: { type: "binary", mime: "image/jpeg", summary: "frame", uri },
+          }),
+          {
+            label: "Capture",
+            description: "Take a still photo.",
+            estimate: "fast",
+          },
+        ),
+      },
+    }));
+    return server;
+  }
+
+  class RequestProbeLlm implements LlmAdapter {
+    calls = 0;
+    observedToolResults: ToolResultContentBlock[] = [];
+    observedSecondMessages: ConversationMessage[] = [];
+
+    async chat(options: LlmChatOptions): Promise<LlmResponse> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return {
+          content: [
+            { type: "tool_use", id: "call-capture", name: "demo__camera__capture", input: {} },
+          ],
+          stopReason: "tool_use",
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      }
+      this.observedSecondMessages = options.messages;
+      this.observedToolResults = options.messages
+        .flatMap((message) => message.content)
+        .filter((block): block is ToolResultContentBlock => block.type === "tool_result");
+      return {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      };
+    }
+  }
+
+  async function runCapture(
+    uri: string,
+    config = TEST_CONFIG,
+    imageRegistry?: ImageRegistry,
+  ) {
+    const server = captureServer(uri);
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "first-party",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      config,
+    );
+    const history = new ConversationHistory({
+      historyTurns: config.agent.historyTurns,
+      toolResultMaxChars: config.agent.toolResultMaxChars,
+    });
+    const llm = new RequestProbeLlm();
+    history.addUserText("what do you see?");
+    try {
+      await hub.connect();
+      await runLoop({ config, hub, history, llm, imageRegistry });
+    } finally {
+      hub.shutdown();
+    }
+    return llm;
+  }
+
+  test("registers a file:// image content_ref and attaches it to the trail", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loop-content-ref-"));
+    try {
+      const jpegPath = path.join(dir, "frame.jpg");
+      writeFileSync(jpegPath, JPEG_BYTES);
+      const registry = new ImageRegistry({ maxLoaded: 4, defaultTtlTurns: 3, maxStored: 16 });
+
+      const llm = await runCapture(pathToFileURL(jpegPath).href, TEST_CONFIG, registry);
+
+      expect(llm.observedToolResults).toHaveLength(1);
+      expect(llm.observedToolResults[0]?.content).toContain(
+        "[image registered as /gallery/img-1 (loaded, ttl 3) — describe it before it unloads]",
+      );
+
+      const registered = registry.get("img-1");
+      expect(registered?.source).toBe("tool:demo:/camera");
+      expect(registered?.summary).toBe("frame");
+
+      // The trail (last user message) carries caption + image block.
+      const trail = llm.observedSecondMessages.at(-1);
+      expect(trail?.role).toBe("user");
+      const blocks = trail?.content ?? [];
+      const captionIndex = blocks.findIndex(
+        (block) => block.type === "text" && block.text.startsWith("image /gallery/img-1"),
+      );
+      expect(captionIndex).toBeGreaterThan(0);
+      expect(blocks[captionIndex + 1]).toEqual({
+        type: "image",
+        mediaType: "image/jpeg",
+        data: JPEG_BYTES.toString("base64"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("skips oversized files and non-file URIs", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loop-content-ref-"));
+    try {
+      const jpegPath = path.join(dir, "frame.jpg");
+      writeFileSync(jpegPath, JPEG_BYTES);
+      const smallCap = createTestConfig({
+        agent: { maxIterations: 3, toolResultImageMaxBytes: 16 },
+      });
+
+      const cappedRegistry = new ImageRegistry({ maxLoaded: 4, defaultTtlTurns: 3, maxStored: 16 });
+      const oversized = await runCapture(pathToFileURL(jpegPath).href, smallCap, cappedRegistry);
+      expect(oversized.observedToolResults[0]?.content).not.toContain("image registered");
+      expect(cappedRegistry.list()).toHaveLength(0);
+
+      const remoteRegistry = new ImageRegistry({ maxLoaded: 4, defaultTtlTurns: 3, maxStored: 16 });
+      const remote = await runCapture("http://example.com/frame.jpg", TEST_CONFIG, remoteRegistry);
+      expect(remote.observedToolResults[0]?.content).not.toContain("image registered");
+      expect(remoteRegistry.list()).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("without a registry, content_refs are not materialized", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loop-content-ref-"));
+    try {
+      const jpegPath = path.join(dir, "frame.jpg");
+      writeFileSync(jpegPath, JPEG_BYTES);
+
+      const llm = await runCapture(pathToFileURL(jpegPath).href);
+
+      expect(llm.observedToolResults[0]?.content).not.toContain("image registered");
+      const trail = llm.observedSecondMessages.at(-1);
+      expect(trail?.content.some((block) => block.type === "image")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

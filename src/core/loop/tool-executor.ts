@@ -2,9 +2,11 @@ import type { SloppyConfig } from "../../config/schema";
 import type { ToolUseContentBlock } from "../../llm/types";
 import { LlmAbortError } from "../../llm/types";
 import type { ProviderRuntimeHub } from "../hub";
+import type { ImageRegistry } from "../images";
 import type { RuntimeToolResolution, RuntimeToolSet } from "../tools";
 import { formatStateTree } from "../tree-format";
 import { classifyToolInvocationError, extractApprovalId } from "./approval-suspension";
+import { loadContentRefImageRecords } from "./content-ref-images";
 import type {
   AgentToolEvent,
   AgentToolInvocation,
@@ -174,6 +176,7 @@ export async function executeToolCall(
   transformInvoke?: RunLoopHooks["transformInvoke"],
   roleId?: string,
   signal?: AbortSignal,
+  imageRegistry?: ImageRegistry,
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
@@ -279,6 +282,29 @@ export async function executeToolCall(
     }
 
     const taskId = readTaskId(result.status, result.data);
+    let registeredNotes = "";
+    if (result.status === "ok" && imageRegistry) {
+      const records = await loadContentRefImageRecords(result.data, {
+        maxBytes: config.agent.toolResultImageMaxBytes,
+      });
+      registeredNotes = records
+        .map((record) => {
+          const entry = imageRegistry.register({
+            bytes: record.bytes,
+            mediaType: record.mediaType,
+            summary: record.summary ?? "tool result image",
+            source: `tool:${resolution.providerId}:${path}`,
+            width: record.width,
+            height: record.height,
+          });
+          const state = entry.loaded
+            ? `loaded, ttl ${entry.ttlTurnsRemaining}`
+            : "registered unloaded — trail is full of pinned images";
+          const nudge = entry.loaded ? " — describe it before it unloads" : "";
+          return `\n[image registered as ${entry.path} (${state})${nudge}]`;
+        })
+        .join("");
+    }
     return {
       kind: "completed",
       invocation,
@@ -287,7 +313,7 @@ export async function executeToolCall(
           type: "tool_result",
           toolUseId: toolUse.id,
           isError: result.status === "error",
-          content: stringifyResult(result),
+          content: stringifyResult(result) + registeredNotes,
         },
         summary,
       },

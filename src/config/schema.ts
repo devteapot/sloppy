@@ -521,6 +521,23 @@ const visionPluginConfigSchema = z
     defaultHeight: 512,
   });
 
+const imagesPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    // Loaded images ride the per-turn state trail (no cache prefix), so they
+    // re-bill at the full input rate every turn — keep these small. TTL 1 =
+    // glance once, describe, drop the pixels; the model reloads on demand.
+    maxLoaded: z.number().int().min(1).default(4),
+    defaultTtlTurns: z.number().int().min(1).default(1),
+    maxStored: z.number().int().min(1).default(16),
+  })
+  .default({
+    enabled: true,
+    maxLoaded: 4,
+    defaultTtlTurns: 1,
+    maxStored: 16,
+  });
+
 const mcpPluginConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -728,6 +745,7 @@ const pluginsConfigSchema = z.preprocess(
     apps: appsPluginConfigSchema,
     terminal: terminalPluginConfigSchema,
     filesystem: filesystemPluginConfigSchema,
+    images: imagesPluginConfigSchema,
     memory: memoryPluginConfigSchema,
     skills: skillsPluginConfigSchema,
     "meta-runtime": metaRuntimePluginConfigSchema,
@@ -813,6 +831,9 @@ export const sloppyConfigSchema = z.object({
           summaryMaxTokens: 2048,
           retryOnOverflow: true,
         }),
+      // Image content_refs in tool results (file:// on the same host) larger
+      // than this are not loaded into the conversation.
+      toolResultImageMaxBytes: z.number().int().min(1024).default(5_242_880),
     })
     .default({
       maxIterations: 32,
@@ -827,6 +848,7 @@ export const sloppyConfigSchema = z.object({
         summaryMaxTokens: 2048,
         retryOnOverflow: true,
       },
+      toolResultImageMaxBytes: 5_242_880,
     }),
   session: z
     .object({

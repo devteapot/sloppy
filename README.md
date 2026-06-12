@@ -768,7 +768,7 @@ Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
 that expose OpenAI-style reasoning controls. Prefer protocol-specific
 `thinking` blocks for new config.
 
-First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute typed runtime services, deliberate SLOP provider/session projections, extension events, client-agnostic commands and presentation contributions, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summaries. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `apps`, `terminal`, `filesystem`, and `images` (the in-memory image registry whose loaded images ride the per-turn state trail). Plugins can also contribute typed runtime services, deliberate SLOP provider/session projections, extension events, client-agnostic commands and presentation contributions, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summaries. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:

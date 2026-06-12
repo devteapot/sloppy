@@ -12,6 +12,7 @@ import { CronProvider } from "./cron/provider";
 import { DelegationProvider } from "./delegation/provider";
 import { attachSubAgentRunnerFactory } from "./delegation/runtime/runner-factory";
 import { FilesystemProvider } from "./filesystem/provider";
+import { ImagesProvider } from "./images/provider";
 import {
   type FirstPartyPluginMetadata,
   firstPartyPluginMetadata,
@@ -125,6 +126,46 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transport: new InProcessTransport(filesystem.server),
           transportLabel: "in-process",
           stop: () => filesystem.stop(),
+        }),
+      ];
+    },
+  },
+  {
+    ...firstPartyPluginMetadata("images"),
+    createProviders: (config) => {
+      const plugin = config.plugins.images;
+      const images = new ImagesProvider({
+        maxLoaded: plugin.maxLoaded,
+        defaultTtlTurns: plugin.defaultTtlTurns,
+        maxStored: plugin.maxStored,
+      });
+      return [
+        registeredProvider({
+          id: "images",
+          name: "Images",
+          transport: new InProcessTransport(images.server),
+          transportLabel: "in-process",
+          stop: () => images.stop(),
+          attachRuntime: (_hub, _config, ctx) => {
+            if (!ctx) {
+              return undefined;
+            }
+            ctx.imageRegistry = images.registry;
+            return {
+              stop() {
+                if (ctx.imageRegistry === images.registry) {
+                  ctx.imageRegistry = undefined;
+                }
+              },
+            };
+          },
+          systemPromptFragment: () =>
+            [
+              "Images (camera frames, attachments) are stored in the images provider's /gallery, not inline in history.",
+              "Loaded images appear in the live state message captioned with their /gallery node path; the matching node shows metadata and describe/load/unload/pin/remove actions.",
+              "Images auto-unload after their TTL (default: one turn). While an image is visible, invoke describe on its node with a one-line description — that is how you recognize it afterwards, decide to load it again, or remove it.",
+              "Load (optionally with ttl_turns) or pin images you must keep seeing; remove ones that are no longer relevant.",
+            ].join("\n"),
         }),
       ];
     },

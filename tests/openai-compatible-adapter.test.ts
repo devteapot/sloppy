@@ -798,4 +798,31 @@ describe("OpenAICompatibleAdapter", () => {
     expect(receivedSignal).toBe(controller.signal);
     expect(aborted).toBe(true);
   });
+
+  test("serializes a user message with interleaved text and image blocks", () => {
+    const messages: ConversationMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<slop-state>...</slop-state>" },
+          { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+          { type: "image", mediaType: "image/jpeg", data: "anVuaw==" },
+        ],
+      },
+    ];
+
+    const converted = toOpenAIMessages("system prompt", messages);
+
+    expect(converted).toEqual([
+      { role: "system", content: "system prompt" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<slop-state>...</slop-state>" },
+          { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,anVuaw==" } },
+        ],
+      },
+    ]);
+  });
 });

@@ -137,6 +137,7 @@ export async function executeToolCalls(
             options.transformInvoke,
             options.roleId,
             options.signal,
+            options.imageRegistry,
           ),
         ),
       );
@@ -170,6 +171,7 @@ export async function executeToolCalls(
         options.transformInvoke,
         options.roleId,
         options.signal,
+        options.imageRegistry,
       );
     } catch (error) {
       if (error instanceof LlmAbortError || options.signal?.aborted) {
@@ -177,7 +179,6 @@ export async function executeToolCalls(
       }
       throw error;
     }
-
     if (result.kind === "approval_requested") {
       emitApprovalRequestedToolCall(result, options);
       return {

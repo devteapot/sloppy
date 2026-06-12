@@ -39,6 +39,13 @@ export const FIRST_PARTY_PLUGIN_MANIFEST = [
     providerIds: ["filesystem"],
   },
   {
+    id: "images",
+    version: "1.0.0",
+    defaultEnabled: true,
+    description: "In-memory image registry; loaded images ride the per-turn state trail.",
+    providerIds: ["images"],
+  },
+  {
     id: "memory",
     version: "1.0.0",
     defaultEnabled: false,
