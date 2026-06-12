@@ -1,6 +1,7 @@
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import type { ProviderRuntimeHub } from "./hub";
+import type { ImageRegistry } from "./images";
 import type { RuntimeToolResolution } from "./tools";
 
 export type ToolPolicyDecision = null | { reject: string };
@@ -33,6 +34,14 @@ export interface RuntimeContext {
    * profile without wiring a second manager instance.
    */
   llmProfileManager?: LlmProfileManager;
+  /**
+   * Shared image registry, set by the images plugin's attachRuntime when the
+   * plugin is enabled. The loop materializes loaded images from it into the
+   * per-turn state trail and registers tool-result/user images into it.
+   * Absent ⇒ images fall back to inline behavior (user messages) or are not
+   * materialized at all (tool-result content_refs).
+   */
+  imageRegistry?: ImageRegistry;
 }
 
 export type RoleProfile = {

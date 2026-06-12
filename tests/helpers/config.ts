@@ -40,6 +40,7 @@ export function createTestConfig(
       detailDepth: 4,
       historyTurns: 8,
       toolResultMaxChars: 16000,
+      toolResultImageMaxBytes: 5_242_880,
       ...overrides.agent,
     },
     plugins: testPlugins(overrides.plugins),

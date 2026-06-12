@@ -2573,6 +2573,7 @@ describe("MetaRuntimeProvider", () => {
         apps: { enabled: false },
         terminal: { enabled: false },
         filesystem: { enabled: false },
+        images: { enabled: false },
         memory: { enabled: false },
         skills: { enabled: false },
         "meta-runtime": { enabled: true },

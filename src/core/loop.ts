@@ -22,6 +22,8 @@ import {
   resumingApproval,
   suspendedResult,
 } from "./loop/approval-suspension";
+import type { ImageRegistry } from "./images";
+import { loadContentRefImageRecords } from "./loop/content-ref-images";
 import { stringifyResult, truncateToolResult } from "./loop/result-format";
 import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
@@ -206,6 +208,7 @@ type ExecuteToolCallsOptions = {
   transformInvoke?: RunLoopHooks["transformInvoke"];
   roleId?: string;
   signal?: AbortSignal;
+  imageRegistry?: ImageRegistry;
 };
 
 export { truncateToolResult };
@@ -396,6 +399,7 @@ async function executeToolCall(
   transformInvoke?: RunLoopHooks["transformInvoke"],
   roleId?: string,
   signal?: AbortSignal,
+  imageRegistry?: ImageRegistry,
 ): Promise<ExecuteToolCallResult> {
   const resolution = toolSet.resolve(toolUse.name);
   if (!resolution) {
@@ -605,6 +609,35 @@ async function executeToolCall(
         ? (result.data as { taskId: string }).taskId
         : undefined;
 
+    // Image content_refs are registered into the runtime image registry (the
+    // images provider's state tree), not embedded here: bytes ride the
+    // per-turn state trail while loaded, and the tool result only carries the
+    // node ref. Registered notes go at the TAIL of the result text, which
+    // history truncation preserves.
+    let registeredNotes = "";
+    if (result.status === "ok" && imageRegistry) {
+      const records = await loadContentRefImageRecords(result.data, {
+        maxBytes: config.agent.toolResultImageMaxBytes,
+      });
+      registeredNotes = records
+        .map((record) => {
+          const entry = imageRegistry.register({
+            bytes: record.bytes,
+            mediaType: record.mediaType,
+            summary: record.summary ?? "tool result image",
+            source: `tool:${resolution.providerId}:${path}`,
+            width: record.width,
+            height: record.height,
+          });
+          const state = entry.loaded
+            ? `loaded, ttl ${entry.ttlTurnsRemaining}`
+            : "registered unloaded — trail is full of pinned images";
+          const nudge = entry.loaded ? " — describe it before it unloads" : "";
+          return `\n[image registered as ${entry.path} (${state})${nudge}]`;
+        })
+        .join("");
+    }
+
     return {
       kind: "completed",
       invocation,
@@ -613,7 +646,7 @@ async function executeToolCall(
           type: "tool_result",
           toolUseId: toolUse.id,
           isError: result.status === "error",
-          content: stringifyResult(result),
+          content: stringifyResult(result) + registeredNotes,
         },
         summary,
       },
@@ -782,6 +815,7 @@ async function executeToolCalls(options: ExecuteToolCallsOptions): Promise<
             options.transformInvoke,
             options.roleId,
             options.signal,
+            options.imageRegistry,
           ),
         ),
       );
@@ -851,6 +885,7 @@ async function executeToolCalls(options: ExecuteToolCallsOptions): Promise<
       options.transformInvoke,
       options.roleId,
       options.signal,
+      options.imageRegistry,
     );
 
     if (result.kind === "approval_requested") {
@@ -899,6 +934,7 @@ export async function runLoop(options: {
   };
   systemPrompt?: string;
   hooks?: RunLoopHooks;
+  imageRegistry?: ImageRegistry;
 }): Promise<RunLoopResult> {
   const system = options.systemPrompt ?? buildSystemPrompt(options.config);
   let approval: ApprovalState = options.resume
@@ -942,6 +978,7 @@ export async function runLoop(options: {
         transformInvoke,
         roleId,
         signal: options.signal,
+        imageRegistry: options.imageRegistry,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -967,7 +1004,9 @@ export async function runLoop(options: {
     );
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
-    const requestMessages = options.history.buildRequestMessages(stateContext);
+    const trailImages = options.imageRegistry?.collectTrailImages() ?? [];
+    const imageTokenEstimate = options.imageRegistry?.estimateLoadedImageTokens() ?? 0;
+    const requestMessages = options.history.buildRequestMessages(stateContext, trailImages);
     const response = await options.llm.chat({
       system,
       messages: requestMessages,
@@ -977,6 +1016,9 @@ export async function runLoop(options: {
       onThinking: options.onThinking,
       signal: options.signal,
     });
+    // Tick AFTER a completed request: each loaded image gets exactly its TTL
+    // worth of appearances; aborted requests and resume iterations don't age.
+    options.imageRegistry?.onTurn();
     const reportedInput = response.usage.inputTokens;
     const reportedOutput = response.usage.outputTokens;
     const reportedThinking = response.usage.thinkingTokens;
@@ -993,8 +1035,20 @@ export async function runLoop(options: {
       inputTokenSource,
       outputTokenSource,
       thinkingTokenSource,
-      stateContextTokens: stateContextTokenCount.tokens,
-      stateContextTokenSource: stateContextTokenCount.source,
+      // Loaded trail images are added as a heuristic estimate on top of the
+      // counted text; the source still reflects how the text was counted.
+      stateContextTokens:
+        stateContextTokenCount.tokens !== undefined
+          ? stateContextTokenCount.tokens + imageTokenEstimate
+          : imageTokenEstimate > 0
+            ? imageTokenEstimate
+            : undefined,
+      stateContextTokenSource:
+        stateContextTokenCount.tokens !== undefined
+          ? stateContextTokenCount.source
+          : imageTokenEstimate > 0
+            ? "local"
+            : stateContextTokenCount.source,
     });
 
     options.history.addAssistantContent(response.content);
@@ -1031,6 +1085,7 @@ export async function runLoop(options: {
       transformInvoke,
       roleId,
       signal: options.signal,
+      imageRegistry: options.imageRegistry,
     });
     if (execution.status === "waiting_approval") {
       return {

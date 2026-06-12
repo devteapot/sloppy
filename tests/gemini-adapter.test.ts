@@ -152,6 +152,28 @@ describe("GeminiAdapter", () => {
     });
   });
 
+  test("serializes a user message with interleaved text and image blocks", () => {
+    const messages: ConversationMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<slop-state>...</slop-state>" },
+          { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+          { type: "image", mediaType: "image/jpeg", data: "anVuaw==" },
+        ],
+      },
+    ];
+
+    const contents = toGeminiContents(messages);
+
+    expect(contents[0]?.role).toBe("user");
+    expect(contents[0]?.parts).toEqual([
+      { text: "<slop-state>...</slop-state>" },
+      { text: "image /gallery/img-1 (camera frame, ttl 3):" },
+      { inlineData: { mimeType: "image/jpeg", data: "anVuaw==" } },
+    ]);
+  });
+
   test("streams text and normalizes Gemini tool calls", async () => {
     let streamedText = "";
     async function* createStream(): AsyncGenerator<GenerateContentResponse> {
