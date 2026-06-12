@@ -6,6 +6,8 @@
 // non-public concerns (mirror plumbing, discovery state) already live
 // under `src/core/agent/`.
 
+import { basename } from "node:path";
+
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
@@ -27,6 +29,7 @@ import { bootstrapProviderRuntime } from "./bootstrap";
 import type { ConsumerHub, ExternalProviderState, ProviderLifecycleEvent } from "./consumer";
 import { buildSystemPrompt } from "./context";
 import { ConversationHistory } from "./history";
+import type { ImageRegistry } from "./images";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
@@ -108,6 +111,7 @@ export class Agent {
   private discoveryStop: (() => void) | null = null;
   private discoverySync: Promise<void> = Promise.resolve();
   private history: ConversationHistory;
+  private imageRegistry: ImageRegistry | undefined;
   private llmProfileManager: LlmProfileManager;
   private llmProfileId?: string;
   private llmModelOverride?: string;
@@ -228,6 +232,9 @@ export class Agent {
     const { hub, runtimeCtx } = bootstrap;
     this.runtimeStops.push(...bootstrap.runtimeStops);
     this.systemPromptFragments.push(...bootstrap.systemPromptFragments);
+    // Set by the images plugin's attachRuntime when enabled; undefined ⇒
+    // images stay inline (user messages) / unmaterialized (tool results).
+    this.imageRegistry = runtimeCtx.imageRegistry;
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     // Resolve role lazily so that providers' attachRuntime hooks have a
@@ -297,7 +304,23 @@ export class Agent {
       throw new Error("Agent has not been started.");
     }
 
-    this.history.addUserMessage(parseUserMessageBlocks(userMessage));
+    const registry = this.imageRegistry;
+    this.history.addUserMessage(
+      parseUserMessageBlocks(
+        userMessage,
+        registry
+          ? {
+              registerImage: ({ mediaType, data, sourceUri }) =>
+                registry.register({
+                  bytes: Buffer.from(data, "base64"),
+                  mediaType,
+                  source: "user",
+                  summary: `user attachment (${basename(sourceUri)})`,
+                }).path,
+            }
+          : undefined,
+      ),
+    );
     return this.runLoopWithAbort(async (signal) => {
       const llm = await this.llmProfileManager.createAdapter(
         this.llmProfileId,
@@ -318,6 +341,7 @@ export class Agent {
           onTurnUsage: this.callbacks.onTurnUsage,
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
+          imageRegistry: this.imageRegistry,
         }),
       );
     });
@@ -374,6 +398,7 @@ export class Agent {
           },
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
+          imageRegistry: this.imageRegistry,
         }),
       );
     });
@@ -612,6 +637,7 @@ export class Agent {
     }
     this.runtimeStops = [];
     this.systemPromptFragments = [];
+    this.imageRegistry = undefined;
 
     this.discoveryStop?.();
     this.discoveryStop = null;

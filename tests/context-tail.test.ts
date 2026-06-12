@@ -75,6 +75,40 @@ describe("SLOP context tail", () => {
     expect(JSON.stringify(second)).not.toContain("first");
   });
 
+  test("interleaves trail image captions before their image blocks", () => {
+    const history = new ConversationHistory({
+      historyTurns: 8,
+      toolResultMaxChars: 16000,
+    });
+    history.addUserText("hello");
+
+    const trailImages = [
+      {
+        caption: "image /gallery/img-1 (camera frame, ttl 3):",
+        image: { type: "image" as const, mediaType: "image/jpeg", data: "anVuaw==" },
+      },
+      {
+        caption: "image /gallery/img-2 (desk view, pinned):",
+        image: { type: "image" as const, mediaType: "image/png", data: "cGluaw==" },
+      },
+    ];
+    const messages = history.buildRequestMessages("<slop-state>now</slop-state>", trailImages);
+
+    const trail = messages.at(-1);
+    expect(trail?.role).toBe("user");
+    expect(trail?.content).toEqual([
+      { type: "text", text: "<slop-state>now</slop-state>" },
+      { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+      { type: "image", mediaType: "image/jpeg", data: "anVuaw==" },
+      { type: "text", text: "image /gallery/img-2 (desk view, pinned):" },
+      { type: "image", mediaType: "image/png", data: "cGluaw==" },
+    ]);
+
+    // Trail images are per-request, never persisted into history entries.
+    const next = history.buildRequestMessages("<slop-state>later</slop-state>");
+    expect(JSON.stringify(next)).not.toContain("anVuaw==");
+  });
+
   test("exposes tag escaping as a standalone encoder primitive", () => {
     expect(escapeSlopContextText('<SLOP-STATE x="1"></SLOP-STATE>')).toBe(
       "<slop-state-escaped><\\/slop-state>",

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ImageContentBlock, MessageContentBlock } from "../llm/types";
 
-const IMAGE_MIME_TYPES: Record<string, string> = {
+export const IMAGE_MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -21,7 +21,19 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 
 const IMAGE_LINK_PATTERN = /\[Image #\d+\]\((file:\/\/[^)]+)\)/g;
 
-export function parseUserMessageBlocks(text: string): MessageContentBlock[] {
+export type UserMessageImageOptions = {
+  /**
+   * Register the image into the runtime image registry and return its node
+   * path (e.g. "/images/img-4") — the message then carries a small ref text
+   * instead of the inline image block. Return null to fall back to inlining.
+   */
+  registerImage?: (image: { mediaType: string; data: string; sourceUri: string }) => string | null;
+};
+
+export function parseUserMessageBlocks(
+  text: string,
+  options?: UserMessageImageOptions,
+): MessageContentBlock[] {
   const blocks: MessageContentBlock[] = [];
   let cursor = 0;
 
@@ -37,7 +49,14 @@ export function parseUserMessageBlocks(text: string): MessageContentBlock[] {
     if (start > cursor) {
       pushText(blocks, text.slice(cursor, start));
     }
-    blocks.push(image);
+    const registeredPath = options?.registerImage
+      ? options.registerImage({ mediaType: image.mediaType, data: image.data, sourceUri: url })
+      : null;
+    if (registeredPath) {
+      blocks.push({ type: "text", text: `[image registered as ${registeredPath}]` });
+    } else {
+      blocks.push(image);
+    }
     cursor = end;
   }
 

@@ -5,6 +5,7 @@ import type {
   TextContentBlock,
   ToolResultContentBlock,
 } from "../llm/types";
+import type { TrailImage } from "./images";
 
 type HistoryKind = "user" | "assistant" | "tool";
 
@@ -74,18 +75,24 @@ export class ConversationHistory {
     });
   }
 
-  buildRequestMessages(stateContext: string): ConversationMessage[] {
+  buildRequestMessages(
+    stateContext: string,
+    trailImages?: ReadonlyArray<TrailImage>,
+  ): ConversationMessage[] {
     const limited = this.limitToRecentTurns().map(({ kind: _kind, ...entry }) => entry);
+    // Loaded registry images ride the trail message, each preceded by a
+    // caption naming its /images node so the model can map pixels to the
+    // lifecycle affordances. The trail is rebuilt per request, so these
+    // blocks leave context as soon as the image is unloaded.
+    const content: MessageContentBlock[] = [{ type: "text", text: stateContext }];
+    for (const trailImage of trailImages ?? []) {
+      content.push({ type: "text", text: trailImage.caption }, trailImage.image);
+    }
     return [
       ...limited,
       {
         role: "user",
-        content: [
-          {
-            type: "text",
-            text: stateContext,
-          },
-        ],
+        content,
       },
     ];
   }

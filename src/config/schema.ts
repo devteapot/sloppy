@@ -394,6 +394,23 @@ const visionPluginConfigSchema = z
     defaultHeight: 512,
   });
 
+const imagesPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    // Loaded images ride the per-turn state trail (no cache prefix), so they
+    // re-bill at the full input rate every turn — keep these small. TTL 1 =
+    // glance once, describe, drop the pixels; the model reloads on demand.
+    maxLoaded: z.number().int().min(1).default(4),
+    defaultTtlTurns: z.number().int().min(1).default(1),
+    maxStored: z.number().int().min(1).default(16),
+  })
+  .default({
+    enabled: true,
+    maxLoaded: 4,
+    defaultTtlTurns: 1,
+    maxStored: 16,
+  });
+
 const mcpPluginConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -426,6 +443,174 @@ const a2aPluginConfigSchema = z
     agents: {},
   });
 
+// Voice plugin (STT + TTS). Endpoints mirror the LLM endpoint shape; local
+// self-hosted servers are configured exactly like the `ollama` LLM endpoint —
+// a `baseUrl` plus `auth: { type: "none" }`. `endpointAuthSchema` is the neutral
+// auth union shared by both modalities (no `codex` variant, which is LLM-only).
+export const endpointAuthSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("none") }).strict(),
+  z.object({ type: z.literal("env"), env: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal("secure_store") }).strict(),
+]);
+
+// Speech protocols are plain strings validated against the runtime's speech
+// protocol registry at profile resolution (an unknown protocol surfaces as the
+// profile's invalidReason, not a config-load crash). A closed enum here would
+// prevent plugins from registering new protocols.
+export const sttProtocolSchema = z.string().trim().min(1);
+export const ttsProtocolSchema = z.string().trim().min(1);
+
+const voiceSttModelSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    language: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const voiceTtsVoiceSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const voiceSttEndpointSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    protocol: sttProtocolSchema,
+    // Wire-format variant within the protocol family (realtime-stt: openai | vllm).
+    dialect: z.string().trim().min(1).default("openai"),
+    baseUrl: z.string().trim().min(1).optional(),
+    auth: endpointAuthSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    // PCM16 input rate the service expects (OpenAI realtime requires 24000).
+    sampleRate: z.number().int().min(8000).max(48000).default(16000),
+    models: z.record(z.string().min(1), voiceSttModelSchema).default({}),
+  })
+  .strict();
+
+const voiceTtsEndpointSchema = z
+  .object({
+    label: z.string().trim().min(1).optional(),
+    protocol: ttsProtocolSchema,
+    baseUrl: z.string().trim().min(1).optional(),
+    auth: endpointAuthSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    // Synthesis model (e.g. "gpt-4o-mini-tts", "kokoro"). A profile may override it.
+    model: z.string().trim().min(1).optional(),
+    // PCM16 rate of the service's `response_format: "pcm"` output.
+    pcmSampleRate: z.number().int().min(8000).max(48000).default(24000),
+    voices: z.record(z.string().min(1), voiceTtsVoiceSchema).default({}),
+  })
+  .strict();
+
+const voiceSttProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    endpointId: z.string().min(1),
+    model: z.string().min(1),
+    language: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+const voiceTtsProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().trim().min(1).optional(),
+    endpointId: z.string().min(1),
+    voice: z.string().min(1),
+    model: z.string().min(1).optional(),
+    speed: z.number().min(0.25).max(4).optional(),
+  })
+  .strict();
+
+const voiceSttConfigSchema = z
+  .object({
+    endpoints: z.record(z.string().min(1), voiceSttEndpointSchema).default({}),
+    profiles: z.array(voiceSttProfileSchema).default([]),
+    defaultProfileId: z.string().min(1).optional(),
+  })
+  .default({ endpoints: {}, profiles: [] });
+
+const voiceTtsConfigSchema = z
+  .object({
+    endpoints: z.record(z.string().min(1), voiceTtsEndpointSchema).default({}),
+    profiles: z.array(voiceTtsProfileSchema).default([]),
+    defaultProfileId: z.string().min(1).optional(),
+  })
+  .default({ endpoints: {}, profiles: [] });
+
+const voicePluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    stt: voiceSttConfigSchema,
+    tts: voiceTtsConfigSchema,
+  })
+  .default({
+    enabled: false,
+    stt: { endpoints: {}, profiles: [] },
+    tts: { endpoints: {}, profiles: [] },
+  });
+
+// Streaming voice conversation loop: mic PCM → realtime STT session → agent
+// turn → streamed TTS → streamed playback. Audio I/O is swappable: `host` uses
+// the local mic/speaker (dev / pre-hardware), `robot` routes audio through the
+// reachy provider's affordances. STT/TTS profiles live in the `voice` plugin —
+// not duplicated here.
+const voiceConversationAudioConfigSchema = z
+  .object({
+    backend: z.enum(["host", "robot"]).default("host"),
+    // Optional command overrides; both support a `{rate}` token (sample rate in
+    // Hz). streamCommand must write mono signed 16-bit LE PCM to stdout at the
+    // active STT endpoint's rate; playStreamCommand must play the same framing
+    // from stdin. Defaults target macOS (sox `sox -d` capture / `play` output).
+    streamCommand: z.array(z.string().min(1)).min(1).optional(),
+    playStreamCommand: z.array(z.string().min(1)).min(1).optional(),
+    streamChunkMs: z.number().min(10).max(1000).default(40),
+    // Provider id supplying mic/speaker affordances when backend === "robot".
+    providerId: z.string().min(1).default("reachy"),
+  })
+  // Strict so removed batch-era fields (captureCommand, silence*, …) fail
+  // loudly instead of being silently ignored.
+  .strict()
+  .default({
+    backend: "host",
+    streamChunkMs: 40,
+    providerId: "reachy",
+  });
+
+const voiceConversationEmbodimentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    providerId: z.string().min(1).default("reachy"),
+  })
+  .default({ enabled: true, providerId: "reachy" });
+
+const voiceConversationRealtimeConfigSchema = z
+  .object({
+    autoStartMode: z.enum(["off", "continuous"]).default("off"),
+    defaultStartMode: z.enum(["single_turn", "continuous"]).default("single_turn"),
+  })
+  .default({ autoStartMode: "off", defaultStartMode: "single_turn" });
+
+const voiceConversationPluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    audio: voiceConversationAudioConfigSchema,
+    embodiment: voiceConversationEmbodimentConfigSchema,
+    realtime: voiceConversationRealtimeConfigSchema,
+  })
+  .default({
+    enabled: false,
+    audio: {
+      backend: "host",
+      streamChunkMs: 40,
+      providerId: "reachy",
+    },
+    embodiment: { enabled: true, providerId: "reachy" },
+    realtime: { autoStartMode: "off", defaultStartMode: "single_turn" },
+  });
+
 const pluginsConfigSchema = z.preprocess(
   (value) => value ?? {},
   z.object({
@@ -433,6 +618,7 @@ const pluginsConfigSchema = z.preprocess(
     apps: appsPluginConfigSchema,
     terminal: terminalPluginConfigSchema,
     filesystem: filesystemPluginConfigSchema,
+    images: imagesPluginConfigSchema,
     memory: memoryPluginConfigSchema,
     skills: skillsPluginConfigSchema,
     "meta-runtime": metaRuntimePluginConfigSchema,
@@ -446,6 +632,8 @@ const pluginsConfigSchema = z.preprocess(
     mcp: mcpPluginConfigSchema,
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,
+    voice: voicePluginConfigSchema,
+    "voice-conversation": voiceConversationPluginConfigSchema,
   }),
 );
 
@@ -499,6 +687,9 @@ export const sloppyConfigSchema = z.object({
       detailDepth: z.number().int().min(1).default(4),
       historyTurns: z.number().int().min(1).default(8),
       toolResultMaxChars: z.number().int().min(512).default(16000),
+      // Image content_refs in tool results (file:// on the same host) larger
+      // than this are not loaded into the conversation.
+      toolResultImageMaxBytes: z.number().int().min(1024).default(5_242_880),
     })
     .default({
       maxIterations: 32,
@@ -506,6 +697,7 @@ export const sloppyConfigSchema = z.object({
       detailDepth: 4,
       historyTurns: 8,
       toolResultMaxChars: 16000,
+      toolResultImageMaxBytes: 5_242_880,
     }),
   session: z
     .object({
@@ -605,6 +797,16 @@ export type LlmEndpointConfig = {
 export type LlmEndpointInputConfig = Omit<LlmEndpointConfig, "auth"> & {
   auth?: LlmEndpointAuthConfig;
 };
+
+export type EndpointAuthConfig = z.infer<typeof endpointAuthSchema>;
+export type SttProtocol = z.infer<typeof sttProtocolSchema>;
+export type TtsProtocol = z.infer<typeof ttsProtocolSchema>;
+export type VoiceSttEndpointConfig = z.infer<typeof voiceSttEndpointSchema>;
+export type VoiceTtsEndpointConfig = z.infer<typeof voiceTtsEndpointSchema>;
+export type VoiceSttProfileConfig = z.infer<typeof voiceSttProfileSchema>;
+export type VoiceTtsProfileConfig = z.infer<typeof voiceTtsProfileSchema>;
+export type VoicePluginConfig = z.infer<typeof voicePluginConfigSchema>;
+export type VoiceConversationPluginConfig = z.infer<typeof voiceConversationPluginConfigSchema>;
 
 export interface LlmConfig {
   reasoningEffort?: LlmReasoningEffort;

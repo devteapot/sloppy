@@ -11,6 +11,8 @@ import type {
 } from "../../runtime/doctor-types";
 import type { ToolEventEnricher } from "../../session/event-bus";
 import type { SessionRuntimePlugin } from "../../session/plugins";
+import { SpeechProfileManager } from "../../speech/profile-manager";
+import { speechRegistry } from "../../speech/registry";
 import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
@@ -22,6 +24,7 @@ import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegat
 import { filesystemToolEventEnricher } from "./filesystem/audit";
 import { checkWorkspacePaths } from "./filesystem/doctor";
 import { FilesystemProvider } from "./filesystem/provider";
+import { ImagesProvider } from "./images/provider";
 import { checkMcpEnvironmentExposure, collectMcpSubprocessProbes } from "./mcp/doctor";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
@@ -34,8 +37,33 @@ import { SpecProvider } from "./spec/provider";
 import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
+import { DEFAULT_STT_ENDPOINTS, DEFAULT_TTS_ENDPOINTS } from "./voice/endpoints";
+import { createSpeechNetworkRule } from "./voice/policy";
+import { registerSpeechProtocols } from "./voice/protocols";
+import { VoiceProvider } from "./voice/provider";
+import { createVoiceConversationPlugin } from "./voice-conversation/session";
 import { WebProvider } from "./web/provider";
 import { WorkspacesProvider } from "./workspaces/provider";
+
+// One SpeechProfileManager per config so the voice provider (profile state +
+// set_profile), the conversation loop (adapter creation), and the network
+// policy rule (endpoint locality) share runtime profile selection. Keyed by
+// the config object the collectors pass through. This is also where the
+// first-party speech protocols get registered — all consumers obtain the
+// manager here, so registration always precedes adapter resolution.
+const speechManagers = new WeakMap<SloppyConfig, SpeechProfileManager>();
+
+function speechManagerFor(config: SloppyConfig): SpeechProfileManager {
+  let manager = speechManagers.get(config);
+  if (!manager) {
+    registerSpeechProtocols(speechRegistry);
+    manager = new SpeechProfileManager(config.plugins.voice, {
+      defaults: { stt: DEFAULT_STT_ENDPOINTS, tts: DEFAULT_TTS_ENDPOINTS },
+    });
+    speechManagers.set(config, manager);
+  }
+  return manager;
+}
 
 function registeredProvider(
   input: Omit<RegisteredProvider, "kind"> & { kind?: RegisteredProvider["kind"] },
@@ -160,6 +188,50 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transport: new InProcessTransport(filesystem.server),
           transportLabel: "in-process",
           stop: () => filesystem.stop(),
+        }),
+      ];
+    },
+  },
+  {
+    id: "images",
+    version: "1.0.0",
+    defaultEnabled: true,
+    description: "In-memory image registry; loaded images ride the per-turn state trail.",
+    providerIds: ["images"],
+    createProviders: (config) => {
+      const plugin = config.plugins.images;
+      const images = new ImagesProvider({
+        maxLoaded: plugin.maxLoaded,
+        defaultTtlTurns: plugin.defaultTtlTurns,
+        maxStored: plugin.maxStored,
+      });
+      return [
+        registeredProvider({
+          id: "images",
+          name: "Images",
+          transport: new InProcessTransport(images.server),
+          transportLabel: "in-process",
+          stop: () => images.stop(),
+          attachRuntime: (_hub, _config, ctx) => {
+            if (!ctx) {
+              return undefined;
+            }
+            ctx.imageRegistry = images.registry;
+            return {
+              stop() {
+                if (ctx.imageRegistry === images.registry) {
+                  ctx.imageRegistry = undefined;
+                }
+              },
+            };
+          },
+          systemPromptFragment: () =>
+            [
+              "Images (camera frames, attachments) are stored in the images provider's /gallery, not inline in history.",
+              "Loaded images appear in the live state message captioned with their /gallery node path; the matching node shows metadata and describe/load/unload/pin/remove actions.",
+              "Images auto-unload after their TTL (default: one turn). While an image is visible, invoke describe on its node with a one-line description — that is how you recognize it afterwards, decide to load it again, or remove it.",
+              "Load (optionally with ttl_turns) or pin images you must keep seeing; remove ones that are no longer relevant.",
+            ].join("\n"),
         }),
       ];
     },
@@ -547,6 +619,42 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
         }),
       ];
     },
+  },
+  {
+    id: "voice",
+    version: "2.0.0",
+    defaultEnabled: false,
+    description: "Speech profile configuration provider (streaming STT/TTS).",
+    providerIds: ["voice"],
+    policyRules: (config) => [createSpeechNetworkRule(speechManagerFor(config))],
+    createProviders: (config) => {
+      const provider = new VoiceProvider(speechManagerFor(config));
+      return [
+        registeredProvider({
+          id: "voice",
+          name: "Voice",
+          transport: new InProcessTransport(provider.server),
+          transportLabel: "in-process",
+          stop: () => provider.stop(),
+          systemPromptFragment: () =>
+            [
+              "Speech configuration is exposed through the voice provider as SLOP state.",
+              "Observe /voice/stt and /voice/tts for profile readiness; invoke set_profile to switch profiles.",
+              "Speaking happens through the session's /conversation node (voice-conversation plugin), not through this provider.",
+            ].join("\n"),
+        }),
+      ];
+    },
+  },
+  {
+    id: "voice-conversation",
+    version: "2.0.0",
+    defaultEnabled: false,
+    description:
+      "Streaming voice conversation loop (mic PCM → realtime STT → turn → streamed TTS → playback).",
+    providerIds: ["voice"],
+    createSessionPlugin: (config) =>
+      createVoiceConversationPlugin(config.plugins["voice-conversation"], speechManagerFor(config)),
   },
 ];
 

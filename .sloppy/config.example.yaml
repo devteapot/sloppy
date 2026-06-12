@@ -80,6 +80,95 @@ plugins:
         protocolVersion: "1.0"
   workspaces:
     enabled: true
+  # Voice: streaming speech. STT runs over OpenAI-Realtime-like WebSocket
+  # transcription sessions (protocol `realtime-stt`, with a per-endpoint
+  # `dialect`: openai | vllm); TTS streams PCM over the OpenAI-compatible
+  # /v1/audio/speech protocol (`openai-speech`). Each modality is independent.
+  # Cloud endpoints authenticate via an env var (or a stored credential); local
+  # self-hosted servers need only a baseUrl plus `auth: { type: none }`.
+  voice:
+    enabled: true
+    stt:
+      endpoints:
+        # DGX/Spark node running the Nemotron ASR realtime service (server-side
+        # VAD; OpenAI GA transcription-session dialect). The model field is
+        # passed through, so local model paths work. sampleRate is the PCM16
+        # rate the service expects.
+        nemotron-dgx:
+          protocol: realtime-stt
+          dialect: openai
+          baseUrl: ws://dgx-spark.local:8000/v1/realtime
+          auth:
+            type: none
+          sampleRate: 16000
+        # Local vLLM /v1/realtime ASR (e.g. Voxtral Realtime):
+        # vllm-voxtral:
+        #   protocol: realtime-stt
+        #   dialect: vllm
+        #   baseUrl: ws://localhost:8000/v1/realtime
+        #   auth: { type: none }
+        #   sampleRate: 16000
+        # OpenAI cloud transcription sessions (24 kHz PCM only):
+        # openai-realtime:
+        #   protocol: realtime-stt
+        #   auth: { type: env, env: OPENAI_API_KEY }
+        #   sampleRate: 24000
+      profiles:
+        - id: stt-nemotron
+          label: Nemotron realtime
+          endpointId: nemotron-dgx
+          model: /models/nemotron-3.5-asr-streaming-0.6b
+        # - id: stt-openai
+        #   endpointId: openai-realtime
+        #   model: gpt-4o-mini-transcribe
+      defaultProfileId: stt-nemotron
+    tts:
+      endpoints:
+        # Local, OpenAI-compatible streaming TTS (kokoro-fastapi; community
+        # Qwen3-TTS servers expose the same surface). pcmSampleRate is the rate
+        # of the server's `response_format: pcm` output.
+        kokoro:
+          protocol: openai-speech
+          baseUrl: http://localhost:8880/v1
+          auth:
+            type: none
+          model: kokoro
+          pcmSampleRate: 24000
+          voices:
+            af_bella: {}
+        # Cloud (uncomment and set OPENAI_API_KEY to use):
+        # openai-tts:
+        #   protocol: openai-speech
+        #   auth: { type: env, env: OPENAI_API_KEY }
+        #   model: gpt-4o-mini-tts
+      profiles:
+        - id: tts-local
+          label: Kokoro (local)
+          endpointId: kokoro
+          voice: af_bella
+      defaultProfileId: tts-local
+
+  # Hands-free streaming conversation loop: mic PCM → realtime STT (provider
+  # VAD) → agent turn → sentence-pipelined TTS → streamed playback, animating
+  # the robot head while it speaks. start_listening requires approval when a
+  # speech endpoint is non-local (localhost + auth none); continuous auto-start
+  # only proceeds when both endpoints are local.
+  voice-conversation:
+    enabled: false
+    audio:
+      backend: host # `host` = laptop mic/speaker (dev / pre-hardware); `robot` = reachy mic/speaker
+      providerId: reachy # robot provider id used when backend: robot
+      streamChunkMs: 40 # mic frame size sent to the STT session
+      # Optional command overrides; `{rate}` is replaced with the endpoint's
+      # sample rate (defaults target macOS sox):
+      # streamCommand: ["sox", "-d", "-c", "1", "-r", "{rate}", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
+      # playStreamCommand: ["play", "-q", "-t", "raw", "-r", "{rate}", "-e", "signed-integer", "-b", "16", "-c", "1", "-"]
+    realtime:
+      autoStartMode: off # set to continuous for always-on listening at session startup
+      defaultStartMode: single_turn # used by the /conversation start_listening action
+    embodiment:
+      enabled: true # runtime-driven head/antenna motion during the reply (visible in the MuJoCo sim)
+      providerId: reachy
 
 workspaces:
   activeWorkspaceId: sloppy

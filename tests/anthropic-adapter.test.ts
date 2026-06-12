@@ -118,4 +118,64 @@ describe("AnthropicAdapter", () => {
       usage: { inputTokens: 10, outputTokens: 3 },
     });
   });
+
+  test("serializes a user message with interleaved text and image blocks", async () => {
+    let receivedBody: Record<string, unknown> | undefined;
+    const client = {
+      messages: {
+        stream: (body: Record<string, unknown>) => {
+          receivedBody = body;
+          return {
+            abort: () => undefined,
+            on: () => undefined,
+            finalMessage: async () =>
+              ({
+                id: "msg-test",
+                type: "message",
+                role: "assistant",
+                model: "claude-sonnet-4-6",
+                content: [{ type: "text", text: "a desk" }],
+                stop_reason: "end_turn",
+                stop_sequence: null,
+                usage: { input_tokens: 10, output_tokens: 3 },
+              }) as unknown as Message,
+          };
+        },
+        countTokens: async () => ({ input_tokens: 0 }),
+      },
+    };
+
+    const adapter = new AnthropicAdapter({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+      client,
+    });
+
+    await adapter.chat({
+      system: "system prompt",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "<slop-state>...</slop-state>" },
+            { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+            { type: "image", mediaType: "image/jpeg", data: "anVuaw==" },
+          ],
+        },
+      ],
+      maxTokens: 256,
+    });
+
+    expect((receivedBody?.messages as unknown[])[0]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "<slop-state>...</slop-state>" },
+        { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/jpeg", data: "anVuaw==" },
+        },
+      ],
+    });
+  });
 });
