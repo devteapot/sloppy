@@ -111,6 +111,22 @@ idle → connecting → listening → thinking → speaking → (continuous: re-
   `{rate}`-templated); `robot` routes through the reachy provider's
   `/mic`/`/speaker` affordances (playback collects the stream into one WAV
   clip per reply).
+- **Inline emote markers** (`embodiment.emotes`, default on with embodiment):
+  the `/conversation` node summary tells the model it may embed `[emote:name]`
+  markers in voice replies where the mood shifts. `speak()` strips them
+  (`emote-markers.ts` — they survive `normalizeForSpeech`, so stripping happens
+  before any text reaches a TTS stream), validates names against the robot
+  provider's `/behavior` `props.emotions` (vocabulary unavailable → fire
+  unvalidated, the provider rejects bad names), splits the reply into segments
+  spoken sequentially, and fires `play_emotion {sound: false}` fire-and-forget
+  as each marked segment starts. One head-wobble loop spans the whole reply and
+  skips ticks whose `set_pose` returns an error result (`conflict` while an
+  emotion has the robot busy) — so the choreography "emotion at the marker,
+  wobble between" is emergent from the provider's busy policy, with no
+  sequencing state. A second marker while an emotion still plays is a
+  deliberate skip (the conflict result is ignored). Barge-in
+  (`stop_listening`) also invokes `/behavior stop`; a reply that ends mid-emote
+  lets the move finish.
 
 ## Privacy boundary
 
