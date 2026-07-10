@@ -206,7 +206,7 @@ surface:
 
 ```sh
 bunx tsc --noEmit
-bun test tests/meta-runtime-provider.test.ts
+bun test tests/meta-runtime-*.test.ts
 bun test tests/skills-provider.test.ts
 bun test tests/delegation-provider.test.ts
 bun test tests/kernel-boundary.test.ts

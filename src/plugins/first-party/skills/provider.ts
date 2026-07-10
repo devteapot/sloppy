@@ -1,151 +1,32 @@
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
-import { parse as parseYaml } from "yaml";
 
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
 import { isWithinRoot, safeRealpath } from "../../../providers/path-containment";
-
-type SkillScope = "session" | "workspace" | "global" | "builtin" | "imported";
-type WritableSkillScope = Exclude<SkillScope, "builtin" | "imported">;
-
-type SkillInfo = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  tags: string[];
-  related_skills: string[];
-  dangerous: boolean;
-  platforms: string[];
-  category?: string;
-  metadata: Record<string, unknown>;
-  skill_path: string;
-  file_path: string;
-  directory?: string;
-  supporting_files: string[];
-  scope: SkillScope;
-  content?: string;
-};
-
-type SkillRoot = {
-  scope: Exclude<SkillScope, "session">;
-  dir: string;
-  idPrefix: string;
-};
-
-type SkillProposal = {
-  id: string;
-  scope: WritableSkillScope;
-  name: string;
-  version: string;
-  body: string;
-  status: "proposed" | "active" | "rejected";
-  created_at: string;
-  activated_at?: string;
-  requires_approval: boolean;
-};
-
-type SkillManageOperation = "create" | "patch" | "edit" | "delete" | "write_file" | "remove_file";
-
-const SKILL_SCOPE_PRECEDENCE: Record<SkillScope, number> = {
-  session: 0,
-  workspace: 1,
-  global: 2,
-  builtin: 3,
-  imported: 4,
-};
-
-const DEFAULT_VIEW_MAX_BYTES = 65536;
-const SLOPPY_SKILL_DIR_TOKEN = "$" + "{SLOPPY_SKILL_DIR}";
-
-function compareSkills(a: SkillInfo, b: SkillInfo): number {
-  const byName = a.name.localeCompare(b.name);
-  if (byName !== 0) return byName;
-  const byScope = SKILL_SCOPE_PRECEDENCE[a.scope] - SKILL_SCOPE_PRECEDENCE[b.scope];
-  if (byScope !== 0) return byScope;
-  return a.id.localeCompare(b.id);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
-
-function extractFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-
-  const parsed = parseYaml(match[1]);
-  return isRecord(parsed) ? parsed : {};
-}
-
-function nestedRecord(root: Record<string, unknown>, key: string): Record<string, unknown> {
-  const value = root[key];
-  return isRecord(value) ? value : {};
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function portablePath(path: string): string {
-  return path.split(sep).join("/");
-}
-
-function stableSkillId(prefix: string, skillPath: string): string {
-  return `skill-${prefix}${skillPath.replace(/[\\/]/g, "-").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-}
-
-function writableScope(value: unknown): WritableSkillScope | undefined {
-  return value === "session" || value === "workspace" || value === "global" ? value : undefined;
-}
-
-function isWritableScope(scope: SkillScope): scope is WritableSkillScope {
-  return scope === "session" || scope === "workspace" || scope === "global";
-}
-
-async function readTextFile(path: string, maxBytes: number): Promise<string> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    throw new Error(`File does not exist: ${path}`);
-  }
-  if (file.size > maxBytes) {
-    throw new Error(`File is too large to read through skills provider: ${path}`);
-  }
-  return file.text();
-}
-
-async function discoverSupportingFiles(skillDir: string): Promise<string[]> {
-  const glob = new Bun.Glob("**/*");
-  const files: string[] = [];
-
-  try {
-    for await (const relativePath of glob.scan({ cwd: skillDir })) {
-      if (relativePath === "SKILL.md") continue;
-      const absolutePath = join(skillDir, relativePath);
-      try {
-        if (statSync(absolutePath).isFile()) {
-          files.push(relativePath);
-        }
-      } catch {
-        // Skip files that disappear or cannot be statted during discovery.
-      }
-    }
-  } catch {
-    // Missing or unreadable skill directories are handled as empty support sets.
-  }
-
-  return files.sort();
-}
+import {
+  asStringArray,
+  compareSkills,
+  DEFAULT_VIEW_MAX_BYTES,
+  discoverSupportingFiles,
+  extractFrontmatter,
+  isWritableScope,
+  nestedRecord,
+  portablePath,
+  readTextFile,
+  type SkillInfo,
+  type SkillManageOperation,
+  type SkillProposal,
+  type SkillRoot,
+  type SkillScope,
+  SLOPPY_SKILL_DIR_TOKEN,
+  slugify,
+  stableSkillId,
+  type WritableSkillScope,
+  writableScope,
+} from "./model";
 
 export class SkillsProvider {
   readonly server: SlopServer;

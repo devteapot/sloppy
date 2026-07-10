@@ -1,5 +1,3 @@
-import type { LlmTool } from "@slop-ai/consumer/browser";
-
 import type { SloppyConfig } from "../config/schema";
 import type {
   LlmAdapter,
@@ -22,191 +20,33 @@ import {
   resumingApproval,
   suspendedResult,
 } from "./loop/approval-suspension";
+import type {
+  AgentToolEvent,
+  AgentToolInvocation,
+  ExecuteToolCallResult,
+  ExecuteToolCallsOptions,
+  LocalRuntimeTool,
+  PendingApprovalContinuation,
+  RunLoopHooks,
+  RunLoopResult,
+} from "./loop/contracts";
 import { stringifyResult, truncateToolResult } from "./loop/result-format";
-import type { ToolPolicyDecision } from "./role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "./tools";
 import { formatStateTree } from "./tree-format";
 
+export type {
+  AgentToolEvent,
+  AgentToolInvocation,
+  AgentToolResult,
+  LocalRuntimeTool,
+  LocalRuntimeToolContext,
+  LocalRuntimeToolResult,
+  PendingApprovalContinuation,
+  RunLoopHooks,
+  RunLoopResult,
+} from "./loop/contracts";
+
 const PARALLEL_SAFE_TOOL_CONCURRENCY = 4;
-
-export interface RunLoopHooks {
-  toolPolicy?: (
-    resolution: RuntimeToolResolution,
-    params: Record<string, unknown>,
-    config: SloppyConfig,
-  ) => ToolPolicyDecision;
-  transformInvoke?: (
-    resolution: RuntimeToolResolution,
-    params: Record<string, unknown>,
-    config: SloppyConfig,
-  ) => Record<string, unknown>;
-  beforeNextTurn?: (hub: ProviderRuntimeHub, signal?: AbortSignal) => Promise<void>;
-  /**
-   * Optional id of the role driving this loop iteration. When set, the loop
-   * passes this id as per-call metadata to `hub.invoke` so hub policy rules
-   * can scope themselves by role. The metadata
-   * is per-invocation; it does NOT leak to other callers (scheduler, UI).
-   */
-  roleId?: string;
-  /**
-   * Runtime-local tools that are not provider affordances. These are for
-   * session-owned control surfaces such as goal progress reporting; reusable
-   * capabilities should still be providers or skills.
-   */
-  localTools?: () => LocalRuntimeTool[];
-}
-
-type ToolResult = {
-  block: ToolResultContentBlock;
-  summary: string;
-};
-
-export type AgentToolResult = {
-  kind?: string;
-  data?: unknown;
-};
-
-export type LocalRuntimeToolResult = {
-  status: "ok" | "error";
-  summary: string;
-  content: unknown;
-  isError?: boolean;
-};
-
-export type LocalRuntimeToolContext = {
-  hub: ProviderRuntimeHub;
-  config: SloppyConfig;
-  signal?: AbortSignal;
-};
-
-export type LocalRuntimeTool = {
-  pluginId?: string;
-  tool: LlmTool;
-  providerId?: string;
-  path?: string;
-  execute: (
-    params: Record<string, unknown>,
-    context: LocalRuntimeToolContext,
-  ) => LocalRuntimeToolResult | Promise<LocalRuntimeToolResult>;
-};
-
-export type AgentToolInvocation = {
-  toolUseId: string;
-  toolName: string;
-  kind: "observation" | "affordance" | "local";
-  pluginId?: string;
-  providerId?: string;
-  path?: string;
-  action: string;
-  label?: string;
-  resultKind?: string;
-  params: Record<string, unknown>;
-};
-
-export type AgentToolEvent =
-  | {
-      kind: "started";
-      invocation: AgentToolInvocation;
-      summary: string;
-    }
-  | {
-      kind: "completed";
-      invocation: AgentToolInvocation;
-      summary: string;
-      status: "ok" | "error" | "accepted" | "cancelled";
-      taskId?: string;
-      errorCode?: string;
-      errorMessage?: string;
-      result?: AgentToolResult;
-    }
-  | {
-      kind: "approval_requested";
-      invocation: AgentToolInvocation;
-      summary: string;
-      errorCode: string;
-      errorMessage: string;
-      /**
-       * Hub-owned approval id (e.g. `approval-…`). Plumbed through directly
-       * so the session runtime can resolve / cancel / resume strictly by id
-       * instead of tuple-matching the mirrored `/approvals` tree.
-       */
-      approvalId?: string;
-    };
-
-export type PendingApprovalContinuation = {
-  blockedInvocation: AgentToolInvocation;
-  iteration: number;
-  toolCalls: ToolUseContentBlock[];
-  nextToolCallIndex: number;
-  toolResults: ToolResultContentBlock[];
-  deferredToolResults?: {
-    toolCallIndex: number;
-    result: ToolResultContentBlock;
-  }[];
-};
-
-export type RunLoopResult =
-  | {
-      status: "completed";
-      response: string;
-      usage?: {
-        inputTokens: number;
-        outputTokens: number;
-        thinkingTokens?: number;
-      };
-    }
-  | {
-      status: "waiting_approval";
-      pending: PendingApprovalContinuation;
-      usage?: {
-        inputTokens: number;
-        outputTokens: number;
-        thinkingTokens?: number;
-      };
-    };
-
-type ExecuteToolCallResult =
-  | {
-      kind: "completed";
-      invocation?: AgentToolInvocation;
-      result: ToolResult;
-      status: "ok" | "error" | "accepted";
-      taskId?: string;
-      errorCode?: string;
-      errorMessage?: string;
-      activityResult?: AgentToolResult;
-    }
-  | {
-      kind: "approval_requested";
-      invocation: AgentToolInvocation;
-      summary: string;
-      errorCode: string;
-      errorMessage: string;
-      /**
-       * Hub-owned approval id (e.g. `approval-…`). Plumbed through directly
-       * so the session runtime can resolve / cancel / resume strictly by id
-       * instead of tuple-matching the mirrored `/approvals` tree.
-       */
-      approvalId?: string;
-    };
-
-type ExecuteToolCallsOptions = {
-  toolCalls: ToolUseContentBlock[];
-  startIndex: number;
-  toolResults: ToolResultContentBlock[];
-  iteration: number;
-  toolSet: RuntimeToolSet;
-  localTools: LocalRuntimeTool[];
-  hub: ProviderRuntimeHub;
-  config: SloppyConfig;
-  onToolCall?: (summary: string) => void;
-  onToolResult?: (summary: string) => void;
-  onToolEvent?: (event: AgentToolEvent) => void;
-  toolPolicy?: RunLoopHooks["toolPolicy"];
-  transformInvoke?: RunLoopHooks["transformInvoke"];
-  roleId?: string;
-  signal?: AbortSignal;
-};
 
 export { truncateToolResult };
 

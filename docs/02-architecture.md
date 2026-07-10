@@ -412,6 +412,18 @@ boundary:
 - direct provider query/invoke for deeper capability-specific surfaces
 - no privileged in-process UI integration
 
+## Implementation Boundaries
+
+Provider and runtime entrypoints retain ownership of live state, lifecycle, and orchestration.
+Substantial deterministic subdomains live in named sibling modules: protocol parsing and models,
+SLOP descriptor assembly, pure state transitions, result shaping, and reusable contracts. Tests are
+partitioned along the same behavioral seams so a provider change does not require navigating a
+single monolithic harness.
+
+File length is a diagnostic for mixed ownership, not an architectural limit. Refactors should
+extract a coherent subdomain with an explicit contract; generic utility buckets and pass-through
+wrappers do not improve modularity.
+
 ## Design Boundaries
 
 The runtime intentionally does not include:

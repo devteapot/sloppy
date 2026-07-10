@@ -144,6 +144,11 @@ The actual runtime model is still SLOP:
 - `patch`
 - `invoke`
 
+Implementation modules follow the same boundary discipline. Provider entrypoints own live state and
+orchestration, while sibling modules own protocol parsing, descriptor construction, pure state
+transitions, and reusable domain contracts. File length is treated as a signal to look for one of
+those ownership seams, not as a reason to move unrelated code into generic utility modules.
+
 ## What is implemented now
 
 ### Additional First-Party Plugin Providers

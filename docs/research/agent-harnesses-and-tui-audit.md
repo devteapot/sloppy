@@ -38,13 +38,14 @@ Repository evidence inspected:
 - TUI code under `apps/tui/src/`, especially `app.tsx`,
   `slop/session-client.ts`, `slop/node-mappers.ts`, `state/commands.ts`,
   `state/command-palette.ts`, and route/component files.
-- TUI tests in `tests/tui-session-client.test.ts`.
+- TUI tests in `tests/tui-manifest-mapping.test.ts`, `tests/tui-node-mappers.test.ts`, and
+  `tests/tui-session-clients.test.ts`.
 
 Verification run during this audit:
 
 ```sh
 bun run tui:typecheck
-bun test tests/tui-session-client.test.ts
+bun test tests/tui-manifest-mapping.test.ts tests/tui-node-mappers.test.ts tests/tui-session-clients.test.ts
 ```
 
 Both passed; the TUI test slice ran 22 passing tests.
@@ -439,7 +440,8 @@ Files inspected:
   prompt, and supervisor session operations.
 - `apps/tui/src/routes/*`: chat, setup, approvals, tasks, and apps route
   overlays.
-- `tests/tui-session-client.test.ts`: mapper tests, command parser tests,
+- `tests/tui-manifest-mapping.test.ts`, `tests/tui-node-mappers.test.ts`, and
+  `tests/tui-session-clients.test.ts`: mapper tests, command parser tests,
   palette action tests, initial route tests, queue mapping tests, and live mock
   SLOP socket tests for session client/app proxy/queue.
 

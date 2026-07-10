@@ -1,190 +1,36 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+
 import { errorMessage, now } from "../shared/runtime-helpers";
+import {
+  type A2AAgentCard,
+  type A2AAgentConfig,
+  type A2AAgentInterface,
+  type A2AAgentState,
+  type A2AAgentStatus,
+  type A2APart,
+  type A2ATask,
+  type A2ATaskRecord,
+  agentName,
+  asRecord,
+  configuredCardUrl,
+  type FetchLike,
+  maybeRecord,
+  nodeId,
+  normalizeBinding,
+  optionalBoolean,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+  optionalStringArray,
+  parseParts,
+  taskFromResponse,
+  taskKey,
+  taskStatusState,
+  taskStatusTimestamp,
+  tasksFromListResponse,
+} from "./model";
 
-export type A2AAgentConfig = {
-  name?: string;
-  cardUrl?: string;
-  url?: string;
-  protocolVersion?: string;
-  headers?: Record<string, string>;
-  bearerTokenEnv?: string;
-  apiKeyEnv?: string;
-  apiKeyHeader?: string;
-  timeoutMs?: number;
-  fetchOnStart?: boolean;
-};
-
-type A2AAgentStatus = "unfetched" | "refreshing" | "ready" | "error";
-
-type A2AAgentCard = Record<string, unknown> & {
-  name?: string;
-  description?: string;
-  version?: string;
-  supportedInterfaces?: unknown[];
-  capabilities?: Record<string, unknown>;
-  skills?: unknown[];
-  defaultInputModes?: string[];
-  defaultOutputModes?: string[];
-};
-
-type A2AAgentInterface = {
-  url: string;
-  protocolBinding: string;
-  protocolVersion?: string;
-  tenant?: string;
-};
-
-type A2APart = Record<string, unknown>;
-type A2ATask = Record<string, unknown> & {
-  id?: string;
-  contextId?: string;
-  status?: Record<string, unknown>;
-};
-
-type A2ATaskRecord = {
-  id: string;
-  agentId: string;
-  taskId: string;
-  contextId?: string;
-  statusState?: string;
-  lastUpdatedAt: string;
-  source: "send" | "get" | "list" | "cancel";
-  task: A2ATask;
-};
-
-type A2AAgentState = {
-  id: string;
-  config: A2AAgentConfig;
-  status: A2AAgentStatus;
-  error?: string;
-  card?: A2AAgentCard;
-  interfaceUrl?: string;
-  protocolVersion?: string;
-  tenant?: string;
-  etag?: string;
-  lastModified?: string;
-  lastRefreshAt?: string;
-  extendedCardAt?: string;
-};
-
-type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-function nodeId(value: string): string {
-  return encodeURIComponent(value);
-}
-
-function maybeRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-function asRecord(value: unknown, context: string): Record<string, unknown> {
-  const record = maybeRecord(value);
-  if (!record) {
-    throw new Error(`${context} must be an object.`);
-  }
-  return record;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function optionalRecord(value: unknown, fieldName: string): Record<string, unknown> | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  return asRecord(value, fieldName);
-}
-
-function optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new Error(`${fieldName} must be an array of strings.`);
-  }
-  return value;
-}
-
-function parseParts(value: unknown): A2APart[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error("parts must be a non-empty array.");
-  }
-
-  return value.map((part, index) => {
-    const record = asRecord(part, `parts[${index}]`);
-    const contentFields = ["text", "raw", "url", "data"].filter((key) => key in record);
-    if (contentFields.length !== 1) {
-      throw new Error(`parts[${index}] must contain exactly one of text, raw, url, or data.`);
-    }
-    return record;
-  });
-}
-
-function normalizeBinding(value: unknown): string {
-  return String(value ?? "")
-    .replace(/[-_+\s]/g, "")
-    .toUpperCase();
-}
-
-function taskKey(agentId: string, taskId: string): string {
-  return `${agentId}:${taskId}`;
-}
-
-function taskStatusState(task: A2ATask): string | undefined {
-  return optionalString(maybeRecord(task.status)?.state);
-}
-
-function taskStatusTimestamp(task: A2ATask): string | undefined {
-  return optionalString(maybeRecord(task.status)?.timestamp);
-}
-
-function taskFromResponse(value: unknown): A2ATask | undefined {
-  const response = maybeRecord(value);
-  if (!response) {
-    return undefined;
-  }
-
-  const nestedTask = maybeRecord(response.task);
-  if (nestedTask) {
-    return nestedTask as A2ATask;
-  }
-
-  return typeof response.id === "string" ? (response as A2ATask) : undefined;
-}
-
-function tasksFromListResponse(value: unknown): A2ATask[] {
-  const response = maybeRecord(value);
-  const tasks = Array.isArray(response?.tasks) ? response.tasks : Array.isArray(value) ? value : [];
-  return tasks
-    .map((task) => maybeRecord(task))
-    .filter((task): task is A2ATask => Boolean(task && typeof task.id === "string"));
-}
-
-function agentName(agent: A2AAgentState): string {
-  return agent.card?.name ?? agent.config.name ?? agent.id;
-}
-
-function configuredCardUrl(config: A2AAgentConfig): string {
-  if (config.cardUrl) {
-    return config.cardUrl;
-  }
-  if (config.url) {
-    return new URL("/.well-known/agent-card.json", config.url).toString();
-  }
-  throw new Error("A2A agent requires cardUrl or url.");
-}
+export type { A2AAgentConfig } from "./model";
 
 export class A2AProvider {
   readonly server: SlopServer;
