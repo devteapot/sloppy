@@ -5,6 +5,7 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import type { RegisteredProvider } from "../providers/registry";
 import { createFirstPartyProviders } from "../providers/registry";
+import type { ChildSessionFactory } from "../runtime/child-session";
 import { ConsumerHub } from "./consumer";
 import { RoleRegistry, type RuntimeContext, type RuntimeEvent } from "./role";
 
@@ -31,6 +32,7 @@ export async function bootstrapProviderRuntime(options: {
   publishEvent?: (event: RuntimeEvent) => void;
   roleRegistry?: RoleRegistry;
   llmProfileManager?: LlmProfileManager;
+  childSessionFactory?: ChildSessionFactory;
   collectSystemPromptFragments?: boolean;
 }): Promise<ProviderRuntimeBootstrap> {
   const providers = options.providers ?? createFirstPartyProviders(options.config);
@@ -47,6 +49,7 @@ export async function bootstrapProviderRuntime(options: {
     publishEvent: options.publishEvent ?? (() => undefined),
     roleRegistry: options.roleRegistry ?? new RoleRegistry(),
     llmProfileManager: options.llmProfileManager,
+    childSessionFactory: options.childSessionFactory,
   };
 
   const runtimeStops: Array<{ stop(): void }> = [];

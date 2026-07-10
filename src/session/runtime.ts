@@ -6,13 +6,7 @@ import {
   llmThinkingDisplaySchema,
   type SloppyConfig,
 } from "../config/schema";
-import type {
-  AgentCallbacks,
-  AgentRunResult,
-  LocalRuntimeTool,
-  ResolvedApprovalToolResult,
-  RoleProfile,
-} from "../core/agent";
+import type { AgentCallbacks, LocalRuntimeTool, RoleProfile } from "../core/agent";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
@@ -22,83 +16,48 @@ import {
 } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import { isLlmAbortError } from "../llm/types";
-import {
-  createFirstPartySessionPlugins,
-  createFirstPartyToolEventEnrichers,
-} from "../plugins/first-party/catalog";
-import { type AgentEventBus, createAgentEventBus, mergeCallbacks } from "./event-bus";
+import { createFirstPartySessionPlugins } from "../plugins/first-party/session-facets";
+import type { ChildSessionFactory, ChildSessionFactoryOptions } from "../runtime/child-session";
+import { type AgentEventBus, mergeCallbacks } from "./event-bus";
 import {
   type ExternalSessionAgentState,
   toExternalAgentLlmState,
   toSessionLlmState,
 } from "./llm-state";
-import {
-  SESSION_MIRROR_PATH_LIST,
-  SESSION_MIRROR_PATHS,
-  syncExternalProviderStatesToSession,
-  syncProviderSnapshotToSession,
-} from "./mirror-sync";
+import { SESSION_MIRROR_PATH_LIST } from "./mirror-sync";
 import { type PluginRuntimeContext, SessionPluginManager } from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
+import { AgentSessionProvider } from "./provider";
+import {
+  createLocalProviderIds,
+  createSessionCallbacks,
+  createSessionEventBus,
+  createSessionStore,
+  type SessionRuntimeOptions,
+  syncExternalRuntimeLlmState,
+} from "./runtime-assembly";
+import type { SendMessageResult, SessionAgent } from "./runtime-contracts";
 import {
   boundToolResult,
   buildToolResultBlock,
-  mergePluginExtensionEventTypes,
   parseProfileKind,
   previewToolParams,
-  resolveInitialLlmRoute,
-  resolveSessionPersistencePath,
   runtimeConfigFingerprint,
 } from "./runtime-helpers";
-import { SessionStore } from "./store";
+import type { SessionStore } from "./store";
 import { TurnCoordinator } from "./turn-coordinator";
 import type { ApprovalMode } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
+export type { SessionRuntimeOptions } from "./runtime-assembly";
+export type {
+  SendMessageResult,
+  SessionAgent,
+  SessionAgentFactory,
+} from "./runtime-contracts";
 export { boundToolResult } from "./runtime-helpers";
 
 const DEFAULT_CONFIG = createDefaultConfig();
-
-export interface SessionAgent {
-  start(): Promise<void>;
-  listConnectedProviders?(): { id: string; name: string }[];
-  chat(userMessage: string): Promise<AgentRunResult>;
-  resumeWithToolResult(result: ResolvedApprovalToolResult): Promise<AgentRunResult>;
-  invokeProvider(
-    providerId: string,
-    path: string,
-    action: string,
-    params?: Record<string, unknown>,
-  ): Promise<ResultMessage>;
-  queryProvider?(
-    providerId: string,
-    path: string,
-    options?: {
-      depth?: number;
-      maxNodes?: number;
-      window?: [number, number];
-    },
-  ): Promise<SlopNode>;
-  loadProvider?(providerId: string): Promise<boolean>;
-  reloadProvider?(providerId: string): Promise<void>;
-  unloadProvider?(providerId: string): boolean;
-  resolveApprovalDirect(approvalId: string): Promise<ResultMessage>;
-  rejectApprovalDirect(approvalId: string, reason?: string): void;
-  cancelActiveTurn(): boolean;
-  clearPendingApproval(): void;
-  updateConfig?(config: SloppyConfig): void;
-  shutdown(): void;
-}
-
-export type SessionAgentFactory = (
-  callbacks: AgentCallbacks,
-  config: SloppyConfig,
-  llmProfileManager: LlmProfileManager,
-) => SessionAgent;
-
-export type SendMessageResult =
-  | { status: "started"; turnId: string }
-  | { status: "queued"; queuedMessageId: string; position: number };
 
 function createDefaultSessionAgent(
   callbacks: AgentCallbacks,
@@ -114,6 +73,7 @@ function createDefaultSessionAgent(
     llmModelOverride?: string;
     policyRules?: InvokePolicy[];
     localTools?: () => LocalRuntimeTool[];
+    childSessionFactory?: ChildSessionFactory;
   },
 ): SessionAgent {
   return new ProfileSessionAgent({
@@ -129,8 +89,33 @@ function createDefaultSessionAgent(
     mirrorProviderPaths: SESSION_MIRROR_PATH_LIST,
     policyRules: extras?.policyRules,
     localTools: extras?.localTools,
+    childSessionFactory: extras?.childSessionFactory,
     callbacks,
   });
+}
+
+export function createDefaultChildSession(
+  options: ChildSessionFactoryOptions,
+): ReturnType<ChildSessionFactory> {
+  const runtime = new SessionRuntime({
+    config: options.config,
+    sessionId: options.sessionId,
+    title: options.title,
+    agentFactory: options.agentFactory,
+    ignoredProviderIds: options.ignoredProviderIds,
+    llmProfileManager: options.llmProfileManager,
+    llmProfileId: options.llmProfileId,
+    llmModelOverride: options.llmModelOverride,
+    requiresLlmProfile: options.requiresLlmProfile,
+    externalAgentState: options.externalAgentState,
+    policyRules: options.policyRules,
+    parentActorId: options.parentActorId,
+  });
+  const provider = new AgentSessionProvider(runtime, {
+    providerId: options.providerId,
+    providerName: options.providerName,
+  });
+  return { runtime, provider };
 }
 
 export class SessionRuntime {
@@ -143,163 +128,42 @@ export class SessionRuntime {
   private requiresLlmProfile = true;
   private externalAgentState?: ExternalSessionAgentState;
   private started = false;
-  private readonly localProviderIds = new Set<string>();
+  private readonly localProviderIds: Set<string>;
   private readonly plugins: SessionPluginManager;
   private turns!: TurnCoordinator;
   private readonly startedRuntimeConfigFingerprint: string;
   private readonly configReloader?: () => Promise<SloppyConfig>;
 
-  constructor(options?: {
-    config?: SloppyConfig;
-    sessionId?: string;
-    title?: string;
-    store?: SessionStore;
-    agentFactory?: SessionAgentFactory;
-    llmProfileManager?: LlmProfileManager;
-    ignoredProviderIds?: string[];
-    parentActorId?: string;
-    taskId?: string;
-    role?: RoleProfile;
-    roleId?: string;
-    roleRegistry?: RoleRegistry;
-    actorKind?: string;
-    actorName?: string;
-    actorId?: string;
-    launchScope?: {
-      key: string;
-      root: string;
-    };
-    requiresLlmProfile?: boolean;
-    externalAgentState?: ExternalSessionAgentState;
-    llmProfileId?: string;
-    llmModelOverride?: string;
-    policyRules?: InvokePolicy[];
-    sessionPersistencePath?: string | false;
-    approvalMode?: ApprovalMode;
-    configReloader?: () => Promise<SloppyConfig>;
-  }) {
-    this.config = options?.config ?? DEFAULT_CONFIG;
+  constructor(options: SessionRuntimeOptions = {}) {
+    this.config = options.config ?? DEFAULT_CONFIG;
     this.startedRuntimeConfigFingerprint = runtimeConfigFingerprint(this.config);
-    this.configReloader = options?.configReloader;
-    this.requiresLlmProfile = options?.requiresLlmProfile ?? true;
-    this.externalAgentState = options?.externalAgentState;
+    this.configReloader = options.configReloader;
+    this.requiresLlmProfile = options.requiresLlmProfile ?? true;
+    this.externalAgentState = options.externalAgentState;
     this.llmProfileManager =
-      options?.llmProfileManager ??
+      options.llmProfileManager ??
       createRuntimeLlmProfileManager({
         config: this.config,
       });
-    const sessionId = options?.sessionId ?? crypto.randomUUID();
-    for (const providerId of options?.ignoredProviderIds ?? []) {
-      this.localProviderIds.add(providerId);
-    }
-    this.localProviderIds.add(`sloppy-session-${sessionId}`);
+    const sessionId = options.sessionId ?? crypto.randomUUID();
+    this.localProviderIds = createLocalProviderIds(sessionId, options.ignoredProviderIds);
     const sessionPlugins = createFirstPartySessionPlugins(this.config);
-    const initialLlmRoute = resolveInitialLlmRoute(this.config);
-    this.store =
-      options?.store ??
-      new SessionStore({
-        sessionId,
-        modelProvider: initialLlmRoute.endpointId,
-        model: initialLlmRoute.model,
-        title: options?.title,
-        workspaceRoot: this.config.plugins.filesystem.root,
-        workspaceId: this.config.workspaces?.activeWorkspaceId,
-        projectId: this.config.workspaces?.activeProjectId,
-        launchScope: options?.launchScope,
-        persistencePath: resolveSessionPersistencePath(
-          this.config,
-          sessionId,
-          options?.sessionPersistencePath,
-        ),
-        snapshotMigrators: sessionPlugins.flatMap((plugin) =>
-          plugin.migrateSnapshot ? [plugin.migrateSnapshot] : [],
-        ),
-        snapshotRecoverers: sessionPlugins.flatMap((plugin) =>
-          plugin.recoverSnapshot ? [plugin.recoverSnapshot] : [],
-        ),
-        snapshotProjections: sessionPlugins.flatMap((plugin) => plugin.snapshotProjections ?? []),
-        extensionEventTypes: mergePluginExtensionEventTypes(sessionPlugins),
-      });
-    if (options?.approvalMode) {
+    this.store = createSessionStore(options, this.config, sessionId, sessionPlugins);
+    if (options.approvalMode) {
       this.store.setApprovalMode(options.approvalMode);
     }
     this.plugins = new SessionPluginManager(sessionPlugins, this.createPluginContext());
 
     if (!this.requiresLlmProfile) {
-      this.store.syncLlmState(
-        toExternalAgentLlmState(
-          this.externalAgentState ?? {
-            provider: "external",
-            model: "agent",
-          },
-        ),
-      );
+      syncExternalRuntimeLlmState(this.store, this.externalAgentState);
     }
 
-    const callbacks: AgentCallbacks = {
-      onText: (chunk) => {
-        const turnId = this.turns.snapshot().activeTurnId;
-        if (!turnId) {
-          return;
-        }
-        this.store.appendAssistantText(turnId, chunk);
-      },
-      onThinking: (delta) => {
-        const turnId = this.turns.snapshot().activeTurnId;
-        if (!turnId) {
-          return;
-        }
-        this.store.appendAssistantThinking(turnId, {
-          blockId: delta.id,
-          provider: delta.provider,
-          model: delta.model,
-          format: delta.format,
-          display: delta.display,
-          delta: delta.delta,
-          startedAt: delta.startedAt,
-          completedAt: delta.completedAt,
-          elapsedMs: delta.elapsedMs,
-          tokenCount: delta.tokenCount,
-          tokenCountSource: delta.tokenCountSource,
-          done: delta.done,
-        });
-      },
-      onToolEvent: (event) => {
-        this.turns.handleToolEvent(event);
-      },
-      onTurnUsage: (usage) => {
-        this.store.recordUsage({
-          ...usage,
-          turnId: this.turns.snapshot().activeTurnId ?? undefined,
-        });
-      },
-      onProviderSnapshot: (update) => {
-        syncProviderSnapshotToSession(this.store, update, this.turns.snapshot().pendingApproval, {
-          localProviderIds: this.localProviderIds,
-        });
-        if (update.path === SESSION_MIRROR_PATHS.approvals) {
-          this.turns.scheduleAutoApprovals();
-        }
-      },
-      onExternalProviderStates: (states) => {
-        syncExternalProviderStatesToSession(this.store, states);
-      },
-    };
-
-    const eventLogPath = process.env.SLOPPY_EVENT_LOG;
-    if (eventLogPath) {
-      this.eventBus = createAgentEventBus({
-        logPath: eventLogPath,
-        actor: {
-          id: options?.actorId ?? options?.sessionId ?? "agent",
-          name: options?.actorName ?? options?.title,
-          kind: options?.actorKind ?? "agent",
-          parentId: options?.parentActorId,
-          taskId: options?.taskId,
-        },
-        toolEventEnrichers: createFirstPartyToolEventEnrichers(this.config),
-      });
-    }
+    const callbacks = createSessionCallbacks({
+      store: this.store,
+      localProviderIds: this.localProviderIds,
+      turns: () => this.turns,
+    });
+    this.eventBus = createSessionEventBus(options, this.config);
 
     const finalCallbacks = this.eventBus
       ? mergeCallbacks(callbacks, this.eventBus.callbacks)
@@ -311,22 +175,23 @@ export class SessionRuntime {
       : undefined;
 
     const agentFactory =
-      options?.agentFactory ??
+      options.agentFactory ??
       ((callbacks, config, llmProfileManager) =>
         createDefaultSessionAgent(
           callbacks,
           config,
           llmProfileManager,
-          options?.ignoredProviderIds,
-          options?.role,
+          options.ignoredProviderIds,
+          options.role,
           {
-            roleId: options?.roleId,
-            roleRegistry: options?.roleRegistry,
+            roleId: options.roleId,
+            roleRegistry: options.roleRegistry,
             publishEvent,
-            llmProfileId: options?.llmProfileId,
-            llmModelOverride: options?.llmModelOverride,
-            policyRules: options?.policyRules,
+            llmProfileId: options.llmProfileId,
+            llmModelOverride: options.llmModelOverride,
+            policyRules: options.policyRules,
             localTools: () => this.buildLocalTools(),
+            childSessionFactory: options.childSessionFactory ?? createDefaultChildSession,
           },
         ));
     this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);

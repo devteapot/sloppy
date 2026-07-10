@@ -1,5 +1,6 @@
-import type { SessionViewSnapshot, TuiRoute } from "../backend/slop-types";
+import type { SessionViewSnapshot } from "../backend/slop-types";
 import type { SupervisorSnapshot } from "../backend/supervisor-client";
+import { builtinPaletteCommands } from "./builtin-commands";
 import type { LocalCommand } from "./command-types";
 import { projectPluginActions } from "./manifest-projection";
 
@@ -10,37 +11,11 @@ export type PaletteCommand = {
   command: LocalCommand;
 };
 
-const ROUTES: TuiRoute[] = ["chat", "setup", "approvals", "tasks", "apps", "inspect", "runtime"];
-
 export function buildCommandPaletteCommands(
   snapshot: SessionViewSnapshot,
   supervisor?: SupervisorSnapshot | null,
 ): PaletteCommand[] {
-  const commands: PaletteCommand[] = ROUTES.map((route) => ({
-    id: `route:${route}`,
-    label: `Open ${route}`,
-    command: route === "inspect" ? { type: "inspect_open" } : { type: "route", route },
-  }));
-  commands.push({
-    id: "approval-mode:toggle",
-    label: "Toggle approval mode",
-    description: "Switch the session between normal and auto approvals",
-    command: { type: "approval_mode", mode: "toggle" },
-  });
-  commands.push({
-    id: "config:reload-session",
-    label: "Reload session config",
-    description: "Reload config for the selected session",
-    command: { type: "config_reload", target: "session" },
-  });
-  if (supervisor) {
-    commands.push({
-      id: "config:reload-supervisor",
-      label: "Reload supervisor config",
-      description: "Refresh supervisor config and available scopes",
-      command: { type: "config_reload", target: "supervisor" },
-    });
-  }
+  const commands: PaletteCommand[] = builtinPaletteCommands(Boolean(supervisor));
 
   for (const item of snapshot.queue) {
     if (item.canCancel) {

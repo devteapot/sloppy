@@ -149,6 +149,13 @@ orchestration, while sibling modules own protocol parsing, descriptor constructi
 transitions, and reusable domain contracts. File length is treated as a signal to look for one of
 those ownership seams, not as a reason to move unrelated code into generic utility modules.
 
+The main seams are concrete: model-turn orchestration is separate from tool
+execution and scheduling; the Hub delegates provider connection mechanics and
+dangerous-affordance indexing; session contracts and constructor assembly sit
+outside `SessionRuntime`; first-party provider construction is separate from
+session/policy/doctor facets; and config migration/environment stages plus
+Codex auth, A2A transport, and skill discovery have domain-specific modules.
+
 ## What is implemented now
 
 ### Additional First-Party Plugin Providers

@@ -13,13 +13,14 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
-import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/catalog";
+import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/policy-facets";
 import {
   discoverProviderDescriptors,
   type ProviderDiscoveryUpdate,
   watchProviderDescriptors,
 } from "../providers/discovery";
 import { createFirstPartyProviders } from "../providers/registry";
+import type { ChildSessionFactory } from "../runtime/child-session";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
@@ -127,6 +128,7 @@ export class Agent {
   private runtimeStops: Array<{ stop(): void }> = [];
   private systemPromptFragments: string[] = [];
   private localTools?: () => LocalRuntimeTool[];
+  private childSessionFactory?: ChildSessionFactory;
 
   constructor(
     options?: {
@@ -142,6 +144,7 @@ export class Agent {
       mirrorProviderPaths?: string[];
       policyRules?: InvokePolicy[];
       localTools?: () => LocalRuntimeTool[];
+      childSessionFactory?: ChildSessionFactory;
     } & AgentCallbacks,
   ) {
     this.config = options?.config ?? DEFAULT_CONFIG;
@@ -175,6 +178,7 @@ export class Agent {
       ...(options?.policyRules ?? []),
     ];
     this.localTools = options?.localTools;
+    this.childSessionFactory = options?.childSessionFactory;
     this.history = new ConversationHistory({
       historyTurns: this.config.agent.historyTurns,
       toolResultMaxChars: this.config.agent.toolResultMaxChars,
@@ -223,6 +227,7 @@ export class Agent {
       publishEvent: (event) => this.publishEventCallback?.(event),
       roleRegistry: this.roleRegistry,
       llmProfileManager: this.llmProfileManager,
+      childSessionFactory: this.childSessionFactory,
       collectSystemPromptFragments: true,
     });
     const { hub, runtimeCtx } = bootstrap;

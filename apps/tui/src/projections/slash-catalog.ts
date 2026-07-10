@@ -1,5 +1,6 @@
 import type { PluginItem } from "../backend/slop-types";
 import { readActionSlash } from "./action-slash";
+import { BUILTIN_COMMAND_SPECS } from "./builtin-commands";
 
 // Catalog of built-in slash commands surfaced in the autocomplete popover.
 // Keep entries terse — `name` is the canonical form (no leading slash);
@@ -16,84 +17,14 @@ export type SlashCatalogOptions = {
   actionsByPath?: Record<string, string[]>;
 };
 
-export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = [
-  { name: "help", description: "Show hotkeys and slash commands" },
-  { name: "quit", aliases: ["q", "exit"], description: "Exit the TUI" },
-  { name: "clear", aliases: ["new"], description: "Discard the queued message buffer" },
-
-  { name: "chat", description: "Open the chat route" },
-  { name: "setup", description: "Manage LLM profiles and credentials" },
-  { name: "approvals", description: "Review pending approvals" },
-  { name: "tasks", description: "Inspect provider tasks" },
-  { name: "apps", description: "List attached external providers" },
-  { name: "inspect", aliases: ["tree"], description: "Open the SLOP state inspector" },
-  { name: "runtime", description: "Open runtime status and supervised sessions" },
-
-  {
-    name: "verbosity",
-    signature: "[compact|verbose]",
-    description: "Show or set chat verbosity",
-  },
-  {
-    name: "approval",
-    aliases: ["approval-mode"],
-    signature: "[normal|auto]",
-    description: "Show or set the session approval mode",
-  },
-  {
-    name: "query",
-    signature: "[app-id:]path depth [--window a:b] [--max-nodes n]",
-    description: "Query a SLOP state tree into the inspector",
-  },
-  {
-    name: "invoke",
-    signature: "[app-id:]path action {json}",
-    description: "Invoke an affordance on a SLOP node",
-  },
-
-  {
-    name: "profile",
-    signature: "<provider> <model> [--reasoning-effort high] [--thinking-display hidden]",
-    description: "Save an LLM profile (env-keyed)",
-  },
-  {
-    name: "profile-secret",
-    aliases: ["secret-profile"],
-    signature: "<provider> <model>",
-    description: "Deferred: masked profile entry is not available in the inline TUI",
-  },
-
-  {
-    name: "queue-cancel",
-    signature: "<id|position>",
-    description: "Cancel a queued user message",
-  },
-  {
-    name: "reload-config",
-    aliases: ["config-reload"],
-    signature: "[session|supervisor]",
-    description: "Reload session or supervisor config",
-  },
-
-  {
-    name: "session-new",
-    aliases: ["new-session"],
-    signature: "--workspace-id <id> --project-id <id>",
-    description: "Create a new supervised session",
-  },
-  {
-    name: "session-switch",
-    aliases: ["switch-session"],
-    signature: "<session-id>",
-    description: "Switch the TUI to another supervised session",
-  },
-  {
-    name: "session-stop",
-    aliases: ["stop-session"],
-    signature: "<session-id>",
-    description: "Stop a supervised session",
-  },
-];
+export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = BUILTIN_COMMAND_SPECS.filter(
+  (spec) => spec.discoverable !== false,
+).map(({ name, aliases, signature, description }) => ({
+  name,
+  aliases,
+  signature,
+  description,
+}));
 
 export function buildSlashEntries(
   plugins: PluginItem[] = [],

@@ -24,6 +24,35 @@ The default runtime includes:
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
 
+### Implementation Ownership Boundaries
+
+The implementation keeps orchestration entrypoints separate from independently
+substantial mechanics:
+
+- `core/loop.ts` owns model-turn orchestration; `core/loop/tool-executor.ts`
+  owns one tool invocation and `tool-scheduler.ts` owns ordering, bounded safe
+  concurrency, and approval barriers.
+- `ConsumerHub` remains the state/query/invoke and policy boundary, while
+  `provider-connection.ts` owns connection teardown mechanics and
+  `dangerous-affordance-index.ts` owns safety metadata discovered from trees.
+- `SessionRuntime` owns session lifecycle. Session-facing contracts and
+  constructor assembly live in `session/runtime-contracts.ts` and
+  `session/runtime-assembly.ts`.
+- first-party plugin identity/default metadata lives in `manifest.ts`;
+  provider construction stays in `catalog.ts`, while session, policy, and
+  doctor facets have separate composition modules.
+- config loading is a staged pipeline: legacy LLM migration, environment
+  overlays, schema validation, path normalization, and scope layering are
+  separate responsibilities.
+- integration providers keep wire mechanics in domain modules: Codex auth is
+  separate from Responses translation, A2A HTTP/JSON-RPC is separate from SLOP
+  projection, and skill discovery/path containment is separate from skill
+  affordance orchestration.
+
+Delegation receives a `ChildSessionFactory` from runtime composition. It does
+not import the concrete session runtime, which keeps the runtime/plugin graph
+acyclic and makes child-session construction explicit at the boundary.
+
 ## Provider Model
 
 Everything visible to the agent is a provider state tree with affordances:
@@ -91,8 +120,9 @@ SLOP state:
 - `/tasks` tracks remote A2A tasks observed through `SendMessage`, `GetTask`,
   `ListTasks`, and `CancelTask`.
 
-The provider sends `A2A-Version` headers, supports env-backed bearer/API-key
-credentials, and keeps remote protocol errors visible as provider state. It
+The A2A client sends `A2A-Version` headers and supports env-backed
+bearer/API-key credentials. The provider keeps remote protocol errors visible
+as provider state. It
 does not replace `meta-runtime`, `delegation`, or `messaging`; those remain the
 SLOP-native substrate for internal topology, capability masks, child sessions,
 and state-rich routing.

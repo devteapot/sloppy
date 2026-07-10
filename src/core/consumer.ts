@@ -4,16 +4,12 @@
 // class. Keeping the interface narrow is what enforces "thin core, fat
 // providers".
 
-import {
-  type HelloMessage,
-  type ResultMessage,
-  SlopConsumer,
-  type SlopNode,
-} from "@slop-ai/consumer/browser";
+import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { RegisteredProvider } from "../providers/registry";
 import { ApprovalQueue } from "./approvals";
+import { DangerousAffordanceIndex } from "./dangerous-affordance-index";
 import { debug, isDebugEnabled } from "./debug";
 import type { ProviderRuntimeHub } from "./hub";
 import {
@@ -24,37 +20,10 @@ import {
   type InvokePolicy,
   PolicyDeniedError,
 } from "./policy";
+import { type ConnectedProvider, connectProvider, disconnectProvider } from "./provider-connection";
 import type { ProviderTreeView } from "./subscriptions";
 import { buildRuntimeToolSet, type RuntimeToolSet } from "./tools";
 import { formatStateTree } from "./tree-format";
-
-type ConnectedProvider = RegisteredProvider & {
-  consumer: SlopConsumer;
-  hello: HelloMessage;
-  overviewSubscriptionId: string;
-  overviewTree: SlopNode;
-  focusSubscriptions: Map<
-    string,
-    {
-      path: string;
-      subscriptionId: string;
-      tree: SlopNode;
-      depth: number;
-    }
-  >;
-  patchListener: (subscriptionId: string) => void;
-  disconnectListener: () => void;
-  unsubscribeEvent: (() => void) | null;
-  watchedSubscriptions: Map<
-    string,
-    {
-      path: string;
-      subscriptionId: string;
-      tree: SlopNode;
-      listeners: Set<(tree: SlopNode | null) => void>;
-    }
-  >;
-};
 
 export type ExternalProviderStatus = "connected" | "disconnected" | "error" | "unloaded";
 
@@ -82,40 +51,6 @@ export type ProviderLifecycleEvent =
       providerId: string;
       reason: "disconnected" | "removed" | "reload" | "shutdown" | "unloaded";
     };
-
-const AFFORDANCE_KEY_SEPARATOR = "\u001f";
-
-function buildAffordanceKey(providerId: string, path: string, action: string): string {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return [providerId, normalizedPath, action].join(AFFORDANCE_KEY_SEPARATOR);
-}
-
-function joinPath(parent: string, segment: string): string {
-  if (parent === "/" || parent === "") {
-    return `/${segment}`;
-  }
-  return `${parent}/${segment}`;
-}
-
-function walkAffordances(
-  node: SlopNode,
-  path: string,
-  visit: (path: string, action: string, dangerous: boolean) => void,
-): void {
-  if (Array.isArray(node.affordances)) {
-    for (const aff of node.affordances) {
-      visit(path, aff.action, aff.dangerous === true);
-    }
-  }
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      if (typeof child.id !== "string" || child.id.length === 0) {
-        continue;
-      }
-      walkAffordances(child, joinPath(path, child.id), visit);
-    }
-  }
-}
 
 // Bounds for the one-shot deep query that seeds the dangerous-affordance
 // registry on provider attach. High enough to walk realistic provider trees
@@ -166,7 +101,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
    * cleared when that provider detaches, so unloaded app cards do not keep
    * stale affordance metadata alive.
    */
-  private dangerousAffordances = new Set<string>();
+  private dangerousAffordances = new DangerousAffordanceIndex();
 
   constructor(registeredProviders: RegisteredProvider[], config: SloppyConfig) {
     this.registeredProviders = registeredProviders;
@@ -219,83 +154,22 @@ export class ConsumerHub implements ProviderRuntimeHub {
     }
 
     try {
-      const consumer = new SlopConsumer(registeredProvider.transport);
-      const hello = await consumer.connect();
-      const overview = await consumer.subscribe("/", this.config.agent.overviewDepth);
-
-      const patchListener = (subscriptionId: string) => {
-        const tree = consumer.getTree(subscriptionId);
-        if (!tree) {
-          return;
-        }
-
-        const connectedProvider = this.providers.get(registeredProvider.id);
-        if (!connectedProvider) {
-          return;
-        }
-
-        if (subscriptionId === connectedProvider.overviewSubscriptionId) {
-          connectedProvider.overviewTree = tree;
-          this.recordDangerousAffordances(connectedProvider.id, tree);
-          this.bumpStateRevision();
-          return;
-        }
-
-        for (const focus of connectedProvider.focusSubscriptions.values()) {
-          if (subscriptionId !== focus.subscriptionId) {
-            continue;
-          }
-          focus.tree = tree;
-          this.recordDangerousAffordances(connectedProvider.id, tree, focus.path);
-          this.bumpStateRevision();
-          return;
-        }
-
-        for (const watched of connectedProvider.watchedSubscriptions.values()) {
-          if (subscriptionId !== watched.subscriptionId) {
-            continue;
-          }
-
-          watched.tree = tree;
-          for (const listener of watched.listeners) {
-            listener(tree);
-          }
-          this.bumpStateRevision();
-          return;
-        }
-      };
-      const disconnectListener = () => {
-        this.teardownProvider(registeredProvider.id, {
-          connectionAlive: false,
-          disconnectError: "Provider disconnected.",
-          lifecycleReason: "disconnected",
-        });
-      };
-      const unsubscribeEvent = consumer.onEvent((name, data) => {
-        for (const listener of this.providerEventListeners) {
-          listener({
-            providerId: registeredProvider.id,
-            name,
-            data,
+      const provider = await connectProvider(registeredProvider, this.config.agent.overviewDepth, {
+        onPatch: (providerId, subscriptionId, tree) =>
+          this.handleProviderPatch(providerId, subscriptionId, tree),
+        onDisconnect: (providerId) => {
+          this.teardownProvider(providerId, {
+            connectionAlive: false,
+            disconnectError: "Provider disconnected.",
+            lifecycleReason: "disconnected",
           });
-        }
+        },
+        onEvent: (providerId, name, data) => {
+          for (const listener of this.providerEventListeners) {
+            listener({ providerId, name, data });
+          }
+        },
       });
-
-      const provider: ConnectedProvider = {
-        ...registeredProvider,
-        consumer,
-        hello,
-        overviewSubscriptionId: overview.id,
-        overviewTree: overview.snapshot,
-        focusSubscriptions: new Map(),
-        patchListener,
-        disconnectListener,
-        unsubscribeEvent,
-        watchedSubscriptions: new Map(),
-      };
-
-      consumer.on("patch", patchListener);
-      consumer.on("disconnect", disconnectListener);
 
       this.providers.set(provider.id, provider);
       this.recordDangerousAffordances(provider.id, provider.overviewTree);
@@ -306,7 +180,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
       // baseline). Nodes added at runtime under subscribed subtrees are
       // picked up by the patch listener.
       try {
-        const deep = await consumer.query("/", DANGEROUS_DISCOVERY_DEPTH, {
+        const deep = await provider.consumer.query("/", DANGEROUS_DISCOVERY_DEPTH, {
           max_nodes: DANGEROUS_DISCOVERY_MAX_NODES,
         });
         this.recordDangerousAffordances(provider.id, deep);
@@ -454,6 +328,36 @@ export class ConsumerHub implements ProviderRuntimeHub {
     }
   }
 
+  private handleProviderPatch(providerId: string, subscriptionId: string, tree: SlopNode): void {
+    const provider = this.providers.get(providerId);
+    if (!provider) return;
+
+    if (subscriptionId === provider.overviewSubscriptionId) {
+      provider.overviewTree = tree;
+      this.recordDangerousAffordances(provider.id, tree);
+      this.bumpStateRevision();
+      return;
+    }
+
+    for (const focus of provider.focusSubscriptions.values()) {
+      if (subscriptionId !== focus.subscriptionId) continue;
+      focus.tree = tree;
+      this.recordDangerousAffordances(provider.id, tree, focus.path);
+      this.bumpStateRevision();
+      return;
+    }
+
+    for (const watched of provider.watchedSubscriptions.values()) {
+      if (subscriptionId !== watched.subscriptionId) continue;
+      watched.tree = tree;
+      for (const listener of watched.listeners) {
+        listener(tree);
+      }
+      this.bumpStateRevision();
+      return;
+    }
+  }
+
   private teardownProvider(
     providerId: string,
     options: {
@@ -475,42 +379,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
       return;
     }
 
-    provider.consumer.off("patch", provider.patchListener);
-    provider.consumer.off("disconnect", provider.disconnectListener);
-    provider.unsubscribeEvent?.();
-    provider.unsubscribeEvent = null;
-
-    for (const watched of provider.watchedSubscriptions.values()) {
-      try {
-        provider.consumer.unsubscribe(watched.subscriptionId);
-      } catch {
-        // The provider may have already disconnected before watched subscriptions could be removed.
-      }
-    }
-    provider.watchedSubscriptions.clear();
-
-    for (const focus of provider.focusSubscriptions.values()) {
-      try {
-        provider.consumer.unsubscribe(focus.subscriptionId);
-      } catch {
-        // The provider may have dropped between the decision to remove it and the unsubscribe call.
-      }
-    }
-    provider.focusSubscriptions.clear();
-
-    if (options.connectionAlive) {
-      try {
-        provider.consumer.unsubscribe(provider.overviewSubscriptionId);
-      } catch {
-        // The provider may have dropped before we could unsubscribe the overview subscription.
-      }
-
-      try {
-        provider.consumer.disconnect();
-      } catch {
-        // Best-effort disconnect after unsubscribe failures.
-      }
-    }
+    disconnectProvider(provider, options.connectionAlive);
 
     provider.approvals?.setQueue(null);
     if (options.stopProvider !== false) {
@@ -553,7 +422,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
    * hub has ever seen, not just the currently-focused subtree.
    */
   isDangerousAffordance(providerId: string, path: string, action: string): boolean {
-    return this.dangerousAffordances.has(buildAffordanceKey(providerId, path, action));
+    return this.dangerousAffordances.has(providerId, path, action);
   }
 
   private recordDangerousAffordances(
@@ -561,17 +430,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
     tree: SlopNode,
     rootPath: string = "/",
   ): boolean {
-    let added = false;
-    walkAffordances(tree, rootPath, (path, action, dangerous) => {
-      if (dangerous) {
-        const before = this.dangerousAffordances.size;
-        this.dangerousAffordances.add(buildAffordanceKey(providerId, path, action));
-        if (this.dangerousAffordances.size > before) {
-          added = true;
-        }
-      }
-    });
-    return added;
+    return this.dangerousAffordances.record(providerId, tree, rootPath);
   }
 
   getProviderViews(): ProviderTreeView[] {
@@ -931,12 +790,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
   }
 
   private clearDangerousAffordances(providerId: string): void {
-    const prefix = `${providerId}${AFFORDANCE_KEY_SEPARATOR}`;
-    for (const key of [...this.dangerousAffordances]) {
-      if (key.startsWith(prefix)) {
-        this.dangerousAffordances.delete(key);
-      }
-    }
+    this.dangerousAffordances.clearProvider(providerId);
   }
 
   private bumpStateRevision(): void {

@@ -17,6 +17,9 @@ Checked in now:
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order
+- explicit runtime ownership seams for model-turn orchestration, tool
+  execution/scheduling, provider connection lifecycle, session assembly, and
+  child-session construction, with no runtime import cycles
 - default first-party plugins: `apps`, `terminal`, `filesystem`
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
@@ -45,7 +48,8 @@ Checked in now:
 - ACP adapters selectable as first-class main-session LLM profiles behind the
   same session-provider boundary
 - native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
-  by the Codex CLI auth store created by `codex login`
+  by the Codex CLI auth store created by `codex login`; auth-file discovery and
+  OAuth refresh are isolated from the model protocol adapter
 - runtime smoke harness (`bun run runtime:smoke`) covering provider-level
   meta-runtime routing plus native and ACP delegated-child modes
 - opt-in live headless CLI e2e (`SLOPPY_RUN_LIVE_E2E=1 bun test

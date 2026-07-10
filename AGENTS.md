@@ -93,14 +93,19 @@ src/
   cli.ts
   index.ts
   config/
+    environment.ts
+    json.ts
+    llm-migrations.ts
     persist.ts
   core/
+    loop/
   llm/
     anthropic.ts
     catalog.ts
     credential-store.ts
     factory.ts
     gemini.ts
+    openai-codex-auth.ts
     openai-codex.ts
     openai-compatible.ts
     profile-manager.ts
@@ -111,6 +116,8 @@ src/
     acp/
     delegation/
   session/
+    runtime-assembly.ts
+    runtime-contracts.ts
 tests/
 docs/
 ```

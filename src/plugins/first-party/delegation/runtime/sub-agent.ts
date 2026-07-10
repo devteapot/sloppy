@@ -5,12 +5,11 @@ import type { ProviderRuntimeHub } from "../../../../core/hub";
 import type { LlmProfileManager } from "../../../../llm/profile-manager";
 import { InProcessTransport } from "../../../../providers/in-process";
 import type { RegisteredProvider } from "../../../../providers/registry";
-import { AgentSessionProvider } from "../../../../session/provider";
-import {
-  type ExternalSessionAgentState,
-  type SendMessageResult,
-  type SessionAgentFactory,
-  SessionRuntime,
+import type { ChildSessionFactory, ChildSessionHandle } from "../../../../runtime/child-session";
+import type {
+  ExternalSessionAgentState,
+  SendMessageResult,
+  SessionAgentFactory,
 } from "../../../../session/runtime";
 import type { AgentTurnState } from "../../../../session/types";
 
@@ -54,6 +53,7 @@ export interface SubAgentRunnerOptions {
    * Optional list of first-party plugin ids to force-disable in the child runtime.
    */
   disableFirstPartyPlugins?: string[];
+  childSessionFactory: ChildSessionFactory;
 }
 
 export class SubAgentRunner {
@@ -63,8 +63,8 @@ export class SubAgentRunner {
   readonly sessionProviderId: string;
 
   private parentHub: ProviderRuntimeHub;
-  private runtime: SessionRuntime;
-  private provider: AgentSessionProvider;
+  private runtime: ChildSessionHandle["runtime"];
+  private provider: ChildSessionHandle["provider"];
   private status: SubAgentStatus = "pending";
   private listeners = new Set<SubAgentListener>();
   private unsubscribeStore: (() => void) | null = null;
@@ -106,10 +106,12 @@ export class SubAgentRunner {
       plugins: overriddenPlugins,
     };
 
-    this.runtime = new SessionRuntime({
+    const child = options.childSessionFactory({
       config: childConfig,
       sessionId: this.sessionProviderId,
       title: options.name,
+      providerId: this.sessionProviderId,
+      providerName: `Sub-agent: ${options.name}`,
       agentFactory: options.agentFactory,
       ignoredProviderIds: [this.sessionProviderId],
       llmProfileManager: options.llmProfileManager,
@@ -123,11 +125,8 @@ export class SubAgentRunner {
           : undefined,
       parentActorId: "parent",
     });
-
-    this.provider = new AgentSessionProvider(this.runtime, {
-      providerId: this.sessionProviderId,
-      providerName: `Sub-agent: ${options.name}`,
-    });
+    this.runtime = child.runtime;
+    this.provider = child.provider;
   }
 
   onChange(listener: SubAgentListener): () => void {

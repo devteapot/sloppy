@@ -4,7 +4,7 @@ import { createDefaultConfig } from "../src/config/load";
 import {
   createFirstPartySessionPlugins,
   metadataSessionPlugin,
-} from "../src/plugins/first-party/catalog";
+} from "../src/plugins/first-party/session-facets";
 import { validateDescriptor } from "../src/providers/descriptor-validation";
 
 describe("validateDescriptor", () => {
