@@ -4,7 +4,7 @@ import { createDefaultConfig } from "../src/config/load";
 import {
   createFirstPartySessionPlugins,
   metadataSessionPlugin,
-} from "../src/plugins/first-party/catalog";
+} from "../src/plugins/first-party/session-facets";
 import { validateDescriptor } from "../src/providers/descriptor-validation";
 
 describe("validateDescriptor", () => {
@@ -128,7 +128,7 @@ describe("first-party plugin catalog validation", () => {
         description: "test descriptor",
         extensionNamespaces: ["goal"],
       }),
-    ).toThrow("declares extensionNamespaces but no createSessionPlugin");
+    ).toThrow("declares extensionNamespaces but has no session facet");
   });
 
   test("metadata-only session plugins without namespaces are allowed", () => {

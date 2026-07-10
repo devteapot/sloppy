@@ -1,11 +1,23 @@
-import { createHash } from "node:crypto";
-
-import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+import { createSlopServer, type SlopServer } from "@slop-ai/server";
 
 import type { ProviderRuntimeHub } from "../../../core/hub";
 import type { RuntimeEvent } from "../../../core/role";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
 import { now } from "../shared/runtime-helpers";
+import {
+  emptySkillImportSummary,
+  parseRuntimeBundle,
+  type RuntimeBundle,
+  type RuntimeBundleSkill,
+  type RuntimeBundleSkillFile,
+  type SkillImportSummary,
+  sha256,
+} from "./meta-runtime-bundle";
+import {
+  buildMetaRuntimeCollectionDescriptor,
+  buildMetaRuntimePatternsDescriptor,
+  buildMetaRuntimeProposalsDescriptor,
+} from "./meta-runtime-collection-descriptors";
 import { dispatchMetaRuntimeRoute } from "./meta-runtime-dispatch";
 import {
   createTopologyExperiment,
@@ -79,153 +91,6 @@ export type {
   TopologyPattern,
 } from "./meta-runtime-model";
 
-function sha256(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
-}
-
-function emptySkillImportSummary(): SkillImportSummary {
-  return { created: [], skipped: [], failed: [], skippedFiles: [] };
-}
-
-function validateBundleHash(label: string, content: string, expected: unknown): string | undefined {
-  if (expected === undefined) {
-    return undefined;
-  }
-  if (typeof expected !== "string" || expected.trim() === "") {
-    throw new Error(`${label} must be a non-empty string when provided.`);
-  }
-  const actual = sha256(content);
-  if (expected !== actual) {
-    throw new Error(`${label} does not match bundled content.`);
-  }
-  return expected;
-}
-
-function validateBundleFilePath(path: string, label: string): void {
-  if (path.startsWith("/") || path.startsWith("\\") || path.split(/[\\/]+/).includes("..")) {
-    throw new Error(`${label} must be a relative path inside the skill directory.`);
-  }
-}
-
-function parseRuntimeBundle(raw: unknown): RuntimeBundle {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("bundle must be an object.");
-  }
-  const record = raw as Record<string, unknown>;
-  if (record.kind !== "sloppy.meta-runtime.bundle") {
-    throw new Error("bundle.kind must be sloppy.meta-runtime.bundle.");
-  }
-  if (record.schema_version !== 1) {
-    throw new Error("bundle.schema_version must be 1.");
-  }
-  const state = record.state;
-  if (!state || typeof state !== "object" || Array.isArray(state)) {
-    throw new Error("bundle.state must be an object.");
-  }
-  const rawSkills = Array.isArray(record.skills) ? record.skills : [];
-  const skills: RuntimeBundleSkill[] = rawSkills.map((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`bundle.skills[${index}] must be an object.`);
-    }
-    const skill = entry as Record<string, unknown>;
-    if (typeof skill.name !== "string" || skill.name.trim() === "") {
-      throw new Error(`bundle.skills[${index}].name must be a non-empty string.`);
-    }
-    if (typeof skill.content !== "string" || skill.content.trim() === "") {
-      throw new Error(`bundle.skills[${index}].content must be a non-empty string.`);
-    }
-    return {
-      name: skill.name,
-      version: typeof skill.version === "string" ? skill.version : undefined,
-      scope: typeof skill.scope === "string" ? skill.scope : undefined,
-      content: skill.content,
-      content_sha256: validateBundleHash(
-        `bundle.skills[${index}].content_sha256`,
-        skill.content,
-        skill.content_sha256,
-      ),
-      files: parseBundleSkillFiles(skill.files, index),
-    };
-  });
-  return {
-    kind: "sloppy.meta-runtime.bundle",
-    schema_version: 1,
-    exported_at: typeof record.exported_at === "string" ? record.exported_at : now(),
-    scope:
-      record.scope === "global" || record.scope === "workspace" || record.scope === "session"
-        ? record.scope
-        : "merged",
-    state: parsePersistedState(state),
-    skills,
-    notes: { secrets: "excluded" },
-  };
-}
-
-function parseBundleSkillFiles(raw: unknown, skillIndex: number): RuntimeBundleSkillFile[] {
-  if (raw === undefined) return [];
-  if (!Array.isArray(raw)) {
-    throw new Error(`bundle.skills[${skillIndex}].files must be an array.`);
-  }
-  return raw.map((entry, fileIndex) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`bundle.skills[${skillIndex}].files[${fileIndex}] must be an object.`);
-    }
-    const file = entry as Record<string, unknown>;
-    if (typeof file.path !== "string" || file.path.trim() === "") {
-      throw new Error(
-        `bundle.skills[${skillIndex}].files[${fileIndex}].path must be a non-empty string.`,
-      );
-    }
-    validateBundleFilePath(file.path, `bundle.skills[${skillIndex}].files[${fileIndex}].path`);
-    if (typeof file.content !== "string") {
-      throw new Error(`bundle.skills[${skillIndex}].files[${fileIndex}].content must be a string.`);
-    }
-    return {
-      path: file.path,
-      content: file.content,
-      sha256: validateBundleHash(
-        `bundle.skills[${skillIndex}].files[${fileIndex}].sha256`,
-        file.content,
-        file.sha256,
-      ),
-    };
-  });
-}
-
-type RuntimeBundleSkillFile = {
-  path: string;
-  content: string;
-  sha256?: string;
-};
-
-type RuntimeBundleSkill = {
-  name: string;
-  version?: string;
-  scope?: string;
-  content: string;
-  content_sha256?: string;
-  files: RuntimeBundleSkillFile[];
-};
-
-type RuntimeBundle = {
-  kind: "sloppy.meta-runtime.bundle";
-  schema_version: 1;
-  exported_at: string;
-  scope: MetaScope | "merged";
-  state: PersistedState;
-  skills: RuntimeBundleSkill[];
-  notes: {
-    secrets: "excluded";
-  };
-};
-
-type SkillImportSummary = {
-  created: string[];
-  skipped: string[];
-  failed: Array<{ name: string; reason: string }>;
-  skippedFiles: Array<{ name: string; path: string; reason: string }>;
-};
-
 export class MetaRuntimeProvider {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
@@ -263,28 +128,50 @@ export class MetaRuntimeProvider {
     this.load();
 
     this.server.register("session", () => this.buildSessionDescriptor());
-    this.server.register("agents", () => this.collection("agents", listById(this.agents)));
-    this.server.register("profiles", () => this.collection("profiles", listByName(this.profiles)));
-    this.server.register("channels", () => this.collection("channels", listById(this.channels)));
-    this.server.register("routes", () => this.collection("routes", listById(this.routes)));
+    this.server.register("agents", () =>
+      buildMetaRuntimeCollectionDescriptor("agents", listById(this.agents)),
+    );
+    this.server.register("profiles", () =>
+      buildMetaRuntimeCollectionDescriptor("profiles", listByName(this.profiles)),
+    );
+    this.server.register("channels", () =>
+      buildMetaRuntimeCollectionDescriptor("channels", listById(this.channels)),
+    );
+    this.server.register("routes", () =>
+      buildMetaRuntimeCollectionDescriptor("routes", listById(this.routes)),
+    );
     this.server.register("capabilities", () =>
-      this.collection("capabilities", listById(this.capabilities)),
+      buildMetaRuntimeCollectionDescriptor("capabilities", listById(this.capabilities)),
     );
     this.server.register("executor-bindings", () =>
-      this.collection("executor-bindings", listById(this.executorBindings)),
+      buildMetaRuntimeCollectionDescriptor("executor-bindings", listById(this.executorBindings)),
     );
     this.server.register("skill-versions", () =>
-      this.collection("skill-versions", listById(this.skillVersions)),
+      buildMetaRuntimeCollectionDescriptor("skill-versions", listById(this.skillVersions)),
     );
     this.server.register("experiments", () =>
-      this.collection("experiments", listById(this.experiments)),
+      buildMetaRuntimeCollectionDescriptor("experiments", listById(this.experiments)),
     );
     this.server.register("evaluations", () =>
-      this.collection("evaluations", listById(this.evaluations)),
+      buildMetaRuntimeCollectionDescriptor("evaluations", listById(this.evaluations)),
     );
-    this.server.register("proposals", () => this.buildProposalsDescriptor());
-    this.server.register("patterns", () => this.buildPatternsDescriptor());
-    this.server.register("events", () => this.collection("events", this.events));
+    this.server.register("proposals", () =>
+      buildMetaRuntimeProposalsDescriptor({
+        proposals: this.proposals,
+        requiresApproval: (proposal) => this.recomputeProposalApproval(proposal),
+        applyProposal: (id) => this.applyProposal(id),
+        revertProposal: (id) => this.revertProposal(id),
+      }),
+    );
+    this.server.register("patterns", () =>
+      buildMetaRuntimePatternsDescriptor({
+        patterns: this.patterns,
+        proposeFromPattern: (params) => this.proposeFromPattern(params),
+      }),
+    );
+    this.server.register("events", () =>
+      buildMetaRuntimeCollectionDescriptor("events", this.events),
+    );
     this.server.register("approvals", () => this.approvals.buildDescriptor());
   }
 
@@ -1065,120 +952,11 @@ export class MetaRuntimeProvider {
     });
   }
 
-  private buildProposalsDescriptor() {
-    const items: ItemDescriptor[] = listById(this.proposals).map((proposal) => {
-      const requiresApproval = this.recomputeProposalApproval(proposal);
-      return {
-        id: proposal.id,
-        props: { ...proposal, requiresApproval },
-        summary: proposal.summary,
-        actions: {
-          ...(proposal.status === "proposed"
-            ? {
-                apply_proposal: action(async () => this.applyProposal(proposal.id), {
-                  label: "Apply Proposal",
-                  description:
-                    "Apply this topology proposal. Privileged or persistent changes request approval.",
-                  dangerous: requiresApproval,
-                  estimate: "fast",
-                }),
-                revert_proposal: action(async () => this.revertProposal(proposal.id), {
-                  label: "Revert Proposal",
-                  description: "Mark this proposed topology change as reverted.",
-                  estimate: "instant",
-                }),
-              }
-            : {}),
-        },
-        meta: {
-          urgency: requiresApproval && proposal.status === "proposed" ? "high" : "low",
-        },
-      };
-    });
-
-    return {
-      type: "collection",
-      props: {
-        count: items.length,
-      },
-      summary: "Pending and resolved meta-runtime topology proposals.",
-      items,
-    };
-  }
-
   private recomputeProposalApproval(proposal: Proposal): boolean {
     const requiresApproval = classifyApproval(proposal.scope, proposal.ops);
     if (proposal.requiresApproval !== requiresApproval) {
       proposal.requiresApproval = requiresApproval;
     }
     return requiresApproval;
-  }
-
-  private buildPatternsDescriptor() {
-    const items: ItemDescriptor[] = listByName(this.patterns).map((pattern) => ({
-      id: pattern.id,
-      props: pattern,
-      summary: pattern.summary ?? pattern.name,
-      actions: {
-        propose_from_pattern: action(
-          {
-            scope: {
-              type: "string",
-              enum: ["session", "workspace", "global"],
-              optional: true,
-            },
-            summary: {
-              type: "string",
-              optional: true,
-            },
-            rationale: {
-              type: "string",
-              optional: true,
-            },
-            ttl_ms: {
-              type: "number",
-              optional: true,
-            },
-            ops: {
-              type: "array",
-              description:
-                "Explicit typed TopologyChange operations adapted from this pattern for the current graph.",
-              items: { type: "object", additionalProperties: true },
-            },
-          },
-          (params) => this.proposeFromPattern({ ...params, pattern_id: pattern.id }),
-          {
-            label: "Propose From Pattern",
-            description:
-              "Create a topology proposal from this archived pattern using explicit adapted operations.",
-            estimate: "fast",
-          },
-        ),
-      },
-    }));
-
-    return {
-      type: "collection",
-      props: {
-        count: items.length,
-      },
-      summary: "Reusable topology patterns archived from promoted experiments.",
-      items,
-    };
-  }
-
-  private collection(name: string, items: Array<Record<string, unknown>>) {
-    return {
-      type: "collection",
-      props: {
-        count: items.length,
-      },
-      summary: `Meta-runtime ${name}.`,
-      items: items.map((item) => ({
-        id: String(item.id),
-        props: item,
-        summary: String(item.name ?? item.summary ?? item.id),
-      })),
-    };
   }
 }

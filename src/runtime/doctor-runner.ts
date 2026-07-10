@@ -9,7 +9,7 @@ import { LlmProfileManager } from "../llm/profile-manager";
 import {
   createFirstPartyDoctorChecks,
   createFirstPartyDoctorSubprocessProbes,
-} from "../plugins/first-party/catalog";
+} from "../plugins/first-party/doctor-facets";
 import { loadPersistedSessionSnapshot } from "../session/store/persistence";
 import { findExecutable } from "./doctor-helpers";
 import type {

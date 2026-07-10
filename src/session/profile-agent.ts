@@ -20,6 +20,7 @@ import {
   acpProfileFingerprint,
   createAcpProfileSessionAgent,
 } from "../plugins/first-party/delegation/acp-profile";
+import type { ChildSessionFactory } from "../runtime/child-session";
 import type { SessionAgent } from "./runtime";
 
 type ProfileSessionAgentOptions = {
@@ -35,6 +36,7 @@ type ProfileSessionAgentOptions = {
   mirrorProviderPaths?: string[];
   policyRules?: InvokePolicy[];
   localTools?: () => LocalRuntimeTool[];
+  childSessionFactory?: ChildSessionFactory;
   callbacks: AgentCallbacks;
 };
 
@@ -61,6 +63,7 @@ export class ProfileSessionAgent implements SessionAgent {
   private readonly mirrorProviderPaths: string[];
   private readonly policyRules?: InvokePolicy[];
   private readonly localTools?: () => LocalRuntimeTool[];
+  private readonly childSessionFactory?: ChildSessionFactory;
   private readonly callbacks: AgentCallbacks;
   private inner: SessionAgent | null = null;
   private innerFingerprint: string | null = null;
@@ -78,6 +81,7 @@ export class ProfileSessionAgent implements SessionAgent {
     this.mirrorProviderPaths = options.mirrorProviderPaths ?? [];
     this.policyRules = options.policyRules;
     this.localTools = options.localTools;
+    this.childSessionFactory = options.childSessionFactory;
     this.callbacks = options.callbacks;
   }
 
@@ -262,6 +266,7 @@ export class ProfileSessionAgent implements SessionAgent {
       mirrorProviderPaths: this.mirrorProviderPaths,
       policyRules: this.policyRules,
       localTools: this.localTools,
+      childSessionFactory: this.childSessionFactory,
       ...this.callbacks,
     });
   }

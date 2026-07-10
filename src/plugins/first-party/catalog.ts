@@ -2,36 +2,26 @@ import { join } from "node:path";
 
 import { getHomeConfigPath } from "../../config/load";
 import type { SloppyConfig } from "../../config/schema";
-import type { InvokePolicy } from "../../core/policy";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
-import type {
-  RuntimeDoctorCheckFactory,
-  RuntimeDoctorSubprocessProbeFactory,
-} from "../../runtime/doctor-types";
-import type { ToolEventEnricher } from "../../session/event-bus";
-import type { SessionRuntimePlugin } from "../../session/plugins";
-import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
 import { CronProvider } from "./cron/provider";
-import { checkAcpAdapter, checkAcpBoundary, collectAcpSubprocessProbes } from "./delegation/doctor";
 import { DelegationProvider } from "./delegation/provider";
-import { attachSubAgentRunnerFactory, createDelegationWaitTool } from "./delegation/runtime";
-import { filesystemToolEventEnricher } from "./filesystem/audit";
-import { checkWorkspacePaths } from "./filesystem/doctor";
+import { attachSubAgentRunnerFactory } from "./delegation/runtime/runner-factory";
 import { FilesystemProvider } from "./filesystem/provider";
-import { checkMcpEnvironmentExposure, collectMcpSubprocessProbes } from "./mcp/doctor";
+import {
+  type FirstPartyPluginMetadata,
+  firstPartyPluginMetadata,
+  isFirstPartyPluginEnabled,
+} from "./manifest";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
-import { checkMetaRuntimePersistence } from "./meta-runtime/doctor";
 import { MetaRuntimeProvider } from "./meta-runtime/provider";
-import { createPersistentGoalPlugin } from "./persistent-goal/session";
 import { SkillsProvider } from "./skills/provider";
 import { SpecProvider } from "./spec/provider";
-import { terminalSafetyRule } from "./terminal/policy";
 import { TerminalProvider } from "./terminal/provider";
 import { VisionProvider } from "./vision/provider";
 import { WebProvider } from "./web/provider";
@@ -46,41 +36,16 @@ function registeredProvider(
   };
 }
 
-export function metadataSessionPlugin(plugin: FirstPartyPluginDescriptor): SessionRuntimePlugin {
-  if (plugin.extensionNamespaces?.length) {
-    // A descriptor that owns extension namespaces needs runtime behavior
-    // (projection, recovery, event mapping); a metadata-only session plugin
-    // would silently no-op. Fail fast — this is a first-party catalog bug.
-    throw new Error(
-      `First-party plugin '${plugin.id}' declares extensionNamespaces but no createSessionPlugin.`,
-    );
-  }
-  return {
-    id: plugin.id,
-    version: plugin.version,
-    description: plugin.description,
-    defaultEnabled: plugin.defaultEnabled,
-    providerIds: plugin.providerIds,
-    extensionNamespaces: plugin.extensionNamespaces,
-    ui: plugin.ui,
-  };
-}
+export type FirstPartyPluginDescriptor = FirstPartyPluginMetadata & {
+  createProviders?: (config: SloppyConfig) => RegisteredProvider[];
+};
 
 export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {
-    id: "persistent-goal",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Persistent long-running session objective controls.",
-    extensionNamespaces: ["goal"],
-    createSessionPlugin: () => createPersistentGoalPlugin(),
+    ...firstPartyPluginMetadata("persistent-goal"),
   },
   {
-    id: "apps",
-    version: "1.0.0",
-    defaultEnabled: true,
-    description: "External app discovery and load/unload controls.",
-    providerIds: ["apps"],
+    ...firstPartyPluginMetadata("apps"),
     createProviders: () => {
       const apps = new AppsProvider();
       return [
@@ -109,12 +74,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "terminal",
-    version: "1.0.0",
-    defaultEnabled: true,
-    description: "Terminal command execution provider.",
-    providerIds: ["terminal"],
-    policyRules: () => [terminalSafetyRule],
+    ...firstPartyPluginMetadata("terminal"),
     createProviders: (config) => {
       const plugin = config.plugins.terminal;
       const terminal = new TerminalProvider({
@@ -135,13 +95,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "filesystem",
-    version: "1.0.0",
-    defaultEnabled: true,
-    description: "Workspace filesystem state and file editing provider.",
-    providerIds: ["filesystem"],
-    doctorChecks: () => [checkWorkspacePaths],
-    toolEventEnrichers: () => [filesystemToolEventEnricher],
+    ...firstPartyPluginMetadata("filesystem"),
     createProviders: (config) => {
       const plugin = config.plugins.filesystem;
       const filesystem = new FilesystemProvider({
@@ -165,11 +119,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "memory",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Session memory provider.",
-    providerIds: ["memory"],
+    ...firstPartyPluginMetadata("memory"),
     createProviders: (config) => {
       const plugin = config.plugins.memory;
       const memory = new MemoryProvider({
@@ -190,11 +140,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "skills",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Hermes-style skill discovery and management provider.",
-    providerIds: ["skills"],
+    ...firstPartyPluginMetadata("skills"),
     createProviders: (config) => {
       const plugin = config.plugins.skills;
       const metaRuntime = config.plugins["meta-runtime"];
@@ -227,13 +173,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "meta-runtime",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Optional topology and self-evolution provider.",
-    providerIds: ["meta-runtime"],
-    ui: {},
-    doctorChecks: () => [checkMetaRuntimePersistence],
+    ...firstPartyPluginMetadata("meta-runtime"),
     createProviders: (config) => {
       const plugin = config.plugins["meta-runtime"];
       const metaRuntime = new MetaRuntimeProvider({
@@ -261,11 +201,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "web",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Web search and read provider.",
-    providerIds: ["web"],
+    ...firstPartyPluginMetadata("web"),
     createProviders: (config) => {
       const web = new WebProvider({ historyLimit: config.plugins.web.historyLimit });
       return [
@@ -281,11 +217,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "browser",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Browser automation provider.",
-    providerIds: ["browser"],
+    ...firstPartyPluginMetadata("browser"),
     createProviders: (config) => {
       const plugin = config.plugins.browser;
       const browser = new BrowserProvider({
@@ -304,11 +236,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "cron",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Scheduled job provider.",
-    providerIds: ["cron"],
+    ...firstPartyPluginMetadata("cron"),
     createProviders: (config) => {
       const cron = new CronProvider({ maxJobs: config.plugins.cron.maxJobs });
       return [
@@ -335,11 +263,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "messaging",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Internal typed messaging provider.",
-    providerIds: ["messaging"],
+    ...firstPartyPluginMetadata("messaging"),
     createProviders: (config) => {
       const messaging = new MessagingProvider({
         maxMessages: config.plugins.messaging.maxMessages,
@@ -357,13 +281,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "delegation",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Delegated child-agent provider and wait tool.",
-    providerIds: ["delegation"],
-    doctorChecks: () => [checkAcpAdapter, checkAcpBoundary],
-    doctorSubprocessProbes: () => [collectAcpSubprocessProbes],
+    ...firstPartyPluginMetadata("delegation"),
     createProviders: (config) => {
       const delegation = new DelegationProvider({
         maxAgents: config.plugins.delegation.maxAgents,
@@ -387,7 +305,13 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
               "After retrieving a child's final result, close that child session unless you need a follow-up turn.",
             ].join("\n"),
           attachRuntime: (hub, hubConfig, ctx) => {
-            attachSubAgentRunnerFactory(delegation, hub, hubConfig, ctx?.llmProfileManager);
+            attachSubAgentRunnerFactory(
+              delegation,
+              hub,
+              hubConfig,
+              ctx?.llmProfileManager,
+              ctx?.childSessionFactory,
+            );
             return {
               stop() {},
             };
@@ -395,21 +319,9 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
         }),
       ];
     },
-    createSessionPlugin: () => ({
-      id: "delegation",
-      version: "1.0.0",
-      description: "Delegated child-agent provider and wait tool.",
-      defaultEnabled: false,
-      providerIds: ["delegation"],
-      localTools: () => [createDelegationWaitTool()],
-    }),
   },
   {
-    id: "spec",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Workspace specification provider.",
-    providerIds: ["spec"],
+    ...firstPartyPluginMetadata("spec"),
     createProviders: (config) => {
       const spec = new SpecProvider({ workspaceRoot: config.plugins.filesystem.root });
       return [
@@ -424,11 +336,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "vision",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Image generation and analysis provider.",
-    providerIds: ["vision"],
+    ...firstPartyPluginMetadata("vision"),
     createProviders: (config) => {
       const plugin = config.plugins.vision;
       const vision = new VisionProvider({
@@ -449,11 +357,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "workspaces",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "Workspace and scoped config provider.",
-    providerIds: ["workspaces"],
+    ...firstPartyPluginMetadata("workspaces"),
     createProviders: (config) => {
       const workspaces = new WorkspacesProvider({
         registry: config.workspaces,
@@ -477,11 +381,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "a2a",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "A2A interoperability provider.",
-    providerIds: ["a2a"],
+    ...firstPartyPluginMetadata("a2a"),
     createProviders: (config) => {
       const plugin = config.plugins.a2a;
       const a2a = new A2AProvider({
@@ -512,13 +412,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
     },
   },
   {
-    id: "mcp",
-    version: "1.0.0",
-    defaultEnabled: false,
-    description: "MCP compatibility provider.",
-    providerIds: ["mcp"],
-    doctorChecks: () => [checkMcpEnvironmentExposure],
-    doctorSubprocessProbes: () => [collectMcpSubprocessProbes],
+    ...firstPartyPluginMetadata("mcp"),
     createProviders: (config) => {
       const plugin = config.plugins.mcp;
       const mcp = new McpProvider({
@@ -550,13 +444,6 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
 ];
 
-export function isFirstPartyPluginEnabled(
-  config: SloppyConfig,
-  plugin: FirstPartyPluginDescriptor,
-): boolean {
-  return config.plugins[plugin.id]?.enabled ?? plugin.defaultEnabled;
-}
-
 export function activeFirstPartyPlugins(config: SloppyConfig): FirstPartyPluginDescriptor[] {
   return FIRST_PARTY_PLUGINS.filter((plugin) => isFirstPartyPluginEnabled(config, plugin));
 }
@@ -567,28 +454,14 @@ export function createFirstPartyPluginProviders(config: SloppyConfig): Registere
   );
 }
 
-export function createFirstPartySessionPlugins(config: SloppyConfig): SessionRuntimePlugin[] {
-  return activeFirstPartyPlugins(config).map((plugin) =>
-    plugin.createSessionPlugin ? plugin.createSessionPlugin(config) : metadataSessionPlugin(plugin),
-  );
-}
-
-export function createFirstPartyPluginPolicyRules(config: SloppyConfig): InvokePolicy[] {
-  return activeFirstPartyPlugins(config).flatMap((plugin) => plugin.policyRules?.(config) ?? []);
-}
-
-export function createFirstPartyToolEventEnrichers(config: SloppyConfig): ToolEventEnricher[] {
-  return activeFirstPartyPlugins(config).flatMap(
-    (plugin) => plugin.toolEventEnrichers?.(config) ?? [],
-  );
-}
-
-export function createFirstPartyDoctorChecks(config: SloppyConfig): RuntimeDoctorCheckFactory[] {
-  return FIRST_PARTY_PLUGINS.flatMap((plugin) => plugin.doctorChecks?.(config) ?? []);
-}
-
-export function createFirstPartyDoctorSubprocessProbes(
-  config: SloppyConfig,
-): RuntimeDoctorSubprocessProbeFactory[] {
-  return FIRST_PARTY_PLUGINS.flatMap((plugin) => plugin.doctorSubprocessProbes?.(config) ?? []);
-}
+export {
+  createFirstPartyDoctorChecks,
+  createFirstPartyDoctorSubprocessProbes,
+} from "./doctor-facets";
+export { isFirstPartyPluginEnabled } from "./manifest";
+export { createFirstPartyPluginPolicyRules } from "./policy-facets";
+export {
+  createFirstPartySessionPlugins,
+  createFirstPartyToolEventEnrichers,
+  metadataSessionPlugin,
+} from "./session-facets";

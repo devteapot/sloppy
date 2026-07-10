@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { SloppyConfig } from "../src/config/schema";
 import { ConsumerHub } from "../src/core/consumer";
 import { SubAgentRunner } from "../src/plugins/first-party/delegation/runtime";
+import { AgentSessionProvider } from "../src/session/provider";
+import { SessionRuntime } from "../src/session/runtime";
 import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig();
@@ -98,6 +100,14 @@ describe("kernel boundary: sub-agent runs with the lean child runtime", () => {
         parentHub: hub,
         parentConfig: config,
         llmProfileManager: stubLlmProfileManager,
+        childSessionFactory: (options) => {
+          const runtime = new SessionRuntime(options);
+          const provider = new AgentSessionProvider(runtime, {
+            providerId: options.providerId,
+            providerName: options.providerName,
+          });
+          return { runtime, provider };
+        },
         agentFactory: (callbacks, childConfig) => {
           capturedPlugins = childConfig.plugins;
           return {

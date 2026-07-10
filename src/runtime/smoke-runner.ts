@@ -14,6 +14,7 @@ import type { ConsumerHub } from "../core/consumer";
 import { LlmConfigurationError, type LlmProfileManager } from "../llm/profile-manager";
 import { buildRuntimeSloppyConfig } from "../llm/runtime-config";
 import { type AgentEventBus, createAgentEventBus } from "../session/event-bus";
+import { createDefaultChildSession } from "../session/runtime";
 
 export type RuntimeSmokeMode = "providers" | "native" | "acp";
 
@@ -378,6 +379,7 @@ export async function runRuntimeSmoke(
       },
       publishEvent: eventBus?.publish,
       llmProfileManager: options.llmProfileManager,
+      childSessionFactory: createDefaultChildSession,
     });
     hub = bootstrap.hub;
     stops = bootstrap.runtimeStops;

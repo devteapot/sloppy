@@ -1,196 +1,41 @@
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
-import { parse as parseYaml } from "yaml";
 
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
 import { isWithinRoot, safeRealpath } from "../../../providers/path-containment";
-
-type SkillScope = "session" | "workspace" | "global" | "builtin" | "imported";
-type WritableSkillScope = Exclude<SkillScope, "builtin" | "imported">;
-
-type SkillInfo = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  tags: string[];
-  related_skills: string[];
-  dangerous: boolean;
-  platforms: string[];
-  category?: string;
-  metadata: Record<string, unknown>;
-  skill_path: string;
-  file_path: string;
-  directory?: string;
-  supporting_files: string[];
-  scope: SkillScope;
-  content?: string;
-};
-
-type SkillRoot = {
-  scope: Exclude<SkillScope, "session">;
-  dir: string;
-  idPrefix: string;
-};
-
-type SkillProposal = {
-  id: string;
-  scope: WritableSkillScope;
-  name: string;
-  version: string;
-  body: string;
-  status: "proposed" | "active" | "rejected";
-  created_at: string;
-  activated_at?: string;
-  requires_approval: boolean;
-};
-
-type SkillManageOperation = "create" | "patch" | "edit" | "delete" | "write_file" | "remove_file";
-
-const SKILL_SCOPE_PRECEDENCE: Record<SkillScope, number> = {
-  session: 0,
-  workspace: 1,
-  global: 2,
-  builtin: 3,
-  imported: 4,
-};
-
-const DEFAULT_VIEW_MAX_BYTES = 65536;
-const SLOPPY_SKILL_DIR_TOKEN = "$" + "{SLOPPY_SKILL_DIR}";
-
-function compareSkills(a: SkillInfo, b: SkillInfo): number {
-  const byName = a.name.localeCompare(b.name);
-  if (byName !== 0) return byName;
-  const byScope = SKILL_SCOPE_PRECEDENCE[a.scope] - SKILL_SCOPE_PRECEDENCE[b.scope];
-  if (byScope !== 0) return byScope;
-  return a.id.localeCompare(b.id);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
-
-function extractFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-
-  const parsed = parseYaml(match[1]);
-  return isRecord(parsed) ? parsed : {};
-}
-
-function nestedRecord(root: Record<string, unknown>, key: string): Record<string, unknown> {
-  const value = root[key];
-  return isRecord(value) ? value : {};
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function portablePath(path: string): string {
-  return path.split(sep).join("/");
-}
-
-function stableSkillId(prefix: string, skillPath: string): string {
-  return `skill-${prefix}${skillPath.replace(/[\\/]/g, "-").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-}
-
-function writableScope(value: unknown): WritableSkillScope | undefined {
-  return value === "session" || value === "workspace" || value === "global" ? value : undefined;
-}
-
-function isWritableScope(scope: SkillScope): scope is WritableSkillScope {
-  return scope === "session" || scope === "workspace" || scope === "global";
-}
-
-async function readTextFile(path: string, maxBytes: number): Promise<string> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    throw new Error(`File does not exist: ${path}`);
-  }
-  if (file.size > maxBytes) {
-    throw new Error(`File is too large to read through skills provider: ${path}`);
-  }
-  return file.text();
-}
-
-async function discoverSupportingFiles(skillDir: string): Promise<string[]> {
-  const glob = new Bun.Glob("**/*");
-  const files: string[] = [];
-
-  try {
-    for await (const relativePath of glob.scan({ cwd: skillDir })) {
-      if (relativePath === "SKILL.md") continue;
-      const absolutePath = join(skillDir, relativePath);
-      try {
-        if (statSync(absolutePath).isFile()) {
-          files.push(relativePath);
-        }
-      } catch {
-        // Skip files that disappear or cannot be statted during discovery.
-      }
-    }
-  } catch {
-    // Missing or unreadable skill directories are handled as empty support sets.
-  }
-
-  return files.sort();
-}
+import {
+  asStringArray,
+  compareSkills,
+  extractFrontmatter,
+  isWritableScope,
+  nestedRecord,
+  portablePath,
+  readTextFile,
+  type SkillInfo,
+  type SkillManageOperation,
+  type SkillProposal,
+  type SkillRoot,
+  type SkillScope,
+  slugify,
+  type WritableSkillScope,
+  writableScope,
+} from "./model";
+import { SkillRepository, type SkillRepositoryOptions } from "./repository";
 
 export class SkillsProvider {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
-  private roots: SkillRoot[];
+  private readonly repository: SkillRepository;
   private skills: SkillInfo[] = [];
   private proposals = new Map<string, SkillProposal>();
   private usage = new Map<string, { viewCount: number; lastViewedAt?: string }>();
-  private templateVars: boolean;
-  private viewMaxBytes: number;
   private discoveryReady: Promise<void>;
   private discoveryLoading = false;
 
-  constructor(options: {
-    skillsDir?: string;
-    builtinSkillsDir?: string;
-    globalSkillsDir?: string;
-    workspaceSkillsDir?: string;
-    externalDirs?: string[];
-    templateVars?: boolean;
-    viewMaxBytes?: number;
-  }) {
-    this.roots = [
-      ...(options.builtinSkillsDir
-        ? [{ scope: "builtin" as const, dir: options.builtinSkillsDir, idPrefix: "builtin-" }]
-        : []),
-      {
-        scope: "imported",
-        dir: options.skillsDir ?? join(homedir(), ".sloppy", "skills"),
-        idPrefix: "",
-      },
-      ...((options.externalDirs ?? []).map((dir, index) => ({
-        scope: "imported" as const,
-        dir,
-        idPrefix: `external-${index}-`,
-      })) satisfies SkillRoot[]),
-      ...(options.globalSkillsDir
-        ? [{ scope: "global" as const, dir: options.globalSkillsDir, idPrefix: "global-" }]
-        : []),
-      ...(options.workspaceSkillsDir
-        ? [{ scope: "workspace" as const, dir: options.workspaceSkillsDir, idPrefix: "workspace-" }]
-        : []),
-    ];
-    this.templateVars = options.templateVars ?? true;
-    this.viewMaxBytes = options.viewMaxBytes ?? DEFAULT_VIEW_MAX_BYTES;
+  constructor(options: SkillRepositoryOptions) {
+    this.repository = new SkillRepository(options);
 
     this.server = createSlopServer({
       id: "skills",
@@ -210,67 +55,11 @@ export class SkillsProvider {
     this.server.stop();
   }
 
-  private async discoverSkills(): Promise<SkillInfo[]> {
-    const glob = new Bun.Glob("**/SKILL.md");
-    const skills: SkillInfo[] = [];
-
-    for (const root of this.roots) {
-      try {
-        for await (const relativePath of glob.scan({ cwd: root.dir })) {
-          const filePath = join(root.dir, relativePath);
-          try {
-            const content = await readTextFile(filePath, this.viewMaxBytes);
-            const fm = extractFrontmatter(content);
-            const metadata = nestedRecord(fm, "metadata");
-            const sloppyMetadata = nestedRecord(metadata, "sloppy");
-            const skillPath = portablePath(relativePath.replace(/\/SKILL\.md$/, ""));
-            const pathParts = skillPath.split("/").filter(Boolean);
-            const category =
-              typeof sloppyMetadata.category === "string"
-                ? sloppyMetadata.category
-                : typeof fm.category === "string"
-                  ? fm.category
-                  : pathParts.length > 1
-                    ? pathParts[0]
-                    : undefined;
-            const tags = asStringArray(fm.tags);
-            const sloppyTags = asStringArray(sloppyMetadata.tags);
-            const skillDir = dirname(filePath);
-
-            skills.push({
-              id: stableSkillId(root.idPrefix, skillPath || "root"),
-              name: typeof fm.name === "string" ? fm.name : pathParts.at(-1) || skillPath,
-              description: typeof fm.description === "string" ? fm.description : "",
-              version: typeof fm.version === "string" ? fm.version : "0.0.0",
-              tags: tags.length > 0 ? tags : sloppyTags,
-              related_skills: asStringArray(fm.related_skills),
-              dangerous: fm.dangerous === true,
-              platforms: asStringArray(fm.platforms),
-              category,
-              metadata,
-              skill_path: skillPath,
-              file_path: filePath,
-              directory: skillDir,
-              supporting_files: await discoverSupportingFiles(skillDir),
-              scope: root.scope,
-            });
-          } catch {
-            // Skip unreadable skill files.
-          }
-        }
-      } catch {
-        // Skills directory does not exist or is unreadable.
-      }
-    }
-
-    return skills.sort(compareSkills);
-  }
-
   private async reloadSkills(): Promise<void> {
     this.discoveryLoading = true;
     this.server.refresh();
     try {
-      this.skills = await this.discoverSkills();
+      this.skills = await this.repository.discover();
     } finally {
       this.discoveryLoading = false;
       this.server.refresh();
@@ -283,18 +72,7 @@ export class SkillsProvider {
 
   private findSkill(skillName: string, scope?: SkillScope): SkillInfo | undefined {
     const normalized = skillName.trim();
-    return this.skills.find(
-      (skill) =>
-        (!scope || skill.scope === scope) &&
-        (skill.name === normalized ||
-          skill.skill_path === normalized ||
-          (skill.category ? `${skill.category}/${skill.name}` === normalized : false)),
-    );
-  }
-
-  private renderSkillContent(skill: SkillInfo, content: string): string {
-    if (!this.templateVars || !skill.directory) return content;
-    return content.replaceAll(SLOPPY_SKILL_DIR_TOKEN, skill.directory);
+    return this.repository.find(this.skills, normalized, scope);
   }
 
   private skillUsage(skill: SkillInfo): { viewCount: number; lastViewedAt?: string } {
@@ -313,21 +91,7 @@ export class SkillsProvider {
   }
 
   private resolveSkillFile(skill: SkillInfo, filePath: string): string {
-    if (!skill.directory) {
-      throw new Error(`Skill ${skill.name} does not have a filesystem directory.`);
-    }
-    if (isAbsolute(filePath)) {
-      throw new Error("file_path must be relative to the skill directory.");
-    }
-    const root = safeRealpath(skill.directory);
-    if (!root) {
-      throw new Error(`Could not resolve skill directory: ${skill.directory}`);
-    }
-    const absolutePath = resolve(skill.directory, filePath);
-    if (!isWithinRoot(root, absolutePath)) {
-      throw new Error("file_path escapes the skill directory.");
-    }
-    return absolutePath;
+    return this.repository.resolveFile(skill, filePath);
   }
 
   private async viewSkill(
@@ -351,7 +115,7 @@ export class SkillsProvider {
     if (!filePath || filePath === "SKILL.md") {
       const content =
         skill.content ??
-        (await readTextFile(skill.file_path, this.viewMaxBytes).catch(() => {
+        (await readTextFile(skill.file_path, this.repository.viewMaxBytes).catch(() => {
           throw new Error(`Could not read skill file: ${skill.file_path}`);
         }));
       const usage = this.recordSkillView(skill);
@@ -362,12 +126,12 @@ export class SkillsProvider {
         supporting_files: skill.supporting_files,
         view_count: usage.viewCount,
         last_viewed_at: usage.lastViewedAt,
-        content: this.renderSkillContent(skill, content),
+        content: this.repository.render(skill, content),
       };
     }
 
     const absolutePath = this.resolveSkillFile(skill, filePath);
-    const content = await readTextFile(absolutePath, this.viewMaxBytes);
+    const content = await readTextFile(absolutePath, this.repository.viewMaxBytes);
     const usage = this.recordSkillView(skill);
 
     return {
@@ -377,7 +141,7 @@ export class SkillsProvider {
       supporting_files: skill.supporting_files,
       view_count: usage.viewCount,
       last_viewed_at: usage.lastViewedAt,
-      content: this.renderSkillContent(skill, content),
+      content: this.repository.render(skill, content),
     };
   }
 
@@ -461,7 +225,7 @@ export class SkillsProvider {
       this.skills.push(this.sessionSkillFromProposal(proposal));
       this.skills.sort(compareSkills);
     } else {
-      const root = this.roots.find((candidate) => candidate.scope === proposal.scope);
+      const root = this.repository.roots.find((candidate) => candidate.scope === proposal.scope);
       if (!root) {
         throw new Error(`No ${proposal.scope} skill root is configured.`);
       }
@@ -506,13 +270,13 @@ export class SkillsProvider {
   private defaultCreateScope(params: Record<string, unknown>): WritableSkillScope {
     const explicit = writableScope(params.scope);
     if (explicit) return explicit;
-    if (this.roots.some((root) => root.scope === "workspace")) return "workspace";
-    if (this.roots.some((root) => root.scope === "global")) return "global";
+    if (this.repository.roots.some((root) => root.scope === "workspace")) return "workspace";
+    if (this.repository.roots.some((root) => root.scope === "global")) return "global";
     return "session";
   }
 
   private rootForScope(scope: Exclude<WritableSkillScope, "session">): SkillRoot {
-    const root = this.roots.find((candidate) => candidate.scope === scope);
+    const root = this.repository.roots.find((candidate) => candidate.scope === scope);
     if (!root) throw new Error(`No ${scope} skill root is configured.`);
     return root;
   }
@@ -653,7 +417,7 @@ export class SkillsProvider {
     }
     mkdirSync(dir, { recursive: true });
     writeFileSync(skillPath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
-    this.skills = await this.discoverSkills();
+    this.skills = await this.repository.discover();
     this.server.refresh();
     return { operation: "create", status: "active", scope, name, file_path: skillPath };
   }
@@ -666,7 +430,8 @@ export class SkillsProvider {
     const newString = typeof params.new_string === "string" ? params.new_string : "";
     if (!oldString) throw new Error("old_string must be non-empty for patch.");
 
-    const current = skill.content ?? (await readTextFile(skill.file_path, this.viewMaxBytes));
+    const current =
+      skill.content ?? (await readTextFile(skill.file_path, this.repository.viewMaxBytes));
     const occurrences = current.split(oldString).length - 1;
     if (occurrences !== 1) {
       throw new Error(`old_string must appear exactly once; found ${occurrences}.`);
@@ -677,7 +442,7 @@ export class SkillsProvider {
       skill.content = updated;
     } else {
       writeFileSync(skill.file_path, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
-      this.skills = await this.discoverSkills();
+      this.skills = await this.repository.discover();
     }
     this.server.refresh();
     return { operation: "patch", status: "active", scope: skill.scope, name: skill.name };
@@ -699,7 +464,7 @@ export class SkillsProvider {
       skill.content = content;
     } else {
       writeFileSync(skill.file_path, content.endsWith("\n") ? content : `${content}\n`, "utf8");
-      this.skills = await this.discoverSkills();
+      this.skills = await this.repository.discover();
     }
     this.server.refresh();
     return { operation: "edit", status: "active", scope: skill.scope, name: skill.name };
@@ -723,7 +488,7 @@ export class SkillsProvider {
       throw new Error(`Refusing to delete unsafe skill directory: ${skill.directory}`);
     }
     rmSync(skill.directory, { recursive: true, force: true });
-    this.skills = await this.discoverSkills();
+    this.skills = await this.repository.discover();
     this.server.refresh();
     return { operation: "delete", status: "deleted", scope: skill.scope, name: skill.name };
   }
@@ -743,7 +508,7 @@ export class SkillsProvider {
     const absolutePath = this.resolveWritableFile(skill, filePath);
     mkdirSync(dirname(absolutePath), { recursive: true });
     writeFileSync(absolutePath, content, "utf8");
-    this.skills = await this.discoverSkills();
+    this.skills = await this.repository.discover();
     this.server.refresh();
     return {
       operation: "write_file",
@@ -762,7 +527,7 @@ export class SkillsProvider {
     if (!filePath) throw new Error("file_path must be non-empty for remove_file.");
     const absolutePath = this.resolveWritableFile(skill, filePath);
     rmSync(absolutePath, { force: true });
-    this.skills = await this.discoverSkills();
+    this.skills = await this.repository.discover();
     this.server.refresh();
     return {
       operation: "remove_file",

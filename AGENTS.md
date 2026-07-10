@@ -61,18 +61,18 @@ bun run test
 
 ```sh
 bun test
-bun test tests/filesystem-provider.test.ts
-bun test tests/filesystem-provider.test.ts --test-name-pattern "writes files"
-bun test tests/agent-session-provider.test.ts
+bun test tests/filesystem-provider-*.test.ts
+bun test tests/filesystem-provider-*.test.ts --test-name-pattern "writes files"
+bun test tests/agent-session-*.test.ts
 bun test tests/acp-capabilities.test.ts
 bun test tests/delegation-provider.test.ts
-bun test tests/meta-runtime-provider.test.ts
+bun test tests/meta-runtime-*.test.ts
 bun test tests/runtime-doctor.test.ts
 bun test tests/runtime-smoke.test.ts
 bun test tests/terminal-provider.test.ts
 bun test tests/openai-compatible-adapter.test.ts
 bun test tests/gemini-adapter.test.ts
-bun test tests/tui-session-client.test.ts
+bun test tests/tui-manifest-mapping.test.ts tests/tui-node-mappers.test.ts tests/tui-session-clients.test.ts
 ```
 
 - Opt-in live LLM/runtime e2e:
@@ -90,27 +90,43 @@ SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 apps/
   tui/
 src/
+  agent.ts
   cli.ts
   index.ts
   config/
+    environment.ts
+    json.ts
+    llm-migrations.ts
     persist.ts
   core/
+    loop/
   llm/
     anthropic.ts
     catalog.ts
     credential-store.ts
     factory.ts
     gemini.ts
+    openai-codex-auth.ts
     openai-codex.ts
     openai-compatible.ts
     profile-manager.ts
     runtime-config.ts
     types.ts
   providers/
+  plugins/
+    first-party/
+      catalog.ts
+      doctor-facets.ts
+      manifest.ts
+      policy-facets.ts
+      session-facets.ts
   runtime/
     acp/
+    child-session.ts
     delegation/
   session/
+    runtime-assembly.ts
+    runtime-contracts.ts
 tests/
 docs/
 ```
@@ -128,6 +144,11 @@ docs/
 - Observation tools such as `query_state`, `focus_state`, and `unfocus_state` are Hub-owned consumer controls, not provider capabilities.
 - Prefer a public session provider or bridge for UIs over privileged in-process UI integrations.
 - Treat first-party UIs as consumers of the same boundary that third-party UIs will use.
+- Keep provider and runtime entrypoints focused on state ownership and orchestration. Move protocol
+  parsing, descriptor assembly, pure state transitions, and reusable contracts into domain-named
+  sibling modules when those responsibilities become independently substantial.
+- Treat file length as a diagnostic rather than a quota. Split by behavioral ownership; do not
+  create generic utility modules or artificial wrappers solely to reduce line counts.
 
 ## Import And SDK Guidance
 - Use ESM `import`/`export` syntax.

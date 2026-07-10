@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+
 import {
   type Action,
   action,
@@ -15,7 +16,6 @@ import {
   loadSessionRegistry,
   persistSessionRegistry,
   recordFromSnapshot,
-  type SessionRegistryRecord,
   sessionRegistryPath,
   snapshotPathForSession,
 } from "./registry";
@@ -23,176 +23,25 @@ import { SessionService } from "./service";
 import type { Listener } from "./socket";
 import { loadPersistedSessionSnapshot } from "./store/persistence";
 import { listenSessionSupervisor } from "./supervisor-listener";
+import {
+  approvalModeParam,
+  type ClientLease,
+  defaultTitle,
+  now,
+  type PublicSessionRecord,
+  recordFromRegistry,
+  registryRecordFromSession,
+  type ScopeRecord,
+  type SessionRecord,
+  type SessionScopeInput,
+  scopesFromConfig,
+  sessionScopeInputFromParams,
+  sessionSocketPath,
+  stringParam,
+} from "./supervisor-model";
 import type { ApprovalMode } from "./types";
 
-export type SessionScopeInput = {
-  workspace_id?: string;
-  project_id?: string;
-  title?: string;
-  session_id?: string;
-  approval_mode?: ApprovalMode;
-};
-
-export type SessionRecord = {
-  sessionId: string;
-  providerId: string;
-  socketPath: string;
-  runtimeStatus: "live" | "dormant";
-  workspaceRoot?: string;
-  workspaceId?: string;
-  projectId?: string;
-  launchScopeKey?: string;
-  launchRoot?: string;
-  title?: string;
-  createdAt: string;
-  lastActivityAt: string;
-  snapshotPath?: string;
-  archived?: boolean;
-  service?: SessionService;
-  unsubscribe?: () => void;
-};
-
-type PublicSessionRecord = {
-  sessionId: string;
-  providerId: string;
-  socketPath?: string;
-  runtimeStatus: "live" | "dormant";
-  workspaceRoot?: string;
-  workspaceId?: string;
-  projectId?: string;
-  launchScopeKey?: string;
-  launchRoot?: string;
-  title?: string;
-  createdAt: string;
-  lastActivityAt: string;
-  session_id: string;
-  provider_id: string;
-  socket_path?: string;
-  runtime_status: "live" | "dormant";
-  workspace_root?: string;
-  workspace_id?: string;
-  project_id?: string;
-  launch_scope_key?: string;
-  launch_root?: string;
-  created_at: string;
-  last_activity_at: string;
-  is_resume_session: boolean;
-  turn_state?: string;
-  turn_message?: string;
-  queued_count?: number;
-  pending_approval_count?: number;
-  running_task_count?: number;
-  approvalMode?: ApprovalMode;
-  approval_mode?: ApprovalMode;
-  [key: string]: unknown;
-};
-
-type ScopeRecord = {
-  id: string;
-  workspaceId: string;
-  projectId?: string;
-  name: string;
-  root: string;
-  configPath: string;
-  description?: string;
-};
-
-type ClientLease = {
-  leaseId: string;
-  selectedSessionId?: string;
-  label?: string;
-  connectedAt: string;
-};
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-function sanitizeSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]+/g, "-") || "session";
-}
-
-function sessionSocketPath(sessionId: string): string {
-  return `/tmp/slop/sloppy-session-${sanitizeSegment(sessionId)}.sock`;
-}
-
-function defaultTitle(input: {
-  workspaceId?: string;
-  projectId?: string;
-  fallback?: string;
-}): string | undefined {
-  if (input.fallback) {
-    return input.fallback;
-  }
-  if (input.workspaceId && input.projectId) {
-    return `${input.workspaceId}/${input.projectId}`;
-  }
-  return input.workspaceId;
-}
-
-function recordFromRegistry(record: SessionRegistryRecord): SessionRecord {
-  return {
-    sessionId: record.sessionId,
-    providerId: `sloppy-session-${record.sessionId}`,
-    socketPath: "",
-    runtimeStatus: "dormant",
-    title: record.title,
-    workspaceRoot: record.workspaceRoot,
-    workspaceId: record.workspaceId,
-    projectId: record.projectId,
-    launchScopeKey: record.launchScopeKey,
-    launchRoot: record.launchRoot,
-    createdAt: record.createdAt,
-    lastActivityAt: record.lastActivityAt,
-    snapshotPath: record.snapshotPath,
-    archived: record.archived,
-  };
-}
-
-function registryRecordFromSession(record: SessionRecord): SessionRegistryRecord {
-  return {
-    sessionId: record.sessionId,
-    title: record.title,
-    workspaceRoot: record.workspaceRoot,
-    workspaceId: record.workspaceId,
-    projectId: record.projectId,
-    launchScopeKey: record.launchScopeKey,
-    launchRoot: record.launchRoot,
-    createdAt: record.createdAt,
-    lastActivityAt: record.lastActivityAt,
-    snapshotPath: record.snapshotPath,
-    archived: record.archived,
-  };
-}
-
-function stringParam(params: Record<string, unknown>, name: string): string | undefined {
-  const value = params[name];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function approvalModeParam(
-  params: Record<string, unknown>,
-  name: string,
-): ApprovalMode | undefined {
-  const value = params[name];
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === "normal" || value === "auto") {
-    return value;
-  }
-  throw new Error(`${name} must be 'normal' or 'auto'.`);
-}
-
-function sessionScopeInputFromParams(params: Record<string, unknown>): SessionScopeInput {
-  return {
-    workspace_id: stringParam(params, "workspace_id"),
-    project_id: stringParam(params, "project_id"),
-    title: stringParam(params, "title"),
-    session_id: stringParam(params, "session_id"),
-    approval_mode: approvalModeParam(params, "approval_mode"),
-  };
-}
+export type { SessionRecord, SessionScopeInput } from "./supervisor-model";
 
 export class SessionSupervisorProvider {
   readonly server: SlopServer;
@@ -366,7 +215,7 @@ export class SessionSupervisorProvider {
     this.notifyLifecycle();
     return {
       status: "ok",
-      scope_count: this.scopesFromConfig(config).length,
+      scope_count: scopesFromConfig(config).length,
       registry_path: this.registryPath,
     };
   }
@@ -575,7 +424,7 @@ export class SessionSupervisorProvider {
       await this.ensureInitialized();
       const scopeId = decodeURIComponent(scopeMatch[1] ?? "");
       const config = await this.baseConfig();
-      const scope = this.scopesFromConfig(config).find((item) => item.id === scopeId);
+      const scope = scopesFromConfig(config).find((item) => item.id === scopeId);
       if (!scope) {
         throw new Error(`Unknown scope: ${scopeId}`);
       }
@@ -784,37 +633,6 @@ export class SessionSupervisorProvider {
     }
   }
 
-  private scopesFromConfig(config: SloppyConfig): ScopeRecord[] {
-    const registry = config.workspaces;
-    if (!registry) {
-      return [];
-    }
-
-    const scopes: ScopeRecord[] = [];
-    for (const [workspaceId, workspace] of Object.entries(registry.items)) {
-      scopes.push({
-        id: workspaceId,
-        workspaceId,
-        name: workspace.name ?? workspaceId,
-        description: workspace.description,
-        root: workspace.root,
-        configPath: workspace.configPath,
-      });
-      for (const [projectId, project] of Object.entries(workspace.projects)) {
-        scopes.push({
-          id: `${workspaceId}/${projectId}`,
-          workspaceId,
-          projectId,
-          name: project.name ?? `${workspace.name ?? workspaceId}/${projectId}`,
-          description: project.description,
-          root: project.root,
-          configPath: project.configPath,
-        });
-      }
-    }
-    return scopes.sort((left, right) => left.id.localeCompare(right.id));
-  }
-
   private buildSessionDescriptor() {
     const resume = this.resumeSessionId ? this.records.get(this.resumeSessionId) : undefined;
     return {
@@ -1005,7 +823,7 @@ export class SessionSupervisorProvider {
       type: "collection",
       props: {
         ready: this.cachedConfig !== null,
-        count: this.cachedConfig ? this.scopesFromConfig(this.cachedConfig).length : 0,
+        count: this.cachedConfig ? scopesFromConfig(this.cachedConfig).length : 0,
         error: this.scopeError,
       },
       summary: "Configured workspace/project scopes available for new sessions.",
@@ -1016,7 +834,7 @@ export class SessionSupervisorProvider {
             this.scopeError = null;
             const config = await this.baseConfig();
             this.server.refresh();
-            return { count: this.scopesFromConfig(config).length };
+            return { count: scopesFromConfig(config).length };
           },
           {
             label: "Refresh Scopes",
@@ -1027,7 +845,7 @@ export class SessionSupervisorProvider {
         ),
       },
       items: this.cachedConfig
-        ? this.scopesFromConfig(this.cachedConfig).map((scope) => this.buildScopeItem(scope))
+        ? scopesFromConfig(this.cachedConfig).map((scope) => this.buildScopeItem(scope))
         : [],
     };
   }

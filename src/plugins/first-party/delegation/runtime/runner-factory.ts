@@ -2,6 +2,7 @@ import type { SloppyConfig } from "../../../../config/schema";
 import type { ProviderRuntimeHub } from "../../../../core/hub";
 import type { LlmProfileManager } from "../../../../llm/profile-manager";
 import { AcpSessionAgent } from "../../../../runtime/acp";
+import type { ChildSessionFactory } from "../../../../runtime/child-session";
 import type { SessionAgentFactory } from "../../../../session/runtime";
 import type { DelegationProvider } from "../provider";
 import { assertAcpSpawnAllowed } from "./acp-capabilities";
@@ -13,12 +14,16 @@ export function attachSubAgentRunnerFactory(
   hub: ProviderRuntimeHub,
   config: SloppyConfig,
   llmProfileManager?: LlmProfileManager,
+  childSessionFactory?: ChildSessionFactory,
 ): void {
   delegation.setParentHub(hub);
 
   const resolver = new ExecutorResolver({ config });
 
   delegation.setRunnerFactory((spawn, callbacks) => {
+    if (!childSessionFactory) {
+      throw new Error("Delegation requires a child session runtime factory.");
+    }
     const executor = resolver.resolve(spawn.executor);
 
     let agentFactory: SessionAgentFactory | undefined;
@@ -73,6 +78,7 @@ export function attachSubAgentRunnerFactory(
       requiresLlmProfile,
       externalAgentState,
       capabilityMasks: spawn.capabilityMasks,
+      childSessionFactory,
     });
     const unsubscribe = runner.onChange((event) => {
       callbacks.onUpdate({

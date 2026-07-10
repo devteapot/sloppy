@@ -1,5 +1,6 @@
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
+import type { ChildSessionFactory } from "../runtime/child-session";
 import type { ProviderRuntimeHub } from "./hub";
 import type { RuntimeToolResolution } from "./tools";
 
@@ -33,6 +34,8 @@ export interface RuntimeContext {
    * profile without wiring a second manager instance.
    */
   llmProfileManager?: LlmProfileManager;
+  /** Factory supplied by the session composition root for delegated child sessions. */
+  childSessionFactory?: ChildSessionFactory;
 }
 
 export type RoleProfile = {

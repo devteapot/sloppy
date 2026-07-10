@@ -1,194 +1,38 @@
 import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "@slop-ai/server";
+
 import { errorMessage, now } from "../shared/runtime-helpers";
+import { A2AClient } from "./client";
+import {
+  type A2AAgentCard,
+  type A2AAgentConfig,
+  type A2AAgentState,
+  type A2AAgentStatus,
+  type A2APart,
+  type A2ATask,
+  type A2ATaskRecord,
+  agentName,
+  configuredCardUrl,
+  type FetchLike,
+  maybeRecord,
+  nodeId,
+  optionalBoolean,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+  optionalStringArray,
+  parseParts,
+  taskFromResponse,
+  taskKey,
+  taskStatusState,
+  taskStatusTimestamp,
+  tasksFromListResponse,
+} from "./model";
 
-export type A2AAgentConfig = {
-  name?: string;
-  cardUrl?: string;
-  url?: string;
-  protocolVersion?: string;
-  headers?: Record<string, string>;
-  bearerTokenEnv?: string;
-  apiKeyEnv?: string;
-  apiKeyHeader?: string;
-  timeoutMs?: number;
-  fetchOnStart?: boolean;
-};
-
-type A2AAgentStatus = "unfetched" | "refreshing" | "ready" | "error";
-
-type A2AAgentCard = Record<string, unknown> & {
-  name?: string;
-  description?: string;
-  version?: string;
-  supportedInterfaces?: unknown[];
-  capabilities?: Record<string, unknown>;
-  skills?: unknown[];
-  defaultInputModes?: string[];
-  defaultOutputModes?: string[];
-};
-
-type A2AAgentInterface = {
-  url: string;
-  protocolBinding: string;
-  protocolVersion?: string;
-  tenant?: string;
-};
-
-type A2APart = Record<string, unknown>;
-type A2ATask = Record<string, unknown> & {
-  id?: string;
-  contextId?: string;
-  status?: Record<string, unknown>;
-};
-
-type A2ATaskRecord = {
-  id: string;
-  agentId: string;
-  taskId: string;
-  contextId?: string;
-  statusState?: string;
-  lastUpdatedAt: string;
-  source: "send" | "get" | "list" | "cancel";
-  task: A2ATask;
-};
-
-type A2AAgentState = {
-  id: string;
-  config: A2AAgentConfig;
-  status: A2AAgentStatus;
-  error?: string;
-  card?: A2AAgentCard;
-  interfaceUrl?: string;
-  protocolVersion?: string;
-  tenant?: string;
-  etag?: string;
-  lastModified?: string;
-  lastRefreshAt?: string;
-  extendedCardAt?: string;
-};
-
-type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-function nodeId(value: string): string {
-  return encodeURIComponent(value);
-}
-
-function maybeRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-function asRecord(value: unknown, context: string): Record<string, unknown> {
-  const record = maybeRecord(value);
-  if (!record) {
-    throw new Error(`${context} must be an object.`);
-  }
-  return record;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function optionalRecord(value: unknown, fieldName: string): Record<string, unknown> | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  return asRecord(value, fieldName);
-}
-
-function optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new Error(`${fieldName} must be an array of strings.`);
-  }
-  return value;
-}
-
-function parseParts(value: unknown): A2APart[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error("parts must be a non-empty array.");
-  }
-
-  return value.map((part, index) => {
-    const record = asRecord(part, `parts[${index}]`);
-    const contentFields = ["text", "raw", "url", "data"].filter((key) => key in record);
-    if (contentFields.length !== 1) {
-      throw new Error(`parts[${index}] must contain exactly one of text, raw, url, or data.`);
-    }
-    return record;
-  });
-}
-
-function normalizeBinding(value: unknown): string {
-  return String(value ?? "")
-    .replace(/[-_+\s]/g, "")
-    .toUpperCase();
-}
-
-function taskKey(agentId: string, taskId: string): string {
-  return `${agentId}:${taskId}`;
-}
-
-function taskStatusState(task: A2ATask): string | undefined {
-  return optionalString(maybeRecord(task.status)?.state);
-}
-
-function taskStatusTimestamp(task: A2ATask): string | undefined {
-  return optionalString(maybeRecord(task.status)?.timestamp);
-}
-
-function taskFromResponse(value: unknown): A2ATask | undefined {
-  const response = maybeRecord(value);
-  if (!response) {
-    return undefined;
-  }
-
-  const nestedTask = maybeRecord(response.task);
-  if (nestedTask) {
-    return nestedTask as A2ATask;
-  }
-
-  return typeof response.id === "string" ? (response as A2ATask) : undefined;
-}
-
-function tasksFromListResponse(value: unknown): A2ATask[] {
-  const response = maybeRecord(value);
-  const tasks = Array.isArray(response?.tasks) ? response.tasks : Array.isArray(value) ? value : [];
-  return tasks
-    .map((task) => maybeRecord(task))
-    .filter((task): task is A2ATask => Boolean(task && typeof task.id === "string"));
-}
-
-function agentName(agent: A2AAgentState): string {
-  return agent.card?.name ?? agent.config.name ?? agent.id;
-}
-
-function configuredCardUrl(config: A2AAgentConfig): string {
-  if (config.cardUrl) {
-    return config.cardUrl;
-  }
-  if (config.url) {
-    return new URL("/.well-known/agent-card.json", config.url).toString();
-  }
-  throw new Error("A2A agent requires cardUrl or url.");
-}
+export type { A2AAgentConfig } from "./model";
 
 export class A2AProvider {
   readonly server: SlopServer;
-  private readonly fetchImpl: FetchLike;
+  private readonly client: A2AClient;
   private readonly fetchOnStart: boolean;
   private readonly agents = new Map<string, A2AAgentState>();
   private readonly tasks = new Map<string, A2ATaskRecord>();
@@ -200,7 +44,7 @@ export class A2AProvider {
       fetchImpl?: FetchLike;
     } = {},
   ) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.client = new A2AClient(options.fetchImpl);
     this.fetchOnStart = options.fetchOnStart ?? true;
 
     for (const [id, config] of Object.entries(options.agents ?? {})) {
@@ -259,116 +103,6 @@ export class A2AProvider {
     return this.requireAgent(agentId);
   }
 
-  private buildHeaders(agent: A2AAgentState, options: { json?: boolean } = {}): Headers {
-    const headers = new Headers(agent.config.headers ?? {});
-    headers.set("Accept", "application/json");
-    if (options.json) {
-      headers.set("Content-Type", "application/json");
-    }
-
-    const protocolVersion = agent.protocolVersion ?? agent.config.protocolVersion;
-    if (protocolVersion) {
-      headers.set("A2A-Version", protocolVersion);
-    }
-
-    if (agent.config.bearerTokenEnv) {
-      const value = Bun.env[agent.config.bearerTokenEnv];
-      if (!value) {
-        throw new Error(
-          `A2A agent ${agent.id} requires ${agent.config.bearerTokenEnv} for bearer auth.`,
-        );
-      }
-      headers.set("Authorization", `Bearer ${value}`);
-    }
-
-    if (agent.config.apiKeyEnv) {
-      if (!agent.config.apiKeyHeader) {
-        throw new Error(`A2A agent ${agent.id} sets apiKeyEnv without apiKeyHeader.`);
-      }
-      const value = Bun.env[agent.config.apiKeyEnv];
-      if (!value) {
-        throw new Error(`A2A agent ${agent.id} requires ${agent.config.apiKeyEnv}.`);
-      }
-      headers.set(agent.config.apiKeyHeader, value);
-    }
-
-    return headers;
-  }
-
-  private async fetchWithTimeout(
-    agent: A2AAgentState,
-    url: string,
-    init: RequestInit,
-  ): Promise<Response> {
-    const timeoutMs = agent.config.timeoutMs;
-    const controller = new AbortController();
-    const timer =
-      timeoutMs == null
-        ? undefined
-        : setTimeout(() => {
-            controller.abort();
-          }, timeoutMs);
-
-    try {
-      return await this.fetchImpl(url, {
-        ...init,
-        signal: controller.signal,
-      });
-    } catch (error) {
-      if (controller.signal.aborted) {
-        throw new Error(`A2A request to ${url} timed out after ${timeoutMs}ms.`);
-      }
-      throw error;
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  private selectJsonRpcInterface(agent: A2AAgentState, card: A2AAgentCard): A2AAgentInterface {
-    if (agent.config.url) {
-      return {
-        url: agent.config.url,
-        protocolBinding: "JSONRPC",
-        protocolVersion: agent.config.protocolVersion,
-      };
-    }
-
-    const supportedInterfaces = Array.isArray(card.supportedInterfaces)
-      ? card.supportedInterfaces
-      : [];
-    for (const rawInterface of supportedInterfaces) {
-      const candidate = maybeRecord(rawInterface);
-      if (!candidate || normalizeBinding(candidate.protocolBinding) !== "JSONRPC") {
-        continue;
-      }
-
-      const url = optionalString(candidate.url);
-      if (!url) {
-        continue;
-      }
-
-      return {
-        url,
-        protocolBinding: "JSONRPC",
-        protocolVersion: optionalString(candidate.protocolVersion),
-        tenant: optionalString(candidate.tenant),
-      };
-    }
-
-    const fallbackUrl = optionalString(card.url);
-    if (fallbackUrl) {
-      return {
-        url: fallbackUrl,
-        protocolBinding: "JSONRPC",
-        protocolVersion: agent.config.protocolVersion,
-      };
-    }
-
-    throw new Error(`A2A agent ${agent.id} does not expose a JSONRPC interface.`);
-  }
-
   private async refreshAgent(agentId: string): Promise<{
     id: string;
     status: A2AAgentStatus;
@@ -377,26 +111,13 @@ export class A2AProvider {
     skillCount: number;
   }> {
     const agent = this.requireAgent(agentId);
-    const cardUrl = configuredCardUrl(agent.config);
     agent.status = "refreshing";
     agent.error = undefined;
     this.server.refresh();
 
     try {
-      const headers = this.buildHeaders(agent);
-      if (agent.etag) {
-        headers.set("If-None-Match", agent.etag);
-      }
-      if (agent.lastModified) {
-        headers.set("If-Modified-Since", agent.lastModified);
-      }
-
-      const response = await this.fetchWithTimeout(agent, cardUrl, {
-        method: "GET",
-        headers,
-      });
-
-      if (response.status === 304 && agent.card) {
+      const result = await this.client.fetchAgentCard(agent);
+      if (result.kind === "not-modified") {
         agent.status = "ready";
         agent.lastRefreshAt = now();
         this.server.refresh();
@@ -405,23 +126,17 @@ export class A2AProvider {
           status: agent.status,
           name: agentName(agent),
           interfaceUrl: agent.interfaceUrl ?? null,
-          skillCount: Array.isArray(agent.card.skills) ? agent.card.skills.length : 0,
+          skillCount: Array.isArray(agent.card?.skills) ? agent.card.skills.length : 0,
         };
       }
 
-      if (!response.ok) {
-        throw new Error(`Agent Card fetch failed: HTTP ${response.status} ${response.statusText}`);
-      }
-
-      const card = asRecord(await response.json(), "A2A Agent Card") as A2AAgentCard;
-      const selectedInterface = this.selectJsonRpcInterface(agent, card);
-      agent.card = card;
-      agent.interfaceUrl = selectedInterface.url;
+      agent.card = result.card;
+      agent.interfaceUrl = result.selectedInterface.url;
       agent.protocolVersion =
-        agent.config.protocolVersion ?? selectedInterface.protocolVersion ?? "1.0";
-      agent.tenant = selectedInterface.tenant;
-      agent.etag = response.headers.get("etag") ?? undefined;
-      agent.lastModified = response.headers.get("last-modified") ?? undefined;
+        agent.config.protocolVersion ?? result.selectedInterface.protocolVersion ?? "1.0";
+      agent.tenant = result.selectedInterface.tenant;
+      agent.etag = result.etag;
+      agent.lastModified = result.lastModified;
       agent.status = "ready";
       agent.error = undefined;
       agent.lastRefreshAt = now();
@@ -432,7 +147,7 @@ export class A2AProvider {
         status: agent.status,
         name: agentName(agent),
         interfaceUrl: agent.interfaceUrl ?? null,
-        skillCount: Array.isArray(agent.card.skills) ? agent.card.skills.length : 0,
+        skillCount: Array.isArray(result.card.skills) ? result.card.skills.length : 0,
       };
     } catch (error) {
       agent.status = "error";
@@ -478,39 +193,7 @@ export class A2AProvider {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<unknown> {
-    const agent = await this.ensureReady(agentId);
-    if (!agent.interfaceUrl) {
-      throw new Error(`A2A agent ${agentId} has no selected JSONRPC interface.`);
-    }
-
-    const requestId = `a2a-${crypto.randomUUID()}`;
-    const response = await this.fetchWithTimeout(agent, agent.interfaceUrl, {
-      method: "POST",
-      headers: this.buildHeaders(agent, { json: true }),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: requestId,
-        method,
-        ...(params === undefined ? {} : { params }),
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`A2A ${method} failed: HTTP ${response.status} ${response.statusText}`);
-    }
-
-    const payload = asRecord(await response.json(), `A2A ${method} response`);
-    const error = maybeRecord(payload.error);
-    if (error) {
-      const message = optionalString(error.message) ?? `A2A ${method} returned an error.`;
-      const wrapped = new Error(message) as Error & { code?: string; data?: unknown };
-      const code = error.code;
-      wrapped.code = typeof code === "string" ? code : String(code ?? "a2a_error");
-      wrapped.data = error.data;
-      throw wrapped;
-    }
-
-    return payload.result;
+    return this.client.invokeJsonRpc(await this.ensureReady(agentId), method, params);
   }
 
   private rememberTask(
@@ -729,7 +412,7 @@ export class A2AProvider {
     const card = maybeRecord(result);
     if (card) {
       agent.card = card as A2AAgentCard;
-      const selectedInterface = this.selectJsonRpcInterface(agent, agent.card);
+      const selectedInterface = this.client.selectJsonRpcInterface(agent, agent.card);
       agent.interfaceUrl = selectedInterface.url;
       agent.protocolVersion =
         agent.config.protocolVersion ??

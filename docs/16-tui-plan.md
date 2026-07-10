@@ -157,6 +157,10 @@ execution, overlays, mode, notices, and session/supervisor updates.
 `route-overlay.ts` renders temporary route panels.
 `custom-editor.ts` subclasses pi-tui `Editor` for local submission transforms and composer completion.
 `composer-autocomplete.ts` is a façade over separate slash-command and workspace-rooted `@` file-path autocomplete providers; each provider owns its own trigger rules, matching, and apply behavior.
+`projections/builtin-commands.ts` is the single built-in command registry for
+names, aliases, grammar, parsing, autocomplete metadata, and static palette
+actions. Live queue, approval, task, session, and plugin actions remain
+snapshot-driven projections in `palette-items.ts`.
 
 The composer owns the input frame, prompt gutter, placeholder, autocomplete presentation, and local mode label rendering. The mode label, live slash entries, and session workspace root are passed from `AppUi`; the composer does not own runtime policy.
 
