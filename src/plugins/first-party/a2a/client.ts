@@ -92,7 +92,10 @@ export class A2AClient {
         protocolVersion: agent.config.protocolVersion,
       };
     }
-    for (const rawInterface of card.supportedInterfaces ?? []) {
+    const supportedInterfaces = Array.isArray(card.supportedInterfaces)
+      ? card.supportedInterfaces
+      : [];
+    for (const rawInterface of supportedInterfaces) {
       const candidate = maybeRecord(rawInterface);
       if (!candidate || normalizeBinding(candidate.protocolBinding) !== "JSONRPC") continue;
       const url = optionalString(candidate.url);

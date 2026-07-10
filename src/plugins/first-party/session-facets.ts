@@ -13,7 +13,7 @@ import { createPersistentGoalPlugin } from "./persistent-goal/session";
 export function metadataSessionPlugin(plugin: FirstPartyPluginMetadata): SessionRuntimePlugin {
   if (plugin.extensionNamespaces?.length) {
     throw new Error(
-      `First-party plugin '${plugin.id}' declares extensionNamespaces but no createSessionPlugin.`,
+      `First-party plugin '${plugin.id}' declares extensionNamespaces but has no session facet.`,
     );
   }
   return {

@@ -1,3 +1,5 @@
+export type { AgentCallbacks, AgentOptions, AgentRunResult } from "./agent";
+export { Agent } from "./agent";
 export {
   expandHomePath,
   loadConfig,
@@ -15,7 +17,6 @@ export type {
   SloppyConfig,
 } from "./config/schema";
 export { sloppyConfigSchema } from "./config/schema";
-export { Agent } from "./core/agent";
 export type { RoleProfile } from "./core/role";
 export { defaultRole } from "./core/role";
 export type { GatewayAuthorizer, WsGateway, WsGatewayOptions } from "./gateway";
@@ -29,6 +30,7 @@ export {
   hasExplicitRuntimeLlmRouting,
 } from "./llm/runtime-config";
 export { BrowserProvider } from "./plugins/first-party/browser/provider";
+export type { FirstPartyPluginDescriptor } from "./plugins/first-party/catalog";
 export {
   activeFirstPartyPlugins,
   createFirstPartyPluginPolicyRules,
@@ -67,7 +69,6 @@ export { SpecProvider } from "./plugins/first-party/spec/provider";
 export { TerminalProvider } from "./plugins/first-party/terminal/provider";
 export { VisionProvider } from "./plugins/first-party/vision/provider";
 export { WebProvider } from "./plugins/first-party/web/provider";
-export type { FirstPartyPluginDescriptor } from "./plugins/types";
 export { InProcessTransport } from "./providers/in-process";
 export { NodeSocketClientTransport } from "./providers/node-socket";
 export type { RegisteredProvider } from "./providers/registry";
@@ -80,9 +81,15 @@ export {
 } from "./providers/registry";
 export type { AcpAdapterConfig, AcpSessionAgentOptions } from "./runtime/acp";
 export { AcpSessionAgent } from "./runtime/acp";
+export type {
+  ChildSessionFactory,
+  ChildSessionFactoryOptions,
+  ChildSessionHandle,
+} from "./runtime/child-session";
 export type { AgentSessionSnapshot } from "./session";
 export {
   AgentSessionProvider,
+  createDefaultChildSession,
   SessionRuntime,
   SessionService,
   SessionStore,

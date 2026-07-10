@@ -51,7 +51,9 @@ substantial mechanics:
 
 Delegation receives a `ChildSessionFactory` from runtime composition. It does
 not import the concrete session runtime, which keeps the runtime/plugin graph
-acyclic and makes child-session construction explicit at the boundary.
+acyclic and makes child-session construction explicit at the boundary. The
+package-level `Agent` and legacy REPL are composition roots that install the
+default session-backed factory; custom core embedders may supply another.
 
 ## Provider Model
 

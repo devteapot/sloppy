@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
+import { Agent, type AgentRunResult } from "./agent";
 import { CLI_USAGE, parseCliArgs } from "./cli-args";
 import { runHeadlessSingleShot } from "./cli-headless";
 import { defaultConfigPromise } from "./config/load";
-import { Agent, type AgentRunResult } from "./core/agent";
 
 const DEFAULT_CONFIG = await defaultConfigPromise;
 const stdout = Bun.stdout.writer();

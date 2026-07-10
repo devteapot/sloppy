@@ -4,7 +4,6 @@ import { getHomeConfigPath } from "../../config/load";
 import type { SloppyConfig } from "../../config/schema";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
-import type { FirstPartyPluginDescriptor } from "../types";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
@@ -12,7 +11,11 @@ import { CronProvider } from "./cron/provider";
 import { DelegationProvider } from "./delegation/provider";
 import { attachSubAgentRunnerFactory } from "./delegation/runtime/runner-factory";
 import { FilesystemProvider } from "./filesystem/provider";
-import { firstPartyPluginMetadata, isFirstPartyPluginEnabled } from "./manifest";
+import {
+  type FirstPartyPluginMetadata,
+  firstPartyPluginMetadata,
+  isFirstPartyPluginEnabled,
+} from "./manifest";
 import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
@@ -32,6 +35,10 @@ function registeredProvider(
     kind: input.kind ?? "first-party",
   };
 }
+
+export type FirstPartyPluginDescriptor = FirstPartyPluginMetadata & {
+  createProviders?: (config: SloppyConfig) => RegisteredProvider[];
+};
 
 export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   {

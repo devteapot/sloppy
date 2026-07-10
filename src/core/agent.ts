@@ -102,6 +102,23 @@ export interface AgentCallbacks {
   }) => void;
 }
 
+export type AgentOptions = {
+  config?: SloppyConfig;
+  llmProfileManager?: LlmProfileManager;
+  llmProfileId?: string;
+  llmModelOverride?: string;
+  ignoredProviderIds?: string[];
+  role?: RoleProfile;
+  roleId?: string;
+  roleRegistry?: RoleRegistry;
+  publishEvent?: (event: RuntimeEvent) => void;
+  mirrorProviderPaths?: string[];
+  policyRules?: InvokePolicy[];
+  localTools?: () => LocalRuntimeTool[];
+  /** Required by custom composition roots that enable delegated child sessions. */
+  childSessionFactory?: ChildSessionFactory;
+} & AgentCallbacks;
+
 export class Agent {
   private config: SloppyConfig;
   private hub: ConsumerHub | null = null;
@@ -130,23 +147,7 @@ export class Agent {
   private localTools?: () => LocalRuntimeTool[];
   private childSessionFactory?: ChildSessionFactory;
 
-  constructor(
-    options?: {
-      config?: SloppyConfig;
-      llmProfileManager?: LlmProfileManager;
-      llmProfileId?: string;
-      llmModelOverride?: string;
-      ignoredProviderIds?: string[];
-      role?: RoleProfile;
-      roleId?: string;
-      roleRegistry?: RoleRegistry;
-      publishEvent?: (event: RuntimeEvent) => void;
-      mirrorProviderPaths?: string[];
-      policyRules?: InvokePolicy[];
-      localTools?: () => LocalRuntimeTool[];
-      childSessionFactory?: ChildSessionFactory;
-    } & AgentCallbacks,
-  ) {
+  constructor(options?: AgentOptions) {
     this.config = options?.config ?? DEFAULT_CONFIG;
     const userOnToolEvent = options?.onToolEvent;
     this.callbacks = {

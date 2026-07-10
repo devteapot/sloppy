@@ -128,7 +128,7 @@ describe("first-party plugin catalog validation", () => {
         description: "test descriptor",
         extensionNamespaces: ["goal"],
       }),
-    ).toThrow("declares extensionNamespaces but no createSessionPlugin");
+    ).toThrow("declares extensionNamespaces but has no session facet");
   });
 
   test("metadata-only session plugins without namespaces are allowed", () => {

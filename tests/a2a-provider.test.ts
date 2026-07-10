@@ -329,4 +329,29 @@ describe("A2AProvider", () => {
     expect(agent.properties?.status).toBe("error");
     expect(String(agent.properties?.error)).toContain("does not expose a JSONRPC interface");
   });
+
+  test("uses the card URL fallback when supportedInterfaces is malformed", async () => {
+    const { consumer } = createProvider({
+      agents: {
+        fallback: {
+          cardUrl: "https://agent.example/.well-known/agent-card.json",
+        },
+      },
+      card: {
+        name: "Fallback Agent",
+        version: "1.0.0",
+        supportedInterfaces: {},
+        url: "https://agent.example/a2a/fallback",
+        skills: [],
+      },
+    });
+
+    await consumer.connect();
+    const refresh = await consumer.invoke("/agents/fallback", "refresh_card", {});
+    expect(refresh.status).toBe("ok");
+
+    const agent = await consumer.query("/agents/fallback", 1);
+    expect(agent.properties?.status).toBe("ready");
+    expect(agent.properties?.interface_url).toBe("https://agent.example/a2a/fallback");
+  });
 });
