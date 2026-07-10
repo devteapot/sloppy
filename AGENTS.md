@@ -90,6 +90,7 @@ SLOPPY_RUN_LIVE_E2E=1 bun test tests/cli-headless-e2e.test.ts
 apps/
   tui/
 src/
+  agent.ts
   cli.ts
   index.ts
   config/
@@ -112,8 +113,16 @@ src/
     runtime-config.ts
     types.ts
   providers/
+  plugins/
+    first-party/
+      catalog.ts
+      doctor-facets.ts
+      manifest.ts
+      policy-facets.ts
+      session-facets.ts
   runtime/
     acp/
+    child-session.ts
     delegation/
   session/
     runtime-assembly.ts
