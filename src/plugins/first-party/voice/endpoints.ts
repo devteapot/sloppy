@@ -13,6 +13,7 @@ export const DEFAULT_STT_ENDPOINTS: Record<string, SpeechSttEndpointConfig> = {
     label: "OpenAI Realtime Transcription",
     protocol: "realtime-stt",
     dialect: "openai",
+    baseUrl: "wss://api.openai.com/v1/realtime",
     auth: { type: "env", env: "OPENAI_API_KEY" },
     // OpenAI's realtime input is 24 kHz pcm16 only.
     sampleRate: 24000,
@@ -39,6 +40,7 @@ export const DEFAULT_TTS_ENDPOINTS: Record<string, SpeechTtsEndpointConfig> = {
   "openai-tts": {
     label: "OpenAI Speech",
     protocol: "openai-speech",
+    baseUrl: "https://api.openai.com/v1",
     auth: { type: "env", env: "OPENAI_API_KEY" },
     model: "gpt-4o-mini-tts",
     pcmSampleRate: 24000,

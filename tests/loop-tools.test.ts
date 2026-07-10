@@ -8,6 +8,7 @@ import { action, createSlopServer } from "@slop-ai/server";
 
 import { ConsumerHub } from "../src/core/consumer";
 import { ConversationHistory } from "../src/core/history";
+import { ImageRegistry } from "../src/core/images";
 import {
   type AgentToolEvent,
   buildToolFreeRequestHistory,
@@ -15,7 +16,6 @@ import {
   truncateToolResult,
 } from "../src/core/loop";
 import { createLlmAdapter } from "../src/llm/factory";
-import { ImageRegistry } from "../src/core/images";
 import type {
   ConversationMessage,
   LlmAdapter,

@@ -1,10 +1,13 @@
 import type { SloppyConfig } from "../../config/schema";
 
+export type FirstPartyPluginId = keyof SloppyConfig["plugins"] & string;
+
 export type FirstPartyPluginMetadata = {
-  id: keyof SloppyConfig["plugins"] & string;
+  id: FirstPartyPluginId;
   version: string;
   description?: string;
   defaultEnabled: boolean;
+  isEnabled?: (config: SloppyConfig) => boolean;
   providerIds?: string[];
   extensionNamespaces?: string[];
 };
@@ -138,29 +141,20 @@ export const FIRST_PARTY_PLUGIN_MANIFEST = [
   },
   {
     id: "voice",
-    version: "2.0.0",
+    version: "3.0.0",
     defaultEnabled: false,
-    description: "Speech profile configuration provider (streaming STT/TTS).",
+    isEnabled: (config: SloppyConfig) =>
+      config.plugins.voice.enabled || config.plugins.voice.conversation.enabled,
+    description: "Streaming speech profiles and the optional voice conversation loop.",
     providerIds: ["voice"],
-  },
-  {
-    id: "voice-conversation",
-    version: "2.0.0",
-    defaultEnabled: false,
-    description:
-      "Streaming voice conversation loop (mic PCM → realtime STT → turn → streamed TTS → playback).",
-    providerIds: ["voice"],
-    extensionNamespaces: ["voice-conversation"],
   },
 ] as const satisfies readonly FirstPartyPluginMetadata[];
 
-export const FIRST_PARTY_PLUGIN_BY_ID = new Map(
+export const FIRST_PARTY_PLUGIN_BY_ID = new Map<FirstPartyPluginId, FirstPartyPluginMetadata>(
   FIRST_PARTY_PLUGIN_MANIFEST.map((plugin) => [plugin.id, plugin]),
 );
 
-export function firstPartyPluginMetadata(
-  id: FirstPartyPluginMetadata["id"],
-): FirstPartyPluginMetadata {
+export function firstPartyPluginMetadata(id: FirstPartyPluginId): FirstPartyPluginMetadata {
   const plugin = FIRST_PARTY_PLUGIN_BY_ID.get(id);
   if (!plugin) {
     throw new Error(`Unknown first-party plugin metadata: ${id}`);
@@ -172,6 +166,9 @@ export function isFirstPartyPluginEnabled(
   config: SloppyConfig,
   plugin: FirstPartyPluginMetadata,
 ): boolean {
+  if (plugin.isEnabled) {
+    return plugin.isEnabled(config);
+  }
   return config.plugins[plugin.id]?.enabled ?? plugin.defaultEnabled;
 }
 

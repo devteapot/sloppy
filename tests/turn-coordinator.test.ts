@@ -118,12 +118,28 @@ function makePlugins(plugins: SessionRuntimePlugin[] = []) {
     getRuntimeService: () => undefined,
     invokeProvider: async () => okResult(),
     queryProvider: async () => ({ id: "root", type: "group" }),
+    transientState: {
+      read: () => undefined,
+      replace: () => undefined,
+      update: () => undefined,
+      clear: () => undefined,
+    },
+    approvals: {
+      request: () => {
+        throw new Error("not used");
+      },
+      cancel: () => false,
+    },
+    turns: {
+      submit: () => ({ status: "started", turnId: "turn-test" }),
+      drainQueue: () => undefined,
+    },
     startTurn: () => ({ status: "started", turnId: "turn-test" }),
     queueTurn: () => ({ status: "queued", queuedMessageId: "queued-test", position: 1 }),
     drainQueue: () => undefined,
     audit: () => undefined,
   };
-  return new SessionPluginManager(plugins, ctx);
+  return new SessionPluginManager(plugins, () => ctx);
 }
 
 function makeCoordinator(options?: {
@@ -314,6 +330,85 @@ describe("TurnCoordinator", () => {
       pluginTurn: { pluginId: "test-plugin", runId: "run-1" },
       usedTools: false,
     });
+  });
+
+  test("submit(plugin) queues atomically while another Turn is active", async () => {
+    const agent = new FakeTurnAgent();
+    const active = agent.nextChat();
+    const { turns, store } = makeCoordinator({ agent });
+
+    turns.submit({ source: "user", text: "active user work" });
+    const submitted = turns.submit({
+      source: "plugin",
+      request: {
+        pluginId: "test-plugin",
+        runId: "run-queued-atomically",
+        text: "voice ingress",
+        author: "Test Plugin",
+      },
+    });
+
+    expect(submitted).toMatchObject({ status: "queued", position: 1 });
+    expect(store.getSnapshot().queue[0]).toMatchObject({
+      source: "plugin",
+      pluginId: "test-plugin",
+      pluginRunId: "run-queued-atomically",
+    });
+
+    active.resolve({ status: "completed", response: "done" });
+    await turns.waitForIdle();
+  });
+
+  test("queued Plugin cancellation notifies its owner", () => {
+    const cancelled: unknown[] = [];
+    const plugin: SessionRuntimePlugin = {
+      id: "test-plugin",
+      version: "0.0.0",
+      onQueuedTurnCancelled: (message) => cancelled.push(message),
+    };
+    const { turns } = makeCoordinator({ plugins: makePlugins([plugin]) });
+    const queued = turns.queuePluginTurn({
+      pluginId: "test-plugin",
+      runId: "run-cancelled",
+      text: "cancel me",
+      author: "Test Plugin",
+    });
+
+    turns.cancelQueuedTurn(queued.queuedMessageId);
+
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({ pluginId: "test-plugin", pluginRunId: "run-cancelled" });
+  });
+
+  test("queued Plugin cancellation stays committed when the owner callback throws", () => {
+    const plugin: SessionRuntimePlugin = {
+      id: "test-plugin",
+      version: "0.0.0",
+      onQueuedTurnCancelled: () => {
+        throw new Error("cleanup failed");
+      },
+    };
+    const audit: Array<Record<string, unknown> & { kind: string }> = [];
+    const { turns, store } = makeCoordinator({ plugins: makePlugins([plugin]), audit });
+    const queued = turns.queuePluginTurn({
+      pluginId: "test-plugin",
+      runId: "run-callback-fails",
+      text: "cancel me anyway",
+      author: "Test Plugin",
+    });
+
+    expect(turns.cancelQueuedTurn(queued.queuedMessageId)).toEqual({
+      queuedMessageId: queued.queuedMessageId,
+      status: "cancelled",
+    });
+    expect(store.getSnapshot().queue).toEqual([]);
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        kind: "plugin_queued_turn_cancel_callback_error",
+        pluginId: "test-plugin",
+        error: "cleanup failed",
+      }),
+    );
   });
 
   test("approval resolution resumes the active pending Turn by sourceApprovalId", async () => {
@@ -524,5 +619,92 @@ describe("TurnCoordinator", () => {
       { providerId: "terminal", path: "/approvals/approval-source-1", action: "approve" },
     ]);
     expect(audit.filter((event) => event.kind === "auto_approval_error")).toHaveLength(0);
+  });
+
+  test("Session-native Plugin approvals execute directly without provider invocation", async () => {
+    const { turns, store, agent } = makeCoordinator();
+    let executions = 0;
+    const requested = turns.requestPluginApproval("voice", {
+      path: "/conversation",
+      action: "start_listening",
+      reason: "Streams microphone audio remotely.",
+      dangerous: true,
+      execute: () => {
+        executions += 1;
+        return { status: "started" };
+      },
+    });
+
+    expect(store.getSnapshot().approvals[0]).toMatchObject({
+      id: requested.approvalId,
+      status: "pending",
+      provider: "session-plugin:voice",
+      path: "/conversation",
+      action: "start_listening",
+      canApprove: true,
+      canReject: true,
+    });
+
+    const resolved = await turns.resolveApproval(requested.approvalId, "approve");
+
+    expect(resolved.status).toBe("started");
+    expect(executions).toBe(1);
+    expect(agent.providerInvocations).toEqual([]);
+    expect(store.getApproval(requested.approvalId)?.status).toBe("approved");
+  });
+
+  test("Session-native Plugin approvals reject and auto-approve with Session mode", async () => {
+    const { turns, store } = makeCoordinator();
+    let rejected = "";
+    const manual = turns.requestPluginApproval("voice", {
+      path: "/conversation",
+      action: "start_listening",
+      reason: "Manual consent.",
+      execute: () => ({ status: "started" }),
+      reject: (reason) => {
+        rejected = reason ?? "rejected";
+      },
+    });
+    await turns.resolveApproval(manual.approvalId, "reject", { reason: "No microphone." });
+    expect(rejected).toBe("No microphone.");
+    expect(store.getApproval(manual.approvalId)?.status).toBe("rejected");
+
+    turns.setApprovalMode("auto");
+    let autoExecutions = 0;
+    const automatic = turns.requestPluginApproval("voice", {
+      path: "/conversation",
+      action: "start_listening",
+      reason: "Auto consent.",
+      execute: () => {
+        autoExecutions += 1;
+      },
+    });
+    await turns.waitForIdle();
+
+    expect(autoExecutions).toBe(1);
+    expect(store.getApproval(automatic.approvalId)?.status).toBe("approved");
+  });
+
+  test("Session-native explicit approvals are never resolved by auto mode", async () => {
+    const { turns, store } = makeCoordinator();
+    turns.setApprovalMode("auto");
+    let executions = 0;
+    const explicit = turns.requestPluginApproval("voice", {
+      path: "/conversation",
+      action: "start_listening",
+      reason: "Explicit microphone egress consent.",
+      autoApprovable: false,
+      execute: () => {
+        executions += 1;
+      },
+    });
+
+    await turns.waitForIdle();
+
+    expect(executions).toBe(0);
+    expect(store.getApproval(explicit.approvalId)).toMatchObject({
+      status: "pending",
+      autoApprovable: false,
+    });
   });
 });

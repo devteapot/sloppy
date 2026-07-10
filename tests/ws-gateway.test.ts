@@ -22,7 +22,7 @@ afterEach(async () => {
     listener.close();
   }
   for (const supervisor of supervisors.splice(0)) {
-    supervisor.stop();
+    await supervisor.stop();
   }
   if (originalHome == null) {
     delete process.env.HOME;

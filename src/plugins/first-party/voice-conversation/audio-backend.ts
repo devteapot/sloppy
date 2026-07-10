@@ -14,22 +14,33 @@ export interface AudioStreamSource {
   close(): void;
 }
 
-/**
- * Where the conversation loop's audio comes from and goes to. Both ends are
- * deliberately behind one interface so the loop is identical whether audio is
- * the local machine (dev / pre-hardware) or the robot's mic and speaker.
- */
-export interface AudioBackend {
-  /** Open a continuous PCM16LE mono stream for realtime STT (default 16 kHz). */
-  openStream?(signal?: AbortSignal, sampleRate?: number): AudioStreamSource;
-  /** Play a PCM chunk stream as it arrives (streamed synthesis playback). */
+export interface AudioInputAdapter {
+  readonly inputResourceKeys: readonly string[];
+  openStream(signal?: AbortSignal, sampleRate?: number): AudioStreamSource;
+  dispose(): void;
+}
+
+export interface AudioOutputAdapter {
+  readonly outputResourceKeys: readonly string[];
   playStream(
     format: PcmFormat,
     chunks: AsyncIterable<Uint8Array>,
     signal?: AbortSignal,
   ): Promise<void>;
-  /** Tear down any in-flight subprocess / resources. */
   dispose(): void;
+}
+
+/**
+ * Where the conversation loop's audio comes from and goes to. Both ends are
+ * deliberately behind one interface so the loop is identical whether audio is
+ * the local machine (dev / pre-hardware) or the robot's mic and speaker.
+ * Kept as a compatibility composition while callers migrate to the independent
+ * input/output adapter interfaces above.
+ */
+export interface AudioBackend extends AudioOutputAdapter {
+  readonly inputResourceKeys?: readonly string[];
+  /** Open a continuous PCM16LE mono stream for realtime STT (default 16 kHz). */
+  openStream?(signal?: AbortSignal, sampleRate?: number): AudioStreamSource;
 }
 
 /** `(providerId, path, action, params) => result` — i.e. ctx.invokeProvider. */
@@ -44,7 +55,7 @@ const DEFAULT_STREAM_SAMPLE_RATE = 16000;
 
 // Structural so the zod plugin config satisfies it and tests can pass plain
 // objects. Command templates support a `{rate}` token (sample rate in Hz).
-type HostAudioConfig = {
+export type HostAudioConfig = {
   streamCommand?: string[];
   playStreamCommand?: string[];
   streamChunkMs: number;
@@ -55,15 +66,15 @@ type HostAudioConfig = {
  * command's stdout; playback pipes PCM into a player's stdin. Commands are
  * config-overridable; the defaults target macOS (sox `sox -d` / `play`).
  */
-export class HostAudioBackend implements AudioBackend {
+export class HostAudioInputAdapter implements AudioInputAdapter {
+  readonly inputResourceKeys = ["host:default:input"] as const;
+
   private readonly streamCommand: string[] | undefined;
-  private readonly playStreamCommand: string[] | undefined;
   private readonly streamChunkMs: number;
   private active: ReturnType<typeof Bun.spawn> | null = null;
 
   constructor(config: HostAudioConfig) {
     this.streamCommand = config.streamCommand;
-    this.playStreamCommand = config.playStreamCommand;
     this.streamChunkMs = config.streamChunkMs;
   }
 
@@ -89,6 +100,22 @@ export class HostAudioBackend implements AudioBackend {
     });
     signal?.addEventListener("abort", () => source.close(), { once: true });
     return source;
+  }
+}
+
+export class HostAudioOutputAdapter implements AudioOutputAdapter {
+  readonly outputResourceKeys = ["host:default:output"] as const;
+
+  private readonly playStreamCommand: string[] | undefined;
+  private active: ReturnType<typeof Bun.spawn> | null = null;
+
+  constructor(config: HostAudioConfig) {
+    this.playStreamCommand = config.playStreamCommand;
+  }
+
+  dispose(): void {
+    this.active?.kill();
+    this.active = null;
   }
 
   /**
@@ -152,16 +179,83 @@ export class HostAudioBackend implements AudioBackend {
   }
 }
 
+/** Compatibility composition preserving the original full-duplex interface. */
+export class HostAudioBackend implements AudioBackend, AudioInputAdapter {
+  readonly input: HostAudioInputAdapter;
+  readonly output: HostAudioOutputAdapter;
+  readonly inputResourceKeys: readonly string[];
+  readonly outputResourceKeys: readonly string[];
+
+  constructor(config: HostAudioConfig) {
+    this.input = new HostAudioInputAdapter(config);
+    this.output = new HostAudioOutputAdapter(config);
+    this.inputResourceKeys = this.input.inputResourceKeys;
+    this.outputResourceKeys = this.output.outputResourceKeys;
+  }
+
+  openStream(signal?: AbortSignal, sampleRate?: number): AudioStreamSource {
+    return this.input.openStream(signal, sampleRate);
+  }
+
+  playStream(
+    format: PcmFormat,
+    chunks: AsyncIterable<Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.output.playStream(format, chunks, signal);
+  }
+
+  dispose(): void {
+    this.input.dispose();
+    this.output.dispose();
+  }
+}
+
+export type OpenProviderAudioInput = (
+  signal?: AbortSignal,
+  sampleRate?: number,
+) => AudioStreamSource;
+
+/** Provider input adapter for transports that expose an out-of-band PCM stream. */
+export class ProviderAudioInputAdapter implements AudioInputAdapter {
+  readonly inputResourceKeys: readonly string[];
+  private active: AudioStreamSource | null = null;
+
+  constructor(
+    providerId: string,
+    private readonly openInput: OpenProviderAudioInput,
+  ) {
+    this.inputResourceKeys = [`provider:${providerId}:mic`];
+  }
+
+  openStream(signal?: AbortSignal, sampleRate?: number): AudioStreamSource {
+    this.active?.close();
+    const source = this.openInput(signal, sampleRate);
+    this.active = source;
+    signal?.addEventListener("abort", () => source.close(), { once: true });
+    return source;
+  }
+
+  dispose(): void {
+    this.active?.close();
+    this.active = null;
+  }
+}
+
 /**
  * Robot audio via the reachy provider's affordances (Phase 2b). Mirrors the host
  * backend so the loop is unchanged — only the provider needs `/mic` `/speaker`
  * affordances implemented when hardware arrives.
  */
-export class RobotAudioBackend implements AudioBackend {
+export class ProviderAudioOutputAdapter implements AudioOutputAdapter {
+  readonly outputResourceKeys: readonly string[];
+
   constructor(
     private readonly providerId: string,
     private readonly invoke: InvokeProvider,
-  ) {}
+  ) {
+    this.outputResourceKeys = [`provider:${providerId}:speaker`];
+  }
 
   async play(audio: CapturedAudio): Promise<void> {
     const result = await this.invoke(this.providerId, "/speaker", "play", {
@@ -199,6 +293,9 @@ export class RobotAudioBackend implements AudioBackend {
 
   dispose(): void {}
 }
+
+/** Compatibility name for the provider-backed output adapter. */
+export class RobotAudioBackend extends ProviderAudioOutputAdapter implements AudioBackend {}
 
 class HostCommandAudioStreamSource implements AudioStreamSource {
   private closed = false;

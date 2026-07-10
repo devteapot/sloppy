@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
 import type { EndpointAuthConfig } from "../config/schema";
 import {
@@ -16,6 +16,7 @@ const CREDENTIAL_PREFIX = "voice:";
 
 const DEFAULT_STT_SAMPLE_RATE = 16000;
 const DEFAULT_TTS_SAMPLE_RATE = 24000;
+const PUBLIC_ROUTING_FINGERPRINT_KEY = randomBytes(32);
 
 // Structural config types. The zod-inferred plugin config satisfies these;
 // keeping them structural lets the manager (and plugin-registered protocols)
@@ -78,6 +79,27 @@ export type SpeechEndpointDefaults = {
   tts?: Record<string, SpeechTtsEndpointConfig>;
 };
 
+export type PreparedSpeechDestination = Readonly<{
+  profileId: string;
+  endpointId: string;
+  label: string;
+  origin?: string;
+  remote: boolean;
+  routingFingerprint: string;
+}>;
+
+export type PreparedSpeechAdapterSet = Readonly<{
+  generation: number;
+  stt: Readonly<{
+    destination: PreparedSpeechDestination;
+    createAdapter(): SttProtocolAdapter;
+  }>;
+  tts?: Readonly<{
+    destination: PreparedSpeechDestination;
+    createAdapter(): TtsProtocolAdapter;
+  }>;
+}>;
+
 export type SpeechKeySource = "env" | "secure_store" | "not_required" | "missing";
 
 export type SpeechProfileState = {
@@ -127,6 +149,7 @@ export class SpeechProfileManager {
   private readonly credentialStore: CredentialStore;
   private readonly registry: SpeechProtocolRegistry;
   private readonly defaults: SpeechEndpointDefaults;
+  private generation = 0;
   private sttSelected?: string;
   private ttsSelected?: string;
   private readonly sttAdapters = new Map<
@@ -137,6 +160,7 @@ export class SpeechProfileManager {
     string,
     { fingerprint: string; adapter: TtsProtocolAdapter }
   >();
+  private readonly selectionListeners = new Set<() => void>();
 
   constructor(
     config: SpeechPluginConfig,
@@ -148,28 +172,54 @@ export class SpeechProfileManager {
       defaults?: SpeechEndpointDefaults;
     },
   ) {
-    this.config = config;
+    this.config = structuredClone(config);
     this.credentialStore = options?.credentialStore ?? createCredentialStore();
     // The registry defaults to the shared singleton, which starts EMPTY —
     // protocols are registered by the plugin layer (see voice/protocols).
     // Construct managers through catalog.ts's speechManagerFor, or register
     // protocols / inject a registry yourself.
     this.registry = options?.registry ?? speechRegistry;
-    this.defaults = options?.defaults ?? {};
+    this.defaults = structuredClone(options?.defaults ?? {});
   }
 
   updateConfig(config: SpeechPluginConfig): void {
-    this.config = config;
+    this.config = structuredClone(config);
+    this.generation += 1;
     this.sttAdapters.clear();
     this.ttsAdapters.clear();
+    this.emitSelectionChange();
   }
 
   setSttProfile(profileId: string): void {
+    if (!this.config.stt.profiles.some((profile) => profile.id === profileId)) {
+      throw new Error(`STT profile '${profileId}' is not configured.`);
+    }
+    if (this.sttSelected === profileId) {
+      return;
+    }
     this.sttSelected = profileId;
+    this.generation += 1;
+    this.emitSelectionChange();
   }
 
   setTtsProfile(profileId: string): void {
+    if (!this.config.tts.profiles.some((profile) => profile.id === profileId)) {
+      throw new Error(`TTS profile '${profileId}' is not configured.`);
+    }
+    if (this.ttsSelected === profileId) {
+      return;
+    }
     this.ttsSelected = profileId;
+    this.generation += 1;
+    this.emitSelectionChange();
+  }
+
+  /** Active runs subscribe so a profile change cannot silently change egress. */
+  onSelectionChange(listener: () => void): () => void {
+    this.selectionListeners.add(listener);
+    return () => {
+      this.selectionListeners.delete(listener);
+    };
   }
 
   sttEndpoints(): Record<string, SpeechSttEndpointConfig> {
@@ -253,6 +303,115 @@ export class SpeechProfileManager {
     }
     const config = this.ttsEndpoints()[state.selectedEndpointId];
     return config ? { id: state.selectedEndpointId, config } : null;
+  }
+
+  /**
+   * Capture both active modalities from one config/profile generation and bind
+   * adapter factories to copied endpoint/profile inputs. If selection changes
+   * while credentials are resolving, the capture retries instead of returning
+   * a mixed-generation plan.
+   */
+  async prepareActiveAdapters(options?: {
+    signal?: AbortSignal;
+  }): Promise<PreparedSpeechAdapterSet> {
+    for (;;) {
+      throwIfSpeechPreparationAborted(options?.signal);
+      const generation = this.generation;
+      const config = structuredClone(this.config);
+      const sttSelected = this.sttSelected;
+      const ttsSelected = this.ttsSelected;
+      const sttEndpoints = structuredClone({ ...this.defaults.stt, ...config.stt.endpoints });
+      const ttsEndpoints = structuredClone({ ...this.defaults.tts, ...config.tts.endpoints });
+
+      const [sttStates, ttsStates] = await abortableSpeechPreparation(
+        Promise.all([
+          Promise.all(
+            config.stt.profiles.map((profile) =>
+              this.resolveSttProfile(profile, sttEndpoints, options?.signal),
+            ),
+          ),
+          Promise.all(
+            config.tts.profiles.map((profile) =>
+              this.resolveTtsProfile(profile, ttsEndpoints, options?.signal),
+            ),
+          ),
+        ]),
+        options?.signal,
+      );
+      if (generation !== this.generation) {
+        continue;
+      }
+
+      const sttProfileId = selectCapturedProfile(
+        sttSelected,
+        config.stt.defaultProfileId,
+        sttStates,
+      );
+      const sttProfile = config.stt.profiles.find((profile) => profile.id === sttProfileId);
+      const sttState = sttStates.find((state) => state.id === sttProfileId);
+      if (!sttProfile || !sttState?.ready) {
+        throw new Error(
+          sttState?.invalidReason ?? "A ready STT profile is required to start a voice run.",
+        );
+      }
+      const sttEndpoint = sttEndpoints[sttProfile.endpointId];
+      if (!sttEndpoint) {
+        throw new Error(
+          `STT profile '${sttProfile.id}' references unknown endpoint '${sttProfile.endpointId}'.`,
+        );
+      }
+      const sttCredential = await abortableSpeechPreparation(
+        this.resolveCredential(
+          sttProfile.endpointId,
+          sttProfile.id,
+          sttEndpoint.auth,
+          options?.signal,
+        ),
+        options?.signal,
+      );
+      if (!sttCredential.ready) {
+        throw new Error(sttCredential.invalidReason ?? "STT profile is not ready.");
+      }
+
+      const ttsProfileId = selectCapturedProfile(
+        ttsSelected,
+        config.tts.defaultProfileId,
+        ttsStates,
+      );
+      const ttsProfile = config.tts.profiles.find((profile) => profile.id === ttsProfileId);
+      const ttsState = ttsStates.find((state) => state.id === ttsProfileId);
+      let preparedTts: PreparedSpeechAdapterSet["tts"];
+      if (ttsProfile && ttsState?.ready) {
+        const ttsEndpoint = ttsEndpoints[ttsProfile.endpointId];
+        if (!ttsEndpoint) {
+          throw new Error(
+            `TTS profile '${ttsProfile.id}' references unknown endpoint '${ttsProfile.endpointId}'.`,
+          );
+        }
+        const ttsCredential = await abortableSpeechPreparation(
+          this.resolveCredential(
+            ttsProfile.endpointId,
+            ttsProfile.id,
+            ttsEndpoint.auth,
+            options?.signal,
+          ),
+          options?.signal,
+        );
+        if (!ttsCredential.ready) {
+          throw new Error(ttsCredential.invalidReason ?? "TTS profile is not ready.");
+        }
+        preparedTts = this.bindTtsAdapter(ttsProfile, ttsEndpoint, ttsCredential.apiKey);
+      }
+
+      if (generation !== this.generation) {
+        continue;
+      }
+      return Object.freeze({
+        generation,
+        stt: this.bindSttAdapter(sttProfile, sttEndpoint, sttCredential.apiKey),
+        ...(preparedTts && { tts: preparedTts }),
+      });
+    }
   }
 
   async createSttAdapter(profileId?: string): Promise<SttProtocolAdapter> {
@@ -365,6 +524,7 @@ export class SpeechProfileManager {
   private async resolveSttProfile(
     profile: SpeechSttProfileConfig,
     endpoints: Record<string, SpeechSttEndpointConfig>,
+    signal?: AbortSignal,
   ): Promise<SpeechProfileState> {
     const endpoint = endpoints[profile.endpointId];
     if (!endpoint) {
@@ -394,7 +554,12 @@ export class SpeechProfileManager {
         invalidReason: `Unknown STT protocol '${endpoint.protocol}'. Registered: ${this.registry.sttProtocols().join(", ")}.`,
       };
     }
-    const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
+    const credential = await this.resolveCredential(
+      profile.endpointId,
+      profile.id,
+      endpoint.auth,
+      signal,
+    );
     return {
       id: profile.id,
       label: profile.label,
@@ -412,6 +577,7 @@ export class SpeechProfileManager {
   private async resolveTtsProfile(
     profile: SpeechTtsProfileConfig,
     endpoints: Record<string, SpeechTtsEndpointConfig>,
+    signal?: AbortSignal,
   ): Promise<SpeechProfileState> {
     const endpoint = endpoints[profile.endpointId];
     if (!endpoint) {
@@ -442,7 +608,12 @@ export class SpeechProfileManager {
         invalidReason: `Unknown TTS protocol '${endpoint.protocol}'. Registered: ${this.registry.ttsProtocols().join(", ")}.`,
       };
     }
-    const credential = await this.resolveCredential(profile.endpointId, profile.id, endpoint.auth);
+    const credential = await this.resolveCredential(
+      profile.endpointId,
+      profile.id,
+      endpoint.auth,
+      signal,
+    );
     return {
       id: profile.id,
       label: profile.label,
@@ -455,6 +626,67 @@ export class SpeechProfileManager {
       isDefault: false,
       invalidReason: credential.invalidReason,
     };
+  }
+
+  private bindSttAdapter(
+    profile: SpeechSttProfileConfig,
+    endpoint: SpeechSttEndpointConfig,
+    apiKey?: string,
+  ): PreparedSpeechAdapterSet["stt"] {
+    const sampleRate = endpoint.sampleRate ?? DEFAULT_STT_SAMPLE_RATE;
+    const adapterConfig = Object.freeze({
+      endpointId: profile.endpointId,
+      protocol: endpoint.protocol,
+      dialect: endpoint.dialect,
+      model: profile.model,
+      apiKey,
+      baseUrl: endpoint.baseUrl,
+      headers: endpoint.headers ? Object.freeze({ ...endpoint.headers }) : undefined,
+      language: profile.language,
+      sampleRate,
+    });
+    return Object.freeze({
+      destination: buildPreparedDestination("stt", profile, endpoint, {
+        protocol: endpoint.protocol,
+        dialect: endpoint.dialect,
+        model: profile.model,
+        language: profile.language,
+        sampleRate,
+        headers: endpoint.headers,
+      }),
+      createAdapter: () => this.registry.createSttAdapter(adapterConfig),
+    });
+  }
+
+  private bindTtsAdapter(
+    profile: SpeechTtsProfileConfig,
+    endpoint: SpeechTtsEndpointConfig,
+    apiKey?: string,
+  ): NonNullable<PreparedSpeechAdapterSet["tts"]> {
+    const pcmSampleRate = endpoint.pcmSampleRate ?? DEFAULT_TTS_SAMPLE_RATE;
+    const model = profile.model ?? endpoint.model ?? "";
+    const adapterConfig = Object.freeze({
+      endpointId: profile.endpointId,
+      protocol: endpoint.protocol,
+      model,
+      apiKey,
+      baseUrl: endpoint.baseUrl,
+      headers: endpoint.headers ? Object.freeze({ ...endpoint.headers }) : undefined,
+      voice: profile.voice,
+      speed: profile.speed,
+      pcmSampleRate,
+    });
+    return Object.freeze({
+      destination: buildPreparedDestination("tts", profile, endpoint, {
+        protocol: endpoint.protocol,
+        model,
+        voice: profile.voice,
+        speed: profile.speed,
+        pcmSampleRate,
+        headers: endpoint.headers,
+      }),
+      createAdapter: () => this.registry.createTtsAdapter(adapterConfig),
+    });
   }
 
   private selectActive(modality: "stt" | "tts", states: SpeechProfileState[]): string | undefined {
@@ -475,6 +707,7 @@ export class SpeechProfileManager {
     endpointId: string,
     profileId: string,
     auth: EndpointAuthConfig | undefined,
+    signal?: AbortSignal,
   ): Promise<ResolvedCredential> {
     if (!auth || auth.type === "none") {
       return { ready: true, keySource: "not_required" };
@@ -487,7 +720,7 @@ export class SpeechProfileManager {
       }
     }
 
-    const stored = await this.getStoredCredential(endpointId, profileId);
+    const stored = await this.getStoredCredential(endpointId, profileId, signal);
     if (stored) {
       return { ready: true, keySource: "secure_store", apiKey: stored };
     }
@@ -502,13 +735,27 @@ export class SpeechProfileManager {
     };
   }
 
-  private async getStoredCredential(endpointId: string, profileId: string): Promise<string | null> {
-    const byEndpoint = await this.credentialStore.get(`${CREDENTIAL_PREFIX}${endpointId}`);
+  private async getStoredCredential(
+    endpointId: string,
+    profileId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const byEndpoint = await this.credentialStore.get(`${CREDENTIAL_PREFIX}${endpointId}`, {
+      signal,
+    });
     if (byEndpoint) {
       return normalizeKey(byEndpoint) ?? null;
     }
-    const byProfile = await this.credentialStore.get(`${CREDENTIAL_PREFIX}${profileId}`);
+    const byProfile = await this.credentialStore.get(`${CREDENTIAL_PREFIX}${profileId}`, {
+      signal,
+    });
     return byProfile ? (normalizeKey(byProfile) ?? null) : null;
+  }
+
+  private emitSelectionChange(): void {
+    for (const listener of this.selectionListeners) {
+      listener();
+    }
   }
 }
 
@@ -522,4 +769,108 @@ function normalizeKey(value: string | undefined): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function throwIfSpeechPreparationAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Speech adapter preparation cancelled.");
+  }
+}
+
+function abortableSpeechPreparation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  try {
+    throwIfSpeechPreparationAborted(signal);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      try {
+        throwIfSpeechPreparationAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function selectCapturedProfile(
+  selected: string | undefined,
+  defaultId: string | undefined,
+  states: SpeechProfileState[],
+): string | undefined {
+  if (selected && states.some((state) => state.id === selected)) return selected;
+  if (defaultId && states.some((state) => state.id === defaultId)) return defaultId;
+  return (states.find((state) => state.ready) ?? states[0])?.id;
+}
+
+function buildPreparedDestination(
+  modality: "stt" | "tts",
+  profile: SpeechSttProfileConfig | SpeechTtsProfileConfig,
+  endpoint: SpeechSttEndpointConfig | SpeechTtsEndpointConfig,
+  routingInputs: Record<string, unknown>,
+): PreparedSpeechDestination {
+  const target = sanitizedTarget(endpoint.baseUrl);
+  if (!target) {
+    throw new Error(
+      `${modality.toUpperCase()} endpoint '${profile.endpointId}' must declare an explicit valid baseUrl before it can be frozen into a voice run.`,
+    );
+  }
+  const noAuth = !endpoint.auth || endpoint.auth.type === "none";
+  const remote = !(noAuth && target.local);
+  return Object.freeze({
+    profileId: profile.id,
+    endpointId: profile.endpointId,
+    label: endpoint.label ?? profile.endpointId,
+    origin: target.origin,
+    remote,
+    routingFingerprint: opaqueRoutingFingerprintOf([
+      modality,
+      profile.id,
+      profile.endpointId,
+      endpoint.baseUrl,
+      endpoint.auth?.type ?? "none",
+      routingInputs,
+    ]),
+  });
+}
+
+function sanitizedTarget(
+  baseUrl: string | undefined,
+): { origin: string; target: string; local: boolean } | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    const parsed = new URL(baseUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const supportedSpeechScheme =
+      parsed.protocol === "http:" ||
+      parsed.protocol === "https:" ||
+      parsed.protocol === "ws:" ||
+      parsed.protocol === "wss:";
+    const local =
+      supportedSpeechScheme &&
+      (hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "0.0.0.0" ||
+        hostname === "[::1]" ||
+        hostname === "::1");
+    return {
+      origin: parsed.origin,
+      target: `${parsed.origin}${parsed.pathname}`,
+      local,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function opaqueRoutingFingerprintOf(parts: unknown[]): string {
+  return createHmac("sha256", PUBLIC_ROUTING_FINGERPRINT_KEY)
+    .update(JSON.stringify(parts))
+    .digest("hex");
 }

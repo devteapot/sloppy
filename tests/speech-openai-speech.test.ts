@@ -3,7 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { OpenAISpeechStreamAdapter } from "../src/plugins/first-party/voice/protocols/openai-speech";
 import type { FetchLike, TtsAdapterConfig } from "../src/speech/types";
 
-type Call = { url: string; body: Record<string, unknown>; signal?: AbortSignal };
+type Call = {
+  url: string;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+  redirect?: RequestRedirect;
+};
 
 /**
  * Fetch double whose responses stream their body in scripted chunks. Each
@@ -15,7 +20,12 @@ function streamingFetch(options: { failStatus?: number } = {}) {
   let release: (() => void)[] = [];
   const fetchImpl: FetchLike = async (url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    calls.push({ url, body, signal: init?.signal ?? undefined });
+    calls.push({
+      url,
+      body,
+      signal: init?.signal ?? undefined,
+      redirect: init?.redirect,
+    });
     if (options.failStatus) {
       return new Response("synthesis exploded", { status: options.failStatus });
     }
@@ -81,6 +91,18 @@ async function collect(iterable: AsyncIterable<Uint8Array>, pump: () => void): P
 }
 
 describe("OpenAISpeechStreamAdapter", () => {
+  test("a pre-aborted stream never opens a speech request", async () => {
+    const fetch = streamingFetch();
+    const controller = new AbortController();
+    controller.abort();
+    const stream = makeAdapter(fetch.fetchImpl).openStream({ signal: controller.signal });
+    stream.appendText(SENTENCE_A);
+    stream.end();
+
+    expect(await collect(stream.chunks(), fetch.releaseAll)).toEqual([]);
+    expect(fetch.calls).toHaveLength(0);
+  });
+
   test("requests pcm with voice/model and streams ordered chunks across sentences", async () => {
     const { fetchImpl, calls, releaseAll } = streamingFetch();
     const stream = makeAdapter(fetchImpl).openStream();
@@ -100,6 +122,7 @@ describe("OpenAISpeechStreamAdapter", () => {
       response_format: "pcm",
     });
     expect(calls[1]?.body.input).toBe(SENTENCE_B);
+    expect(calls.every((call) => call.redirect === "error")).toBe(true);
     // Strict order: all of sentence A's audio before any of sentence B's.
     expect(chunks).toEqual([
       `${SENTENCE_A}|a`,

@@ -74,6 +74,7 @@ export class SubAgentRunner {
   private registered = false;
   private sawTurnInFlight = false;
   private sessionProviderClosed = false;
+  private teardownPromise: Promise<void> | null = null;
 
   constructor(options: SubAgentRunnerOptions) {
     this.id = options.id;
@@ -185,7 +186,7 @@ export class SubAgentRunner {
       this.completedAt = new Date().toISOString();
       this.sessionProviderClosed = true;
       this.transition("failed");
-      this.teardown();
+      await this.teardown();
     }
   }
 
@@ -208,7 +209,7 @@ export class SubAgentRunner {
     this.completedAt = new Date().toISOString();
     this.sessionProviderClosed = true;
     this.transition("cancelled");
-    this.teardown();
+    await this.teardown();
   }
 
   async sendMessage(text: string): Promise<SendMessageResult> {
@@ -244,14 +245,19 @@ export class SubAgentRunner {
     this.completedAt ??= new Date().toISOString();
     this.sessionProviderClosed = true;
     this.transition("closed");
-    this.teardown();
+    await this.teardown();
   }
 
   shutdown(): void {
-    this.teardown();
+    void this.teardown();
   }
 
-  private teardown(): void {
+  private teardown(): Promise<void> {
+    this.teardownPromise ??= this.performTeardown();
+    return this.teardownPromise;
+  }
+
+  private async performTeardown(): Promise<void> {
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
 
@@ -262,7 +268,7 @@ export class SubAgentRunner {
     this.sessionProviderClosed = true;
 
     try {
-      this.runtime.shutdown();
+      await this.runtime.shutdown();
     } catch {
       // ignore shutdown errors
     }
@@ -296,7 +302,7 @@ export class SubAgentRunner {
       this.completedAt = new Date().toISOString();
       this.sessionProviderClosed = true;
       this.transition("failed");
-      this.teardown();
+      void this.teardown();
       return;
     }
 

@@ -587,6 +587,23 @@ export const endpointAuthSchema = z.discriminatedUnion("type", [
 export const sttProtocolSchema = z.string().trim().min(1);
 export const ttsProtocolSchema = z.string().trim().min(1);
 
+const speechBaseUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return (
+        ["http:", "https:", "ws:", "wss:"].includes(parsed.protocol) &&
+        !parsed.username &&
+        !parsed.password
+      );
+    } catch {
+      return false;
+    }
+  }, "Expected an HTTP(S) or WS(S) URL without embedded credentials.");
+
 const voiceSttModelSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
@@ -606,7 +623,7 @@ const voiceSttEndpointSchema = z
     protocol: sttProtocolSchema,
     // Wire-format variant within the protocol family (realtime-stt: openai | vllm).
     dialect: z.string().trim().min(1).default("openai"),
-    baseUrl: z.string().trim().min(1).optional(),
+    baseUrl: speechBaseUrlSchema,
     auth: endpointAuthSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
     // PCM16 input rate the service expects (OpenAI realtime requires 24000).
@@ -619,7 +636,7 @@ const voiceTtsEndpointSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
     protocol: ttsProtocolSchema,
-    baseUrl: z.string().trim().min(1).optional(),
+    baseUrl: speechBaseUrlSchema,
     auth: endpointAuthSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
     // Synthesis model (e.g. "gpt-4o-mini-tts", "kokoro"). A profile may override it.
@@ -667,23 +684,11 @@ const voiceTtsConfigSchema = z
   })
   .default({ endpoints: {}, profiles: [] });
 
-const voicePluginConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    stt: voiceSttConfigSchema,
-    tts: voiceTtsConfigSchema,
-  })
-  .default({
-    enabled: false,
-    stt: { endpoints: {}, profiles: [] },
-    tts: { endpoints: {}, profiles: [] },
-  });
-
 // Streaming voice conversation loop: mic PCM → realtime STT session → agent
-// turn → streamed TTS → streamed playback. Audio I/O is swappable: `host` uses
-// the local mic/speaker (dev / pre-hardware), `robot` routes audio through the
-// reachy provider's affordances. STT/TTS profiles live in the `voice` plugin —
-// not duplicated here.
+// turn → streamed TTS → streamed playback. `host` supplies realtime input
+// and output; the current `robot` compatibility adapter supplies output only
+// and is rejected by doctor for conversation capture. STT/TTS profiles live in
+// the owning `voice` Plugin and are not duplicated here.
 const voiceConversationAudioConfigSchema = z
   .object({
     backend: z.enum(["host", "robot"]).default("host"),
@@ -739,8 +744,50 @@ const voiceConversationPluginConfigSchema = z
     realtime: { autoStartMode: "off", defaultStartMode: "single_turn" },
   });
 
+const voicePluginConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    stt: voiceSttConfigSchema,
+    tts: voiceTtsConfigSchema,
+    conversation: voiceConversationPluginConfigSchema,
+  })
+  .default({
+    enabled: false,
+    stt: { endpoints: {}, profiles: [] },
+    tts: { endpoints: {}, profiles: [] },
+    conversation: {
+      enabled: false,
+      audio: { backend: "host", streamChunkMs: 40, providerId: "reachy" },
+      embodiment: { enabled: true, providerId: "reachy", emotes: true },
+      realtime: { autoStartMode: "off", defaultStartMode: "single_turn" },
+    },
+  });
+
+export function normalizeLegacyVoiceConversationConfig(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value ?? {};
+  }
+  const plugins = value as Record<string, unknown>;
+  if (!("voice-conversation" in plugins)) {
+    return plugins;
+  }
+  const voiceValue = plugins.voice;
+  const voice =
+    voiceValue && typeof voiceValue === "object" && !Array.isArray(voiceValue)
+      ? (voiceValue as Record<string, unknown>)
+      : {};
+  const { "voice-conversation": legacyConversation, ...withoutLegacy } = plugins;
+  return {
+    ...withoutLegacy,
+    voice: {
+      ...voice,
+      conversation: voice.conversation ?? legacyConversation,
+    },
+  };
+}
+
 const pluginsConfigSchema = z.preprocess(
-  (value) => value ?? {},
+  normalizeLegacyVoiceConversationConfig,
   z.object({
     "persistent-goal": persistentGoalPluginConfigSchema,
     apps: appsPluginConfigSchema,
@@ -761,7 +808,6 @@ const pluginsConfigSchema = z.preprocess(
     workspaces: workspacesPluginConfigSchema,
     a2a: a2aPluginConfigSchema,
     voice: voicePluginConfigSchema,
-    "voice-conversation": voiceConversationPluginConfigSchema,
   }),
 );
 

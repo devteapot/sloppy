@@ -6,7 +6,14 @@ import { FakeWebSocket } from "./helpers/fake-websocket";
 
 const ctor = FakeWebSocket as unknown as WebSocketConstructorLike;
 
-function makeAdapter(overrides: { dialect?: string; baseUrl?: string; apiKey?: string } = {}) {
+function makeAdapter(
+  overrides: {
+    dialect?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    webSocketCtor?: WebSocketConstructorLike;
+  } = {},
+) {
   return new RealtimeSttAdapter({
     endpointId: "test",
     protocol: "realtime-stt",
@@ -16,7 +23,7 @@ function makeAdapter(overrides: { dialect?: string; baseUrl?: string; apiKey?: s
     baseUrl: overrides.baseUrl ?? "ws://localhost:8000/v1/realtime",
     language: "en",
     sampleRate: 16000,
-    webSocketCtor: ctor,
+    webSocketCtor: overrides.webSocketCtor ?? ctor,
   });
 }
 
@@ -35,6 +42,17 @@ async function startSession(adapter: RealtimeSttAdapter): Promise<{
 }
 
 describe("RealtimeSttAdapter — openai dialect", () => {
+  test("a pre-aborted start never constructs a WebSocket", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    FakeWebSocket.latest = undefined;
+
+    await expect(
+      makeAdapter().startSession({ signal: controller.signal, onEvent: () => undefined }),
+    ).rejects.toThrow("cancelled");
+    expect(FakeWebSocket.latest).toBeUndefined();
+  });
+
   test("connects with ?intent=transcription and sends the GA session.update", async () => {
     const { socket } = await startSession(makeAdapter({ apiKey: "sk-test" }));
 
@@ -61,6 +79,21 @@ describe("RealtimeSttAdapter — openai dialect", () => {
     const { socket } = await startSession(makeAdapter());
     const headers = (socket.options as { headers: Record<string, string> }).headers;
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  test("rejects a connected WebSocket whose origin differs from the approved URL", async () => {
+    class RedirectedWebSocket extends FakeWebSocket {
+      constructor(_url: string, options?: unknown) {
+        super("wss://redirected.example.test/v1/realtime", options);
+      }
+    }
+    const adapter = makeAdapter({
+      baseUrl: "wss://approved.example.test/v1/realtime",
+      webSocketCtor: RedirectedWebSocket as unknown as WebSocketConstructorLike,
+    });
+
+    await expect(startSession(adapter)).rejects.toThrow("cross-origin WebSocket redirect");
+    expect(FakeWebSocket.latest?.sent).toEqual([]);
   });
 
   test("maps the GA event sequence to runtime events", async () => {

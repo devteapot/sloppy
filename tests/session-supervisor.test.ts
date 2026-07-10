@@ -55,7 +55,7 @@ afterEach(async () => {
     listener.close();
   }
   for (const supervisor of supervisors.splice(0)) {
-    supervisor.stop();
+    await supervisor.stop();
   }
   if (originalHome == null) {
     delete process.env.HOME;
@@ -213,7 +213,7 @@ describe("SessionSupervisor", () => {
     workspaceClient.disconnect();
     supervisor.disconnect();
 
-    provider.stop();
+    await provider.stop();
     supervisors.splice(supervisors.indexOf(provider), 1);
     expect(existsSync(appSession.socketPath)).toBe(false);
   });
@@ -588,7 +588,7 @@ describe("SessionSupervisor", () => {
 
     running.listener.close();
     listeners.splice(listeners.indexOf(running.listener), 1);
-    running.supervisor.stop();
+    await running.supervisor.stop();
     supervisors.splice(supervisors.indexOf(running.supervisor), 1);
 
     expect(existsSync(supervisorSocket)).toBe(false);
@@ -641,7 +641,7 @@ describe("SessionSupervisor", () => {
     firstClient.disconnect();
     first.listener.close();
     listeners.splice(listeners.indexOf(first.listener), 1);
-    first.supervisor.stop();
+    await first.supervisor.stop();
     supervisors.splice(supervisors.indexOf(first.supervisor), 1);
 
     const secondSocket = `/tmp/slop/sloppy-supervisor-registry-b-${crypto.randomUUID()}.sock`;
@@ -933,6 +933,60 @@ describe("SessionSupervisor", () => {
     listeners.push(running.listener);
     expect(existsSync(socketPath)).toBe(true);
     await Bun.sleep(120);
+    expect(existsSync(socketPath)).toBe(false);
+    supervisors.splice(supervisors.indexOf(running.supervisor), 1);
+    listeners.splice(listeners.indexOf(running.listener), 1);
+  });
+
+  test("auto-close rechecks transient Plugin blockers after their state changes", async () => {
+    const home = await createTempDir("sloppy-supervisor-transient-autoclose-home-");
+    const workspace = await createTempDir("sloppy-supervisor-transient-autoclose-workspace-");
+    await writeConfig(
+      home,
+      [
+        ...llmProfileConfigLines("transient-autoclose-model"),
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+    const socketPath = `/tmp/slop/sloppy-supervisor-transient-${crypto.randomUUID()}.sock`;
+    let closed = 0;
+    const running = await startSessionSupervisor({
+      socketPath,
+      cwd: workspace,
+      launchScope: { key: "transient-autoclose-scope", root: workspace },
+      initial: { sessionId: "transient-autoclose-session" },
+      autoClose: {
+        enabled: true,
+        idleTimeoutMs: 30,
+        onClose: () => {
+          closed += 1;
+        },
+      },
+    });
+    supervisors.push(running.supervisor);
+    listeners.push(running.listener);
+    const originalCanAutoClose = running.supervisor.canAutoClose.bind(running.supervisor);
+    let transientBlocked = true;
+    running.supervisor.canAutoClose = () => !transientBlocked && originalCanAutoClose();
+
+    await Bun.sleep(80);
+    expect(closed).toBe(0);
+    expect(existsSync(socketPath)).toBe(true);
+
+    transientBlocked = false;
+    running.initialSession?.service?.runtime
+      .getPluginRuntimeContext("test-transient-blocker")
+      .transientState.replace({ active: false });
+    for (let attempt = 0; attempt < 20 && closed === 0; attempt += 1) {
+      await Bun.sleep(20);
+    }
+
+    expect(closed).toBe(1);
     expect(existsSync(socketPath)).toBe(false);
     supervisors.splice(supervisors.indexOf(running.supervisor), 1);
     listeners.splice(listeners.indexOf(running.listener), 1);

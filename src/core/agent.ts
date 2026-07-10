@@ -151,7 +151,8 @@ export class Agent {
   private publishEventCallback?: (event: RuntimeEvent) => void;
   private mirrorProviderPaths: string[];
   private policyRules: InvokePolicy[];
-  private runtimeStops: Array<{ stop(): void }> = [];
+  private runtimeStops: Array<{ stop(): void | Promise<void> }> = [];
+  private shutdownPromise: Promise<void> | null = null;
   private systemPromptFragments: string[] = [];
   private localTools?: () => LocalRuntimeTool[];
   private childSessionFactory?: ChildSessionFactory;
@@ -690,12 +691,21 @@ export class Agent {
 
   shutdown(): void {
     this.activeRunAbortController?.abort();
+    void this.shutdownAsync().catch(() => undefined);
+  }
 
+  shutdownAsync(): Promise<void> {
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
+    const pendingStops: Promise<void>[] = [];
     for (const runtimeStop of this.runtimeStops) {
       try {
-        runtimeStop.stop();
-      } catch {
-        // best-effort teardown
+        pendingStops.push(Promise.resolve(runtimeStop.stop()));
+      } catch (error) {
+        pendingStops.push(Promise.reject(error));
       }
     }
     this.runtimeStops = [];
@@ -718,13 +728,22 @@ export class Agent {
 
     const hub = this.hub;
     this.hub = null;
-    hub?.shutdown();
+    if (hub) {
+      pendingStops.push(hub.shutdownAsync());
+    }
 
     this.clearPendingApproval();
     this.discovery.setFirstPartyProviderIds([]);
     this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
     this.runtimeServices.clear();
+    const results = await Promise.allSettled(pendingStops);
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length} Agent shutdown hook(s) failed.`);
+    }
   }
 
   private executeLoop(result: RunLoopResult, llm: LlmAdapter): AgentRunResult {

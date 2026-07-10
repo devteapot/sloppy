@@ -8,6 +8,7 @@ import type { SessionStore } from "../store";
 import type { SessionSnapshotMigrator, SessionSnapshotRecoverer } from "../store/persistence";
 import type {
   AgentSessionSnapshot,
+  JsonObject,
   QueuedSessionMessage,
   SessionSnapshotProjector,
   SessionStoreEventType,
@@ -60,6 +61,37 @@ export type PluginTurnFailureEvent = {
   cancelled: boolean;
 };
 
+export type PluginTurnSubmissionResult =
+  | { status: "started"; turnId: string }
+  | { status: "queued"; queuedMessageId: string; position: number };
+
+export type PluginApprovalRequest = {
+  path: string;
+  action: string;
+  reason: string;
+  paramsPreview?: string;
+  dangerous?: boolean;
+  /** Defaults to true. Set false when an explicit human decision is required. */
+  autoApprovable?: boolean;
+  execute: () => unknown | Promise<unknown>;
+  reject?: (reason?: string) => void;
+};
+
+export type PluginApprovalRequestResult = {
+  status: "approval_required";
+  approvalId: string;
+};
+
+/** Observable Session-local Plugin state. It is never included in durable snapshots. */
+export type PluginTransientState = {
+  read<T extends JsonObject = JsonObject>(): Readonly<T> | undefined;
+  replace<T extends JsonObject = JsonObject>(state: T): void;
+  update<T extends JsonObject = JsonObject>(
+    updater: (current: Readonly<T> | undefined) => T | undefined,
+  ): void;
+  clear(): void;
+};
+
 export type PluginRuntimeContext = {
   config: () => SloppyConfig;
   store: SessionStore;
@@ -81,7 +113,18 @@ export type PluginRuntimeContext = {
       window?: [number, number];
     },
   ) => Promise<SlopNode>;
+  transientState: PluginTransientState;
+  approvals: {
+    request: (request: PluginApprovalRequest) => PluginApprovalRequestResult;
+    cancel: (approvalId: string, reason?: string) => boolean;
+  };
+  turns: {
+    submit: (request: PluginTurnRequest) => PluginTurnSubmissionResult;
+    drainQueue: () => void;
+  };
+  /** @deprecated Use turns.submit so active turns queue atomically. */
   startTurn: (request: PluginTurnRequest) => { status: "started"; turnId: string };
+  /** @deprecated Use turns.submit so idle turns start atomically. */
   queueTurn: (request: PluginTurnRequest) => {
     status: "queued";
     queuedMessageId: string;
@@ -119,7 +162,7 @@ export type SessionRuntimePlugin = {
   migrateSnapshot?: SessionSnapshotMigrator;
   recoverSnapshot?: SessionSnapshotRecoverer;
   onStartup?: (ctx: PluginRuntimeContext) => void | Promise<void>;
-  onShutdown?: (ctx: PluginRuntimeContext) => void;
+  onShutdown?: (ctx: PluginRuntimeContext) => void | Promise<void>;
   localTools?: (
     ctx: PluginRuntimeContext,
     activeTurn: ActivePluginTurn | null,
@@ -131,8 +174,11 @@ export type SessionRuntimePlugin = {
   nextTurn?: (ctx: PluginRuntimeContext) => PluginTurnRequest | null;
   onTurnComplete?: (event: PluginTurnCompleteEvent, ctx: PluginRuntimeContext) => void;
   onTurnFailure?: (event: PluginTurnFailureEvent, ctx: PluginRuntimeContext) => void;
+  onQueuedTurnCancelled?: (message: QueuedSessionMessage, ctx: PluginRuntimeContext) => void;
   sessionSummary?: (ctx: PluginRuntimeContext) => SessionSummaryContribution | null;
   autoCloseBlockers?: (ctx: PluginRuntimeContext) => AutoCloseBlocker[];
+  /** Ephemeral typed-client state keyed by Plugin id; never persisted in Session snapshots. */
+  clientState?: (ctx: PluginRuntimeContext) => JsonObject | undefined;
   clientCommands?: (ctx: PluginRuntimeContext) => ClientCommandContribution[];
   client?: ClientContributionDefinition;
 };

@@ -514,14 +514,11 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
             [
               "Speech configuration is exposed through the voice provider as SLOP state.",
               "Observe /voice/stt and /voice/tts for profile readiness; invoke set_profile to switch profiles.",
-              "Speaking happens through the session's /conversation node (voice-conversation plugin), not through this provider.",
+              "Speaking happens through this Plugin's session /conversation node, not through the configuration provider.",
             ].join("\n"),
         }),
       ];
     },
-  },
-  {
-    ...firstPartyPluginMetadata("voice-conversation"),
   },
 ];
 

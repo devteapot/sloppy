@@ -53,6 +53,54 @@ function createFirstPartyProvider(id: string, name: string): RegisteredProvider 
 }
 
 describe("ConsumerHub", () => {
+  test("awaits async provider stops and shutdown is single-flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let stopCalls = 0;
+    const provider = createFirstPartyProvider("async-stop", "Async Stop");
+    provider.stop = async () => {
+      stopCalls += 1;
+      await gate;
+    };
+    const hub = new ConsumerHub([provider], TEST_CONFIG);
+    await hub.connect();
+
+    let completed = false;
+    const first = hub.shutdownAsync().then(() => {
+      completed = true;
+    });
+    const second = hub.shutdownAsync();
+    await Bun.sleep(0);
+    expect(completed).toBe(false);
+    expect(stopCalls).toBe(1);
+
+    release();
+    await Promise.all([first, second]);
+    expect(completed).toBe(true);
+  });
+
+  test("reports and rejects failed provider cleanup during awaited shutdown", async () => {
+    const provider = createFirstPartyProvider("failed-shutdown", "Failed Shutdown");
+    provider.stop = async () => {
+      throw new Error("shutdown cleanup failed");
+    };
+    const hub = new ConsumerHub([provider], TEST_CONFIG);
+    const warnings: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+
+    try {
+      await hub.connect();
+      await expect(hub.shutdownAsync()).rejects.toThrow("Provider shutdown hook(s) failed");
+      expect(warnings.some((message) => message.includes("shutdown cleanup failed"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test("adds and removes providers after the initial connection", async () => {
     const hub = new ConsumerHub([], TEST_CONFIG);
 
@@ -129,6 +177,60 @@ describe("ConsumerHub", () => {
       expect(hub.getExternalProviderStates()).toEqual([]);
     } finally {
       hub.shutdown();
+    }
+  });
+
+  test("isolates first-party cleanup failures after a connection failure", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    const stopError = new Error("cleanup also failed");
+    const provider: RegisteredProvider = {
+      id: "broken-first-party",
+      name: "Broken First Party",
+      kind: "first-party",
+      transport: new NodeSocketClientTransport(
+        `/tmp/sloppy-missing-first-party-${crypto.randomUUID()}.sock`,
+      ),
+      transportLabel: "unix:/tmp/missing-first-party.sock",
+      stop: async () => {
+        throw stopError;
+      },
+    };
+
+    const warnings: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+    try {
+      await hub.connect();
+      await expect(hub.addProvider(provider)).resolves.toBe(false);
+      expect(hub.getProviderViews()).toHaveLength(0);
+      expect(warnings.some((message) => message.includes("cleanup also failed"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      await hub.shutdownAsync();
+    }
+  });
+
+  test("surfaces asynchronous provider cleanup failures during removal", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    const provider = createFirstPartyProvider("broken-removal", "Broken Removal");
+    provider.stop = async () => {
+      throw new Error("remove cleanup failed");
+    };
+    const warnings: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+
+    try {
+      await hub.connect();
+      expect(await hub.addProvider(provider)).toBe(true);
+      hub.removeProvider(provider.id);
+      await Bun.sleep(0);
+      expect(warnings.some((message) => message.includes("remove cleanup failed"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      await hub.shutdownAsync();
     }
   });
 

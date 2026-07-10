@@ -7,13 +7,17 @@ import type { ResultMessage } from "@slop-ai/consumer/browser";
 import {
   createAudioBackend,
   HostAudioBackend,
+  HostAudioInputAdapter,
+  HostAudioOutputAdapter,
   type InvokeProvider,
+  ProviderAudioInputAdapter,
+  ProviderAudioOutputAdapter,
   RobotAudioBackend,
 } from "./audio-backend";
 
 type AudioConfig = Parameters<typeof createAudioBackend>[0];
 
-function audioConfig(overrides: Partial<AudioConfig>): AudioConfig {
+function audioConfig(overrides: Partial<AudioConfig> = {}): AudioConfig {
   return {
     backend: "host",
     streamChunkMs: 40,
@@ -29,6 +33,14 @@ afterAll(async () => {
 });
 
 describe("HostAudioBackend", () => {
+  test("declares independent host input and output resources", () => {
+    const backend = new HostAudioBackend(audioConfig());
+    expect(backend.input).toBeInstanceOf(HostAudioInputAdapter);
+    expect(backend.output).toBeInstanceOf(HostAudioOutputAdapter);
+    expect(backend.inputResourceKeys).toEqual(["host:default:input"]);
+    expect(backend.outputResourceKeys).toEqual(["host:default:output"]);
+  });
+
   test("openStream yields raw PCM chunks from the stream command", async () => {
     const backend = new HostAudioBackend(
       audioConfig({
@@ -118,6 +130,33 @@ describe("HostAudioBackend", () => {
 });
 
 describe("RobotAudioBackend", () => {
+  test("provider input adapter owns its mic resource and closes the stream", () => {
+    let closed = 0;
+    const input = new ProviderAudioInputAdapter("reachy", () => ({
+      async *frames() {
+        yield new Uint8Array([1, 2]);
+      },
+      close() {
+        closed += 1;
+      },
+    }));
+    expect(input.inputResourceKeys).toEqual(["provider:reachy:mic"]);
+    input.openStream();
+    input.dispose();
+    expect(closed).toBe(1);
+  });
+
+  test("is a compatibility adapter over provider-backed audio output", () => {
+    const backend = new RobotAudioBackend("reachy", async () => ({
+      type: "result",
+      id: "compatibility-test",
+      status: "ok",
+      data: {},
+    }));
+    expect(backend).toBeInstanceOf(ProviderAudioOutputAdapter);
+    expect(backend.outputResourceKeys).toEqual(["provider:reachy:speaker"]);
+  });
+
   function okResult(data: unknown): ResultMessage {
     return { type: "result", id: "1", status: "ok", data };
   }

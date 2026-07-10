@@ -34,6 +34,7 @@ export interface SessionAgent {
   shutdown(): void;
   waitForShutdown?(): Promise<void>;
   isShutdownComplete?(): boolean;
+  shutdownAsync?(): Promise<void>;
 }
 
 export type SessionAgentFactory = (

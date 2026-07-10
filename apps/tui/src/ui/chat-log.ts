@@ -519,6 +519,9 @@ function inlineCards(snapshot: SessionViewSnapshot): string[] {
       [
         `**Approval** ${safeMarkdownText(`${approval.provider}.${approval.action}`)}`,
         safeMarkdownText(approval.reason),
+        approval.autoApprovable === false
+          ? "Explicit approval required; auto mode will not resolve it."
+          : "",
         approval.paramsPreview ? safeMarkdownText(approval.paramsPreview) : "",
         approval.canApprove || approval.canReject ? "`Ctrl+K` for approve/reject" : "",
       ]

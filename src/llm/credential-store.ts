@@ -7,18 +7,23 @@ export type CommandResult = {
   exitCode: number;
 };
 
+export type CredentialOperationOptions = {
+  signal?: AbortSignal;
+};
+
 export type CommandRunner = (
   command: string,
   args: string[],
   options?: {
     input?: string;
+    signal?: AbortSignal;
   },
 ) => Promise<CommandResult>;
 
 export interface CredentialStore {
   kind: CredentialStoreKind;
-  getStatus(): Promise<CredentialStoreStatus>;
-  get(profileId: string): Promise<string | null>;
+  getStatus(options?: CredentialOperationOptions): Promise<CredentialStoreStatus>;
+  get(profileId: string, options?: CredentialOperationOptions): Promise<string | null>;
   set(profileId: string, secret: string): Promise<void>;
   delete(profileId: string): Promise<void>;
 }
@@ -64,25 +69,50 @@ async function runSystemCommand(
   args: string[],
   options?: {
     input?: string;
+    signal?: AbortSignal;
   },
 ): Promise<CommandResult> {
+  throwIfCredentialOperationAborted(options?.signal);
   const subprocess = Bun.spawn([command, ...args], {
     stdin: options?.input != null ? new TextEncoder().encode(options.input) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
-    subprocess.exited,
-  ]);
+  const onAbort = () => subprocess.kill();
+  options?.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options?.signal?.aborted) {
+    onAbort();
+  }
 
-  return {
-    stdout,
-    stderr,
-    exitCode,
-  };
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(subprocess.stdout).text(),
+      new Response(subprocess.stderr).text(),
+      subprocess.exited,
+    ]);
+    throwIfCredentialOperationAborted(options?.signal);
+
+    return {
+      stdout,
+      stderr,
+      exitCode,
+    };
+  } catch (error) {
+    throwIfCredentialOperationAborted(options?.signal);
+    throw error;
+  } finally {
+    options?.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+function throwIfCredentialOperationAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Credential operation cancelled.");
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -121,14 +151,23 @@ abstract class BaseCredentialStore implements CredentialStore {
     protected readonly runner: CommandRunner,
   ) {}
 
-  async getStatus(): Promise<CredentialStoreStatus> {
+  async getStatus(options?: CredentialOperationOptions): Promise<CredentialStoreStatus> {
+    if (options?.signal) {
+      throwIfCredentialOperationAborted(options.signal);
+      const status = await this.detectStatus(options);
+      throwIfCredentialOperationAborted(options.signal);
+      this.statusPromise ??= Promise.resolve(status);
+      return status;
+    }
     if (!this.statusPromise) {
       this.statusPromise = this.detectStatus();
     }
     return this.statusPromise;
   }
 
-  protected abstract detectStatus(): Promise<CredentialStoreStatus>;
+  protected abstract detectStatus(
+    options?: CredentialOperationOptions,
+  ): Promise<CredentialStoreStatus>;
 
   protected async ensureAvailable(): Promise<void> {
     const status = await this.getStatus();
@@ -137,7 +176,7 @@ abstract class BaseCredentialStore implements CredentialStore {
     }
   }
 
-  abstract get(profileId: string): Promise<string | null>;
+  abstract get(profileId: string, options?: CredentialOperationOptions): Promise<string | null>;
   abstract set(profileId: string, secret: string): Promise<void>;
   abstract delete(profileId: string): Promise<void>;
 }
@@ -147,32 +186,33 @@ class KeychainCredentialStore extends BaseCredentialStore {
     super("keychain", runner);
   }
 
-  protected async detectStatus(): Promise<CredentialStoreStatus> {
+  protected async detectStatus(
+    options?: CredentialOperationOptions,
+  ): Promise<CredentialStoreStatus> {
     if (process.platform !== "darwin") {
       return "unsupported";
     }
 
     try {
-      await this.runner("security", ["help"]);
+      await this.runner("security", ["help"], options);
       return "available";
     } catch (error) {
+      throwIfCredentialOperationAborted(options?.signal);
       return isNotFoundError(error) ? "unavailable" : "available";
     }
   }
 
-  async get(profileId: string): Promise<string | null> {
-    if ((await this.getStatus()) !== "available") {
+  async get(profileId: string, options?: CredentialOperationOptions): Promise<string | null> {
+    if ((await this.getStatus(options)) !== "available") {
       return null;
     }
 
-    const result = await this.runner("security", [
-      "find-generic-password",
-      "-a",
-      profileId,
-      "-s",
-      KEYCHAIN_SERVICE_NAME,
-      "-w",
-    ]).catch((error) => {
+    const result = await this.runner(
+      "security",
+      ["find-generic-password", "-a", profileId, "-s", KEYCHAIN_SERVICE_NAME, "-w"],
+      options,
+    ).catch((error) => {
+      throwIfCredentialOperationAborted(options?.signal);
       if (isNotFoundError(error)) {
         return { stdout: "", stderr: "", exitCode: 1 } satisfies CommandResult;
       }
@@ -246,31 +286,33 @@ class SecretServiceCredentialStore extends BaseCredentialStore {
     super("secret-service", runner);
   }
 
-  protected async detectStatus(): Promise<CredentialStoreStatus> {
+  protected async detectStatus(
+    options?: CredentialOperationOptions,
+  ): Promise<CredentialStoreStatus> {
     if (process.platform !== "linux") {
       return "unsupported";
     }
 
     try {
-      await this.runner("secret-tool", ["--help"]);
+      await this.runner("secret-tool", ["--help"], options);
       return "available";
     } catch (error) {
+      throwIfCredentialOperationAborted(options?.signal);
       return isNotFoundError(error) ? "unavailable" : "available";
     }
   }
 
-  async get(profileId: string): Promise<string | null> {
-    if ((await this.getStatus()) !== "available") {
+  async get(profileId: string, options?: CredentialOperationOptions): Promise<string | null> {
+    if ((await this.getStatus(options)) !== "available") {
       return null;
     }
 
-    const result = await this.runner("secret-tool", [
-      "lookup",
-      "application",
-      SECRET_SERVICE_APP_NAME,
-      "profile_id",
-      profileId,
-    ]).catch((error) => {
+    const result = await this.runner(
+      "secret-tool",
+      ["lookup", "application", SECRET_SERVICE_APP_NAME, "profile_id", profileId],
+      options,
+    ).catch((error) => {
+      throwIfCredentialOperationAborted(options?.signal);
       if (isNotFoundError(error)) {
         return { stdout: "", stderr: "", exitCode: 1 } satisfies CommandResult;
       }
@@ -347,11 +389,14 @@ class UnsupportedCredentialStore extends BaseCredentialStore {
     super("none", runner);
   }
 
-  protected async detectStatus(): Promise<CredentialStoreStatus> {
+  protected async detectStatus(
+    _options?: CredentialOperationOptions,
+  ): Promise<CredentialStoreStatus> {
     return "unsupported";
   }
 
-  async get(_profileId: string): Promise<string | null> {
+  async get(_profileId: string, options?: CredentialOperationOptions): Promise<string | null> {
+    throwIfCredentialOperationAborted(options?.signal);
     return null;
   }
 

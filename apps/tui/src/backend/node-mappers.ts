@@ -70,6 +70,7 @@ export const EMPTY_SESSION_VIEW: SessionViewSnapshot = {
   approvals: [],
   tasks: [],
   apps: [],
+  pluginState: {},
   plugins: [],
   queue: [],
   inspect: EMPTY_INSPECT,
@@ -202,6 +203,7 @@ export function mapClientSnapshot(
       status: app.status,
       lastError: app.lastError,
     })),
+    pluginState: input.pluginState,
     plugins: input.plugins.map((plugin) => ({
       id: plugin.id,
       version: plugin.version,

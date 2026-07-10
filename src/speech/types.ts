@@ -125,11 +125,15 @@ export type TtsAdapterConfig = {
 
 export type WebSocketConstructorLike = new (
   url: string,
-  protocolsOrOptions?: string | string[] | { headers?: Record<string, string> },
+  protocolsOrOptions?:
+    | string
+    | string[]
+    | { headers?: Record<string, string>; followRedirects?: false },
 ) => WebSocketLike;
 
 export type WebSocketLike = {
   readonly readyState: number;
+  readonly url: string;
   addEventListener(type: "open", listener: () => void): void;
   addEventListener(type: "close", listener: (event: CloseEvent) => void): void;
   addEventListener(type: "error", listener: (event: Event) => void): void;

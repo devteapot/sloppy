@@ -226,6 +226,7 @@ export type ApprovalItem = {
   reason: string;
   paramsPreview?: string;
   dangerous: boolean;
+  autoApprovable?: boolean;
   canApprove: boolean;
   canReject: boolean;
   createdAt?: string;
@@ -360,6 +361,7 @@ export type SessionViewSnapshot = {
   approvals: ApprovalItem[];
   tasks: TaskItem[];
   apps: AppItem[];
+  pluginState: Record<string, Record<string, unknown>>;
   plugins: PluginItem[];
   queue: QueuedItem[];
   inspect: InspectState;

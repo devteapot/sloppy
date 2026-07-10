@@ -39,9 +39,9 @@ export function createFirstPartySessionPlugins(config: SloppyConfig): SessionRun
         localTools: () => [createDelegationWaitTool()],
       };
     }
-    if (plugin.id === "voice-conversation") {
+    if (plugin.id === "voice" && config.plugins.voice.conversation.enabled) {
       return createVoiceConversationPlugin(
-        config.plugins["voice-conversation"],
+        config.plugins.voice.conversation,
         speechManagerFor(config),
       );
     }

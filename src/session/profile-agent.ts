@@ -295,6 +295,11 @@ export class ProfileSessionAgent implements SessionAgent {
     return this.shutdownCompletionSettled;
   }
 
+  async shutdownAsync(): Promise<void> {
+    this.shutdown();
+    await this.waitForShutdown();
+  }
+
   private async ensureInner(): Promise<SessionAgent> {
     const state = await this.llmProfileManager.getState();
     const profile = selectedProfile(state.profiles, state.activeProfileId, this.llmProfileId);

@@ -92,12 +92,12 @@ export class SessionService {
     });
   }
 
-  static stopSession(sessionId: string): boolean {
+  static async stopSession(sessionId: string): Promise<boolean> {
     const session = SessionService.sessions.get(sessionId);
     if (!session) {
       return false;
     }
-    session.stop();
+    await session.stop();
     return true;
   }
 

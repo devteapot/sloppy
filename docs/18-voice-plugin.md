@@ -7,6 +7,12 @@ autospeak. Speech adapters are runtime infrastructure (like `src/llm/`); the
 SLOP surface is configuration state plus the conversation loop's
 `/conversation` node.
 
+`voice` is one first-party Plugin and the sole catalog ownership unit for this
+pipeline. Its descriptor owns the configuration Provider, the `/conversation`
+Session plugin, UI contribution manifest, doctor checks, and
+host-command probes. The source directory `voice-conversation/` is an internal
+implementation location, not a second Plugin identity.
+
 ## Why a runtime-owned contract
 
 There is no wire-format standard for realtime speech. Realtime STT is an
@@ -74,9 +80,11 @@ registry), with per-profile fingerprint caching. It reuses the shared
 `CredentialStore` under a `voice:` account prefix and reports per-modality
 readiness (`ready | needs_credentials | not_configured`) — STT-only or
 TTS-only is a first-class state. `activeSttEndpoint()`/`activeTtsEndpoint()`
-expose the exact endpoint the next adapter will use, so the network policy
-can never diverge from what actually receives audio. The registry and default
-endpoints are constructor-injected; construct managers through
+expose the exact endpoints captured into the next immutable voice run. The
+public run identity is derived from process-scoped keyed routing fingerprints,
+so route changes invalidate a prepared run without exposing an offline verifier
+for credential-bearing URL queries or header values. The
+registry and default endpoints are constructor-injected; construct managers through
 `speechManagerFor` (catalog.ts) — a bare `new SpeechProfileManager(...)` sees
 the empty singleton and resolves every profile to `Unknown protocol`.
 
@@ -86,12 +94,16 @@ surface for configuration only: `/session`, `/stt`, `/tts` readiness state and
 
 ## Conversation loop
 
-`src/plugins/first-party/voice-conversation/session.ts` mounts `/conversation`
-and drives a half-duplex state machine:
+The `voice` Plugin's Session facet, implemented in
+`src/plugins/first-party/voice-conversation/session.ts`, mounts `/conversation`
+and drives a half-duplex state machine. Its phase and partial-caption State is
+transient Session-plugin State: it refreshes the Session provider but is never
+written into durable Session snapshots or `/extensions`:
 
 ```
-idle → connecting → listening → thinking → speaking → (continuous: re-arm)
-       needs_approval (non-local autostart)    restarting (backoff on session loss)
+idle → preparing → needs_approval → acquiring → connecting → listening
+     → queued/thinking → speaking → cleaning → (continuous: re-arm or idle)
+                                      restarting (backoff on session loss)
 ```
 
 - The STT provider does VAD; only `final` transcripts start plugin turns.
@@ -101,53 +113,69 @@ idle → connecting → listening → thinking → speaking → (continuous: re-
   realtime-session instability.
 - `stop_listening` aborts the mic stream, the STT session, in-flight TTS, and
   playback; a stop during `thinking` suppresses the spoken reply.
-- Live state (`phase`, `partial_transcript`, `connected`, `restart_attempt`)
-  publishes through a session **extension record** (namespace
-  `voice-conversation`) — store changes are what refresh the session provider,
-  so closure state alone would never reach clients. Partial-transcript patches
-  are throttled to ~6/s with a trailing flush.
-- Audio I/O is swappable (`audio.backend`): `host` shells out to sox
+- `cleaning` means audio ownership is still being released. Start is absent
+  until cleanup reaches `idle`; a failed release publishes `error` and retains
+  stop so cleanup can be retried.
+- Live state (`phase`, `partial_transcript`, `connected`, frozen endpoints,
+  and audio-resource owners) publishes through transient Session-plugin State.
+  It refreshes the Session provider without entering durable snapshots.
+  Partial-transcript updates are throttled to ~6/s with a trailing flush.
+- Audio input and output are separate adapter seams. The compatibility
+  `audio.backend: host` composition shells out to sox
   (`sox -d … -t raw -` capture, `play … -t raw -` playback, both
-  `{rate}`-templated); `robot` routes through the reachy provider's
-  `/mic`/`/speaker` affordances (playback collects the stream into one WAV
-  clip per reply).
+  `{rate}`-templated). Provider-backed input and output adapters support robot
+  integrations without changing the conversation controller; the current
+  `robot` compatibility composition has playback only and doctor rejects it for
+  realtime conversation until a streaming microphone adapter is configured.
 - **Inline emote markers** (`embodiment.emotes`, default on with embodiment):
-  the `/conversation` node summary tells the model it may embed `[emote:name]`
-  markers in voice replies where the mood shifts. `speak()` strips them
+  voice replies may embed `[emote:name]` markers where the mood shifts.
+  `speak()` strips them
   (`emote-markers.ts` — they survive `normalizeForSpeech`, so stripping happens
   before any text reaches a TTS stream), validates names against the robot
   provider's `/behavior` `props.emotions` (vocabulary unavailable → fire
-  unvalidated, the provider rejects bad names), splits the reply into segments
-  spoken sequentially, and fires `play_emotion {sound: false}` fire-and-forget
-  as each marked segment starts. One head-wobble loop spans the whole reply and
-  skips ticks whose `set_pose` returns an error result (`conflict` while an
-  emotion has the robot busy) — so the choreography "emotion at the marker,
-  wobble between" is emergent from the provider's busy policy, with no
-  sequencing state. A second marker while an emotion still plays is a
-  deliberate skip (the conflict result is ignored). Barge-in
-  (`stop_listening`) also invokes `/behavior stop`; a reply that ends mid-emote
-  lets the move finish.
+  unvalidated, the provider rejects bad names), and splits the reply into
+  sequential speech segments. `ReachyEmbodimentAdapter` owns every Reachy path,
+  emotion invocation, head/antenna cadence, busy behavior, and barge-in stop;
+  `NullEmbodimentAdapter` is the second adapter at the same seam. The generic
+  conversation controller knows only semantic emote names.
 
-## Privacy boundary
+## Privacy seam
 
-`createSpeechNetworkRule` (`src/plugins/first-party/voice/policy.ts`) gates the
-session provider's **`start_listening`** action — the moment audio starts
-flowing — because the streaming sessions themselves are opened in-process, not
-via affordance invokes. It requires approval unless **both** active endpoints
-are local (`auth: { type: none }` + localhost URL, `http(s)`/`ws(s)` alike);
-after approval the hub re-invokes with `preApproved: true`. Continuous
-auto-start (`realtime.autoStartMode: continuous`) only proceeds when both
-endpoints are local; otherwise the loop parks in `needs_approval` until
-`start_listening` is invoked through the hub.
+The Session plugin gates its public **`start_listening`** action at the actual
+data-egress seam. Before opening an audio device or speech transport it freezes
+the selected profiles and destinations into an immutable run plan. Local plans
+start immediately; remote plans create a Session-native approval whose callback
+is the only path that can begin that exact plan. Continuous reconnects reuse the
+same approved plan. Profile changes stop the run, so a later destination always
+requires a fresh start and, when remote, fresh explicit approval. Remote voice
+egress approvals set `autoApprovable: false`; Session `approval_mode=auto` never
+resolves them.
+Preparation is abortable and bounded (15 seconds by default), so stop, profile
+change, or shutdown cannot leave credential/config resolution holding the
+Session lifecycle open indefinitely.
 
 ## Configuration
 
-Nested under `plugins.voice` (`stt`/`tts` × `endpoints`/`profiles`/
-`defaultProfileId`) and `plugins.voice-conversation` (audio commands, autostart
-mode, embodiment). See `.sloppy/config.example.yaml`. Built-in endpoint
-defaults (`src/plugins/first-party/voice/endpoints.ts`): `openai-realtime`,
+All configuration is nested under the single `plugins.voice` Plugin:
+`stt`/`tts` contain endpoints, profiles, and default profile ids, while
+`conversation` contains audio commands, autostart mode, and embodiment. The
+loader migrates the former `plugins.voice-conversation` key into
+`plugins.voice.conversation` per config layer so a legacy workspace override
+retains its normal precedence. See `.sloppy/config.example.yaml`. Built-in
+endpoint defaults (`src/plugins/first-party/voice/endpoints.ts`): `openai-realtime`,
 `vllm-realtime`, `openai-tts`, `kokoro`. Site-specific endpoints (e.g. a DGX
 node) are user config, fully defined in YAML — there is no built-in for them.
+
+The Session facet publishes typed client commands for single-turn start,
+continuous start, and stop, plus a client-agnostic contribution manifest with a
+phase indicator and approval/error notifications. Live values come from the
+generic typed Session `pluginState.voice` entry. UIs consume those contributions
+without SLOP subscriptions or voice-specific rendering branches.
+
+`runtime:doctor` validates selected profile references, the requirement for an
+STT profile when conversation is enabled, and host/robot backend consistency.
+For host audio it also reports the configured capture and playback executables
+through the shared subprocess-probe check; doctor never opens an audio device.
 
 ## Deferred (follow-ups, not built)
 

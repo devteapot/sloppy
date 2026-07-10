@@ -57,6 +57,9 @@ class OpenAISpeechStream implements TtsStream {
   ) {
     this.format = format;
     options?.signal?.addEventListener("abort", () => this.abort(), { once: true });
+    if (options?.signal?.aborted) {
+      this.abort();
+    }
   }
 
   appendText(text: string): void {
@@ -195,6 +198,9 @@ class OpenAISpeechStream implements TtsStream {
       headers,
       body: JSON.stringify(body),
       signal: this.abortController.signal,
+      // Never forward speech text or authorization headers to a redirected
+      // origin. Endpoint changes require a new frozen voice run and consent.
+      redirect: "error",
     });
   }
 

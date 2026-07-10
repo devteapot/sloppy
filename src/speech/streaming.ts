@@ -9,6 +9,10 @@ const WS_OPEN = 1;
 
 /** Resolve once the socket is open; reject on close/error/abort before then. */
 export function waitForOpen(socket: WebSocketLike, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    socket.close();
+    return Promise.reject(new SpeechError("WebSocket connection was cancelled."));
+  }
   if (socket.readyState === WS_OPEN) {
     return Promise.resolve();
   }

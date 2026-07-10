@@ -18,6 +18,7 @@ function clientSnapshot(): SessionClientSnapshot {
       canCancelTurn: false,
       canReloadConfig: true,
     },
+    pluginState: {},
     plugins: [],
   };
 }

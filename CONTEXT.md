@@ -19,23 +19,27 @@ The first-party Provider that exposes discovered external Apps to the Agent unde
 _Avoid_: confusing it with the Session provider's public `/apps` mirror for UIs and external clients; using it to manage first-party Plugins or Providers.
 
 **Plugin**:
-A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`). A Plugin may contribute one or more Providers (`createProviders`) and at most one Session plugin (`createSessionPlugin`); some do only one. It is the packaging/catalog unit, not a capability itself. A name shared between a Plugin and the Provider it creates (e.g. `skills`, `terminal`) refers to two distinct objects.
+A first-party package and the unit of the plugin catalog (`FIRST_PARTY_PLUGINS`). A Plugin may contribute one or more Providers and at most one Session plugin through the matching facet assembly; some do only one. It is the packaging/catalog unit, not a capability itself. A name shared between a Plugin and the Provider it creates (e.g. `skills`, `terminal`) refers to two distinct objects.
 _Avoid_: calling a Plugin a Provider; calling the optional capabilities "optional providers" — they are Plugins.
 
 **Session plugin**:
-The session-provider extension a Plugin produces via `createSessionPlugin` (code type `SessionRuntimePlugin`). It registers into the session provider, contributing session nodes, runtime-local turn tools, hooks, policy rules, and a declarative UI contribution manifest. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
+The Session extension a Plugin contributes (code type `SessionRuntimePlugin`). It can contribute SLOP session nodes, runtime-local turn tools, lifecycle and Turn hooks, Plugin-scoped client state, and typed client commands/contributions. A Plugin can exist without one (e.g. `terminal` contributes only a Provider) or be only one (e.g. `persistent-goal` contributes no Provider).
 _Avoid_: shortening to "plugin" when the package is meant.
+
+**Transient Plugin State**:
+Session-local, Plugin-scoped state published through `PluginRuntimeContext.transientState`. It refreshes the compact Session provider and typed-client `pluginState` but is excluded from durable Session snapshots. Use it for live phases, partial captions, connection health, and resource ownership.
+_Avoid_: tunnelling live runtime state through Extension records merely to trigger refreshes.
 
 **Skill**:
 A `SKILL.md` directory of instructions plus supporting files, loaded by progressive disclosure. A Skill is the runtime's **procedural memory** — a repeatable how-to workflow expressed as instructions over existing affordances. Contrast with the `memory` Provider (facts/episodic memory) and identity memory: those are different memory kinds, not Skills.
 _Avoid_: treating "procedural memory" as a separate artifact — it is the role a Skill plays.
 
 **UI**:
-A client that consumes a Session provider (or Session supervisor) over its socket and renders it for a human. The TUI is a UI; a future web dashboard would be a UI. A UI is not a Provider and not part of the Runtime — UIs live under `apps/`.
+A client that consumes the typed Session or Supervisor API and renders it for a human. The TUI is a UI; a future web dashboard would be a UI. A UI is not a Provider and not part of the Runtime — UIs live under `apps/`.
 _Avoid_: "frontend", "surface", "client" used loosely — the consumer of a Session that renders it for a human is a UI.
 
-**UI contribution manifest**:
-The declarative, UI-agnostic manifest a Session plugin publishes (code type `UiContributionManifest`, exposed at `/plugins`) describing how it extends a UI: state subscriptions, affordance-bound actions, status indicators, and notifications. UI-specific presentation is an optional, ignorable hint keyed by UI; the manifest itself names no rendering technology.
+**Client contribution manifest**:
+The declarative, UI-agnostic manifest a Session plugin publishes through the typed client snapshot. It describes typed commands/actions, status indicators, and notifications over stable snapshot paths. UI-specific presentation is an optional, ignorable hint; execution never depends on a TUI branch or a SLOP path/action pair.
 _Avoid_: "TUI manifest" — the manifest is not TUI-specific.
 
 ### Session state
@@ -74,14 +78,14 @@ _Avoid_: conflating with Agent profile (the template) or Child agent (the runnin
 The runtime instance hosting exactly one Agent — its transcript, turn state, approvals, and activity — reachable over its own socket. Every Session is launched through the same layered config launcher; "scoped" is just an adjective for which layers were active (home-only vs home + workspace + project), not a distinct kind of Session.
 
 **Session provider**:
-The per-Session public SLOP Provider exposing one Session's surface (`/session`, `/turn`, `/transcript`, `/goal`, `/approvals`, `/activity`, `/tasks`, …). The boundary first-party UIs and external clients consume.
+The compact per-Session SLOP Provider exposing deliberate agent-relevant state such as `/session`, `/turn`, `/goal`, and `/conversation`. Ordinary application clients use the typed Session API instead.
 
 **Approval mode**:
-The Session-owned setting that determines whether approval-capable pending approval items across the whole Session are resolved by normal user action or automatically by the Runtime. The supported modes are `normal` and `auto`; `auto` applies to foreground-turn and background/provider approvals alike, the mode persists with the Session snapshot, and UIs render and set it through the Session provider but do not own auto-approval behavior.
+The Session-owned setting that determines whether auto-eligible pending approval items across the whole Session are resolved by normal user action or automatically by the Runtime. The supported modes are `normal` and `auto`; `auto` does not resolve items marked `autoApprovable=false`, the mode persists with the Session snapshot, and clients render and set it without owning auto-approval behavior.
 _Avoid_: approval posture, local approval policy, TUI approval mode, yolo mode.
 
 **Session supervisor**:
-A separate public SLOP Provider that manages many Sessions — `/sessions`, `/scopes`, `create_session`, `select_session`, `stop_session`. Owns lifecycle bookkeeping only; it does not schedule or route work.
+A typed application service that manages many Sessions through the Supervisor API. It owns lifecycle bookkeeping only; it does not schedule or route work and is not a SLOP Provider.
 _Avoid_: calling it an orchestrator.
 
 **Managed supervisor**:

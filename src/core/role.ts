@@ -68,7 +68,7 @@ export type RoleProfile = {
     hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
-  ) => { stop(): void };
+  ) => { stop(): void | Promise<void> };
 };
 
 export const defaultRole: RoleProfile = {

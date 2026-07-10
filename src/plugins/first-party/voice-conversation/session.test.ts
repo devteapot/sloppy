@@ -11,17 +11,46 @@ import type {
   SttSessionOptions,
   TtsStream,
 } from "../../../speech/types";
-import { CONVERSATION_EXTENSION_NAMESPACE, createVoiceConversationPlugin } from "./session";
+import type { AudioResourceLease } from "./audio-resource-arbiter";
+import {
+  createVoiceConversationPlugin as createRuntimeVoiceConversationPlugin,
+  type VoiceConversationPluginOptions,
+} from "./session";
 
 const STT_FORMAT: PcmFormat = { encoding: "pcm16", sampleRate: 16000, channels: 1 };
 const TTS_FORMAT: PcmFormat = { encoding: "pcm16", sampleRate: 24000, channels: 1 };
 
-function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+function createVoiceConversationPlugin(
+  pluginConfig: VoiceConversationPluginConfig,
+  manager: SpeechProfileManager,
+  options: VoiceConversationPluginOptions = {},
+) {
+  return createRuntimeVoiceConversationPlugin(pluginConfig, manager, {
+    resourceArbiter: {
+      acquire: async (_owner, resources) => ({
+        id: `test-lease-${crypto.randomUUID()}`,
+        resources,
+        release: async () => undefined,
+      }),
+      state: async () => [],
+      subscribe: () => () => undefined,
+    },
+    ...options,
   });
-  return { promise, resolve };
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((r, fail) => {
+    resolve = r;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 const ok = (data?: unknown): ResultMessage => ({ type: "result", id: "1", status: "ok", data });
@@ -118,12 +147,15 @@ class FakeTtsStream implements TtsStream {
 type ManagerOptions = {
   localStt?: boolean;
   blockingTts?: boolean;
+  prepareGate?: Promise<void>;
+  tts?: boolean;
 };
 
 function fakeManager(options: ManagerOptions = {}) {
   const sessions: FakeSttSession[] = [];
   const ttsStreams: FakeTtsStream[] = [];
   const sessionWaiters: Array<(session: FakeSttSession) => void> = [];
+  const selectionListeners = new Set<() => void>();
 
   function waitForSession(index: number): Promise<FakeSttSession> {
     if (sessions[index]) {
@@ -134,12 +166,68 @@ function fakeManager(options: ManagerOptions = {}) {
     });
   }
 
+  function createSttAdapter() {
+    return {
+      inputFormat: STT_FORMAT,
+      startSession: async (sessionOptions: SttSessionOptions) => {
+        const session = new FakeSttSession(sessionOptions.onEvent);
+        sessions.push(session);
+        sessionWaiters[sessions.length - 1]?.(session);
+        return session;
+      },
+    };
+  }
+
+  function createTtsAdapter() {
+    return {
+      outputFormat: TTS_FORMAT,
+      openStream: () => {
+        const stream = new FakeTtsStream({ blocking: options.blockingTts });
+        ttsStreams.push(stream);
+        return stream;
+      },
+    };
+  }
+
   const manager = {
+    async prepareActiveAdapters() {
+      await options.prepareGate;
+      const remote = options.localStt === false;
+      return {
+        generation: 0,
+        stt: {
+          destination: {
+            profileId: "stt-p",
+            endpointId: "stt-ep",
+            label: "stt-ep",
+            origin: remote ? "ws://dgx-spark.local:8000" : "ws://localhost:8000",
+            remote,
+            routingFingerprint: remote ? "remote-stt" : "local-stt",
+          },
+          createAdapter: createSttAdapter,
+        },
+        ...(options.tts === false
+          ? {}
+          : {
+              tts: {
+                destination: {
+                  profileId: "tts-p",
+                  endpointId: "tts-ep",
+                  label: "tts-ep",
+                  origin: "http://localhost:8880",
+                  remote: false,
+                  routingFingerprint: "local-tts",
+                },
+                createAdapter: createTtsAdapter,
+              },
+            }),
+      };
+    },
     async getSttState() {
-      return { activeProfileId: "stt-p" };
+      return { status: "ready", activeProfileId: "stt-p" };
     },
     async getTtsState() {
-      return { activeProfileId: "tts-p" };
+      return { status: "ready", activeProfileId: "tts-p" };
     },
     async activeSttEndpoint() {
       return {
@@ -164,30 +252,25 @@ function fakeManager(options: ManagerOptions = {}) {
         },
       };
     },
-    async createSttAdapter() {
-      return {
-        inputFormat: STT_FORMAT,
-        startSession: async (sessionOptions: SttSessionOptions) => {
-          const session = new FakeSttSession(sessionOptions.onEvent);
-          sessions.push(session);
-          sessionWaiters[sessions.length - 1]?.(session);
-          return session;
-        },
-      };
-    },
-    async createTtsAdapter() {
-      return {
-        outputFormat: TTS_FORMAT,
-        openStream: () => {
-          const stream = new FakeTtsStream({ blocking: options.blockingTts });
-          ttsStreams.push(stream);
-          return stream;
-        },
+    createSttAdapter,
+    createTtsAdapter,
+    onSelectionChange(listener: () => void) {
+      selectionListeners.add(listener);
+      return () => {
+        selectionListeners.delete(listener);
       };
     },
   } as unknown as SpeechProfileManager;
 
-  return { manager, sessions, ttsStreams, waitForSession };
+  return {
+    manager,
+    sessions,
+    ttsStreams,
+    waitForSession,
+    emitSelectionChange: () => {
+      for (const listener of selectionListeners) listener();
+    },
+  };
 }
 
 type ExtensionRecordLike = { namespace: string; state: Record<string, unknown> };
@@ -197,6 +280,18 @@ function makeCtx(overrides: Partial<PluginRuntimeContext> = {}) {
   const audits: Array<Record<string, unknown>> = [];
   const turns: string[] = [];
   const publishes: Array<Record<string, unknown>> = [];
+  const approvals = new Map<
+    string,
+    { execute: () => unknown | Promise<unknown>; autoApprovable?: boolean }
+  >();
+  let approvalSeq = 0;
+  const defaultStartTurn = (request: { text: string }) => {
+    turns.push(request.text);
+    return { status: "started" as const, turnId: `t${turns.length}` };
+  };
+  const startTurn =
+    (overrides.startTurn as (request: { text: string }) => { status: "started"; turnId: string }) ??
+    defaultStartTurn;
 
   const ctx = {
     invokeProvider: async () => ok(),
@@ -205,40 +300,53 @@ function makeCtx(overrides: Partial<PluginRuntimeContext> = {}) {
       type: "control",
       properties: { emotions: ["cheerful1", "curious1", "fear1"] },
     }),
-    startTurn: (request: { text: string }) => {
-      turns.push(request.text);
-      return { status: "started" as const, turnId: `t${turns.length}` };
+    startTurn,
+    queueTurn: () => ({ status: "queued" as const, queuedMessageId: "queued-1", position: 1 }),
+    drainQueue: () => undefined,
+    turns: {
+      submit: (request: { text: string }) => startTurn(request),
+      drainQueue: () => undefined,
+    },
+    approvals: {
+      request: (request: { execute: () => unknown | Promise<unknown> }) => {
+        const approvalId = `approval-${++approvalSeq}`;
+        approvals.set(approvalId, request);
+        return { status: "approval_required" as const, approvalId };
+      },
+      cancel: (approvalId: string) => approvals.delete(approvalId),
+    },
+    transientState: {
+      read: () => extensions.voice?.state,
+      replace: (state: Record<string, unknown>) => {
+        extensions.voice = { namespace: "voice", state };
+        publishes.push({ ...state });
+      },
+      update: () => undefined,
+      clear: () => {
+        delete extensions.voice;
+      },
     },
     audit: (event: Record<string, unknown>) => {
       audits.push(event);
     },
-    snapshot: () => ({ extensions }),
-    store: {
-      upsertExtension: (record: ExtensionRecordLike) => {
-        extensions[record.namespace] = record;
-        publishes.push({ ...record.state });
-      },
-      patchExtension: (
-        namespace: string,
-        patch: (record: ExtensionRecordLike) => ExtensionRecordLike,
-      ) => {
-        const record = extensions[namespace];
-        if (!record) {
-          throw new Error(`Unknown session extension: ${namespace}.`);
-        }
-        extensions[namespace] = patch(record);
-        publishes.push({ ...extensions[namespace].state });
-        return { record: extensions[namespace], previousRevision: 0 };
-      },
-    },
+    snapshot: () => ({ session: { sessionId: `test-${crypto.randomUUID()}` }, extensions: {} }),
+    store: {},
     ...overrides,
   } as unknown as PluginRuntimeContext;
 
-  return { ctx, extensions, audits, turns, publishes };
+  return {
+    ctx,
+    extensions,
+    audits,
+    turns,
+    publishes,
+    approvalRequests: approvals,
+    approve: async (approvalId = `approval-${approvalSeq}`) => approvals.get(approvalId)?.execute(),
+  };
 }
 
 function liveState(extensions: Record<string, ExtensionRecordLike>): Record<string, unknown> {
-  return extensions[CONVERSATION_EXTENSION_NAMESPACE]?.state ?? {};
+  return extensions.voice?.state ?? {};
 }
 
 type InvokableAction = { handler: (params: Record<string, unknown>) => unknown };
@@ -247,16 +355,23 @@ function conversationActions(
   plugin: ReturnType<typeof createVoiceConversationPlugin>,
   ctx: PluginRuntimeContext,
 ) {
-  const node = plugin.sessionNodes?.(ctx)[0]?.build(ctx);
-  const actions = node?.actions as unknown as Record<string, InvokableAction> | undefined;
-  if (!actions?.start_listening || !actions.stop_listening) {
-    throw new Error("conversation node is missing actions");
-  }
+  const actionFor = (name: "start_listening" | "stop_listening") => {
+    const node = plugin.sessionNodes?.(ctx)[0]?.build(ctx);
+    const actions = node?.actions as unknown as Record<string, InvokableAction> | undefined;
+    const selected = actions?.[name];
+    if (!selected) {
+      throw new Error(`conversation node is missing ${name}`);
+    }
+    return selected;
+  };
+  let startAction: InvokableAction | undefined;
   return {
-    start: (params: Record<string, unknown> = {}) =>
-      Promise.resolve(actions.start_listening.handler(params)) as Promise<Record<string, unknown>>,
+    start: (params: Record<string, unknown> = {}) => {
+      startAction ??= actionFor("start_listening");
+      return Promise.resolve(startAction.handler(params)) as Promise<Record<string, unknown>>;
+    },
     stop: () =>
-      Promise.resolve(actions.stop_listening.handler({})) as Promise<Record<string, unknown>>,
+      Promise.resolve(actionFor("stop_listening").handler({})) as Promise<Record<string, unknown>>,
   };
 }
 
@@ -291,7 +406,7 @@ async function driveTurn(
     {
       turnId: "t1",
       pluginTurn: {
-        pluginId: "voice-conversation",
+        pluginId: "voice",
         runId: "vc-1",
         author: "reachy-voice",
         continuation: false,
@@ -333,7 +448,7 @@ describe("voice-conversation streaming loop", () => {
       const event: PluginTurnCompleteEvent = {
         turnId: "t1",
         pluginTurn: {
-          pluginId: "voice-conversation",
+          pluginId: "voice",
           runId: "vc-1",
           author: "reachy-voice",
           continuation: false,
@@ -357,9 +472,9 @@ describe("voice-conversation streaming loop", () => {
     { timeout: 5000 },
   );
 
-  test("continuous auto-start parks in needs_approval for a non-local endpoint", async () => {
+  test("continuous auto-start creates a Session approval before remote egress", async () => {
     const { manager, sessions, waitForSession } = fakeManager({ localStt: false });
-    const { ctx, extensions, audits } = makeCtx();
+    const { ctx, extensions, approve, approvalRequests } = makeCtx();
 
     const plugin = createVoiceConversationPlugin(config(), manager);
     await plugin.onStartup?.(ctx);
@@ -367,16 +482,38 @@ describe("voice-conversation streaming loop", () => {
 
     expect(sessions).toHaveLength(0);
     expect(liveState(extensions).phase).toBe("needs_approval");
-    expect(audits.some((a) => a.kind === "voice_conversation_needs_approval")).toBe(true);
+    expect([...approvalRequests.values()][0]?.autoApprovable).toBe(false);
 
-    // An explicit start_listening invoke (already policy-gated by the hub)
-    // starts the loop from needs_approval.
-    const actions = conversationActions(plugin, ctx);
-    const result = await actions.start({ mode: "continuous" });
+    const result = (await approve()) as Record<string, unknown>;
     expect(result.status).toBe("started");
     expect(await waitForSession(0)).toBeDefined();
 
     plugin.onShutdown?.(ctx);
+  });
+
+  test("STT-only runs acquire microphone ownership without blocking the speaker", async () => {
+    const resources: string[][] = [];
+    const arbiter = {
+      acquire: async (_owner: unknown, keys: readonly string[]) => {
+        resources.push([...keys]);
+        return {
+          id: "stt-only",
+          resources: keys,
+          release: async () => undefined,
+        };
+      },
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager, waitForSession } = fakeManager({ tts: false });
+    const { ctx } = makeCtx();
+    const plugin = createVoiceConversationPlugin(config(), manager, { resourceArbiter: arbiter });
+
+    await plugin.onStartup?.(ctx);
+    await waitForSession(0);
+
+    expect(resources).toEqual([["host:default:input"]]);
+    await plugin.onShutdown?.(ctx);
   });
 
   test("second start_listening while starting reports already_active", async () => {
@@ -396,6 +533,307 @@ describe("voice-conversation streaming loop", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(sessions).toHaveLength(1);
 
+    plugin.onShutdown?.(ctx);
+  });
+
+  test("stop during plan preparation cannot revive audio", async () => {
+    const preparation = deferred();
+    const { manager, sessions } = fakeManager({ prepareGate: preparation.promise });
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+    );
+    await plugin.onStartup?.(ctx);
+    const actions = conversationActions(plugin, ctx);
+
+    const starting = actions.start();
+    await Bun.sleep(0);
+    expect(liveState(extensions).phase).toBe("preparing");
+    await actions.stop();
+
+    expect(await starting).toMatchObject({ status: "cancelled" });
+    expect(sessions).toHaveLength(0);
+    expect(liveState(extensions).phase).toBe("idle");
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("preparation timeout clears lifecycle blockers", async () => {
+    const preparation = deferred();
+    const { manager } = fakeManager({ prepareGate: preparation.promise });
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { prepareTimeoutMs: 5 },
+    );
+    await plugin.onStartup?.(ctx);
+
+    const result = await conversationActions(plugin, ctx).start();
+
+    expect(result).toMatchObject({ status: "error" });
+    expect(liveState(extensions).error).toContain("timed out");
+    expect(plugin.autoCloseBlockers?.(ctx)).toEqual([]);
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("stop during resource acquisition releases the late lease", async () => {
+    const acquisition = deferred<AudioResourceLease>();
+    let released = false;
+    const arbiter = {
+      acquire: () => acquisition.promise,
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager, sessions } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { resourceArbiter: arbiter },
+    );
+    await plugin.onStartup?.(ctx);
+    const actions = conversationActions(plugin, ctx);
+
+    const starting = actions.start();
+    while (liveState(extensions).phase !== "acquiring") await Bun.sleep(1);
+    const stopping = actions.stop();
+    acquisition.resolve({
+      id: "late-lease",
+      resources: ["host:input"],
+      release: async () => {
+        released = true;
+      },
+    });
+
+    await stopping;
+    expect(await starting).toMatchObject({ status: "cancelled" });
+    expect(released).toBe(true);
+    expect(sessions).toHaveLength(0);
+    expect(liveState(extensions).phase).toBe("idle");
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("a failed late-lease release remains tracked for stop retry", async () => {
+    const acquisition = deferred<AudioResourceLease>();
+    let allowRelease = false;
+    let releaseAttempts = 0;
+    const arbiter = {
+      acquire: () => acquisition.promise,
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { resourceArbiter: arbiter },
+    );
+    await plugin.onStartup?.(ctx);
+    const actions = conversationActions(plugin, ctx);
+
+    const starting = actions.start();
+    while (liveState(extensions).phase !== "acquiring") await Bun.sleep(1);
+    const stopping = actions.stop();
+    acquisition.resolve({
+      id: "late-retry-lease",
+      resources: ["host:input"],
+      release: async () => {
+        releaseAttempts += 1;
+        if (!allowRelease) throw new Error("late release failed");
+      },
+    });
+
+    await expect(stopping).resolves.toMatchObject({ status: "error" });
+    expect(await starting).toMatchObject({ status: "cancelled" });
+    expect(liveState(extensions).phase).toBe("error");
+    allowRelease = true;
+    expect(await actions.stop()).toMatchObject({ status: "stopped" });
+    expect(releaseAttempts).toBeGreaterThanOrEqual(2);
+    expect(liveState(extensions).phase).toBe("idle");
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("an acquisition rejected during stop does not break cleanup", async () => {
+    const acquisition = deferred<AudioResourceLease>();
+    const arbiter = {
+      acquire: () => acquisition.promise,
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { resourceArbiter: arbiter },
+    );
+    await plugin.onStartup?.(ctx);
+    const actions = conversationActions(plugin, ctx);
+    const starting = actions.start();
+    while (liveState(extensions).phase !== "acquiring") await Bun.sleep(1);
+    const stopping = actions.stop();
+    acquisition.reject(new Error("device arbitration failed"));
+
+    expect(await stopping).toMatchObject({ status: "stopped" });
+    expect(await starting).toMatchObject({ status: "cancelled" });
+    expect(liveState(extensions).phase).toBe("idle");
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("failed lease cleanup keeps stop available and can be retried", async () => {
+    let releaseAttempts = 0;
+    const arbiter = {
+      acquire: async (_owner: unknown, resources: readonly string[]) => ({
+        id: "retry-cleanup",
+        resources,
+        release: async () => {
+          releaseAttempts += 1;
+          if (releaseAttempts === 1) throw new Error("temporary cleanup failure");
+        },
+      }),
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager, waitForSession } = fakeManager({ tts: false });
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { resourceArbiter: arbiter },
+    );
+    await plugin.onStartup?.(ctx);
+    const actions = conversationActions(plugin, ctx);
+    await actions.start();
+    await waitForSession(0);
+
+    expect(await actions.stop()).toMatchObject({ status: "error" });
+    const failedNode = plugin.sessionNodes?.(ctx)[0]?.build(ctx);
+    expect(failedNode?.actions).toHaveProperty("stop_listening");
+    expect(await actions.stop()).toMatchObject({ status: "stopped" });
+    expect(releaseAttempts).toBe(2);
+    expect(liveState(extensions).phase).toBe("idle");
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("shutdown waits for and releases an in-flight acquisition", async () => {
+    const acquisition = deferred<AudioResourceLease>();
+    let releases = 0;
+    const arbiter = {
+      acquire: () => acquisition.promise,
+      state: async () => [],
+      subscribe: () => () => undefined,
+    };
+    const { manager } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(
+      config({ realtime: { autoStartMode: "off", defaultStartMode: "single_turn" } }),
+      manager,
+      { resourceArbiter: arbiter },
+    );
+    await plugin.onStartup?.(ctx);
+    const starting = conversationActions(plugin, ctx).start();
+    while (liveState(extensions).phase !== "acquiring") await Bun.sleep(1);
+    const shutdown = plugin.onShutdown?.(ctx);
+    let released = false;
+    acquisition.resolve({
+      id: "shutdown-lease",
+      resources: ["host:input"],
+      release: async () => {
+        if (!released) {
+          released = true;
+          releases += 1;
+        }
+      },
+    });
+
+    await shutdown;
+    await starting;
+    expect(releases).toBe(1);
+    expect(liveState(extensions).phase).toBe("idle");
+  });
+
+  test("busy Session queues voice ingress and speaks when the queued turn completes", async () => {
+    const { manager, ttsStreams, waitForSession } = fakeManager();
+    const submissions: Array<{
+      pluginId: string;
+      runId: string;
+      text: string;
+      author: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const { ctx, extensions } = makeCtx({
+      turns: {
+        submit: (request) => {
+          submissions.push(request);
+          return { status: "queued" as const, queuedMessageId: "voice-queued", position: 1 };
+        },
+        drainQueue: () => undefined,
+      },
+    } as Partial<PluginRuntimeContext>);
+    const plugin = createVoiceConversationPlugin(config(), manager);
+    await plugin.onStartup?.(ctx);
+
+    const session = await waitForSession(0);
+    session.emit({ type: "final", text: "do not drop me" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(liveState(extensions).phase).toBe("queued");
+    expect(submissions[0]?.text).toBe("do not drop me");
+
+    const queued = submissions[0];
+    if (!queued) throw new Error("voice turn was not submitted");
+    const accepted = plugin.acceptQueuedTurn?.(
+      {
+        id: "voice-queued",
+        status: "queued",
+        text: queued.text,
+        createdAt: new Date().toISOString(),
+        author: queued.author,
+        source: "plugin",
+        pluginId: queued.pluginId,
+        pluginRunId: queued.runId,
+      },
+      ctx,
+    );
+    expect(accepted?.metadata?.voiceRunId).toBeString();
+    plugin.onTurnComplete?.(
+      {
+        turnId: "queued-turn",
+        pluginTurn: {
+          pluginId: "voice",
+          runId: queued.runId,
+          author: queued.author,
+          continuation: false,
+          metadata: accepted?.metadata,
+        },
+        result: { status: "completed", response: "queued reply" },
+        elapsedMs: 5,
+        usedTools: false,
+      },
+      ctx,
+    );
+
+    await waitForSession(1);
+    expect(ttsStreams[0]?.texts).toEqual(["queued reply"]);
+    plugin.onShutdown?.(ctx);
+  });
+
+  test("profile changes stop the frozen run and release its lifecycle blocker", async () => {
+    const { manager, waitForSession, emitSelectionChange } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const plugin = createVoiceConversationPlugin(config(), manager);
+    await plugin.onStartup?.(ctx);
+    const session = await waitForSession(0);
+
+    expect(plugin.autoCloseBlockers?.(ctx)).toHaveLength(1);
+    emitSelectionChange();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(session.closed).toBe(true);
+    expect(liveState(extensions).phase).toBe("idle");
+    expect(liveState(extensions).error).toContain("Speech profile changed");
+    expect(plugin.autoCloseBlockers?.(ctx)).toEqual([]);
     plugin.onShutdown?.(ctx);
   });
 
@@ -440,7 +878,33 @@ describe("voice-conversation streaming loop", () => {
     { timeout: 5000 },
   );
 
-  test("partial transcripts publish through the extension record with throttling", async () => {
+  test("stop cancels restart backoff and clears its lifecycle blocker", async () => {
+    const { manager, waitForSession, sessions } = fakeManager();
+    const { ctx, extensions } = makeCtx();
+    const delayStarted = deferred();
+    const plugin = createVoiceConversationPlugin(config(), manager, {
+      delayFn: (_ms, signal) =>
+        new Promise<void>((resolve) => {
+          delayStarted.resolve(undefined);
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        }),
+    });
+    await plugin.onStartup?.(ctx);
+    const session = await waitForSession(0);
+    session.emit({ type: "closed", cause: "remote", code: 1006, reason: "service died" });
+    await delayStarted.promise;
+
+    expect(liveState(extensions).phase).toBe("restarting");
+    await conversationActions(plugin, ctx).stop();
+    await Bun.sleep(5);
+
+    expect(sessions).toHaveLength(1);
+    expect(liveState(extensions).phase).toBe("idle");
+    expect(plugin.autoCloseBlockers?.(ctx)).toEqual([]);
+    await plugin.onShutdown?.(ctx);
+  });
+
+  test("partial transcripts publish through transient State with throttling", async () => {
     const { manager, waitForSession } = fakeManager();
     const { ctx, extensions } = makeCtx();
     const plugin = createVoiceConversationPlugin(config(), manager);
@@ -484,7 +948,7 @@ describe("voice-conversation streaming loop", () => {
         {
           turnId: "t1",
           pluginTurn: {
-            pluginId: "voice-conversation",
+            pluginId: "voice",
             runId: "vc-1",
             author: "reachy-voice",
             continuation: false,
@@ -539,7 +1003,7 @@ describe("voice-conversation streaming loop", () => {
       {
         turnId: "t1",
         pluginTurn: {
-          pluginId: "voice-conversation",
+          pluginId: "voice",
           runId: "vc-1",
           author: "reachy-voice",
           continuation: false,
@@ -566,7 +1030,7 @@ describe("voice-conversation streaming loop", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(sessions).toHaveLength(0);
-    expect(extensions[CONVERSATION_EXTENSION_NAMESPACE]).toBeUndefined();
+    expect(extensions.voice).toBeUndefined();
   });
 
   test("no-marker reply with embodiment still streams once", async () => {

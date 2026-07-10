@@ -8,7 +8,7 @@ import type {
 /**
  * SLOP provider exposing speech configuration state: per-modality readiness,
  * the active STT/TTS profiles, and `set_profile` to switch them. Speech
- * itself is streaming-only and runs inside the voice-conversation loop —
+ * itself is streaming-only and runs inside the voice Plugin's conversation loop —
  * audio never crosses the SLOP boundary here.
  */
 export class VoiceProvider {

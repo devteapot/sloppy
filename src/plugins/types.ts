@@ -10,12 +10,12 @@ export type PluginProviderContribution = {
   name: string;
   transport: ClientTransport;
   transportLabel: string;
-  stop?: () => void;
+  stop?: () => void | Promise<void>;
   systemPromptFragment?: (config: SloppyConfig) => string | null;
   attachRuntime?: (
     hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
-  ) => { stop(): void } | undefined;
+  ) => { stop(): void | Promise<void> } | undefined;
   approvals?: ProviderApprovalManager;
 };

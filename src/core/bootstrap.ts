@@ -14,7 +14,7 @@ export interface ProviderRuntimeBootstrap {
   hub: ConsumerHub;
   providers: RegisteredProvider[];
   runtimeCtx: RuntimeContext;
-  runtimeStops: Array<{ stop(): void }>;
+  runtimeStops: Array<{ stop(): void | Promise<void> }>;
   systemPromptFragments: string[];
 }
 
@@ -59,7 +59,7 @@ export async function bootstrapProviderRuntime(options: {
     services,
   };
 
-  const runtimeStops: Array<{ stop(): void }> = [];
+  const runtimeStops: Array<{ stop(): void | Promise<void> }> = [];
   const systemPromptFragments: string[] = [];
   for (const provider of providers) {
     const runtimeStop = provider.attachRuntime?.(hub, options.config, runtimeCtx);

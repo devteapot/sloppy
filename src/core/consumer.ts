@@ -71,6 +71,7 @@ function compareExternalProviders(
 }
 
 export class ConsumerHub implements ProviderRuntimeHub {
+  private shutdownPromise: Promise<void> | null = null;
   private providers = new Map<string, ConnectedProvider>();
   private externalProviderStates = new Map<string, ExternalProviderState>();
   private registeredProviderById = new Map<string, RegisteredProvider>();
@@ -211,7 +212,11 @@ export class ConsumerHub implements ProviderRuntimeHub {
       return true;
     } catch (error) {
       if (registeredProvider.kind !== "external") {
-        registeredProvider.stop?.();
+        try {
+          await registeredProvider.stop?.();
+        } catch (stopError) {
+          this.reportProviderCleanupFailure(registeredProvider.id, "failed connection", stopError);
+        }
       }
       if (registeredProvider.kind === "external") {
         this.upsertExternalProviderState({
@@ -369,7 +374,7 @@ export class ConsumerHub implements ProviderRuntimeHub {
       stopProvider?: boolean;
       suppressExternalState?: boolean;
     },
-  ): void {
+  ): Promise<void> | undefined {
     const provider = this.providers.get(providerId);
     if (!provider) {
       this.clearDangerousAffordances(providerId);
@@ -382,8 +387,16 @@ export class ConsumerHub implements ProviderRuntimeHub {
     disconnectProvider(provider, options.connectionAlive);
 
     provider.approvals?.setQueue(null);
-    if (options.stopProvider !== false) {
-      provider.stop?.();
+    let stopPromise: Promise<void> | undefined;
+    if (options.stopProvider !== false && provider.stop) {
+      try {
+        stopPromise = Promise.resolve(provider.stop());
+      } catch (error) {
+        stopPromise = Promise.reject(error);
+      }
+      void stopPromise.catch((error) => {
+        this.reportProviderCleanupFailure(providerId, options.lifecycleReason, error);
+      });
     }
     this.providers.delete(providerId);
     this.clearDangerousAffordances(providerId);
@@ -409,6 +422,13 @@ export class ConsumerHub implements ProviderRuntimeHub {
       providerId,
       reason: options.lifecycleReason,
     });
+    return stopPromise;
+  }
+
+  private reportProviderCleanupFailure(providerId: string, context: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    debug("hub", "provider_cleanup_error", { providerId, context, error: message });
+    console.warn(`[sloppy] provider ${providerId} cleanup failed after ${context}: ${message}`);
   }
 
   /**
@@ -716,16 +736,34 @@ export class ConsumerHub implements ProviderRuntimeHub {
   }
 
   shutdown(): void {
+    void this.shutdownAsync().catch(() => undefined);
+  }
+
+  shutdownAsync(): Promise<void> {
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
+    const stops: Promise<void>[] = [];
     for (const providerId of [...this.providers.keys()]) {
-      this.teardownProvider(providerId, {
+      const stop = this.teardownProvider(providerId, {
         connectionAlive: true,
         lifecycleReason: "shutdown",
       });
+      if (stop) stops.push(stop);
     }
     this.registeredProviderById.clear();
     if (this.externalProviderStates.size > 0) {
       this.externalProviderStates.clear();
       this.emitExternalProviderStateChange();
+    }
+    const results = await Promise.allSettled(stops);
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length} Provider shutdown hook(s) failed.`);
     }
   }
 

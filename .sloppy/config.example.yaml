@@ -180,27 +180,30 @@ plugins:
           voice: af_bella
       defaultProfileId: tts-local
 
-  # Hands-free streaming conversation loop: mic PCM → realtime STT (provider
-  # VAD) → agent turn → sentence-pipelined TTS → streamed playback, animating
-  # the robot head while it speaks. start_listening requires approval when a
-  # speech endpoint is non-local (localhost + auth none); continuous auto-start
-  # only proceeds when both endpoints are local.
-  voice-conversation:
-    enabled: false
-    audio:
-      backend: host # `host` = laptop mic/speaker (dev / pre-hardware); `robot` = reachy mic/speaker
-      providerId: reachy # robot provider id used when backend: robot
-      streamChunkMs: 40 # mic frame size sent to the STT session
-      # Optional command overrides; `{rate}` is replaced with the endpoint's
-      # sample rate (defaults target macOS sox):
-      # streamCommand: ["sox", "-d", "-c", "1", "-r", "{rate}", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
-      # playStreamCommand: ["play", "-q", "-t", "raw", "-r", "{rate}", "-e", "signed-integer", "-b", "16", "-c", "1", "-"]
-    realtime:
-      autoStartMode: off # set to continuous for always-on listening at session startup
-      defaultStartMode: single_turn # used by the /conversation start_listening action
-    embodiment:
-      enabled: true # runtime-driven head/antenna motion during the reply (visible in the MuJoCo sim)
-      providerId: reachy
+    # Hands-free streaming conversation loop: mic PCM → realtime STT (provider
+    # VAD) → agent turn → sentence-pipelined TTS → streamed playback.
+    # Remote speech endpoints create an explicit-only public Session approval
+    # before any audio device or transport opens, including continuous
+    # auto-start. Session approval_mode=auto never resolves voice egress consent.
+    conversation:
+      enabled: false
+      audio:
+        # `host` supports realtime laptop mic/speaker. `robot` currently has
+        # provider-backed playback only and is rejected by doctor until a
+        # streaming provider microphone is wired.
+        backend: host
+        providerId: reachy
+        streamChunkMs: 40 # mic frame size sent to the STT session
+        # Optional command overrides; `{rate}` is replaced with the endpoint's
+        # sample rate (defaults target macOS sox):
+        # streamCommand: ["sox", "-d", "-c", "1", "-r", "{rate}", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
+        # playStreamCommand: ["play", "-q", "-t", "raw", "-r", "{rate}", "-e", "signed-integer", "-b", "16", "-c", "1", "-"]
+      realtime:
+        autoStartMode: off # continuous requests startup listening through the same approval seam
+        defaultStartMode: single_turn # used by /conversation.start_listening
+      embodiment:
+        enabled: true # runtime-driven head/antenna motion during spoken replies
+        providerId: reachy
 
 workspaces:
   activeWorkspaceId: sloppy

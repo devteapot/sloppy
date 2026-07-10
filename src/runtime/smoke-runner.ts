@@ -468,12 +468,12 @@ export async function runRuntimeSmoke(
     unsubscribeProviderStates?.();
     for (const stop of stops) {
       try {
-        stop.stop();
+        await stop.stop();
       } catch {
         // best-effort
       }
     }
-    hub?.shutdown();
+    await hub?.shutdownAsync();
     eventBus?.stop();
     if (tempRoot && !options.keepState) {
       await rm(tempRoot, { recursive: true, force: true });

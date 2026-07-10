@@ -4,6 +4,8 @@
 // framing, and the guarantee that every session emits exactly one `closed`
 // event — a consumer can never keep pumping audio into a dead socket unknowingly.
 
+import WebSocket from "ws";
+
 import { toBase64 } from "../../../../../speech/audio";
 import { once, waitForOpen } from "../../../../../speech/streaming";
 import {
@@ -36,8 +38,7 @@ export class RealtimeSttAdapter implements SttProtocolAdapter {
     this.dialect = resolveRealtimeSttDialect(config.dialect);
     this.inputFormat = { encoding: "pcm16", sampleRate: config.sampleRate, channels: 1 } as const;
     const webSocketCtor =
-      config.webSocketCtor ??
-      (globalThis.WebSocket as unknown as WebSocketConstructorLike | undefined);
+      config.webSocketCtor ?? (WebSocket as unknown as WebSocketConstructorLike | undefined);
     if (!webSocketCtor) {
       throw new SpeechError("Realtime transcription requires a WebSocket implementation.");
     }
@@ -45,13 +46,20 @@ export class RealtimeSttAdapter implements SttProtocolAdapter {
   }
 
   async startSession(options: SttSessionOptions): Promise<SttSession> {
+    if (options.signal?.aborted) {
+      throw new SpeechError("WebSocket connection was cancelled.");
+    }
     const headers: Record<string, string> = { ...this.config.headers };
     if (this.config.apiKey) {
       headers.Authorization = `Bearer ${this.config.apiKey}`;
     }
     const url = this.dialect.connectUrl(this.config.baseUrl ?? DEFAULT_BASE_URL);
-    const socket = new this.webSocketCtor(url, { headers });
+    const socket = new this.webSocketCtor(url, { headers, followRedirects: false });
     await waitForOpen(socket, options.signal);
+    if (new URL(socket.url).origin !== new URL(url).origin) {
+      socket.close(1008, "Speech endpoint origin changed during connection.");
+      throw new SpeechError("Realtime transcription refused a cross-origin WebSocket redirect.");
+    }
 
     const session = new RealtimeSttSession(socket, this.dialect, options.onEvent);
     session.configure({
