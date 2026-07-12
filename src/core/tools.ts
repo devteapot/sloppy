@@ -341,6 +341,12 @@ export function buildRuntimeToolSet(views: ProviderTreeView[]): RuntimeToolSet {
         toolName: prefixedName,
         schemaPath: "$",
       });
+      if (resolution.path === null && resolution.targets?.length) {
+        const properties = isRecord(parameters.properties) ? parameters.properties : {};
+        const target = isRecord(properties.target) ? properties.target : {};
+        properties.target = { ...target, enum: resolution.targets };
+        parameters.properties = properties;
+      }
       const description = withParameterContractDescription(tool.function.description, parameters);
       const affordanceMetadata = affordanceMetadataForResolution(
         visibleTree,

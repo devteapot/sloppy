@@ -89,6 +89,14 @@ describe("buildRuntimeToolSet", () => {
       dangerous: false,
       idempotent: false,
     });
+    const groupedRead = toolSet.tools.find((tool) =>
+      tool.function.name.startsWith("filesystem__read"),
+    );
+    expect(groupedRead?.function.parameters).toMatchObject({
+      properties: {
+        target: { enum: ["/workspace/a.txt", "/workspace/b.txt"] },
+      },
+    });
   });
 
   test("normalizes affordance params to strict JSON Schema for LLM tools", () => {
