@@ -497,10 +497,10 @@ describe("LlmProfileManager", () => {
               {
                 kind: "native",
                 id: "codex-native",
-                label: "Codex GPT-5.5",
+                label: "Codex GPT-5.6 Sol",
                 endpointId: "openai-codex",
-                model: "gpt-5.5",
-                reasoningEffort: "low",
+                model: "gpt-5.6-sol",
+                reasoningEffort: "max",
               },
             ],
           },
@@ -513,8 +513,10 @@ describe("LlmProfileManager", () => {
 
       expect(state.status).toBe("ready");
       expect(state.selectedEndpointId).toBe("openai-codex");
-      expect(state.selectedModel).toBe("gpt-5.5");
-      expect(state.profiles[0]?.reasoningEffort).toBe("low");
+      expect(state.selectedModel).toBe("gpt-5.6-sol");
+      expect(state.profiles[0]?.reasoningEffort).toBe("max");
+      expect(state.profiles[0]?.contextWindowTokens).toBe(258_400);
+      expect(state.profiles[0]?.maxOutputTokens).toBe(128_000);
       expect(state.profiles[0]?.keySource).toBe("external_auth");
       expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
       expect(state.message).toContain("external auth");

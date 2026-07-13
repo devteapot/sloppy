@@ -64,8 +64,8 @@ describe("createLlmAdapter", () => {
       createConfig({
         endpointId: "openai-codex",
         protocol: "openai-codex",
-        model: "gpt-5.5",
-        reasoningEffort: "low",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
       }),
     );
 

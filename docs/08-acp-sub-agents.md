@@ -97,10 +97,10 @@ llm:
   profiles:
     - kind: native
       id: codex-native
-      label: Codex GPT-5.5 Low
+      label: Codex GPT-5.6 Sol Medium
       endpointId: openai-codex
-      model: gpt-5.5
-      reasoningEffort: low
+      model: gpt-5.6-sol
+      reasoningEffort: medium
     - kind: session-agent
       id: claude-acp
       label: Claude ACP

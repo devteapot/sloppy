@@ -11,6 +11,20 @@ describe("default LLM endpoint catalog", () => {
     expect(DEFAULT_LLM_ENDPOINTS.ollama?.baseUrl).toBe("http://localhost:11434/v1");
   });
 
+  test("ships the GPT-5.6 family for native Codex subscription profiles", () => {
+    const endpoint = DEFAULT_LLM_ENDPOINTS["openai-codex"];
+
+    expect(endpoint?.defaultModel).toBe("gpt-5.6-sol");
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      expect(endpoint?.models[model]).toMatchObject({
+        contextWindowTokens: 258_400,
+        maxOutputTokens: 128_000,
+        capabilities: { tools: true, images: true },
+      });
+    }
+    expect(endpoint?.models["gpt-5.5"]).toBeDefined();
+  });
+
   test("merges custom endpoint model metadata over built-ins", () => {
     const endpoints = mergeLlmEndpoints({
       openai: {

@@ -251,14 +251,14 @@ describe("loadConfig", () => {
       workspace,
       [
         "llm:",
-        "  reasoningEffort: low",
+        "  reasoningEffort: max",
         "  defaultProfileId: codex-native",
         "  profiles:",
         "    - id: codex-native",
         "      label: Codex Native",
         "      endpointId: openai-codex",
-        "      model: gpt-5.5",
-        "      reasoningEffort: low",
+        "      model: gpt-5.6-sol",
+        "      reasoningEffort: max",
       ].join("\n"),
     );
 
@@ -271,11 +271,11 @@ describe("loadConfig", () => {
 
     const config = await loadConfig();
 
-    expect(config.llm.reasoningEffort).toBe("low");
+    expect(config.llm.reasoningEffort).toBe("max");
     expect(config.llm.profiles[0]).toMatchObject({
       endpointId: "openai-codex",
-      model: "gpt-5.5",
-      reasoningEffort: "low",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "max",
     });
     expect(config.llm.endpoints["openai-codex"]?.baseUrl).toBe(
       "https://chatgpt.com/backend-api/codex",

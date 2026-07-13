@@ -581,11 +581,15 @@ llm:
   profiles:
     - kind: native
       id: codex-native
-      label: Codex GPT-5.5 Low
+      label: Codex GPT-5.6 Sol Medium
       endpointId: openai-codex
-      model: gpt-5.5
-      reasoningEffort: low
+      model: gpt-5.6-sol
+      reasoningEffort: medium
 ```
+
+The native Codex catalog also includes `gpt-5.6-terra` and
+`gpt-5.6-luna`; `gpt-5.5` remains available for existing profiles. Model
+availability still depends on the ChatGPT account used by `codex login`.
 
 ## Config
 
@@ -634,9 +638,9 @@ output is still captured as public transcript state for later UI toggles, but
 it is not rendered by default and is never replayed into later model calls.
 
 Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
-`medium`, `high`, or `xhigh`) as a compatibility alias for protocols that expose
-OpenAI-style reasoning controls. Prefer protocol-specific `thinking` blocks for
-new config.
+`medium`, `high`, `xhigh`, or `max`) as a compatibility alias for protocols
+that expose OpenAI-style reasoning controls. Prefer protocol-specific
+`thinking` blocks for new config.
 
 First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 

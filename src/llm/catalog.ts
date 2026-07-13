@@ -49,8 +49,41 @@ export const DEFAULT_LLM_ENDPOINTS: Record<string, BuiltInLlmEndpoint> = {
     protocol: "openai-codex",
     baseUrl: "https://chatgpt.com/backend-api/codex",
     auth: { type: "codex" },
-    defaultModel: "gpt-5.5",
+    defaultModel: "gpt-5.6-sol",
     models: {
+      "gpt-5.6-sol": {
+        label: "GPT-5.6 Sol",
+        contextWindowTokens: 258_400,
+        maxOutputTokens: 128_000,
+        capabilities: { tools: true, images: true },
+        compat: {
+          kind: "openai",
+          maxTokensField: "max_completion_tokens",
+          thinkingFormat: "openai",
+        },
+      },
+      "gpt-5.6-terra": {
+        label: "GPT-5.6 Terra",
+        contextWindowTokens: 258_400,
+        maxOutputTokens: 128_000,
+        capabilities: { tools: true, images: true },
+        compat: {
+          kind: "openai",
+          maxTokensField: "max_completion_tokens",
+          thinkingFormat: "openai",
+        },
+      },
+      "gpt-5.6-luna": {
+        label: "GPT-5.6 Luna",
+        contextWindowTokens: 258_400,
+        maxOutputTokens: 128_000,
+        capabilities: { tools: true, images: true },
+        compat: {
+          kind: "openai",
+          maxTokensField: "max_completion_tokens",
+          thinkingFormat: "openai",
+        },
+      },
       "gpt-5.5": {
         contextWindowTokens: 258_400,
         maxOutputTokens: 64_000,
