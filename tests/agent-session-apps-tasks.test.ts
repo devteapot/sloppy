@@ -270,7 +270,7 @@ describe("AgentSessionProvider — apps and tasks", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       const metaPlugin = plugins.children?.find((item) => item.id === "meta-runtime");
-      expect(metaPlugin?.properties?.ui).toEqual({});
+      expect(metaPlugin?.properties?.ui).toBeUndefined();
 
       const apps = await consumer.query("/apps", 1);
       expect(apps.affordances?.some((affordance) => affordance.action === "query_provider")).toBe(

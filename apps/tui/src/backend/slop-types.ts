@@ -264,11 +264,9 @@ export type AppItem = {
 
 export type PluginNotificationContribution = {
   id: string;
-  source: {
-    path: string;
-    prop: string;
-  };
-  to: string;
+  source: string;
+  field?: string;
+  to: unknown;
   message: string;
 };
 
@@ -276,12 +274,9 @@ export type PluginActionContribution = {
   id: string;
   label: string;
   description: string;
-  invoke: {
-    path: string;
-    action: string;
-    params?: Record<string, unknown>;
-  };
-  whenAvailable?: string;
+  command: string;
+  available: boolean;
+  params?: Record<string, unknown>;
   argument?: {
     name: string;
     description?: string;
@@ -293,25 +288,23 @@ export type PluginActionContribution = {
 
 export type PluginIndicatorContribution = {
   id: string;
-  path: string;
-  depth?: number;
+  source: string;
   template: string;
   fields?: Record<string, { format: "text" | "number" | "duration" | "percent" | "bytes" }>;
   visibleWhen?: {
-    prop: string;
+    field: string;
     equals?: unknown;
   };
   severity?: {
-    prop: string;
+    field: string;
     map: Record<string, string>;
   };
 };
 
 export type PluginUiManifest = {
-  subscriptions?: Array<{ path: string; depth: number }>;
-  actions?: PluginActionContribution[];
-  notifications?: PluginNotificationContribution[];
-  indicators?: PluginIndicatorContribution[];
+  actions: PluginActionContribution[];
+  notifications: PluginNotificationContribution[];
+  indicators: PluginIndicatorContribution[];
 };
 
 export type PluginItem = {
@@ -319,7 +312,6 @@ export type PluginItem = {
   version: string;
   status: string;
   description?: string;
-  sessionPaths: string[];
   ui: PluginUiManifest;
 };
 
@@ -365,7 +357,6 @@ export type SessionViewSnapshot = {
   plugins: PluginItem[];
   queue: QueuedItem[];
   inspect: InspectState;
-  actionsByPath: Record<string, string[]>;
 };
 
 export type SaveProfileInput = {

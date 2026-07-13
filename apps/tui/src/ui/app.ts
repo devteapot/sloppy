@@ -128,9 +128,7 @@ export class AppUi {
     this.editor.setModeLabel(this.mode);
     this.editor.setApprovalMode(snapshot.approvalMode);
     this.editor.setWorkspaceRoot(snapshot.session.workspaceRoot);
-    this.editor.setSlashEntries(
-      buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath }),
-    );
+    this.editor.setSlashEntries(buildSlashEntries(snapshot.plugins));
     for (const notification of evaluatePluginNotifications(snapshot, this.notificationValues)) {
       this.setNotice(notification.message);
     }
@@ -233,12 +231,16 @@ export class AppUi {
       return;
     }
     if (command.type === "invoke" || command.type === "plugin_action") {
-      await this.client.invokeInspect(
-        command.path,
-        command.action,
-        command.params,
-        command.type === "invoke" ? command.targetId : "session",
-      );
+      if (command.type === "plugin_action") {
+        await this.client.invokePlugin(command.pluginId, command.command, command.params);
+      } else {
+        await this.client.invokeInspect(
+          command.path,
+          command.action,
+          command.params,
+          command.targetId,
+        );
+      }
       return;
     }
     if (command.type === "queue_cancel") {
@@ -249,6 +251,18 @@ export class AppUi {
       if (target) {
         await this.client.cancelQueuedMessage(target);
       }
+      return;
+    }
+    if (command.type === "approval_resolve") {
+      if (command.resolution === "approve") {
+        await this.client.approveApproval(command.approvalId);
+      } else {
+        await this.client.rejectApproval(command.approvalId);
+      }
+      return;
+    }
+    if (command.type === "task_cancel") {
+      await this.client.cancelTask(command.taskId);
       return;
     }
     if (command.type === "session_switch") {

@@ -3,10 +3,12 @@ import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../config/schema";
 import type { AgentCallbacks, AgentRunResult, ResolvedApprovalToolResult } from "../core/agent";
 import type { LlmProfileManager } from "../llm/profile-manager";
+import type { RuntimeServiceKey } from "../runtime/services";
 
 export interface SessionAgent {
   start(): Promise<void>;
   listConnectedProviders?(): { id: string; name: string }[];
+  getRuntimeService?<T>(key: RuntimeServiceKey<T>): T | undefined;
   chat(userMessage: string): Promise<AgentRunResult>;
   resumeWithToolResult(result: ResolvedApprovalToolResult): Promise<AgentRunResult>;
   invokeProvider(

@@ -215,7 +215,7 @@ session canary routes without adding a scheduler or privileged runtime branch.
 `traffic.experimentId` is optional metadata linking a canary route to the
 experiment it is intended to evaluate.
 
-Agent dispatch invokes `delegation.spawn_agent` with:
+Agent dispatch calls the typed delegation runtime service with:
 
 - the target profile name
 - profile instructions plus the routed message
@@ -229,8 +229,13 @@ sub-agent without a mask records `route.failed` with
 `missing_capability_mask` instead of inheriting the parent's full provider
 surface.
 
-Channel dispatch invokes `messaging.channels/<id>.send` with both the envelope
-body and typed envelope. The source must be a channel participant.
+Channel dispatch calls the typed messaging runtime service with both the
+envelope body and typed envelope. The source must be a channel participant.
+
+These are stable same-process dependencies, so meta-runtime does not route them
+back through provider path/action strings. The delegation and messaging SLOP
+providers still expose the state and affordances that agents and external
+consumers need.
 
 Dispatch records `route.dispatched` only after the provider call succeeds. A
 provider error or invalid target records `route.failed` and returns an unrouted
@@ -327,10 +332,11 @@ queue and should not be hidden inside meta-runtime approval.
 
 Skill versions are not global ambient prompt state. Profiles can list
 `defaultSkillVersionIds`; agent nodes can list `skillVersionIds`. During route
-dispatch, only those selected active skill versions are resolved through
-`skill_view`, loaded, and frozen into the routed child-agent goal. If a selected
-skill cannot be loaded, the route records `route.failed` instead of spawning a
-child without the declared procedural context.
+dispatch, only those selected active skill versions are resolved through the
+typed skills runtime service, loaded, and frozen into the routed child-agent
+goal. The equivalent agent-facing operation remains `skill_view` on the skills
+provider. If a selected skill cannot be loaded, the route records `route.failed`
+instead of spawning a child without the declared procedural context.
 
 The important boundary:
 

@@ -19,9 +19,11 @@ export type ProjectedIndicator = {
   severity?: string;
 };
 
-function actionAvailable(snapshot: SessionViewSnapshot, action: PluginActionContribution): boolean {
-  const required = action.whenAvailable ?? action.invoke.action;
-  return (snapshot.actionsByPath[action.invoke.path] ?? []).includes(required);
+function actionAvailable(
+  _snapshot: SessionViewSnapshot,
+  action: PluginActionContribution,
+): boolean {
+  return action.available;
 }
 
 export function projectPluginActions(snapshot: SessionViewSnapshot): ProjectedPluginAction[] {
@@ -68,7 +70,7 @@ function indicatorVisible(indicator: PluginIndicatorContribution, source: unknow
   if (!indicator.visibleWhen) {
     return true;
   }
-  const value = readObjectProperty(source, indicator.visibleWhen.prop);
+  const value = readObjectProperty(source, indicator.visibleWhen.field);
   return "equals" in indicator.visibleWhen
     ? value === indicator.visibleWhen.equals
     : Boolean(value);
@@ -77,12 +79,12 @@ function indicatorVisible(indicator: PluginIndicatorContribution, source: unknow
 export function projectIndicators(snapshot: SessionViewSnapshot): ProjectedIndicator[] {
   return snapshot.plugins.flatMap((plugin: PluginItem) =>
     (plugin.ui.indicators ?? []).flatMap((indicator): ProjectedIndicator[] => {
-      const source = readObjectPath(snapshot, indicator.path);
+      const source = readObjectPath(snapshot, indicator.source);
       if (!source || !indicatorVisible(indicator, source)) {
         return [];
       }
       const severityValue = indicator.severity
-        ? readObjectProperty(source, indicator.severity.prop)
+        ? readObjectProperty(source, indicator.severity.field)
         : undefined;
       return [
         {

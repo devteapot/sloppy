@@ -1,4 +1,6 @@
-import type { ProviderRuntimeHub } from "../../../core/hub";
+import type { RuntimeServiceRegistry } from "../../../runtime/services";
+import { executorBindingSchema } from "../delegation/runtime/executor-binding";
+import { DELEGATION_SERVICE, MESSAGING_SERVICE, SKILLS_SERVICE } from "../service-keys";
 import type {
   AgentChannel,
   AgentNode,
@@ -14,7 +16,7 @@ import type {
 import { matchingRoutes, normalizeRouteEnvelope } from "./meta-runtime-routing";
 
 export type MetaRuntimeDispatchContext = {
-  hub: ProviderRuntimeHub | null;
+  services: RuntimeServiceRegistry;
   routes: RouteRule[];
   agents: Map<string, AgentNode>;
   profiles: Map<string, AgentProfile>;
@@ -92,25 +94,12 @@ async function buildActiveSkillContext(
 ): Promise<string> {
   const skillVersions = selectedSkillVersions(context, agent, profile);
   if (skillVersions.length === 0) return "";
-  if (!context.hub) {
-    throw new Error("Cannot load active skill versions without a runtime hub.");
-  }
+  const skills = context.services.require(SKILLS_SERVICE, "Skills");
 
   const sections: string[] = [];
   for (const skillVersion of skillVersions) {
-    const result = await context.hub.invoke("skills", "/session", "skill_view", {
-      name: skillVersion.skillId,
-    });
-    if (result.status === "error") {
-      throw new Error(
-        `Failed to load active skill ${skillVersion.skillId}@${skillVersion.version}: ${result.error?.message ?? "unknown error"}.`,
-      );
-    }
-    const data =
-      result.data && typeof result.data === "object" && !Array.isArray(result.data)
-        ? (result.data as Record<string, unknown>)
-        : {};
-    const content = typeof data.content === "string" ? data.content.trim() : "";
+    const viewed = await skills.viewSkill(skillVersion.skillId);
+    const content = viewed.content.trim();
     if (!content) {
       throw new Error(`Active skill ${skillVersion.skillId}@${skillVersion.version} is empty.`);
     }
@@ -133,18 +122,6 @@ async function dispatchSingleRoute(
   route: RouteRule,
   envelope: RouteMessageEnvelope,
 ): Promise<RouteDispatchResult> {
-  if (!context.hub) {
-    return routeFailure(
-      context,
-      route,
-      envelope,
-      "Meta-runtime provider is not attached to a hub.",
-      {
-        reason_code: "missing_hub",
-      },
-    );
-  }
-
   if (route.target.startsWith("agent:")) {
     const agentId = route.target.slice("agent:".length);
     const agent = context.agents.get(agentId);
@@ -227,19 +204,21 @@ async function dispatchSingleRoute(
     ]
       .filter(Boolean)
       .join("\n\n");
-    const result = await context.hub.invoke("delegation", "/session", "spawn_agent", {
-      name: profile.name,
-      goal,
-      ...(executor ? { executor } : {}),
-      capabilityMasks,
-      routeEnvelope: envelope,
-    });
-    if (result.status === "error") {
+    let result: unknown;
+    try {
+      result = context.services.require(DELEGATION_SERVICE, "Delegation").spawnAgent({
+        name: profile.name,
+        goal,
+        executor: executor ? executorBindingSchema.parse(executor) : undefined,
+        capabilityMasks,
+        routeEnvelope: envelope,
+      });
+    } catch (error) {
       return routeFailure(
         context,
         route,
         envelope,
-        `Dispatch to agent ${agent.id} failed: ${result.error?.message ?? "unknown error"}.`,
+        `Dispatch to agent ${agent.id} failed: ${error instanceof Error ? error.message : String(error)}.`,
         {
           reason_code: "target_invoke_error",
           provider: "delegation",
@@ -286,16 +265,17 @@ async function dispatchSingleRoute(
         },
       );
     }
-    const result = await context.hub.invoke("messaging", `/channels/${channelId}`, "send", {
-      message: envelope.body,
-      envelope,
-    });
-    if (result.status === "error") {
+    let result: unknown;
+    try {
+      result = context.services
+        .require(MESSAGING_SERVICE, "Messaging")
+        .sendMessage(channelId, envelope.body, envelope);
+    } catch (error) {
       return routeFailure(
         context,
         route,
         envelope,
-        `Dispatch to channel ${channel.id} failed: ${result.error?.message ?? "unknown error"}.`,
+        `Dispatch to channel ${channel.id} failed: ${error instanceof Error ? error.message : String(error)}.`,
         {
           reason_code: "target_invoke_error",
           provider: "messaging",

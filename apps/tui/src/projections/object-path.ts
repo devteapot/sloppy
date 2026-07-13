@@ -15,7 +15,7 @@ export function readObjectProperty(source: unknown, key: string): unknown {
 
 export function readObjectPath(source: unknown, path: string): unknown {
   let current: unknown = source;
-  for (const segment of path.split("/").filter(Boolean)) {
+  for (const segment of path.split(/[/.]/).filter(Boolean)) {
     current = readObjectProperty(current, segment);
     if (current === undefined) {
       return undefined;

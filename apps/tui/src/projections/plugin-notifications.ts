@@ -21,19 +21,22 @@ function collectPluginNotifications(snapshot: SessionViewSnapshot): RuntimePlugi
 // exported for tests
 export function readPluginNotificationValue(
   snapshot: SessionViewSnapshot,
-  path: string,
-  prop: string,
+  source: string,
+  field?: string,
 ): string | undefined {
-  const current = readObjectPath(snapshot, path);
-  if (current === undefined) {
-    return undefined;
-  }
-
-  const value = readObjectProperty(current, prop);
+  const sourceValue = readObjectPath(snapshot, source);
+  const value = field ? readObjectProperty(sourceValue, field) : sourceValue;
   if (value === null || value === undefined) {
     return undefined;
   }
   return String(value);
+}
+
+function renderMessage(template: string, source: unknown): string {
+  return template.replace(/\{([^}]+)\}/g, (_, rawName: string) => {
+    const value = readObjectProperty(source, rawName.trim());
+    return value === null || value === undefined ? "" : String(value);
+  });
 }
 
 export function evaluatePluginNotifications(
@@ -46,10 +49,11 @@ export function evaluatePluginNotifications(
   for (const notification of collectPluginNotifications(snapshot)) {
     const key = `${notification.pluginId}:${notification.id}`;
     activeKeys.add(key);
+    const source = readObjectPath(snapshot, notification.source);
     const nextValue = readPluginNotificationValue(
       snapshot,
-      notification.source.path,
-      notification.source.prop,
+      notification.source,
+      notification.field,
     );
     const previousValue = previousValues.get(key);
     if (
@@ -57,7 +61,11 @@ export function evaluatePluginNotifications(
       previousValue !== notification.to &&
       nextValue === notification.to
     ) {
-      triggered.push({ ...notification, key });
+      triggered.push({
+        ...notification,
+        message: renderMessage(notification.message, source),
+        key,
+      });
     }
     previousValues.set(key, nextValue);
   }

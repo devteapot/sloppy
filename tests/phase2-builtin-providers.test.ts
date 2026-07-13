@@ -137,7 +137,7 @@ Use this for testing.
       const _skillId = skills.children?.[0]?.id;
       expect(skills.children?.[0]?.properties?.name).toBe("demo-skill");
 
-      const viewResult = await consumer.invoke("/session", "view_skill", {
+      const viewResult = await consumer.invoke("/session", "skill_view", {
         name: "demo-skill",
       });
       expect(viewResult.status).toBe("ok");

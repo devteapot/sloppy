@@ -104,7 +104,7 @@ function renderInspect(snapshot: SessionViewSnapshot): string {
 }
 
 function renderHelp(snapshot: SessionViewSnapshot): string {
-  const commands = buildSlashEntries(snapshot.plugins, { actionsByPath: snapshot.actionsByPath })
+  const commands = buildSlashEntries(snapshot.plugins)
     .map((entry) => {
       const aliases = entry.aliases?.length
         ? ` (${entry.aliases.map((alias) => singleLineText(alias)).join(", ")})`

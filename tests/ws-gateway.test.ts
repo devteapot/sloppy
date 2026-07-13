@@ -2,17 +2,16 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SlopConsumer, WebSocketClientTransport } from "@slop-ai/consumer";
 
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
 import { startWsGateway, type WsGateway } from "../src/gateway";
-import { type SessionSupervisorProvider, startSessionSupervisor } from "../src/session/supervisor";
+import { type SessionSupervisor, startSessionSupervisor } from "../src/session/supervisor";
 
 const tempPaths: string[] = [];
 const gateways: WsGateway[] = [];
 const listeners: Array<{ close: () => void }> = [];
-const providers: SessionSupervisorProvider[] = [];
+const supervisors: SessionSupervisor[] = [];
 const originalHome = process.env.HOME;
 
 afterEach(async () => {
@@ -22,8 +21,8 @@ afterEach(async () => {
   for (const listener of listeners.splice(0)) {
     listener.close();
   }
-  for (const provider of providers.splice(0)) {
-    provider.stop();
+  for (const supervisor of supervisors.splice(0)) {
+    supervisor.stop();
   }
   if (originalHome == null) {
     delete process.env.HOME;
@@ -80,11 +79,10 @@ async function startSupervisor(options?: { initial?: false }) {
   const running = await startSessionSupervisor({
     socketPath,
     cwd: workspace,
-    register: false,
     initial:
-      options?.initial === false ? false : { session_id: "gw-initial", title: "Gateway Initial" },
+      options?.initial === false ? false : { sessionId: "gw-initial", title: "Gateway Initial" },
   });
-  providers.push(running.provider);
+  supervisors.push(running.supervisor);
   listeners.push(running.listener);
   return { socketPath, running };
 }
@@ -134,20 +132,15 @@ describe("WS gateway", () => {
   test("relays the supervisor and its sessions over a single port", async () => {
     const { socketPath } = await startSupervisor();
     const gateway = await startGateway(socketPath);
-    expect(gateway.url).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/supervisor$/);
+    expect(gateway.url).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/api\/supervisor$/);
 
-    const consumer = new SlopConsumer(new WebSocketClientTransport(gateway.url));
-    try {
-      const hello = await consumer.connect();
-      expect(hello.provider.id).toBe("sloppy-session-supervisor");
-      const sessions = await consumer.query("/sessions", 2);
-      const ids = (sessions.children ?? []).map(
-        (child) => (child.properties as Record<string, unknown>).session_id,
-      );
-      expect(ids).toContain("gw-initial");
-    } finally {
-      consumer.disconnect();
-    }
+    const origin = new URL(gateway.url);
+    const removedSupervisorRoute = await wsOutcome(`${origin.protocol}//${origin.host}/supervisor`);
+    expect(removedSupervisorRoute.opened).toBe(false);
+    const removedSessionRoute = await wsOutcome(
+      `${origin.protocol}//${origin.host}/sessions/gw-initial`,
+    );
+    expect(removedSessionRoute.opened).toBe(false);
 
     const sessionClient = new SessionClient(gateway.sessionUrl("gw-initial"));
     try {
@@ -216,18 +209,16 @@ describe("WS gateway", () => {
     const { socketPath } = await startSupervisor({ initial: false });
     const gateway = await startGateway(socketPath, { token: "secret-token" });
 
-    await expect(
-      new SlopConsumer(new WebSocketClientTransport(gateway.url)).connect(),
-    ).rejects.toThrow("WebSocket connection failed");
+    const denied = await wsOutcome(gateway.url);
+    expect(denied.opened).toBe(false);
 
-    const consumer = new SlopConsumer(
-      new WebSocketClientTransport(withToken(gateway.url, "secret-token")),
-    );
+    const client = new SessionSupervisorClient(withToken(gateway.url, "secret-token"), {
+      reconnect: false,
+    });
     try {
-      const hello = await consumer.connect();
-      expect(hello.provider.id).toBe("sloppy-session-supervisor");
+      await client.connect();
     } finally {
-      consumer.disconnect();
+      client.disconnect();
     }
   });
 
@@ -253,16 +244,21 @@ describe("WS gateway", () => {
       `/tmp/slop/sloppy-gateway-missing-${crypto.randomUUID()}.sock`,
     );
 
-    const response = await fetch(`http://127.0.0.1:${gateway.port}/.well-known/slop`);
+    const response = await fetch(`http://127.0.0.1:${gateway.port}/.well-known/sloppy`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       transport: { type: string; url: string };
-      paths: { supervisor: string; session_template: string };
+      paths: {
+        supervisor: string;
+        sessionTemplate: string;
+      };
     };
     expect(body.transport.type).toBe("ws");
     expect(body.transport.url).toBe(gateway.url);
-    expect(body.paths.supervisor).toBe("/supervisor");
-    expect(body.paths.session_template).toBe("/sessions/{session_id}");
+    expect(body.paths.supervisor).toBe("/api/supervisor");
+    expect(body.paths.sessionTemplate).toBe("/api/sessions/{sessionId}");
+    const removedDiscovery = await fetch(`http://127.0.0.1:${gateway.port}/.well-known/slop`);
+    expect(removedDiscovery.status).toBe(404);
 
     // The supervisor relay path fails per-connection but the gateway survives.
     const outcome = await wsOutcome(gateway.url);

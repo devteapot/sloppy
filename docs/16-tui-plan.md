@@ -3,10 +3,10 @@
 ## Current Direction
 
 `apps/tui` is now a TypeScript/Bun inline terminal UI built directly on
-`@earendil-works/pi-tui`. It is a SLOP consumer of the public session provider
-and optional public session supervisor. The default launcher behavior starts or
+`@earendil-works/pi-tui`. It is a consumer of the typed, client-agnostic Session
+API and optional Supervisor API. The default launcher behavior starts or
 reuses a launch-scope managed supervisor for the current working directory, then
-connects to an ordinary session-provider endpoint. It does not use OpenTUI,
+connects to an ordinary typed session endpoint. It does not use OpenTUI,
 Solid, an alternate screen, or privileged in-process runtime access.
 
 The UI model is intentionally scrollback-preserving:
@@ -14,10 +14,10 @@ The UI model is intentionally scrollback-preserving:
 - chat transcript and composer stay in the terminal's native scrollback
 - overlays are temporary bottom panels for setup, approvals, tasks, apps,
   inspector, runtime, and help
-- Ctrl+K opens a command palette projected from built-in commands, live session
-  state, supervisor state, and v2 plugin UI actions
-- plugin UI contribution manifests are v2 `plugin.ui` manifests, not TUI-specific
-  v1 `plugin.tui` manifests
+- Ctrl+K opens a command palette projected from built-in commands, live typed
+  session state, supervisor state, and plugin client actions
+- plugin client manifests declare commands, indicators, notifications, and
+  optional presentation metadata without embedding SLOP paths or TUI behavior
 
 ## Checked-In Status
 
@@ -35,10 +35,9 @@ Implemented:
 - attach mode via `bun run tui -- --socket <session.sock-or-ws-url>`
 - supervisor mode via `bun run tui -- --supervisor <supervisor.sock-or-ws-url>` or
   `--supervisor-socket <supervisor.sock-or-ws-url>`
-- public session subscriptions for `/session`, `/llm`, `/usage`, `/turn`,
-  `/composer`, `/transcript`, `/activity`, `/approvals`, `/tasks`, `/apps`,
-  `/plugins`, and `/queue`
-- dynamic subscriptions from v2 plugin manifests
+- typed full session snapshots with revisioned live updates for session, LLM,
+  usage, turn, transcript, activity, approvals, tasks, apps, extensions, queue,
+  and plugin contributions
 - markdown transcript rendering through pi-tui `Markdown`
 - block-aware transcript rendering that keeps Thinking output plain/labeled while
   assistant and system text blocks use Markdown paths
@@ -54,11 +53,11 @@ Implemented:
 - boxed composer frame with the current local interaction mode label
 - mode cycling with Shift+Tab: `default`, `plan`
 - session approval mode with `/approval [normal|auto]`; the TUI invokes the
-  public `/approvals.set_mode` affordance and renders the session-owned mode
+  typed `approval.setMode` command and renders the session-owned mode
 - explicit verbosity commands: `/verbosity` reports the current presentation depth, while `/verbosity compact` and `/verbosity verbose` switch between the two modes
 - composer autocomplete for command-name-only slash completion from built-in
-  commands and namespaced v2 plugin action presentations whose target
-  affordance is live, with partial matching and highlighted matches; built-ins
+  commands and namespaced plugin action presentations whose server-computed
+  command availability is true, with partial matching and highlighted matches; built-ins
   stay unqualified, while plugin commands project as
   `/<plugin-id>:<command>` using the raw plugin id
 - composer autocomplete for `@`-triggered file and directory path completion,
@@ -73,9 +72,8 @@ Implemented:
   from known files and a bounded directory-walk fallback outside git repos
 - command palette from route commands, queue/task/approval actions, v2 plugin
   actions, and supervisor sessions/scopes
-- TUI scoped New Session commands may invoke supervisor `/session.create_session`
-  with `workspace_id`/`project_id`; generic consumers can also use scope-item
-  `/scopes/{id}.create_session`, with the same approval-mode inheritance
+- TUI scoped New Session commands invoke the typed Supervisor API with
+  workspace/project ids and the same approval-mode inheritance
 - supervisor client leases for per-TUI session selection, auto-close accounting,
   and stop guards when another connected TUI is using a session
 - runtime overlay shows supervised Session approval modes before switching
@@ -112,20 +110,21 @@ Still deferred:
 ### Session Client
 
 `apps/tui/src/backend/session-client.ts` owns the public session connection. It
-uses `@slop-ai/consumer` with Unix socket or WebSocket transports, subscribes to
-public session state, keeps a typed `SessionViewSnapshot`, follows v2 plugin
-manifest subscriptions, and invokes public affordances such as composer send,
-turn cancel, goal controls, approval resolution, task cancel, LLM profile
-controls, and inspect query/invoke.
+uses `SessionApiClient` from `sloppy/session` over Unix socket or WebSocket,
+maps canonical session snapshots into a presentation-oriented
+`SessionViewSnapshot`, and invokes explicit typed commands for composer send,
+turn cancel, plugin controls, approval resolution, task cancel, and LLM profile
+management. Only the generic provider inspector asks the Session API to proxy a
+SLOP provider query or invocation.
 
 ### Supervisor Client
 
-`apps/tui/src/backend/supervisor-client.ts` talks to the public session supervisor
+`apps/tui/src/backend/supervisor-client.ts` talks to the typed public supervisor
 in managed mode or when launched with `--supervisor`. It supports Unix socket
 and WebSocket supervisor endpoints. It exposes the
 launch-scope resume session, the session list, and scope list state, plus
-create/select/stop affordances. Managed mode switches the same `SessionClient`
-between ordinary session-provider endpoints.
+create/select/stop commands. Managed mode switches the same `SessionClient`
+between ordinary typed session endpoints.
 
 The supervisor does not own one global active session. Each connected TUI
 registers a supervisor client lease and updates that lease when its selected
@@ -136,15 +135,19 @@ If a stopped session is selected later, the supervisor restores it from its
 snapshot and lets the normal stale-turn recovery path explain any interrupted
 work.
 
-### Manifest Projection
+### Client Contribution Projection
 
-`apps/tui/src/state/manifest-projection.ts` projects v2 plugin UI manifests:
+`apps/tui/src/projections/manifest-projection.ts` projects client-agnostic
+plugin contributions:
 
-- `actions` become command-palette entries when their target affordance is live
+- `actions` become command-palette entries when server-computed availability is true
 - `indicators` become status-line segments and runtime overlay text
-- `notifications` are evaluated in `state/plugin-notifications.ts` and surfaced
+- `notifications` are evaluated in `projections/plugin-notifications.ts` and surfaced
   through the notice line
-- `subscriptions` are consumed by `SessionClient` for dynamic state coverage
+
+The runtime contribution uses a stable typed snapshot source path and a plugin
+command id. `presentation.tui` may add slash naming hints, but command execution
+does not depend on the TUI or on SLOP path/action pairs.
 
 ### UI Components
 
@@ -180,7 +183,7 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 
 ## Design Rules
 
-- The TUI remains a consumer of public SLOP state and affordances.
+- The TUI remains a consumer of the public typed Session/Supervisor boundary.
 - Interaction mode labels in the composer frame are local TUI presentation state.
 - Approval mode is shared session behavior exposed through public session
   state; first-party UI clients render and invoke that boundary rather than
@@ -188,8 +191,7 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 - Turn state is rendered above the composer through a TUI-owned human label mapper, not as raw `state:phase` debug text; this leaves room for animated status text or spinners later without changing session state.
 - First-party UI behavior must not inspect runtime internals.
 - Managed launch, `--continue`, and auto-close are TUI launcher behavior on top
-  of the agnostic public supervisor. The supervisor itself stays a SLOP provider
-  for session lifecycle bookkeeping.
+  of the agnostic public Supervisor API. The Supervisor has no SLOP transport.
 - Thinking-output visibility toggles are local TUI presentation state; they do
   not invoke a shared session affordance or mutate the public session provider.
 - Toggling Thinking-output visibility re-renders both historical transcript
@@ -227,8 +229,9 @@ The composer owns the input frame, prompt gutter, placeholder, autocomplete pres
 - Compact grouping is a visual transform after sequence ordering. It groups adjacent
   receipts by provider-scoped affordance identity and renders the group title from
   the invocation-time label; verbose mode keeps individual activity pairs.
-- Provider/plugin surfaces should be contributed through v2 `plugin.ui` where
-  possible.
+- Plugin client surfaces should use typed client commands and client-agnostic
+  contribution manifests; SLOP projections should contain only agent-relevant
+  state and affordances.
 - Inline UI should preserve terminal scrollback and avoid alternate-screen
   assumptions. Progressive Markdown may cache stable and tail rendered lines
   inside components, but it must not introduce a separate commit queue, render

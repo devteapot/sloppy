@@ -149,7 +149,7 @@ describe("DelegationProvider", () => {
       expect(agents.children?.[0]?.properties).toMatchObject({
         id: agentId,
         name: "planner",
-        goal: "Plan the next milestone",
+        goal_preview: "Plan the next milestone",
         status: "pending",
         model: "claude",
         completed_at: undefined,
@@ -157,6 +157,7 @@ describe("DelegationProvider", () => {
         error: undefined,
       });
       expect(agents.children?.[0]?.affordances?.map((affordance) => affordance.action)).toEqual([
+        "inspect",
         "cancel",
       ]);
 
@@ -227,7 +228,12 @@ describe("DelegationProvider", () => {
       expect(agent.properties).toMatchObject({
         id: data.id,
         execution_mode: "acp:fake",
-        executor: { kind: "acp", adapterId: "fake" },
+      });
+      expect(agent.properties?.executor).toBeUndefined();
+      const inspected = await consumer.invoke(`/agents/${data.id}`, "inspect", {});
+      expect((inspected.data as { executor: unknown }).executor).toEqual({
+        kind: "acp",
+        adapterId: "fake",
       });
 
       await consumer.invoke(`/agents/${data.id}`, "cancel", {});
@@ -276,7 +282,11 @@ describe("DelegationProvider", () => {
       });
 
       const agent = await consumer.query(`/agents/${agentId}`, 2);
-      expect(agent.properties?.route_envelope).toEqual(capturedRouteEnvelope);
+      expect(agent.properties?.route_envelope_id).toBe("msg-route");
+      const inspected = await consumer.invoke(`/agents/${agentId}`, "inspect", {});
+      expect((inspected.data as { route_envelope: unknown }).route_envelope).toEqual(
+        capturedRouteEnvelope,
+      );
 
       await consumer.invoke(`/agents/${agentId}`, "cancel", {});
     } finally {
@@ -344,7 +354,7 @@ describe("DelegationProvider", () => {
       }, 1500);
       expect(running).toMatchObject({
         id: agentId,
-        goal: "Reach running state",
+        goal_preview: "Reach running state",
         status: "running",
       });
 
@@ -371,7 +381,9 @@ describe("DelegationProvider", () => {
         status: "cancelled",
       });
       expect(cancelled.properties?.completed_at).toBeString();
-      expect(cancelled.affordances?.map((affordance) => affordance.action) ?? []).toEqual([]);
+      expect(cancelled.affordances?.map((affordance) => affordance.action) ?? []).toEqual([
+        "inspect",
+      ]);
 
       const session = await consumer.query("/session", 2);
       expect(session.properties).toMatchObject({
@@ -420,7 +432,10 @@ describe("DelegationProvider", () => {
         result_preview: 'Agent "finisher" completed goal: Produce a final answer',
       });
       expect(completed.properties?.completed_at).toBeString();
-      expect(completed.affordances?.map((affordance) => affordance.action)).toEqual(["get_result"]);
+      expect(completed.affordances?.map((affordance) => affordance.action)).toEqual([
+        "inspect",
+        "get_result",
+      ]);
 
       const result = await consumer.invoke(`/agents/${agentId}`, "get_result", {});
       expect(result.status).toBe("ok");
@@ -521,6 +536,7 @@ describe("DelegationProvider", () => {
         session_provider_closed: false,
       });
       expect(completed.affordances?.map((affordance) => affordance.action)).toEqual([
+        "inspect",
         "get_result",
         "send_message",
         "close",
@@ -562,7 +578,10 @@ describe("DelegationProvider", () => {
         session_provider_closed: true,
         result_preview: "turn 2: second answer",
       });
-      expect(closed.affordances?.map((affordance) => affordance.action)).toEqual(["get_result"]);
+      expect(closed.affordances?.map((affordance) => affordance.action)).toEqual([
+        "inspect",
+        "get_result",
+      ]);
     } finally {
       provider.stop();
     }
@@ -683,8 +702,8 @@ describe("DelegationProvider", () => {
           path: `/agents/${agentId}`,
           depth: 2,
         });
-        const pending = agent.properties?.pending_approvals;
-        return Array.isArray(pending) && pending.length > 0 ? pending : null;
+        const pending = agent.properties?.pending_approval_count;
+        return typeof pending === "number" && pending > 0 ? pending : null;
       });
 
       await waitFor(async () =>

@@ -13,10 +13,6 @@ export type SlashEntry = {
   description: string;
 };
 
-export type SlashCatalogOptions = {
-  actionsByPath?: Record<string, string[]>;
-};
-
 export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = BUILTIN_COMMAND_SPECS.filter(
   (spec) => spec.discoverable !== false,
 ).map(({ name, aliases, signature, description }) => ({
@@ -26,23 +22,12 @@ export const BUILTIN_SLASH_ENTRIES: SlashEntry[] = BUILTIN_COMMAND_SPECS.filter(
   description,
 }));
 
-export function buildSlashEntries(
-  plugins: PluginItem[] = [],
-  options: SlashCatalogOptions = {},
-): SlashEntry[] {
+export function buildSlashEntries(plugins: PluginItem[] = []): SlashEntry[] {
   const seenPluginNames = new Set<string>();
   const pluginEntries = plugins.flatMap((plugin) =>
     (plugin.ui.actions ?? []).flatMap((action): SlashEntry[] => {
       const slash = readActionSlash(action);
-      if (
-        !slash ||
-        !validPluginSlashNamespace(plugin.id) ||
-        !slashActionAvailable(
-          options,
-          action.invoke.path,
-          action.whenAvailable ?? action.invoke.action,
-        )
-      ) {
+      if (!slash || !validPluginSlashNamespace(plugin.id) || !action.available) {
         return [];
       }
 
@@ -81,10 +66,6 @@ function validPluginSlashNamespace(pluginId: string): boolean {
   return pluginId.length > 0 && !/[\s:]/.test(pluginId);
 }
 
-function slashActionAvailable(options: SlashCatalogOptions, path: string, action: string): boolean {
-  return !options.actionsByPath || (options.actionsByPath[path] ?? []).includes(action);
-}
-
 export type SlashSuggestion = {
   entry: SlashEntry;
   // The canonical form to insert.
@@ -98,9 +79,8 @@ export function matchSlashEntries(
   input: string,
   limit = 8,
   plugins: PluginItem[] = [],
-  options: SlashCatalogOptions = {},
 ): SlashSuggestion[] {
-  return matchSlashEntryList(input, buildSlashEntries(plugins, options), limit);
+  return matchSlashEntryList(input, buildSlashEntries(plugins), limit);
 }
 
 export function matchSlashEntryList(

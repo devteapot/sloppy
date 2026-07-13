@@ -6,7 +6,14 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import { action, createSlopServer } from "@slop-ai/server";
 
 import { ConsumerHub } from "../src/core/consumer";
+import type { DelegationService } from "../src/plugins/first-party/delegation/service";
+import type { MessagingService } from "../src/plugins/first-party/messaging/service";
 import { MetaRuntimeProvider } from "../src/plugins/first-party/meta-runtime/provider";
+import {
+  DELEGATION_SERVICE,
+  MESSAGING_SERVICE,
+  SKILLS_SERVICE,
+} from "../src/plugins/first-party/service-keys";
 import { SkillsProvider } from "../src/plugins/first-party/skills/provider";
 import { InProcessTransport } from "../src/providers/in-process";
 import type { RegisteredProvider } from "../src/providers/registry";
@@ -38,19 +45,12 @@ function registeredMetaProvider(provider: MetaRuntimeProvider): RegisteredProvid
     transportLabel: "in-process:test",
     stop: () => provider.stop(),
     approvals: provider.approvals,
-    attachRuntime: (hub) => {
-      provider.setHub(hub);
-      return {
-        stop() {
-          provider.setHub(null);
-        },
-      };
-    },
   };
 }
 
 function delegationStub(): {
   provider: RegisteredProvider;
+  service: DelegationService;
   spawns: Array<Record<string, unknown>>;
 } {
   const spawns: Array<Record<string, unknown>> = [];
@@ -84,6 +84,17 @@ function delegationStub(): {
     },
   }));
   return {
+    service: {
+      spawnAgent: (request) => {
+        spawns.push(request);
+        return {
+          id: "agent-spawned",
+          status: "pending",
+          created_at: new Date().toISOString(),
+          execution_mode: "native",
+        };
+      },
+    },
     provider: {
       id: "delegation",
       name: "Delegation",
@@ -98,6 +109,7 @@ function delegationStub(): {
 
 function messagingStub(): {
   provider: RegisteredProvider;
+  service: MessagingService;
   sent: string[];
   envelopes: unknown[];
 } {
@@ -128,6 +140,13 @@ function messagingStub(): {
     ],
   }));
   return {
+    service: {
+      sendMessage: (channelId, message, envelope) => {
+        sent.push(message);
+        envelopes.push(envelope);
+        return { id: "message-1", channel_id: channelId, sent_at: new Date().toISOString() };
+      },
+    },
     provider: {
       id: "messaging",
       name: "Messaging",
@@ -250,6 +269,7 @@ describe("MetaRuntimeProvider — experiments and skills", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const messaging = messagingStub();
+    meta.bindRuntimeService(MESSAGING_SERVICE, messaging.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, messaging.provider], TEST_CONFIG);
 
@@ -559,6 +579,8 @@ describe("MetaRuntimeProvider — experiments and skills", () => {
     });
     const skills = new SkillsProvider({ skillsDir: join(root, "skills") });
     const delegation = delegationStub();
+    meta.bindRuntimeService(SKILLS_SERVICE, skills);
+    meta.bindRuntimeService(DELEGATION_SERVICE, delegation.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub(
       [metaRegistration, registeredSkillsProvider(skills), delegation.provider],
@@ -704,6 +726,7 @@ describe("MetaRuntimeProvider — experiments and skills", () => {
       skillsDir: join(root, "skills"),
       workspaceSkillsDir: join(root, "workspace-skills"),
     });
+    meta.bindRuntimeService(SKILLS_SERVICE, skills);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, registeredSkillsProvider(skills)], TEST_CONFIG);
 
@@ -811,7 +834,7 @@ describe("MetaRuntimeProvider — experiments and skills", () => {
       expect(typeof approvalId).toBe("string");
       const approved = await consumer.invoke(`/approvals/${approvalId}`, "approve", {});
       expect(approved.status).toBe("error");
-      expect(approved.error?.message).toContain("No hub attached for skill activation");
+      expect(approved.error?.message).toContain("Skills runtime service is not enabled");
 
       const skillVersions = await consumer.query("/skill-versions", 2);
       expect(skillVersions.properties?.count).toBe(0);

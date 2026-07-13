@@ -48,6 +48,7 @@ function createContext(store = createStore()): PluginRuntimeContext {
     store,
     snapshot: () => store.getSnapshot(),
     ensureReady: async () => undefined,
+    getRuntimeService: () => undefined,
     invokeProvider: async () => {
       throw new Error("not used");
     },
@@ -162,5 +163,50 @@ describe("SessionPluginManager", () => {
     expect(() => manager.localTools(null)).toThrow(
       "Duplicate local runtime tool shared_tool registered by alpha and beta.",
     );
+  });
+
+  test("rejects duplicate and dangling typed client contributions", () => {
+    const duplicateCommands: SessionRuntimePlugin = {
+      id: "client-plugin",
+      version: "1.0.0",
+      clientCommands: () => [
+        { id: "run", execute: () => undefined },
+        { id: "run", execute: () => undefined },
+      ],
+    };
+    expect(() => new SessionPluginManager([duplicateCommands], createContext())).toThrow(
+      "Duplicate client command client-plugin:run.",
+    );
+
+    const danglingAction: SessionRuntimePlugin = {
+      id: "client-plugin",
+      version: "1.0.0",
+      client: {
+        actions: [
+          {
+            id: "client:run",
+            label: "Run",
+            description: "Run the client command",
+            command: "missing",
+          },
+        ],
+      },
+    };
+    expect(() => new SessionPluginManager([danglingAction], createContext())).toThrow(
+      "Client action client-plugin:client:run references unknown command missing.",
+    );
+  });
+
+  test("computes typed client command availability on the server", () => {
+    const store = createStore();
+    const manager = new SessionPluginManager([createPersistentGoalPlugin()], createContext(store));
+    const before = manager.clientPlugins()[0]?.contributions.actions;
+    expect(before?.find((action) => action.command === "create")?.available).toBe(true);
+    expect(before?.find((action) => action.command === "pause")?.available).toBe(false);
+
+    seedGoal(store, "exercise typed plugin actions");
+    const after = manager.clientPlugins()[0]?.contributions.actions;
+    expect(after?.find((action) => action.command === "pause")?.available).toBe(true);
+    expect(after?.find((action) => action.command === "create")?.available).toBe(false);
   });
 });

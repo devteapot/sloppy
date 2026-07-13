@@ -42,8 +42,7 @@ export type LocalCommand =
       pluginId: string;
       actionId: string;
       label: string;
-      path: string;
-      action: string;
+      command: string;
       params?: Record<string, unknown>;
     }
   | {
@@ -74,6 +73,8 @@ export type LocalCommand =
     }
   | { type: "rejected"; reason: string }
   | { type: "queue_cancel"; target: string | number }
+  | { type: "approval_resolve"; approvalId: string; resolution: "approve" | "reject" }
+  | { type: "task_cancel"; taskId: string }
   | { type: "config_reload"; target: "session" | "supervisor" }
   | {
       type: "session_new";

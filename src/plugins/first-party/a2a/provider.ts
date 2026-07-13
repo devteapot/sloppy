@@ -746,10 +746,15 @@ export class A2AProvider {
         source: record.source,
         artifact_count: Array.isArray(record.task.artifacts) ? record.task.artifacts.length : 0,
         history_count: Array.isArray(record.task.history) ? record.task.history.length : 0,
-        task: record.task,
       },
       summary: `${record.agentId}/${record.taskId}: ${record.statusState ?? "unknown"}`,
       actions: {
+        inspect: action(async () => record.task, {
+          label: "Inspect Task",
+          description: "Return the complete remote A2A task, including history and artifacts.",
+          idempotent: true,
+          estimate: "instant",
+        }),
         refresh: action(
           {
             history_length: { type: "number", optional: true },

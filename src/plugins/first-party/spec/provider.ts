@@ -514,7 +514,6 @@ export class SpecProvider {
         decision_count: decisions.length,
         proposed_change_count: changes.filter((change) => change.status === "proposed").length,
         body_preview: truncateText(body, 400),
-        spec_path: this.specBodyPath(metadata.id),
       },
       summary: metadata.title,
       actions: {

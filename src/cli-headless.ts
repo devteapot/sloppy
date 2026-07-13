@@ -1,14 +1,20 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { SlopConsumer, type SlopNode } from "@slop-ai/consumer/browser";
-
 import type { SloppyConfig } from "./config/schema";
 import type { LlmProfileManager } from "./llm/profile-manager";
-import { InProcessTransport } from "./providers/in-process";
-import { AgentSessionProvider } from "./session/provider";
+import { InProcessSessionApi } from "./session/client-protocol";
 import { type SessionAgentFactory, SessionRuntime } from "./session/runtime";
-import type { ApprovalMode } from "./session/types";
+import type {
+  ActivityItem,
+  AgentSessionSnapshot,
+  ApprovalItem,
+  ApprovalMode,
+  ExternalAppSnapshot,
+  SessionUsageSnapshot,
+  TranscriptMessage,
+  TurnStateSnapshot,
+} from "./session/types";
 
 type WriteFn = (text: string) => void;
 
@@ -24,7 +30,6 @@ export type CliHeadlessMetrics = {
   status: CliHeadlessStatus;
   exitCode: number;
   sessionId: string;
-  providerId: string;
   turnId?: string;
   elapsedMs: number;
   promptChars: number;
@@ -45,7 +50,6 @@ export type RunHeadlessSingleShotOptions = {
   llmProfileManager?: LlmProfileManager;
   agentFactory?: SessionAgentFactory;
   sessionId?: string;
-  providerId?: string;
   approvalMode?: ApprovalMode;
   writeStdout?: WriteFn;
   writeStderr?: WriteFn;
@@ -59,27 +63,15 @@ function elapsedSince(started: number): number {
   return Math.round((performance.now() - started) * 100) / 100;
 }
 
-function stringProp(node: SlopNode, key: string): string | undefined {
-  const value = node.properties?.[key];
-  return typeof value === "string" ? value : undefined;
+function assistantText(message: TranscriptMessage): string {
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
 }
 
-function nodeSummary(node: SlopNode): string {
-  return node.meta?.summary ?? stringProp(node, "summary") ?? node.id;
-}
-
-function assistantText(message: SlopNode): string {
-  let text = "";
-  for (const group of message.children ?? []) {
-    for (const block of group.children ?? []) {
-      text += stringProp(block, "text") ?? "";
-    }
-  }
-  return text;
-}
-
-function pendingApprovalFrom(approvals: SlopNode): SlopNode | undefined {
-  return approvals.children?.find((child) => child.properties?.status === "pending");
+function pendingApprovalFrom(approvals: ApprovalItem[]): ApprovalItem | undefined {
+  return approvals.find((approval) => approval.status === "pending");
 }
 
 class CliSessionRenderer {
@@ -93,9 +85,9 @@ class CliSessionRenderer {
 
   constructor(private readonly writeStdout: WriteFn) {}
 
-  renderTranscript(tree: SlopNode | null): void {
-    for (const message of tree?.children ?? []) {
-      if (message.properties?.role !== "assistant") {
+  renderTranscript(messages: TranscriptMessage[]): void {
+    for (const message of messages) {
+      if (message.role !== "assistant") {
         continue;
       }
 
@@ -107,7 +99,7 @@ class CliSessionRenderer {
         if (next.length > 0) {
           this.writeStdout(next);
           this.responseChars += next.length;
-          this.streamed ||= message.properties?.state === "streaming";
+          this.streamed ||= message.state === "streaming";
         }
         continue;
       }
@@ -116,26 +108,25 @@ class CliSessionRenderer {
         const chunk = next.slice(previous.length);
         this.writeStdout(chunk);
         this.responseChars += chunk.length;
-        this.streamed ||= message.properties?.state === "streaming";
+        this.streamed ||= message.state === "streaming";
       }
     }
   }
 
-  renderActivity(tree: SlopNode | null): void {
-    for (const item of tree?.children ?? []) {
+  renderActivity(items: ActivityItem[]): void {
+    for (const item of items) {
       if (this.printedActivityIds.has(item.id)) {
         continue;
       }
 
-      const kind = item.properties?.kind;
-      if (kind === "tool_call") {
+      if (item.kind === "tool_call") {
         this.printedActivityIds.add(item.id);
         this.toolCalls += 1;
-        this.writeStdout(`\n[tool] ${nodeSummary(item)}\n`);
-      } else if (kind === "tool_result") {
+        this.writeStdout(`\n[tool] ${item.summary}\n`);
+      } else if (item.kind === "tool_result") {
         this.printedActivityIds.add(item.id);
         this.toolResults += 1;
-        this.writeStdout(`[result] ${nodeSummary(item)}\n`);
+        this.writeStdout(`[result] ${item.summary}\n`);
       }
     }
   }
@@ -158,30 +149,11 @@ async function writeMetricsBestEffort(
   }
 }
 
-async function safeQuery(
-  consumer: SlopConsumer | null,
-  path: string,
-  depth: number,
-): Promise<SlopNode | null> {
-  if (!consumer) {
-    return null;
-  }
-
-  try {
-    return await consumer.query(path, depth);
-  } catch {
-    return null;
-  }
+function externalProviderIds(apps: ExternalAppSnapshot[]): string[] {
+  return apps.filter((app) => app.status === "connected").map((app) => app.id);
 }
 
-function externalProviderIds(apps: SlopNode | null): string[] {
-  return (apps?.children ?? [])
-    .filter((app) => (stringProp(app, "status") ?? "connected") === "connected")
-    .map((app) => stringProp(app, "provider_id") ?? app.id)
-    .filter((id) => id.length > 0);
-}
-
-function buildProviderNotice(providers: ConnectedProvider[], apps: SlopNode | null): string {
+function buildProviderNotice(providers: ConnectedProvider[], apps: ExternalAppSnapshot[]): string {
   const ids =
     providers.length > 0 ? providers.map((provider) => provider.id) : externalProviderIds(apps);
   if (ids.length === 0) {
@@ -190,32 +162,30 @@ function buildProviderNotice(providers: ConnectedProvider[], apps: SlopNode | nu
   return `[sloppy] providers: ${ids.join(", ")} (${ids.length})\n`;
 }
 
-function buildApprovalDetails(approval: SlopNode | undefined, turn: SlopNode | null): string {
+function buildApprovalDetails(approval: ApprovalItem | undefined, turn: TurnStateSnapshot): string {
   if (!approval) {
-    return turn ? (stringProp(turn, "message") ?? "") : "";
+    return turn.message;
   }
 
-  const provider = stringProp(approval, "provider");
-  const action = stringProp(approval, "action");
-  const path = stringProp(approval, "path");
-  const reason = nodeSummary(approval);
-  const target = [provider, action].filter(Boolean).join(":");
-  const targetLine = target || path ? `${target}${path ? ` ${path}` : ""}` : undefined;
-  return [targetLine, reason ? `reason: ${reason}` : undefined].filter(Boolean).join("\n");
+  const target = [approval.provider, approval.action].filter(Boolean).join(":");
+  const targetLine =
+    target || approval.path ? `${target}${approval.path ? ` ${approval.path}` : ""}` : undefined;
+  return [targetLine, approval.reason ? `reason: ${approval.reason}` : undefined]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function metricsFrom(options: {
   status: CliHeadlessStatus;
   exitCode: number;
   sessionId: string;
-  providerId: string;
   prompt: string;
   renderer: CliSessionRenderer;
   started: number;
-  turn: SlopNode | null;
-  usage: SlopNode | null;
+  turn?: TurnStateSnapshot;
+  usage?: SessionUsageSnapshot;
   errorText?: string;
-  approval?: SlopNode;
+  approval?: ApprovalItem;
   turnId?: string;
 }): CliHeadlessMetrics {
   return {
@@ -223,18 +193,17 @@ function metricsFrom(options: {
     status: options.status,
     exitCode: options.exitCode,
     sessionId: options.sessionId,
-    providerId: options.providerId,
-    turnId: options.turnId ?? (options.turn ? stringProp(options.turn, "turn_id") : undefined),
+    turnId: options.turnId ?? options.turn?.turnId ?? undefined,
     elapsedMs: elapsedSince(options.started),
     promptChars: options.prompt.length,
     responseChars: options.renderer.responseChars,
     streamed: options.renderer.streamed,
     toolCalls: options.renderer.toolCalls,
     toolResults: options.renderer.toolResults,
-    usage: options.usage?.properties,
-    turn: options.turn?.properties,
+    usage: options.usage ? { ...options.usage } : undefined,
+    turn: options.turn ? { ...options.turn } : undefined,
     errorMessage: options.errorText,
-    approval: options.approval?.properties,
+    approval: options.approval ? { ...options.approval } : undefined,
   };
 }
 
@@ -245,20 +214,15 @@ export async function runHeadlessSingleShot(
   const writeStdout = options.writeStdout ?? ((text) => process.stdout.write(text));
   const writeStderr = options.writeStderr ?? ((text) => process.stderr.write(text));
   const sessionId = options.sessionId ?? `cli-${crypto.randomUUID()}`;
-  const providerId = options.providerId ?? `sloppy-session-${sessionId}`;
   const renderer = new CliSessionRenderer(writeStdout);
 
   let runtime: SessionRuntime | null = null;
-  let provider: AgentSessionProvider | null = null;
-  let consumer: SlopConsumer | null = null;
-  let transcriptSubscriptionId: string | null = null;
-  let activitySubscriptionId: string | null = null;
+  let api: InProcessSessionApi | null = null;
   let exitCode = 1;
   let status: CliHeadlessStatus = "error";
   let errorText: string | undefined;
-  let finalTurn: SlopNode | null = null;
-  let finalUsage: SlopNode | null = null;
-  let approval: SlopNode | undefined;
+  let finalSnapshot: AgentSessionSnapshot | undefined;
+  let approval: ApprovalItem | undefined;
   let turnId: string | undefined;
 
   try {
@@ -266,7 +230,6 @@ export async function runHeadlessSingleShot(
       config: options.config,
       sessionId,
       title: "CLI Single Shot",
-      ignoredProviderIds: [providerId],
       llmProfileManager: options.llmProfileManager,
       agentFactory: options.agentFactory,
       actorId: "cli-single-shot",
@@ -274,82 +237,47 @@ export async function runHeadlessSingleShot(
       sessionPersistencePath: false,
       approvalMode: options.approvalMode,
     });
-    provider = new AgentSessionProvider(runtime, {
-      providerId,
-      providerName: "Sloppy CLI Session",
+    api = new InProcessSessionApi(runtime);
+    api.onSnapshot((snapshot) => {
+      renderer.renderTranscript(snapshot.session.transcript);
+      renderer.renderActivity(snapshot.session.activity);
     });
-    consumer = new SlopConsumer(new InProcessTransport(provider.server));
+    const initial = await api.connect();
 
-    await runtime.start();
-    await consumer.connect();
+    writeStderr(buildProviderNotice(runtime.listConnectedProviders(), initial.session.apps));
 
-    const [transcript, activity] = await Promise.all([
-      consumer.subscribe("/transcript", 5),
-      consumer.subscribe("/activity", 2),
-    ]);
-    transcriptSubscriptionId = transcript.id;
-    activitySubscriptionId = activity.id;
-    renderer.renderTranscript(transcript.snapshot);
-    renderer.renderActivity(activity.snapshot);
-
-    consumer.on("patch", (subscriptionId: string) => {
-      if (subscriptionId === transcriptSubscriptionId) {
-        renderer.renderTranscript(consumer?.getTree(subscriptionId) ?? null);
-      } else if (subscriptionId === activitySubscriptionId) {
-        renderer.renderActivity(consumer?.getTree(subscriptionId) ?? null);
-      }
-    });
-
-    writeStderr(
-      buildProviderNotice(runtime.listConnectedProviders(), await consumer.query("/apps", 1)),
-    );
-
-    const send = await consumer.invoke("/composer", "send_message", { text: options.prompt });
-    if (send.status !== "ok") {
-      throw new Error(send.error?.message ?? "Failed to submit CLI message.");
-    }
-    if (send.data && typeof send.data === "object") {
-      const data = send.data as Record<string, unknown>;
-      const reportedTurnId = data.turnId ?? data.turn_id;
-      if (typeof reportedTurnId === "string") {
-        turnId = reportedTurnId;
-      }
+    const send = await api.sendMessage(options.prompt);
+    if (send && typeof send === "object" && "turnId" in send && typeof send.turnId === "string") {
+      turnId = send.turnId;
     }
 
-    await runtime.waitForIdle();
-    renderer.renderTranscript(await consumer.query("/transcript", 5));
-    renderer.renderActivity(await consumer.query("/activity", 2));
-
-    finalTurn = await consumer.query("/turn", 1);
-    finalUsage = await consumer.query("/usage", 1);
-    const turnState = stringProp(finalTurn, "state");
+    await api.waitForIdle();
+    finalSnapshot = api.getSnapshot()?.session ?? runtime.store.getSnapshot();
+    renderer.renderTranscript(finalSnapshot.transcript);
+    renderer.renderActivity(finalSnapshot.activity);
+    const turnState = finalSnapshot.turn.state;
 
     if (turnState === "waiting_approval") {
-      const approvals = await consumer.query("/approvals", 2);
-      approval = pendingApprovalFrom(approvals);
-      const details = buildApprovalDetails(approval, finalTurn);
+      approval = pendingApprovalFrom(finalSnapshot.approvals);
+      const details = buildApprovalDetails(approval, finalSnapshot.turn);
       writeStdout(
         `\n[approval] turn was cancelled — single-shot CLI cannot resolve approvals${
           details ? `\n${details}` : ""
         }\n`,
       );
 
-      const cancel = await consumer.invoke("/turn", "cancel_turn", {});
-      if (cancel.status !== "ok") {
-        throw new Error(cancel.error?.message ?? "Failed to cancel approval-gated turn.");
-      }
-      await runtime.waitForIdle();
-      renderer.renderTranscript(await consumer.query("/transcript", 5));
-      renderer.renderActivity(await consumer.query("/activity", 2));
-      finalTurn = await consumer.query("/turn", 1);
-      finalUsage = await consumer.query("/usage", 1);
+      await api.cancelTurn();
+      await api.waitForIdle();
+      finalSnapshot = api.getSnapshot()?.session ?? runtime.store.getSnapshot();
+      renderer.renderTranscript(finalSnapshot.transcript);
+      renderer.renderActivity(finalSnapshot.activity);
       status = "approval_cancelled";
       exitCode = 2;
       return exitCode;
     }
 
     if (turnState === "error") {
-      errorText = stringProp(finalTurn, "last_error") ?? stringProp(finalTurn, "message");
+      errorText = finalSnapshot.turn.lastError ?? finalSnapshot.turn.message;
       if (errorText) {
         writeStderr(`[error] ${errorText}\n`);
       }
@@ -369,30 +297,23 @@ export async function runHeadlessSingleShot(
     status = "error";
     return exitCode;
   } finally {
-    finalTurn ??= await safeQuery(consumer, "/turn", 1);
-    finalUsage ??= await safeQuery(consumer, "/usage", 1);
+    finalSnapshot ??= api?.getSnapshot()?.session;
     const metrics = metricsFrom({
       status,
       exitCode,
       sessionId,
-      providerId,
       prompt: options.prompt,
       renderer,
       started,
-      turn: finalTurn,
-      usage: finalUsage,
+      turn: finalSnapshot?.turn,
+      usage: finalSnapshot?.usage,
       errorText,
       approval,
       turnId,
     });
 
     try {
-      consumer?.disconnect();
-    } catch {
-      // best-effort cleanup
-    }
-    try {
-      provider?.stop();
+      api?.disconnect();
     } catch {
       // best-effort cleanup
     }

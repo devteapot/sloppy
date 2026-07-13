@@ -21,7 +21,6 @@ const sessionId = readOption("--session-id");
 const workspaceId = readOption("--workspace-id");
 const projectId = readOption("--project-id");
 const title = readOption("--title");
-const noRegister = Bun.argv.includes("--no-register");
 const supervisor = Bun.argv.includes("--supervisor");
 const managed = Bun.argv.includes("--managed");
 const noInitialSession = Bun.argv.includes("--no-initial-session");
@@ -34,16 +33,15 @@ if (supervisor) {
   }
   const running = await startSessionSupervisor({
     socketPath,
-    register: !noRegister,
     cwd: process.cwd(),
     launchScope: managed ? resolveLaunchScope(process.cwd()) : undefined,
     initial: noInitialSession
       ? false
       : {
-          workspace_id: workspaceId,
-          project_id: projectId,
+          workspaceId,
+          projectId,
           title,
-          session_id: sessionId,
+          sessionId,
         },
     autoClose: autoCloseEnabled
       ? {
@@ -62,7 +60,7 @@ if (supervisor) {
 
   const shutdown = () => {
     running.listener.close();
-    running.provider.stop();
+    running.supervisor.stop();
     process.exit(0);
   };
 
@@ -89,9 +87,9 @@ const service = new SessionService({
     }),
 });
 
-await service.start({ register: !noRegister });
+await service.start();
 stdout.write(
-  `[sloppy] session provider listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
+  `[sloppy] session API listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
 );
 await stdout.flush();
 

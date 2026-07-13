@@ -43,6 +43,10 @@ describe("WorkspacesProvider", () => {
       const session = await consumer.query("/session", 2);
       expect(session.properties?.active_workspace_id).toBe("alpha");
       expect(session.properties?.active_project_id).toBe("api");
+      expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
+        "set_active_workspace",
+        "set_active_project",
+      ]);
       expect(session.properties?.config_layers).toEqual([
         {
           scope: "global",

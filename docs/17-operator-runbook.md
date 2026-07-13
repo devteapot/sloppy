@@ -75,9 +75,8 @@ live model. Native and ACP modes verify the selected model path.
 
 ## WS Gateway
 
-Unix sockets are the only core session transport. Remote SLOP clients go
-through the standalone WS gateway, which relays the supervisor's unix socket
-and each session's unix socket over a single WebSocket port:
+Local Session and Supervisor APIs use Unix sockets. The standalone WS gateway
+relays the same typed protocol over one WebSocket port:
 
 ```sh
 SLOPPY_WS_TOKEN=<random-token> \
@@ -86,17 +85,15 @@ SLOPPY_WS_TOKEN=<random-token> \
 
 By default the gateway relays the managed supervisor of the current launch
 scope (the same socket `sloppy` uses when started in that directory). Pass
-`--supervisor-socket <path>` to relay a different supervisor; registered
-sockets are listed in `~/.slop/providers/*.json`. If the supervisor socket
-does not exist yet the gateway warns and keeps retrying, so start order does
-not matter.
+`--supervisor-socket <path>` to relay a different supervisor. If the supervisor
+socket does not exist yet the gateway warns and keeps retrying, so start order
+does not matter.
 
-The path scheme is `/supervisor` for the supervisor itself (override with
-`--supervisor-path`) and `/sessions/<session-id>` for individual sessions.
-Dialing a dormant session closes the connection with code `4503` — invoke
-`select_session` through the supervisor first, then redial. The relay is
-protocol-blind (one WebSocket frame per NDJSON line), so state, affordances,
-and subscriptions behave exactly as over the unix socket. Each remote client
+Application clients use `/api/supervisor` and `/api/sessions/<session-id>`.
+There are no legacy `/supervisor` or `/sessions/<session-id>` routes. Dialing a
+dormant session closes the connection with code `4503` — select it through the
+Supervisor API, then redial. The relay
+is protocol-blind (one WebSocket frame per NDJSON line). Each remote client
 holds its own upstream unix connection, so client-lease semantics are
 preserved and remote client count maps one-to-one onto unix connections.
 
@@ -135,7 +132,7 @@ bun run tui
 
 The launcher resolves `realpath(process.cwd())` into a launch scope, starts or
 reuses that scope's managed supervisor, creates a fresh session by default, and
-attaches the TUI to that session's ordinary provider endpoint. Use `sloppy
+attaches the TUI to that session's typed API endpoint. Use `sloppy
 --continue` to select the launch-scope resume session instead. In a clean launch
 scope with no previous session, `--continue` fails at the CLI level.
 
@@ -262,39 +259,27 @@ permanently remove both registry entry and snapshot.
 
 ## Live Session Checks
 
-For a running session, inspect public state instead of runtime internals:
+For a running session, inspect the typed Session snapshot instead of runtime
+internals. It contains session/recovery metadata, LLM readiness, turn and goal
+state, extensions, queue, approvals, tasks, connected apps, controls, and plugin
+contributions. Use the corresponding typed commands for config reload, turn and
+queue cancellation, approval resolution, task cancellation, provider
+load/reload/inspection, and plugin actions.
 
-- `/session`: status, restart-required flags, persistence path, recovery flags
-  and `reload_config` for re-reading the session's scoped config
-- `/llm`: active profile, credential source, secure-store status
-- `/turn`: current turn phase and cancel affordance, when active
-- `/goal`: persistent objective status and usage accounting
-- `/extensions`: generic session extension metadata and cleanup state
-- `/queue`: FIFO user and goal messages waiting for the active turn
-- `/approvals`: pending and resolved approval state
-- `/tasks`: downstream async task state
-- `/apps`: external and first-party plugin provider attachment visibility, including
-  explicit `load_provider`, `reload_provider`, `query_provider`, and `invoke_provider`
+The SLOP projection is reserved for agent context and connected dynamic
+providers. It is not exposed as an alternate Session transport.
 
-The TUI and third-party consumers should use the same public session provider
-boundary.
+For a running supervisor, inspect the typed Supervisor snapshot. It contains
+launch-scope and resume metadata, client lease and auto-close state, live and
+dormant session records, compact turn/goal/queue/task summaries, and configured
+workspace/project scopes.
 
-For a running supervisor, inspect public supervisor state instead of process
-internals:
-
-- `/session`: launch-scope key/root, resume session id/socket, registry path,
-  live/session counts, client lease count, auto-close status, and `reload_config`
-  for refreshing supervisor config and scopes
-- `/sessions`: session records with runtime status, resume marker, scope
-  metadata, live socket when available, and compact turn/goal/queue/task summary
-- `/scopes`: configured workspace/project scopes that can launch new sessions
-
-Use session `/session.reload_config` after editing LLM profile defaults or other
+Use the Session API `reloadConfig` command after editing LLM profile defaults or other
 session-scoped config. It applies LLM-profile changes to the live session and
-sets `/session.config_requires_restart=true` when the edit affects runtime
+sets `session.configRequiresRestart=true` when the edit affects runtime
 wiring that only a restart can rebuild. It does not change approval mode. Use
-supervisor `/session.reload_config` after editing workspace/project scope
-definitions so `/scopes` and future session creation use the new config.
+the Supervisor API `reloadConfig` command after editing workspace/project scope
+definitions so the `scopes` snapshot and future session creation use the new config.
 
 The supervisor owns lifecycle bookkeeping only. It should not be used as a
 hidden scheduler or provider-rewiring layer.

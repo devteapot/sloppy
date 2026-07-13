@@ -5,7 +5,7 @@ import type { LocalCommand } from "./command-types";
 
 export function parsePluginSlashCommand(
   input: string,
-  snapshot: Pick<SessionViewSnapshot, "plugins" | "actionsByPath">,
+  snapshot: Pick<SessionViewSnapshot, "plugins">,
 ): LocalCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) {
@@ -35,8 +35,7 @@ export function parsePluginSlashCommand(
         continue;
       }
 
-      const requiredAction = action.whenAvailable ?? action.invoke.action;
-      if (!(snapshot.actionsByPath[action.invoke.path] ?? []).includes(requiredAction)) {
+      if (!action.available) {
         return {
           type: "rejected",
           reason: `/${plugin.id}:${slash.name} is not available right now.`,
@@ -44,7 +43,7 @@ export function parsePluginSlashCommand(
       }
 
       const argumentText = args.join(" ").trim();
-      const params = { ...(action.invoke.params ?? {}) };
+      const params = { ...(action.params ?? {}) };
       if (action.argument) {
         if (!argumentText && action.argument.required) {
           const signature = slash.signature ? ` ${slash.signature}` : "";
@@ -62,8 +61,7 @@ export function parsePluginSlashCommand(
         pluginId: plugin.id,
         actionId: action.id,
         label: action.label,
-        path: action.invoke.path,
-        action: action.invoke.action,
+        command: action.command,
         params: Object.keys(params).length > 0 ? params : undefined,
       };
     }

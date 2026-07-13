@@ -1,428 +1,570 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
-
-import { action, createSlopServer } from "@slop-ai/server";
-import { listenUnix } from "@slop-ai/server/unix";
 
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
+import {
+  applySnapshotPatch,
+  createSnapshotPatch,
+  InProcessSessionApi,
+  RpcSnapshotClient,
+  SessionApiClient,
+} from "../src/session/client-protocol";
+import { listenClientProtocol } from "../src/session/client-protocol/rpc-server";
+import {
+  CLIENT_PROTOCOL_VERSION,
+  SESSION_CLIENT_PROTOCOL,
+  type SessionClientSnapshot,
+  SUPERVISOR_CLIENT_PROTOCOL,
+  type SupervisorClientSnapshot,
+} from "../src/session/client-protocol/types";
+import type { SessionRuntime } from "../src/session/runtime";
+import { SessionStore } from "../src/session/store";
 
 const listeners: Array<{ close: () => void }> = [];
 
 afterEach(() => {
-  for (const listener of listeners.splice(0)) {
-    listener.close();
-  }
+  for (const listener of listeners.splice(0)) listener.close();
 });
 
-async function waitFor<T>(check: () => T | null, timeoutMs = 1000, intervalMs = 10): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+async function waitFor<T>(check: () => T | null, timeoutMs = 2_000): Promise<T> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
     const result = check();
-    if (result !== null) {
-      return result;
-    }
-    await Bun.sleep(intervalMs);
+    if (result !== null) return result;
+    await Bun.sleep(10);
   }
   throw new Error("Timed out waiting for condition.");
 }
 
-function registerMinimalSessionNodes(
-  server: ReturnType<typeof createSlopServer>,
-  options: { includeGoal?: boolean } = {},
-): void {
-  server.register("session", { type: "context", props: { session_id: "sess-minimal" } });
-  server.register("llm", { type: "collection", props: { status: "ready" }, items: [] });
-  server.register("usage", { type: "context", props: {} });
-  server.register("turn", { type: "status", props: { state: "idle" } });
-  if (options.includeGoal) {
-    server.register("goal", { type: "control", props: { exists: false, status: "none" } });
-  }
-  server.register("composer", { type: "control", props: { ready: true } });
-  server.register("transcript", { type: "collection", props: { count: 0 }, items: [] });
-  server.register("activity", { type: "collection", props: { count: 0 }, items: [] });
-  server.register("approvals", {
-    type: "collection",
-    props: { count: 0, approval_mode: "normal" },
-    items: [],
+function sessionSnapshot(overrides: Partial<SessionClientSnapshot> = {}): SessionClientSnapshot {
+  const store = new SessionStore({
+    sessionId: "sess-typed",
+    modelProvider: "openai",
+    model: "test-model",
   });
-  server.register("tasks", { type: "collection", props: { count: 0 }, items: [] });
-  server.register("apps", { type: "collection", props: { count: 0 }, items: [] });
-  server.register("queue", { type: "collection", props: { count: 0 }, items: [] });
+  return {
+    session: store.getSnapshot(),
+    controls: {
+      canSendMessage: true,
+      canCancelTurn: false,
+      canReloadConfig: true,
+    },
+    plugins: [],
+    ...overrides,
+  };
 }
 
-describe("SessionClient", () => {
-  test("connects when plugin-owned goal path is absent", async () => {
-    const socketPath = `/tmp/slop/tui-no-goal-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
+function listenMockSession(
+  socketPath: string,
+  options: {
+    snapshot?: SessionClientSnapshot;
+    handleRequest?: (method: string, params: Record<string, unknown>) => unknown;
+  } = {},
+): { publish(): void; close(): void } {
+  let snapshot = options.snapshot ?? sessionSnapshot();
+  const subscribers = new Set<() => void>();
+  const listener = listenClientProtocol<SessionClientSnapshot>({
+    socketPath,
+    protocol: SESSION_CLIENT_PROTOCOL,
+    version: CLIENT_PROTOCOL_VERSION,
+    snapshot: () => snapshot,
+    subscribe: (subscriber) => {
+      subscribers.add(subscriber);
+      return () => subscribers.delete(subscriber);
+    },
+    handleRequest: (_owner, method, params) => {
+      if (method === "approval.setMode") {
+        snapshot = {
+          ...snapshot,
+          session: {
+            ...snapshot.session,
+            approvalPolicy: {
+              mode: params.mode === "auto" ? "auto" : "normal",
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        };
+        for (const subscriber of subscribers) subscriber();
+      }
+      return options.handleRequest?.(method, params) ?? { ok: true };
+    },
+  });
+  return {
+    publish: () => {
+      for (const subscriber of subscribers) subscriber();
+    },
+    close: () => listener.close(),
+  };
+}
 
-    registerMinimalSessionNodes(server);
-    listeners.push(listenUnix(server, socketPath, { register: false }));
+function supervisorSnapshot(): SupervisorClientSnapshot {
+  return {
+    supervisor: {
+      resumeSessionId: null,
+      clientLeaseCount: 0,
+      autoCloseEnabled: false,
+    },
+    sessions: [],
+    scopes: [],
+  };
+}
 
-    const client = new SessionClient(socketPath);
+describe("SessionClient typed protocol", () => {
+  test("connects without optional plugin state", async () => {
+    const socketPath = `/tmp/slop/tui-typed-minimal-${crypto.randomUUID()}.sock`;
+    listeners.push(listenMockSession(socketPath));
+    const client = new SessionClient(socketPath, { reconnect: false });
     try {
       const snapshot = await client.connect();
-
       expect(snapshot.connection.status).toBe("connected");
+      expect(snapshot.session.sessionId).toBe("sess-typed");
       expect(snapshot.goal.exists).toBe(false);
       expect(snapshot.plugins).toEqual([]);
     } finally {
       client.disconnect();
-      server.stop();
     }
   });
 
-  test("subscribes to active plugin manifest paths for action gating", async () => {
-    const socketPath = `/tmp/slop/tui-plugin-subscriptions-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-
-    registerMinimalSessionNodes(server);
-    server.register("plugins", {
-      type: "collection",
-      props: { count: 1, ui_manifest_version: 2 },
-      items: [
-        {
-          id: "custom-plugin",
-          props: {
-            id: "custom-plugin",
-            version: "1.0.0",
-            status: "active",
-            ui: {
-              subscriptions: [{ path: "/custom", depth: 1 }],
-              actions: [
-                {
-                  id: "custom:run",
-                  label: "Run Custom Action",
-                  description: "Invoke a plugin-owned custom affordance",
-                  invoke: { path: "/custom", action: "do_it" },
-                  whenAvailable: "do_it",
-                },
-              ],
+  test("receives client-agnostic plugin contributions with server-computed availability", async () => {
+    const socketPath = `/tmp/slop/tui-typed-plugin-${crypto.randomUUID()}.sock`;
+    listeners.push(
+      listenMockSession(socketPath, {
+        snapshot: sessionSnapshot({
+          plugins: [
+            {
+              id: "custom-plugin",
+              version: "1.0.0",
+              status: "active",
+              providerIds: [],
+              extensionNamespaces: [],
+              contributions: {
+                actions: [
+                  {
+                    id: "custom:run",
+                    label: "Run Custom",
+                    description: "Run a custom command",
+                    command: "run",
+                    available: true,
+                  },
+                ],
+                indicators: [],
+                notifications: [],
+              },
             },
-          },
-        },
-      ],
-    });
-    server.register("custom", {
-      type: "control",
-      props: { ready: true },
-      actions: {
-        do_it: action({}, async () => ({ ok: true }), { label: "Do It" }),
-      },
-    });
-    listeners.push(listenUnix(server, socketPath, { register: false }));
-
-    const client = new SessionClient(socketPath);
+          ],
+        }),
+      }),
+    );
+    const client = new SessionClient(socketPath, { reconnect: false });
     try {
       const snapshot = await client.connect();
-
-      expect(snapshot.actionsByPath["/custom"]).toEqual(["do_it"]);
-      expect(snapshot.plugins[0]?.ui.actions?.[0]).toMatchObject({
-        id: "custom:run",
-        invoke: { path: "/custom", action: "do_it" },
+      expect(snapshot.plugins[0]?.ui.actions[0]).toMatchObject({
+        command: "run",
+        available: true,
       });
     } finally {
       client.disconnect();
-      server.stop();
     }
   });
 
-  test("subscribes to the public session provider shape and invokes composer affordances", async () => {
-    const socketPath = `/tmp/slop/tui-client-test-${crypto.randomUUID()}.sock`;
-    const sentMessages: string[] = [];
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-
-    registerMinimalSessionNodes(server, { includeGoal: true });
-    server.register("composer", {
-      type: "control",
-      props: { ready: true, accepts_attachments: false, max_attachments: 0 },
-      actions: {
-        send_message: action(
-          { text: "string" },
-          async ({ text }) => {
-            sentMessages.push(text);
-            return { turnId: "turn-1" };
-          },
-          { label: "Send Message" },
-        ),
-      },
-    });
-
-    listeners.push(listenUnix(server, socketPath, { register: false }));
-
-    const client = new SessionClient(socketPath);
+  test("uses typed commands for messages, approval mode, and plugin actions", async () => {
+    const socketPath = `/tmp/slop/tui-typed-commands-${crypto.randomUUID()}.sock`;
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    listeners.push(
+      listenMockSession(socketPath, {
+        handleRequest: (method, params) => {
+          calls.push({ method, params });
+          return { method };
+        },
+      }),
+    );
+    const client = new SessionClient(socketPath, { reconnect: false });
     try {
-      const snapshot = await client.connect();
-      expect(snapshot.connection.status).toBe("connected");
-      expect(snapshot.composer.canSend).toBe(true);
-
-      const result = await client.sendMessage("hello from tui");
-      expect(result.status).toBe("ok");
-      expect(sentMessages).toEqual(["hello from tui"]);
-    } finally {
-      client.disconnect();
-      server.stop();
-    }
-  });
-
-  test("updates approval mode from the connected provider snapshot", async () => {
-    const socketPath = `/tmp/slop/tui-approval-mode-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-    let approvalMode = "normal";
-
-    registerMinimalSessionNodes(server, { includeGoal: true });
-    server.register("approvals", () => ({
-      type: "collection",
-      props: { count: 0, approval_mode: approvalMode },
-      actions: {
-        set_mode: action(
-          { mode: "string" },
-          async ({ mode }) => {
-            approvalMode = mode === "auto" ? "auto" : "normal";
-            server.refresh();
-            return { mode: approvalMode };
-          },
-          { label: "Set Approval Mode" },
-        ),
-      },
-      items: [],
-    }));
-    listeners.push(listenUnix(server, socketPath, { register: false }));
-
-    const client = new SessionClient(socketPath);
-    try {
-      const snapshot = await client.connect();
-      expect(snapshot.approvalMode).toBe("normal");
-
-      const result = await client.setApprovalMode("auto");
-      expect(result.status).toBe("ok");
-
+      await client.connect();
+      await client.sendMessage("hello from tui");
+      await client.setApprovalMode("auto");
+      await client.invokePlugin("custom-plugin", "run", { target: "prod" });
       await waitFor(() => (client.getSnapshot().approvalMode === "auto" ? true : null));
-      expect(client.getSnapshot().approvalMode).toBe("auto");
+      expect(calls).toEqual([
+        { method: "session.sendMessage", params: { text: "hello from tui" } },
+        { method: "approval.setMode", params: { mode: "auto" } },
+        {
+          method: "plugin.invoke",
+          params: { pluginId: "custom-plugin", command: "run", params: { target: "prod" } },
+        },
+      ]);
     } finally {
       client.disconnect();
-      server.stop();
     }
   });
 });
 
-describe("client resilience", () => {
-  function registerSupervisorNodes(
-    server: ReturnType<typeof createSlopServer>,
-    onLease?: (label: string) => void,
-  ): void {
-    server.register("session", {
-      type: "control",
-      props: { auto_close_enabled: false, client_lease_count: 0 },
-      actions: {
-        register_client_lease: action(
-          { label: "string" },
-          async ({ label }) => {
-            onLease?.(label);
-            return { ok: true };
-          },
-          { label: "Register Lease" },
-        ),
-      },
-    });
-    server.register("sessions", { type: "collection", props: {}, items: [] });
-    server.register("scopes", { type: "collection", props: {}, items: [] });
-  }
+describe("typed client resilience", () => {
+  test("streams growing snapshot text as a compact append patch", () => {
+    const previous = { transcript: [{ text: "a".repeat(10_000) }] };
+    const next = { transcript: [{ text: `${"a".repeat(10_000)}tail` }] };
+    const operations = createSnapshotPatch(previous, next);
+    expect(operations).toEqual([{ op: "append", path: ["transcript", 0, "text"], value: "tail" }]);
+    expect(applySnapshotPatch(previous, operations)).toEqual(next);
+    expect(JSON.stringify(operations).length).toBeLessThan(JSON.stringify(next).length / 10);
+  });
 
-  test("session connect rejects when the server accepts but never sends hello", async () => {
-    const socketPath = `/tmp/slop/tui-timeout-test-${crypto.randomUUID()}.sock`;
-    const silent = createServer(() => {
-      // Accept the connection, say nothing: the SDK handshake never settles.
-    });
-    await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
-
-    const client = new SessionClient(socketPath, { connectTimeoutMs: 100, reconnect: false });
+  test("coalesces rapid snapshot publications to their latest state", async () => {
+    const socketPath = `/tmp/slop/tui-typed-coalesce-${crypto.randomUUID()}.sock`;
+    const subscribers = new Set<() => void>();
+    let snapshot = { text: "" };
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => snapshot,
+        subscribe: (subscriber) => {
+          subscribers.add(subscriber);
+          return () => subscribers.delete(subscriber);
+        },
+        handleRequest: () => ({ ok: true }),
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ text: string }>(socketPath, "sloppy.test-client");
+    const seen: string[] = [];
+    client.onSnapshot((next) => seen.push(next.text));
     try {
-      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
-      expect(client.getSnapshot().connection.status).toBe("error");
+      await client.connect();
+      await Bun.sleep(30);
+      seen.length = 0;
+      for (let index = 0; index < 100; index += 1) {
+        snapshot = { text: `${snapshot.text}x` };
+        for (const subscriber of subscribers) subscriber();
+      }
+      await waitFor(() => (client.getSnapshot()?.text.length === 100 ? true : null));
+      expect(seen.length).toBeLessThanOrEqual(2);
+      expect(client.getSnapshot()?.text).toBe("x".repeat(100));
     } finally {
       client.disconnect();
-      silent.close();
     }
   });
 
-  test("supervisor connect rejects when the server accepts but never sends hello", async () => {
-    const socketPath = `/tmp/slop/tui-supervisor-timeout-test-${crypto.randomUUID()}.sock`;
+  test("does not report a committed command as failed when snapshot publication fails", async () => {
+    const socketPath = `/tmp/slop/tui-typed-projection-failure-${crypto.randomUUID()}.sock`;
+    let count = 0;
+    let projectionFails = false;
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => {
+          if (projectionFails) throw new Error("projection boom");
+          return { count };
+        },
+        subscribe: () => () => {},
+        handleRequest: () => {
+          count += 1;
+          projectionFails = true;
+          return { count };
+        },
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ count: number }>(socketPath, "sloppy.test-client");
+    try {
+      await client.connect();
+      await expect(client.request("increment")).resolves.toEqual({ count: 1 });
+      expect(count).toBe(1);
+    } finally {
+      projectionFails = false;
+      client.disconnect();
+    }
+  });
+
+  test("lets cancellation pass a detached remote waitForIdle request", async () => {
+    const socketPath = `/tmp/slop/tui-typed-wait-cancel-${crypto.randomUUID()}.sock`;
+    let resolveIdle: (() => void) | undefined;
+    const idle = new Promise<void>((resolve) => {
+      resolveIdle = resolve;
+    });
+    let cancelled = false;
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => ({ state: cancelled ? "idle" : "running" }),
+        subscribe: () => () => {},
+        concurrentRequestMethods: new Set(["turn.waitForIdle"]),
+        handleRequest: async (_owner, method) => {
+          if (method === "turn.waitForIdle") {
+            await idle;
+            return;
+          }
+          if (method === "turn.cancel") {
+            cancelled = true;
+            resolveIdle?.();
+            return { status: "cancelled" };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        },
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ state: string }>(socketPath, "sloppy.test-client");
+    try {
+      await client.connect();
+      const waiting = client.request("turn.waitForIdle");
+      const cancellation = client.request("turn.cancel");
+      await expect(cancellation).resolves.toEqual({ status: "cancelled" });
+      await expect(waiting).resolves.toBeUndefined();
+      expect(cancelled).toBe(true);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("serializes concurrent in-process connects and cancels a pending connect", async () => {
+    let releaseStart: (() => void) | undefined;
+    let startCalls = 0;
+    let registrations = 0;
+    let unregistrations = 0;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const runtime = {
+      start: () => {
+        startCalls += 1;
+        return startGate;
+      },
+      getClientSnapshot: () => sessionSnapshot(),
+      store: {
+        registerClient: () => {
+          registrations += 1;
+        },
+        unregisterClient: () => {
+          unregistrations += 1;
+        },
+        onChange: () => () => {},
+      },
+    } as unknown as SessionRuntime;
+    const api = new InProcessSessionApi(runtime);
+    const first = api.connect();
+    const second = api.connect();
+    expect(startCalls).toBe(1);
+    releaseStart?.();
+    await expect(first).resolves.toEqual(await second);
+    expect(registrations).toBe(1);
+    api.disconnect();
+    expect(unregistrations).toBe(1);
+
+    let releaseCancelledStart: (() => void) | undefined;
+    const cancelledGate = new Promise<void>((resolve) => {
+      releaseCancelledStart = resolve;
+    });
+    const cancelledRuntime = {
+      ...runtime,
+      start: () => cancelledGate,
+    } as unknown as SessionRuntime;
+    const cancelledApi = new InProcessSessionApi(cancelledRuntime);
+    const cancelled = cancelledApi.connect();
+    const cancelledResult = cancelled.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    cancelledApi.disconnect();
+    releaseCancelledStart?.();
+    expect(await cancelledResult).toBeInstanceOf(Error);
+    expect(registrations).toBe(1);
+
+    const failingRuntime = {
+      ...runtime,
+      start: () => Promise.resolve(),
+      getClientSnapshot: () => {
+        throw new Error("snapshot projection failed");
+      },
+    } as unknown as SessionRuntime;
+    const failingApi = new InProcessSessionApi(failingRuntime);
+    await expect(failingApi.connect()).rejects.toThrow("snapshot projection failed");
+    expect(registrations).toBe(2);
+    expect(unregistrations).toBe(2);
+  });
+
+  test("allows the same SDK client to retry after its first dial fails", async () => {
+    const socketPath = `/tmp/slop/tui-typed-retry-${crypto.randomUUID()}.sock`;
+    const client = new SessionApiClient(socketPath);
+    try {
+      await expect(client.connect(50)).rejects.toThrow();
+      listeners.push(listenMockSession(socketPath));
+      await waitFor(() => (existsSync(socketPath) ? true : null));
+      const snapshot = await client.connect(500);
+      expect(snapshot.session.session.sessionId).toBe("sess-typed");
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("does not register a client that disconnects before hello is ready", async () => {
+    const socketPath = `/tmp/slop/tui-typed-late-hello-${crypto.randomUUID()}.sock`;
+    let resolveSnapshot: ((snapshot: SessionClientSnapshot) => void) | undefined;
+    const connected: object[] = [];
+    const disconnected: object[] = [];
+    listeners.push(
+      listenClientProtocol<SessionClientSnapshot>({
+        socketPath,
+        protocol: SESSION_CLIENT_PROTOCOL,
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () =>
+          new Promise<SessionClientSnapshot>((resolve) => {
+            resolveSnapshot = resolve;
+          }),
+        subscribe: () => () => {},
+        handleRequest: () => ({ ok: true }),
+        onConnect: (owner) => connected.push(owner),
+        onDisconnect: (owner) => disconnected.push(owner),
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new SessionApiClient(socketPath);
+    const connecting = client.connect(500);
+    const connectionError = connecting.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await waitFor(() => (resolveSnapshot ? true : null));
+    client.disconnect();
+    await Bun.sleep(20);
+    resolveSnapshot?.(sessionSnapshot());
+    const error = await connectionError;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/disconnected/);
+    await Bun.sleep(20);
+    expect(connected).toEqual([]);
+    expect(disconnected).toEqual([]);
+  });
+
+  test("rejects when a server accepts but never sends hello", async () => {
+    const socketPath = `/tmp/slop/tui-typed-timeout-${crypto.randomUUID()}.sock`;
     const silent = createServer(() => {});
     await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
-
-    const client = new SessionSupervisorClient(socketPath, {
-      connectTimeoutMs: 100,
-      reconnect: false,
-    });
+    const client = new SessionClient(socketPath, { connectTimeoutMs: 50, reconnect: false });
     try {
-      await expect(client.connect()).rejects.toThrow(/Timed out connecting/);
+      await expect(client.connect()).rejects.toThrow(/Timed out waiting/);
       expect(client.getSnapshot().connection.status).toBe("error");
     } finally {
       client.disconnect();
       silent.close();
+      rmSync(socketPath, { force: true });
     }
   });
 
-  test("a throwing listener does not break event fan-out", async () => {
-    const socketPath = `/tmp/slop/tui-listener-isolation-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-    registerMinimalSessionNodes(server);
-    listeners.push(listenUnix(server, socketPath, { register: false }));
+  test("times out a WebSocket that never completes its upgrade", async () => {
+    const stalled = createServer(() => {});
+    await new Promise<void>((resolve) => stalled.listen(0, "127.0.0.1", resolve));
+    const address = stalled.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test address.");
+    const client = new RpcSnapshotClient<SessionClientSnapshot>(
+      `ws://127.0.0.1:${address.port}/api/session`,
+      SESSION_CLIENT_PROTOCOL,
+    );
+    const startedAt = Date.now();
+    try {
+      await expect(client.connect(50)).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(500);
+    } finally {
+      client.disconnect();
+      stalled.close();
+    }
+  });
 
+  test("rejects a malformed hello without publishing an undefined snapshot", async () => {
+    const socketPath = `/tmp/slop/tui-typed-malformed-hello-${crypto.randomUUID()}.sock`;
+    const malformed = createServer((socket) => {
+      socket.write(
+        `${JSON.stringify({ type: "hello", protocol: SESSION_CLIENT_PROTOCOL, version: 1 })}\n`,
+      );
+    });
+    await new Promise<void>((resolve) => malformed.listen(socketPath, resolve));
+    const client = new SessionApiClient(socketPath);
+    try {
+      await expect(client.connect(200)).rejects.toThrow(/Invalid .* hello/);
+      expect(client.getSnapshot()).toBeNull();
+    } finally {
+      client.disconnect();
+      malformed.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  test("isolates throwing listeners", async () => {
+    const socketPath = `/tmp/slop/tui-typed-listener-${crypto.randomUUID()}.sock`;
+    listeners.push(listenMockSession(socketPath));
     const client = new SessionClient(socketPath, { reconnect: false });
     const seen: string[] = [];
     try {
       client.on(() => {
         throw new Error("listener boom");
       });
-      client.on((event) => {
-        seen.push(event.type);
-      });
+      client.on((event) => seen.push(event.type));
       await client.connect();
       expect(seen).toContain("snapshot");
       expect(client.getSnapshot().connection.status).toBe("connected");
     } finally {
       client.disconnect();
-      server.stop();
     }
   });
 
-  test("session client reconnects with backoff after the server drops and returns", async () => {
-    const socketPath = `/tmp/slop/tui-reconnect-test-${crypto.randomUUID()}.sock`;
-    let server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-    registerMinimalSessionNodes(server);
-    let listener = listenUnix(server, socketPath, { register: false });
-
+  test("reconnects after the typed session endpoint returns", async () => {
+    const socketPath = `/tmp/slop/tui-typed-reconnect-${crypto.randomUUID()}.sock`;
+    let listener = listenMockSession(socketPath);
     const client = new SessionClient(socketPath, {
-      connectTimeoutMs: 1000,
-      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+      connectTimeoutMs: 200,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 50, maxAttempts: 20 },
     });
     try {
       await client.connect();
-      expect(client.getSnapshot().connection.status).toBe("connected");
-
       listener.close();
-      server.stop();
       await waitFor(() =>
         client.getSnapshot().connection.status === "reconnecting" ? true : null,
       );
-
-      rmSync(socketPath, { force: true });
-      server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-      registerMinimalSessionNodes(server);
-      listener = listenUnix(server, socketPath, { register: false });
-
+      listener = listenMockSession(socketPath);
       await waitFor(
         () => (client.getSnapshot().connection.status === "connected" ? true : null),
-        5000,
+        5_000,
       );
-      // Re-subscription proof: session state is repopulated from the new server.
-      expect(client.getSnapshot().session.sessionId).toBe("sess-minimal");
-      expect(client.getSnapshot().connection.reconnectAttempt).toBeUndefined();
+      expect(client.getSnapshot().session.sessionId).toBe("sess-typed");
     } finally {
       client.disconnect();
       listener.close();
-      server.stop();
     }
   });
 
-  test("user-initiated disconnect never triggers reconnect", async () => {
-    const socketPath = `/tmp/slop/tui-no-reconnect-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-    registerMinimalSessionNodes(server);
-    listeners.push(listenUnix(server, socketPath, { register: false }));
-
-    const client = new SessionClient(socketPath, {
-      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 5 },
-    });
-    const statuses: string[] = [];
-    try {
-      client.on((event) => {
-        if (event.type === "snapshot") {
-          statuses.push(event.snapshot.connection.status);
-        }
-      });
-      await client.connect();
-      client.disconnect();
-      await Bun.sleep(100);
-      expect(client.getSnapshot().connection.status).toBe("disconnected");
-      expect(statuses).not.toContain("reconnecting");
-    } finally {
-      client.disconnect();
-      server.stop();
-    }
-  });
-
-  test("gives up after bounded attempts when the endpoint stays dead", async () => {
-    const socketPath = `/tmp/slop/tui-give-up-test-${crypto.randomUUID()}.sock`;
-    const server = createSlopServer({ id: "mock-session", name: "Mock Session" });
-    registerMinimalSessionNodes(server);
-    const listener = listenUnix(server, socketPath, { register: false });
-
-    const client = new SessionClient(socketPath, {
-      connectTimeoutMs: 200,
-      reconnect: { initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 },
-    });
-    const errors: string[] = [];
-    try {
-      client.on((event) => {
-        if (event.type === "error") {
-          errors.push(event.message);
-        }
-      });
-      await client.connect();
-      listener.close();
-      server.stop();
-      rmSync(socketPath, { force: true });
-
-      await waitFor(
-        () => (errors.some((message) => message.includes("gave up")) ? true : null),
-        5000,
-      );
-      expect(client.getSnapshot().connection.status).toBe("disconnected");
-    } finally {
-      client.disconnect();
-    }
-  });
-
-  test("supervisor client reconnects and registers leases with a custom label", async () => {
-    const socketPath = `/tmp/slop/tui-supervisor-reconnect-test-${crypto.randomUUID()}.sock`;
-    const leaseLabels: string[] = [];
-    let server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
-    registerSupervisorNodes(server, (label) => leaseLabels.push(label));
-    let listener = listenUnix(server, socketPath, { register: false });
-
+  test("supervisor wrapper uses the typed lease command and configured label", async () => {
+    const socketPath = `/tmp/slop/tui-typed-supervisor-${crypto.randomUUID()}.sock`;
+    const labels: unknown[] = [];
+    listeners.push(
+      listenClientProtocol<SupervisorClientSnapshot>({
+        socketPath,
+        protocol: SUPERVISOR_CLIENT_PROTOCOL,
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: supervisorSnapshot,
+        subscribe: () => () => {},
+        handleRequest: (_owner, method, params) => {
+          if (method === "lease.register") labels.push(params.label);
+          return { ok: true };
+        },
+      }),
+    );
     const client = new SessionSupervisorClient(socketPath, {
       leaseLabel: "tui-test",
-      connectTimeoutMs: 1000,
-      reconnect: { initialDelayMs: 20, maxDelayMs: 100, maxAttempts: 20 },
+      reconnect: false,
     });
     try {
       await client.connect();
       await client.registerClientLease();
-      expect(leaseLabels).toEqual(["tui-test"]);
-
-      listener.close();
-      server.stop();
-      await waitFor(() =>
-        client.getSnapshot().connection.status === "reconnecting" ? true : null,
-      );
-
-      rmSync(socketPath, { force: true });
-      server = createSlopServer({ id: "mock-supervisor", name: "Mock Supervisor" });
-      registerSupervisorNodes(server, (label) => leaseLabels.push(label));
-      listener = listenUnix(server, socketPath, { register: false });
-
-      await waitFor(
-        () => (client.getSnapshot().connection.status === "connected" ? true : null),
-        5000,
-      );
+      expect(labels).toEqual(["tui-test"]);
     } finally {
       client.disconnect();
-      listener.close();
-      server.stop();
     }
   });
 });

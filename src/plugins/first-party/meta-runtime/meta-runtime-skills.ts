@@ -1,4 +1,4 @@
-import type { ProviderRuntimeHub } from "../../../core/hub";
+import type { SkillsService } from "../skills/service";
 import type { Proposal, SkillVersion, TopologyChange } from "./meta-runtime-model";
 
 type SkillActivationFailureRecorder = (skillVersionId: string, reason: string) => void;
@@ -10,17 +10,13 @@ type SkillProposalState = {
 };
 
 async function readSkillProposalState(
-  hub: ProviderRuntimeHub,
+  skills: SkillsService,
   proposalId: string,
 ): Promise<SkillProposalState> {
-  const proposal = await hub.queryState({
-    providerId: "skills",
-    path: `/proposals/${proposalId}`,
-    depth: 1,
-  });
-  const status = proposal.properties?.status;
-  const scope = proposal.properties?.scope;
-  const requiresApproval = proposal.properties?.requires_approval;
+  const proposal = await skills.getSkillProposal(proposalId);
+  const status = proposal?.status;
+  const scope = proposal?.scope;
+  const requiresApproval = proposal?.requires_approval;
   return {
     status: typeof status === "string" ? status : undefined,
     scope: typeof scope === "string" ? scope : undefined,
@@ -52,7 +48,7 @@ export function opsWithActivatedSkills(
 
 export async function activateLinkedSkills(
   proposal: Proposal,
-  hub: ProviderRuntimeHub | null,
+  skills: SkillsService | null,
   recordFailure: SkillActivationFailureRecorder,
 ): Promise<Map<string, SkillVersion>> {
   const activated = new Map<string, SkillVersion>();
@@ -62,8 +58,8 @@ export async function activateLinkedSkills(
   );
   if (skillOps.length === 0) return activated;
 
-  if (!hub) {
-    const reason = "No hub attached for skill activation.";
+  if (!skills) {
+    const reason = "Skills runtime service is not enabled for skill activation.";
     for (const op of skillOps) {
       recordFailure(op.skillVersion.id, reason);
     }
@@ -74,7 +70,7 @@ export async function activateLinkedSkills(
     const skillProposalId = op.skillVersion.proposalId;
     if (!skillProposalId) continue;
 
-    const before = await readSkillProposalState(hub, skillProposalId).catch(
+    const before = await readSkillProposalState(skills, skillProposalId).catch(
       (): SkillProposalState => ({}),
     );
     if (before.status === "active") {
@@ -92,13 +88,10 @@ export async function activateLinkedSkills(
       throw new Error(reason);
     }
 
-    const result = await hub.invoke(
-      "skills",
-      `/proposals/${skillProposalId}`,
-      "activate_skill_proposal",
-    );
-    if (result.status === "error") {
-      const after = await readSkillProposalState(hub, skillProposalId).catch(
+    try {
+      await skills.activateSkillProposal(skillProposalId);
+    } catch (error) {
+      const after = await readSkillProposalState(skills, skillProposalId).catch(
         (): SkillProposalState => ({}),
       );
       if (after.status === "active") {
@@ -106,7 +99,9 @@ export async function activateLinkedSkills(
         continue;
       }
       const reason =
-        result.error?.message ?? `Failed to activate linked skill proposal ${skillProposalId}.`;
+        error instanceof Error
+          ? error.message
+          : `Failed to activate linked skill proposal ${skillProposalId}.`;
       recordFailure(op.skillVersion.id, reason);
       throw new Error(reason);
     }

@@ -1,5 +1,8 @@
 # UI-agnostic plugin UI contribution manifest
 
+Status: superseded by ADR 0005. This document records the former SLOP-bound
+client manifest design.
+
 A Session plugin extends a UI through a declarative manifest (`UiContributionManifest`, field `plugin.ui`, published at `/plugins` with `ui_manifest_version: 2`). The manifest names no rendering technology: it is consumed by any UI (the TUI today, a web UI later), each of which projects the contributions onto its own surfaces. This replaces the earlier TUI-specific `plugin.tui` manifest. A plugin contributes declarative bindings to SLOP state and affordances — never rendering code.
 
 The manifest has four kinds:

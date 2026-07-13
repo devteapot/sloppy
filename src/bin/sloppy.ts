@@ -74,16 +74,15 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
   const running = await startSessionSupervisor({
     socketPath,
     cwd: process.cwd(),
-    register: !hasFlag(args, "--no-register"),
     launchScope: hasFlag(args, "--managed") ? resolveLaunchScope(process.cwd()) : undefined,
     initial: hasFlag(args, "--no-initial-session")
       ? false
       : {
-          workspace_id: readOption(args, "--workspace-id"),
-          project_id: readOption(args, "--project-id"),
+          workspaceId: readOption(args, "--workspace-id"),
+          projectId: readOption(args, "--project-id"),
           title: readOption(args, "--title"),
-          session_id: readOption(args, "--session-id"),
-          approval_mode: approvalModeFromArgs(args),
+          sessionId: readOption(args, "--session-id"),
+          approvalMode: approvalModeFromArgs(args),
         },
     autoClose: hasFlag(args, "--auto-close-enabled")
       ? {
@@ -102,7 +101,7 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
 
   const shutdown = () => {
     running.listener.close();
-    running.provider.stop();
+    running.supervisor.stop();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -126,9 +125,9 @@ async function runSessionServe(args: string[]): Promise<number> {
     approvalMode: approvalModeFromArgs(args),
     configReloader: () => loadScopedConfig({ workspaceId, projectId }),
   });
-  await service.start({ register: !hasFlag(args, "--no-register") });
+  await service.start();
   writeStdout(
-    `[sloppy] session provider listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
+    `[sloppy] session API listening on ${service.socketPath} (${config.plugins.filesystem.root})\n`,
   );
   await stdout.flush();
 

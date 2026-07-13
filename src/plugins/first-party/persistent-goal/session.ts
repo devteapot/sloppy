@@ -11,6 +11,7 @@ import type {
   PluginTurnFailureEvent,
   SessionRuntimePlugin,
 } from "../../../session/plugins";
+import { SKILLS_SERVICE } from "../service-keys";
 import { GOAL_EXTENSION_NAMESPACE, goalSnapshotProjection } from "./goal-schema";
 import {
   accountGoalTurnState,
@@ -360,18 +361,11 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
     }
 
     try {
-      const result = await ctx.invokeProvider("skills", "/session", "skill_view", {
-        name: PERSISTENT_GOAL_SKILL_NAME,
-      });
-      if (result.status === "ok") {
-        const data = (result as { data?: unknown }).data;
-        if (data && typeof data === "object" && !Array.isArray(data)) {
-          const content = (data as Record<string, unknown>).content;
-          if (typeof content === "string" && content.trim().length > 0) {
-            goalSkillContent = content;
-            return content;
-          }
-        }
+      const skills = ctx.getRuntimeService(SKILLS_SERVICE);
+      const viewed = await skills?.viewSkill(PERSISTENT_GOAL_SKILL_NAME);
+      if (viewed?.content.trim()) {
+        goalSkillContent = viewed.content;
+        return viewed.content;
       }
     } catch {
       // Fall back to bundled skill below.
@@ -618,9 +612,9 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
       const goal = ctx.snapshot().goal;
       return {
         props: {
-          goal_status: goal?.status ?? "none",
-          goal_objective: goal?.objective ?? null,
-          goal_total_tokens: goal?.totalTokens ?? 0,
+          goalStatus: goal?.status ?? "none",
+          goalObjective: goal?.objective ?? null,
+          goalTotalTokens: goal?.totalTokens ?? 0,
         },
         summary: `goal=${goal?.status ?? "none"}`,
       };
@@ -631,15 +625,53 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
         ? [{ id: `goal:${goal.goalId}`, label: "Persistent goal active" }]
         : [];
     },
-    ui: {
-      subscriptions: [{ path: "/goal", depth: 1 }],
+    clientCommands: (ctx) => [
+      {
+        id: "create",
+        available: (snapshot) => snapshot.goal === null,
+        execute: (_commandCtx, params) => goalControls.createGoal(ctx, params),
+      },
+      {
+        id: "pause",
+        available: (snapshot) => snapshot.goal?.status === "active",
+        execute: (_commandCtx, params) =>
+          goalControls.pauseGoal(
+            ctx,
+            typeof params.message === "string" ? params.message : undefined,
+          ),
+      },
+      {
+        id: "resume",
+        available: (snapshot) =>
+          snapshot.goal?.status === "paused" || snapshot.goal?.status === "budget_limited",
+        execute: (_commandCtx, params) =>
+          goalControls.resumeGoal(
+            ctx,
+            typeof params.message === "string" ? params.message : undefined,
+          ),
+      },
+      {
+        id: "complete",
+        available: (snapshot) => snapshot.goal !== null && snapshot.goal.status !== "complete",
+        execute: (_commandCtx, params) =>
+          goalControls.completeGoal(
+            ctx,
+            typeof params.message === "string" ? params.message : undefined,
+          ),
+      },
+      {
+        id: "clear",
+        available: (snapshot) => snapshot.goal !== null,
+        execute: () => goalControls.clearGoal(ctx),
+      },
+    ],
+    client: {
       actions: [
         {
           id: "goal:create",
           label: "Create Goal",
           description: "Create a persistent session goal",
-          invoke: { path: "/goal", action: "create_goal" },
-          whenAvailable: "create_goal",
+          command: "create",
           argument: {
             name: "objective",
             description: "Goal objective",
@@ -659,44 +691,39 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
           id: "goal:pause",
           label: "Pause Goal",
           description: "Pause automatic goal continuation",
-          invoke: { path: "/goal", action: "pause_goal" },
-          whenAvailable: "pause_goal",
+          command: "pause",
         },
         {
           id: "goal:resume",
           label: "Resume Goal",
           description: "Resume automatic goal continuation",
-          invoke: { path: "/goal", action: "resume_goal" },
-          whenAvailable: "resume_goal",
+          command: "resume",
         },
         {
           id: "goal:complete",
           label: "Complete Goal",
           description: "Mark the active goal complete",
-          invoke: { path: "/goal", action: "complete_goal" },
-          whenAvailable: "complete_goal",
+          command: "complete",
         },
         {
           id: "goal:clear",
           label: "Clear Goal",
           description: "Clear the active goal state",
-          invoke: { path: "/goal", action: "clear_goal" },
-          whenAvailable: "clear_goal",
+          command: "clear",
         },
       ],
       indicators: [
         {
           id: "goal-status",
-          path: "/goal",
-          depth: 1,
-          template: "goal {status} · {total_tokens} tokens",
+          source: "session.goal",
+          template: "goal {status} · {totalTokens} tokens",
           fields: {
             status: { format: "text" },
-            total_tokens: { format: "number" },
+            totalTokens: { format: "number" },
           },
-          visibleWhen: { prop: "exists", equals: true },
+          visibleWhen: { field: "goalId" },
           severity: {
-            prop: "status",
+            field: "status",
             map: {
               active: "info",
               paused: "warning",
@@ -708,7 +735,8 @@ export function createPersistentGoalPlugin(): SessionRuntimePlugin {
       notifications: [
         {
           id: "goal-complete",
-          source: { path: "/goal", prop: "status" },
+          source: "session.goal",
+          field: "status",
           to: "complete",
           message: "Goal complete: {objective}",
         },

@@ -23,7 +23,6 @@ export function metadataSessionPlugin(plugin: FirstPartyPluginMetadata): Session
     defaultEnabled: plugin.defaultEnabled,
     providerIds: plugin.providerIds ? [...plugin.providerIds] : undefined,
     extensionNamespaces: plugin.extensionNamespaces ? [...plugin.extensionNamespaces] : undefined,
-    ui: plugin.ui,
   };
 }
 

@@ -1,3 +1,4 @@
+export * from "./client-protocol";
 export type { LaunchScope } from "./launch-scope";
 export {
   assertRemovableSocketPath,
@@ -9,8 +10,13 @@ export { AgentSessionProvider } from "./provider";
 export { createDefaultChildSession, SessionRuntime } from "./runtime";
 export { SessionService } from "./service";
 export { SessionStore } from "./store";
-export type { SessionRecord, SessionScopeInput } from "./supervisor";
-export { SessionSupervisorProvider, startSessionSupervisor } from "./supervisor";
+export { SessionSupervisor, startSessionSupervisor } from "./supervisor";
+export type {
+  PublicSessionRecord,
+  ScopeRecord,
+  SessionRecord,
+  SessionScopeInput,
+} from "./supervisor-model";
 export type {
   ActivityItem,
   ActivityKind,

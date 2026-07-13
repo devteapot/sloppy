@@ -6,7 +6,10 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 import { action, createSlopServer } from "@slop-ai/server";
 
 import { ConsumerHub } from "../src/core/consumer";
+import type { DelegationService } from "../src/plugins/first-party/delegation/service";
+import type { MessagingService } from "../src/plugins/first-party/messaging/service";
 import { MetaRuntimeProvider } from "../src/plugins/first-party/meta-runtime/provider";
+import { DELEGATION_SERVICE, MESSAGING_SERVICE } from "../src/plugins/first-party/service-keys";
 import { InProcessTransport } from "../src/providers/in-process";
 import type { RegisteredProvider } from "../src/providers/registry";
 import { createTestConfig } from "./helpers/config";
@@ -37,19 +40,12 @@ function registeredMetaProvider(provider: MetaRuntimeProvider): RegisteredProvid
     transportLabel: "in-process:test",
     stop: () => provider.stop(),
     approvals: provider.approvals,
-    attachRuntime: (hub) => {
-      provider.setHub(hub);
-      return {
-        stop() {
-          provider.setHub(null);
-        },
-      };
-    },
   };
 }
 
 function delegationStub(): {
   provider: RegisteredProvider;
+  service: DelegationService;
   spawns: Array<Record<string, unknown>>;
 } {
   const spawns: Array<Record<string, unknown>> = [];
@@ -83,6 +79,17 @@ function delegationStub(): {
     },
   }));
   return {
+    service: {
+      spawnAgent: (request) => {
+        spawns.push(request);
+        return {
+          id: "agent-spawned",
+          status: "pending",
+          created_at: new Date().toISOString(),
+          execution_mode: "native",
+        };
+      },
+    },
     provider: {
       id: "delegation",
       name: "Delegation",
@@ -97,6 +104,7 @@ function delegationStub(): {
 
 function messagingStub(): {
   provider: RegisteredProvider;
+  service: MessagingService;
   sent: string[];
   envelopes: unknown[];
 } {
@@ -127,6 +135,13 @@ function messagingStub(): {
     ],
   }));
   return {
+    service: {
+      sendMessage: (channelId, message, envelope) => {
+        sent.push(message);
+        envelopes.push(envelope);
+        return { id: "message-1", channel_id: channelId, sent_at: new Date().toISOString() };
+      },
+    },
     provider: {
       id: "messaging",
       name: "Messaging",
@@ -158,6 +173,7 @@ describe("MetaRuntimeProvider — routing", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const delegation = delegationStub();
+    meta.bindRuntimeService(DELEGATION_SERVICE, delegation.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, delegation.provider], TEST_CONFIG);
 
@@ -264,6 +280,7 @@ describe("MetaRuntimeProvider — routing", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const delegation = delegationStub();
+    meta.bindRuntimeService(DELEGATION_SERVICE, delegation.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, delegation.provider], TEST_CONFIG);
 
@@ -388,6 +405,7 @@ describe("MetaRuntimeProvider — routing", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const messaging = messagingStub();
+    meta.bindRuntimeService(MESSAGING_SERVICE, messaging.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, messaging.provider], TEST_CONFIG);
 
@@ -452,6 +470,8 @@ describe("MetaRuntimeProvider — routing", () => {
     });
     const delegation = delegationStub();
     const messaging = messagingStub();
+    meta.bindRuntimeService(DELEGATION_SERVICE, delegation.service);
+    meta.bindRuntimeService(MESSAGING_SERVICE, messaging.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub(
       [metaRegistration, delegation.provider, messaging.provider],
@@ -608,6 +628,7 @@ describe("MetaRuntimeProvider — routing", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const messaging = messagingStub();
+    meta.bindRuntimeService(MESSAGING_SERVICE, messaging.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, messaging.provider], TEST_CONFIG);
 
@@ -718,7 +739,7 @@ describe("MetaRuntimeProvider — routing", () => {
     }
   });
 
-  test("dispatch_route records trace events when no runtime hub is attached", async () => {
+  test("dispatch_route records trace events when its typed target service is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-meta-"));
     tempPaths.push(root);
     const { provider, consumer } = harness(join(root, "global"), join(root, "workspace"));
@@ -766,7 +787,8 @@ describe("MetaRuntimeProvider — routing", () => {
       const failure = events.children?.find((child) => child.properties?.kind === "route.failed");
       expect(failure?.properties?.routeId).toBe("hubless-route");
       expect(failure?.properties?.metadata).toMatchObject({
-        reason_code: "missing_hub",
+        reason_code: "target_invoke_error",
+        provider: "messaging",
         route_id: "hubless-route",
         source: "root",
       });
@@ -783,6 +805,7 @@ describe("MetaRuntimeProvider — routing", () => {
       workspaceRoot: join(root, "workspace"),
     });
     const messaging = messagingStub();
+    meta.bindRuntimeService(MESSAGING_SERVICE, messaging.service);
     const metaRegistration = registeredMetaProvider(meta);
     const hub = new ConsumerHub([metaRegistration, messaging.provider], TEST_CONFIG);
 

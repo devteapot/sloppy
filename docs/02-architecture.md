@@ -14,7 +14,8 @@ The default runtime includes:
 
 - `Agent` loop and LLM adapters
 - `ConsumerHub` for state subscriptions, query, invoke, and policy checks
-- session provider and session supervisor providers for UI and API consumers
+- typed session and supervisor client APIs for UI and API consumers
+- deliberate SLOP projections for agent context and dynamic providers
 - durable public session snapshots with explicit stale-turn recovery
 - provider discovery
 - approval queue and generic dangerous-action policy
@@ -23,6 +24,38 @@ The default runtime includes:
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
+
+### Three Runtime Boundaries
+
+SLOP is the agent-context and dynamic integration boundary. Anything the model
+must observe or invoke is projected as deliberate provider state and contextual
+affordances. Dynamically discovered or remote providers also speak SLOP.
+
+Ordinary application clients use the typed Session API and Supervisor API. The
+same API is available in process and as versioned JSON RPC over local Unix
+sockets or WebSocket gateway routes. It carries initial snapshots, coalesced
+incremental patches, and explicit commands without forcing clients to
+reconstruct an application API from a SLOP tree. Streamed text is represented
+as append patches, while each backpressured connection retains only the latest
+pending snapshot update. The TUI and headless CLI are consumers of this API;
+web, IDE, voice, and automation clients use the same contract.
+
+It is not the dependency-injection mechanism for known same-process modules.
+First-party runtime collaborators use typed service interfaces assembled in a
+`RuntimeServiceRegistry`. For example, meta-runtime dispatch calls the typed
+delegation, messaging, and skills services directly; those capabilities still
+publish the agent-relevant part of their state through SLOP providers.
+
+This separation keeps protocol concerns at the interoperability boundary:
+
+- agent-visible or dynamically integrated capability: query, subscribe, and invoke through SLOP
+- stable in-process dependency: call a typed service through the runtime SDK
+- session application client: use the typed Session/Supervisor SDK
+- agent-visible state or action from either kind: expose a deliberate SLOP projection
+
+A plugin may initially implement both its service and provider adapter in one
+class when it has one owner. The interface is the seam: behavior can later move
+behind it without changing consumers or widening the SLOP projection.
 
 ### Implementation Ownership Boundaries
 
@@ -78,19 +111,33 @@ does not rely on salience filtering or node-count compaction for scaling; the
 Agent drives detail explicitly through State focus and Provider affordances.
 Omitted `max_nodes` means no node-count compaction request.
 
+Default projections are decision surfaces, not object dumps. Providers should:
+
+- expose status, counts, summaries, current selections, and bounded previews
+- represent inventories as collections instead of duplicating them with `list_*` actions
+- reveal large, raw, sensitive, or diagnostic payloads through focused queries or explicit `inspect`, `view`, and `read` affordances
+- omit implementation paths, storage roots, raw config, and internal routing records unless they are required to use the capability safely
+- keep mutation affordances beside the state they affect
+
+Examples in the first-party catalog include compact skill and proposal cards,
+delegated-agent previews with on-demand inspection, MCP server/tool diagnostics
+behind `inspect`, A2A task details behind `inspect`, and web results projected as
+queryable collection items rather than one opaque result array.
+
 Built-in capabilities ship as plugins, not privileged runtime branches. A plugin
 is the first-party package and catalog unit; each plugin contributes one or more
 providers and/or a session plugin. Optional plugins include `persistent-goal`,
 `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`,
 `delegation`, `spec`, `mcp`, `workspaces`, `a2a`, and `meta-runtime`.
 
-Public session providers speak the SLOP message protocol over local Unix
-sockets — the only core transport. Remote clients connect through the
-first-party WS gateway (`sloppy gateway`, `src/gateway/`), a standalone
-process that relays the supervisor and per-session unix sockets over a single
-WebSocket port. The relay is protocol-blind (one frame per NDJSON line), so
-state tree, affordance, query, invoke, subscription, and patch semantics are
-unchanged; auth and exposure policy live entirely in the gateway.
+Session services expose one local Unix socket speaking the versioned typed
+client protocol. Remote clients connect through `sloppy gateway` at
+`/api/supervisor` and `/api/sessions/{id}`. There are no legacy SLOP Session or
+Supervisor transport routes. SLOP remains inside the agent/provider boundary;
+auth and exposure policy live entirely in the gateway. The canonical typed SDK
+uses camelCase in both its in-process and transported forms; snake_case remains
+limited to durable on-disk formats and provider projections where it is part of
+the SLOP vocabulary.
 
 ## MCP Compatibility
 
@@ -152,16 +199,12 @@ special runtime branches.
 
 ## Session Supervisor
 
-The session supervisor is a public SLOP provider for managing multiple ordinary
-agent sessions. It is separate from the per-session provider:
-
-- `/session` reports launch-scope metadata, the launch-scope resume session,
-  client lease counts, and exposes `create_session`, `select_session`, and
-  `reload_config`.
-- `/sessions` lists live and dormant session records and exposes per-session
-  `select_session` and, when live, `stop_session` affordances.
-- `/scopes` lists configured workspace/project scopes that can launch new
-  scoped sessions.
+The session supervisor is a typed, client-agnostic service for managing multiple
+ordinary agent sessions. Its snapshot reports launch-scope metadata, the
+launch-scope resume session, client leases, live and dormant session records,
+and configured workspace/project scopes. Explicit typed commands create,
+select, stop, restore, and reload sessions; the Supervisor is not a SLOP
+provider transport.
 
 The supervisor intentionally has no global active session. A connected UI
 registers a supervisor client lease and selects a session for that connection.
@@ -169,10 +212,10 @@ The launch-scope resume session is only the default target for `sloppy
 --continue` and later managed launches that ask to continue. Multiple clients
 can select different sessions concurrently.
 
-Managed TUI launch is implemented above this agnostic supervisor. The launcher
+Managed TUI launch is implemented above this agnostic supervisor API. The launcher
 resolves the real current working directory into a launch scope, starts or
 reuses that scope's managed supervisor, creates a fresh session by default, and
-attaches to the selected session's public provider endpoint. Switching sessions
+attaches to the selected session's typed client endpoint. Switching sessions
 changes the TUI's session endpoint; it does not collapse multiple sessions into one
 provider tree. Stopping a session ends its live process while keeping its
 snapshot and registry record restorable. Selecting a dormant session restores it
@@ -319,12 +362,16 @@ This is a meta-runtime, not arbitrary source-code mutation. The provider schema
 is stable; the graph, routes, capabilities, executor bindings, active skill
 versions, and topology experiment records are state.
 
-Enabled routes dispatch typed message envelopes through the provider hub:
+Enabled routes dispatch typed message envelopes through runtime services:
 
-- `agent:<id>` targets invoke `delegation.spawn_agent` using the target agent's
+- `agent:<id>` targets call the typed delegation service using the target agent's
   profile instructions, executor binding, resolved capability masks, and
   selected skill versions.
-- `channel:<id>` targets invoke `messaging.channels/{id}.send`.
+- `channel:<id>` targets call the typed messaging service.
+
+The delegation and messaging providers remain the SLOP projection for agent
+observation and direct agent-initiated actions. Internal dispatch does not
+encode a provider path and action name just to cross a same-process boundary.
 
 Dispatch can run in single-target mode or fanout mode. Routes can carry
 `matchField`, `matchMode`, and `caseSensitive` metadata for typed envelope
@@ -379,16 +426,16 @@ review which procedural memories are actually being used. The built-in
 propose minimal `skill_manage` changes without adding a scheduler or repair
 policy to the runtime.
 
-The public session provider has a generic `/extensions` metadata substrate for
-skill-backed session features and a `/plugins` registry for first-party session
-runtime plugins. Plugins can contribute session nodes, extension-record event
+The typed Session snapshot has generic `extensions` metadata and a client
+plugin registry. Plugins can contribute typed client commands, declarative
+client-agnostic actions/indicators/notifications, session nodes for the SLOP
+agent projection, extension-record event
 projections, runtime-local turn tools, queued or automatic turns, snapshot
 migration/recovery hooks, startup/shutdown hooks, policy rules, audit metadata
 enrichers, doctor checks, startup subprocess probes, supervisor summary fields,
-and declarative TUI manifests without adding feature-specific branches to the
-provider, TUI, or doctor core. TUI palette entries invoke public session
-affordances declared by plugin manifests and are filtered by the live actions
-available at their SLOP path. Runtime-local tools are stamped with their owning
+without adding feature-specific branches to the runtime, TUI, or doctor core.
+The server computes command availability; clients invoke a plugin id plus typed
+command id rather than a provider path/action pair. Runtime-local tools are stamped with their owning
 plugin id so future policy, dispatch, and telemetry can keep plugin boundaries
 visible. When enabled, `/goal` is a stable projection contributed by the bundled
 `persistent-goal` plugin over the `goal` extension record owned by the bundled
@@ -433,15 +480,16 @@ safety enforcement.
 
 ## Public Consumers
 
-First-party UIs and external clients should use the same provider/session
-boundary:
+First-party UIs and external application clients use the same typed boundary:
 
-- session provider for transcript, turn state, approvals, activity, tasks, and
+- Session API for transcript, turn state, approvals, activity, tasks, and
   app/provider attachment state, plus generic extension metadata when a
   dedicated projection is not enough
-- session supervisor for multi-session listing, scoped creation, switching, and
+- Supervisor API for multi-session listing, scoped creation, switching, and
   stopping
-- direct provider query/invoke for deeper capability-specific surfaces
+- explicit provider query/invoke through the Session API for a generic provider inspector
+- SLOP projections for model context injection, agent actions, compatibility,
+  and dynamic provider integration
 - no privileged in-process UI integration
 
 ## Implementation Boundaries

@@ -12,27 +12,27 @@ describe("endpointForSession", () => {
   });
 
   test("derives a sibling sessions path from a ws supervisor endpoint", () => {
-    expect(endpointForSession(session, "ws://127.0.0.1:8787/supervisor")).toBe(
-      "ws://127.0.0.1:8787/sessions/session-1",
+    expect(endpointForSession(session, "ws://127.0.0.1:8787/api/supervisor")).toBe(
+      "ws://127.0.0.1:8787/api/sessions/session-1",
     );
   });
 
   test("preserves proxy prefixes and wss scheme", () => {
-    expect(endpointForSession(session, "wss://example.com/gw/supervisor")).toBe(
-      "wss://example.com/gw/sessions/session-1",
+    expect(endpointForSession(session, "wss://example.com/gw/api/supervisor")).toBe(
+      "wss://example.com/gw/api/sessions/session-1",
     );
   });
 
   test("preserves auth query parameters", () => {
-    expect(endpointForSession(session, "ws://127.0.0.1:8787/supervisor?token=secret")).toBe(
-      "ws://127.0.0.1:8787/sessions/session-1?token=secret",
+    expect(endpointForSession(session, "ws://127.0.0.1:8787/api/supervisor?token=secret")).toBe(
+      "ws://127.0.0.1:8787/api/sessions/session-1?token=secret",
     );
   });
 
   test("encodes session ids that need escaping", () => {
     const odd = { id: "weird id/with#chars", socketPath: "/tmp/slop/odd.sock" };
-    expect(endpointForSession(odd, "ws://127.0.0.1:8787/supervisor")).toBe(
-      "ws://127.0.0.1:8787/sessions/weird%20id%2Fwith%23chars",
+    expect(endpointForSession(odd, "ws://127.0.0.1:8787/api/supervisor")).toBe(
+      "ws://127.0.0.1:8787/api/sessions/weird%20id%2Fwith%23chars",
     );
   });
 });

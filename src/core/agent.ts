@@ -13,14 +13,15 @@ import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import type { ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
+import { createFirstPartyPluginAssembly } from "../plugins/first-party/catalog";
 import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/policy-facets";
 import {
   discoverProviderDescriptors,
   type ProviderDiscoveryUpdate,
   watchProviderDescriptors,
 } from "../providers/discovery";
-import { createFirstPartyProviders } from "../providers/registry";
 import type { ChildSessionFactory } from "../runtime/child-session";
+import { type RuntimeServiceKey, RuntimeServiceRegistry } from "../runtime/services";
 import { ProviderDiscoveryCoordinator } from "./agent/discovery";
 import { registerProviderMirrors, unregisterProviderMirrors } from "./agent/mirrors";
 import type { ApprovalRecord } from "./approvals";
@@ -146,6 +147,7 @@ export class Agent {
   private systemPromptFragments: string[] = [];
   private localTools?: () => LocalRuntimeTool[];
   private childSessionFactory?: ChildSessionFactory;
+  private readonly runtimeServices = new RuntimeServiceRegistry();
 
   constructor(options?: AgentOptions) {
     this.config = options?.config ?? DEFAULT_CONFIG;
@@ -198,7 +200,9 @@ export class Agent {
       return;
     }
 
-    const firstPartyProviders = createFirstPartyProviders(this.config);
+    this.runtimeServices.clear();
+    const firstPartyAssembly = createFirstPartyPluginAssembly(this.config, this.runtimeServices);
+    const firstPartyProviders = firstPartyAssembly.providers;
     this.discovery.setFirstPartyProviderIds(firstPartyProviders.map((provider) => provider.id));
     this.discovery.resetErrors();
 
@@ -229,6 +233,7 @@ export class Agent {
       roleRegistry: this.roleRegistry,
       llmProfileManager: this.llmProfileManager,
       childSessionFactory: this.childSessionFactory,
+      services: this.runtimeServices,
       collectSystemPromptFragments: true,
     });
     const { hub, runtimeCtx } = bootstrap;
@@ -410,6 +415,10 @@ export class Agent {
     }
 
     return this.hub.invoke(providerId, path, action, params);
+  }
+
+  getRuntimeService<T>(key: RuntimeServiceKey<T>): T | undefined {
+    return this.runtimeServices.get(key);
   }
 
   async queryProvider(
@@ -641,6 +650,7 @@ export class Agent {
     this.discovery.setFirstPartyProviderIds([]);
     this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
+    this.runtimeServices.clear();
   }
 
   private executeLoop(result: RunLoopResult): AgentRunResult {

@@ -428,7 +428,6 @@ describe("SessionService — multi-session support", () => {
 
     expect(snapshot.session.sessionId).toBe("test-session-1");
     expect(service.socketPath).toMatch(/\/tmp\/slop\/[^/]+\.sock$/);
-    expect(service.providerId).toMatch(/^sloppy-session-/);
 
     service.stop();
   });
@@ -570,7 +569,7 @@ describe("SessionService — multi-session support", () => {
     });
 
     try {
-      await noKeyService.start({ register: false });
+      await noKeyService.start();
 
       const noKeySnapshot = noKeyService.runtime.store.getSnapshot();
       expect(noKeySnapshot.llm.status).toBe("needs_credentials");
@@ -602,7 +601,10 @@ describe("SessionService — multi-session support", () => {
       expect(before.llm.profiles).toEqual([]);
       expect(before.llm.secureStoreKind).toBe("none");
 
-      await service.start({ register: false });
+      await service.start();
+      expect(existsSync(socketPath)).toBe(true);
+      expect(existsSync(service.socketPath)).toBe(true);
+      expect(existsSync(`${service.socketPath}.client`)).toBe(false);
 
       const after = service.runtime.store.getSnapshot();
       // runtime.start() ran refreshLlmState before the listener opened, so
@@ -616,5 +618,6 @@ describe("SessionService — multi-session support", () => {
       service.stop();
     }
     expect(existsSync(socketPath)).toBe(false);
+    expect(existsSync(service.socketPath)).toBe(false);
   });
 });

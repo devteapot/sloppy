@@ -10,10 +10,10 @@ This directory is split by whether a document is current operating guidance, fut
 - `03-mvp-plan.md` — implementation plan and near-term roadmap.
 - `04-slop-protocol-reference.md` — local protocol vocabulary and message semantics.
 - `05-language-evaluation.md` — stack and runtime decisions.
-- `06-agent-session-provider.md` — public session-provider state and affordance surface.
+- `06-agent-session-provider.md` — typed Session API and compact SLOP projection.
 - `08-acp-sub-agents.md` — current ACP session-agent and delegation paths.
 - `13-meta-runtime.md` — optional topology/evaluation substrate and skill-led self-evolution boundary.
-- `16-tui-plan.md` — TypeScript/OpenTUI TUI architecture and UX plan.
+- `16-tui-plan.md` — TypeScript/pi-tui TUI architecture and UX plan.
 - `17-operator-runbook.md` — production-style runtime checks, audit, recovery, and operational procedures.
 - `ui-design-system.md` — UI design system for first-party surfaces.
 

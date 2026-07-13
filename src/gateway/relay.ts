@@ -1,10 +1,9 @@
 /**
  * Per-connection relay between a downstream WebSocket client and an upstream
- * unix-socket SLOP provider. The relay is deliberately protocol-blind: one WS
- * text frame maps to one NDJSON line and vice versa, with no SLOP parsing.
- * Listener-level behavior on the unix side (supervisor invoke interception,
- * client-lease tracking) is preserved because each WS client gets its own
- * upstream connection.
+ * typed client-protocol Unix socket. The relay is deliberately protocol-blind:
+ * one WS text frame maps to one NDJSON line and vice versa, with no envelope
+ * parsing. Connection-bound client leases are preserved because each WebSocket
+ * client gets its own upstream connection.
  *
  * The upstream dial uses Bun.connect rather than node:net — Bun's node:net
  * shim reports unix-socket connect failures (e.g. ENOENT) as unhandled
@@ -19,7 +18,7 @@ export const RELAY_CLOSE = {
   supervisorUnavailable: { code: 4502, reason: "supervisor unavailable" },
   sessionNotLive: {
     code: 4503,
-    reason: "session not live; invoke select_session on the supervisor first",
+    reason: "session not live; select it through the Supervisor API first",
   },
   gatewayShutdown: { code: 1001, reason: "gateway shutting down" },
 } as const satisfies Record<string, RelayCloseInfo>;

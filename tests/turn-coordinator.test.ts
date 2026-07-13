@@ -114,6 +114,7 @@ function makePlugins(plugins: SessionRuntimePlugin[] = []) {
     store,
     snapshot: () => store.getSnapshot(),
     ensureReady: async () => undefined,
+    getRuntimeService: () => undefined,
     invokeProvider: async () => okResult(),
     queryProvider: async () => ({ id: "root", type: "group" }),
     startTurn: () => ({ status: "started", turnId: "turn-test" }),
