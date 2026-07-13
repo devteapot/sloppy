@@ -18,6 +18,7 @@ import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
 import { isLlmAbortError } from "../llm/types";
 import { createFirstPartySessionPlugins } from "../plugins/first-party/session-facets";
 import type { ChildSessionFactory, ChildSessionFactoryOptions } from "../runtime/child-session";
+import type { SessionClientSnapshot } from "./client-protocol/types";
 import { type AgentEventBus, mergeCallbacks } from "./event-bus";
 import {
   type ExternalSessionAgentState,
@@ -218,6 +219,7 @@ export class SessionRuntime {
           await this.refreshLlmState({ requireReady: true });
         }
       },
+      getRuntimeService: (key) => this.agent.getRuntimeService?.(key),
       invokeProvider: async (providerId, path, action, params) =>
         this.agent.invokeProvider(providerId, path, action, params),
       queryProvider: async (providerId, path, options) => {
@@ -255,6 +257,27 @@ export class SessionRuntime {
 
   buildPluginSessionSummary(): { props: Record<string, unknown>; summaries: string[] } {
     return this.plugins.sessionSummary();
+  }
+
+  getClientSnapshot(): SessionClientSnapshot {
+    const snapshot = this.store.getSnapshot();
+    return {
+      session: snapshot,
+      controls: {
+        canSendMessage: snapshot.llm.status === "ready",
+        canCancelTurn: this.canCancelTurn(),
+        canReloadConfig: this.configReloader !== undefined,
+      },
+      plugins: this.plugins.clientPlugins(),
+    };
+  }
+
+  invokePluginClientCommand(
+    pluginId: string,
+    command: string,
+    params: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    return this.plugins.invokeClientCommand(pluginId, command, params);
   }
 
   buildAutoCloseBlockers(): { source: string; id: string; label: string }[] {

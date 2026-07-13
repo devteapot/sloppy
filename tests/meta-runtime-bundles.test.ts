@@ -6,6 +6,7 @@ import { SlopConsumer } from "@slop-ai/consumer/browser";
 
 import { ConsumerHub } from "../src/core/consumer";
 import { MetaRuntimeProvider } from "../src/plugins/first-party/meta-runtime/provider";
+import { SKILLS_SERVICE } from "../src/plugins/first-party/service-keys";
 import { SkillsProvider } from "../src/plugins/first-party/skills/provider";
 import { InProcessTransport } from "../src/providers/in-process";
 import { createFirstPartyProviders, type RegisteredProvider } from "../src/providers/registry";
@@ -37,14 +38,6 @@ function registeredMetaProvider(provider: MetaRuntimeProvider): RegisteredProvid
     transportLabel: "in-process:test",
     stop: () => provider.stop(),
     approvals: provider.approvals,
-    attachRuntime: (hub) => {
-      provider.setHub(hub);
-      return {
-        stop() {
-          provider.setHub(null);
-        },
-      };
-    },
   };
 }
 
@@ -270,6 +263,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "source-workspace"),
     });
     const sourceSkills = new SkillsProvider({ skillsDir: join(root, "source-skills") });
+    sourceMeta.bindRuntimeService(SKILLS_SERVICE, sourceSkills);
     const sourceMetaRegistration = registeredMetaProvider(sourceMeta);
     const sourceHub = new ConsumerHub(
       [sourceMetaRegistration, registeredSkillsProvider(sourceSkills)],
@@ -281,6 +275,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],
@@ -373,7 +368,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       expect(importedSkillVersions.children?.map((child) => child.id)).toContain(
         "bundle-review@1.0.0",
       );
-      const importedSkill = await targetSkillsConsumer.invoke("/session", "view_skill", {
+      const importedSkill = await targetSkillsConsumer.invoke("/session", "skill_view", {
         name: "bundle-review",
       });
       expect(importedSkill.status).toBe("ok");
@@ -396,6 +391,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],
@@ -461,7 +457,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
 
       const importedProfiles = await targetMetaConsumer.query("/profiles", 2);
       expect((importedProfiles.children ?? []).map((child) => child.id)).not.toContain("reviewer");
-      const importedSkill = await targetSkillsConsumer.invoke("/session", "view_skill", {
+      const importedSkill = await targetSkillsConsumer.invoke("/session", "skill_view", {
         name: "bundle-review",
       });
       expect(importedSkill.status).toBe("error");
@@ -479,6 +475,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],
@@ -546,6 +543,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],
@@ -628,6 +626,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],
@@ -702,6 +701,7 @@ describe("MetaRuntimeProvider — bundles and registry", () => {
       workspaceRoot: join(root, "target-workspace"),
     });
     const targetSkills = new SkillsProvider({ skillsDir: join(root, "target-skills") });
+    targetMeta.bindRuntimeService(SKILLS_SERVICE, targetSkills);
     const targetMetaRegistration = registeredMetaProvider(targetMeta);
     const targetHub = new ConsumerHub(
       [targetMetaRegistration, registeredSkillsProvider(targetSkills)],

@@ -1,4 +1,3 @@
-import type { ProviderRuntimeHub } from "../../../core/hub";
 import {
   createApprovalRequiredError,
   type ProviderApprovalManager,
@@ -18,7 +17,6 @@ import { asString } from "./meta-runtime-ops";
 
 export type MetaRuntimeExperimentContext = {
   approvals: ProviderApprovalManager;
-  hub: ProviderRuntimeHub | null;
   layers: Record<MetaScope, MetaStateMaps>;
   proposals: Map<string, Proposal>;
   experiments: Map<string, TopologyExperiment>;

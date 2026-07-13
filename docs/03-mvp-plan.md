@@ -20,26 +20,31 @@ Checked in now:
 - explicit runtime ownership seams for model-turn orchestration, tool
   execution/scheduling, provider connection lifecycle, session assembly, and
   child-session construction, with no runtime import cycles
+- typed runtime-service bindings for stable same-process dependencies, with
+  SLOP providers reserved for agent context and dynamic provider integration
+- public SDK entrypoints for core embedding, SLOP consumption, sessions, and
+  first-party plugin composition
 - default first-party plugins: `apps`, `terminal`, `filesystem`
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
-- session provider and headless session server on local Unix sockets, with the
-  standalone WS gateway (`sloppy gateway`) for remote WebSocket clients
-- public session supervisor for scoped session creation, per-client session
+- typed Session and Supervisor APIs on one Unix socket each, with the standalone
+  WS gateway (`sloppy gateway`) exposing only typed `/api/*` routes
+- typed public session supervisor for scoped session creation, per-client session
   selection, launch-scope resume metadata, stopping/restoring sessions, and
   keeping each session on its own provider socket
-- first-party session runtime plugin manager, surfaced through `/plugins`, for
+- first-party session runtime plugin manager, surfaced through typed client
+  contributions and a compact agent-facing `/plugins` projection, for
   contributed session nodes, extension event projections, runtime-local turn
   tools, queued or automatic plugin turns, snapshot migration/recovery hooks,
   lifecycle hooks, policy rules, audit metadata, supervisor summary fields, and
-  declarative TUI manifests
+  client-agnostic action, indicator, and notification manifests
 - generic public session extension metadata, with opt-in `/goal` projected from
   the extension-backed `persistent-goal` skill state by the `persistent-goal`
   session plugin for persistent objective controls, usage accounting, cleanup
   retention, and automatic continuation while active
-- TypeScript/OpenTUI TUI under `apps/tui` that consumes the public
-  agent-session provider endpoint, starts or reuses a launch-scope managed
+- TypeScript/pi-tui TUI under `apps/tui` that consumes the typed Session and
+  Supervisor APIs, starts or reuses a launch-scope managed
   supervisor by default, can attach through an explicit session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert
 - ACP-backed delegated child sessions behind the same session-provider boundary,
@@ -82,6 +87,12 @@ providers, skills, routes, and agent-to-agent channels.
 2. Make state the contract.
    - Providers expose observable state first.
    - Affordances mutate provider-owned state.
+   - Default projections are decision surfaces, not complete serialization:
+     prefer counts, summaries, bounded previews, and collection children;
+     expose large or diagnostic detail through focused query or inspect/view/read.
+   - Do not add `list_*` affordances when the same inventory is already provider
+     state, and do not expose storage paths or raw configuration without a
+     concrete agent decision that requires them.
    - Providers own their Default projection; after that, the Agent drives
      detail explicitly with Observation tools and Provider affordances.
    - The Hub owns State projection for the Agent-facing state tail. Sloppy does
@@ -113,9 +124,9 @@ providers, skills, routes, and agent-to-agent channels.
    - Apply safe session changes directly.
    - Require approval for persistent or privileged changes.
    - Dispatch typed route envelopes to delegated agents or messaging channels
-     through the provider hub, forwarding capability masks into delegated child
-     runtime policy and supporting fanout or sampled canary routes when
-     requested.
+     through typed runtime services, while their SLOP providers remain the
+     agent-facing projection. Forward capability masks into delegated child
+     runtime policy and support fanout or sampled canary routes when requested.
    - Match routes against envelope body, topic, channel id, or metadata paths
      with explicit substring/exact/prefix/regex/exists modes while preserving
      the older body-substring default.

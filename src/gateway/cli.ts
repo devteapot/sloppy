@@ -9,7 +9,6 @@ export type GatewayCliOptions = {
   token?: string;
   allowedOrigins?: string[];
   publicUrl?: string;
-  supervisorPath?: string;
   supervisorSocketPath?: string;
   discovery: boolean;
 };
@@ -70,7 +69,6 @@ export function parseGatewayOptions(
     token: readOption(args, "--token") ?? tokenFromEnv,
     allowedOrigins: parseAllowedOrigins(args),
     publicUrl: readOption(args, "--public-url"),
-    supervisorPath: readOption(args, "--supervisor-path"),
     supervisorSocketPath: readOption(args, "--supervisor-socket"),
     discovery: !args.includes("--no-discovery"),
   };
@@ -95,14 +93,15 @@ export async function runGateway(args: string[]): Promise<number> {
     supervisorSocketPath,
     port: options.port,
     host: options.host,
-    supervisorPath: options.supervisorPath,
     publicUrl: options.publicUrl,
     discovery: options.discovery,
     token: options.token,
     allowedOrigins: options.allowedOrigins,
   });
   stdout.write(
-    `[sloppy] ws gateway listening on ${gateway.url} (sessions at /sessions/<session-id>) -> unix:${supervisorSocketPath}\n`,
+    `[sloppy] ws gateway listening on ${gateway.url} ` +
+      `(sessions at /api/sessions/<session-id>) ` +
+      `-> unix:${supervisorSocketPath}\n`,
   );
   await stdout.flush();
 

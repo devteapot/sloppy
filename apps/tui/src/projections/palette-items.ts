@@ -34,12 +34,7 @@ export function buildCommandPaletteCommands(
         id: `approval:${approval.id}:approve`,
         label: `Approve ${approval.provider}.${approval.action}`,
         description: approval.reason,
-        command: {
-          type: "invoke",
-          targetId: "session",
-          path: `/approvals/${approval.id}`,
-          action: "approve",
-        },
+        command: { type: "approval_resolve", approvalId: approval.id, resolution: "approve" },
       });
     }
     if (approval.canReject) {
@@ -47,12 +42,7 @@ export function buildCommandPaletteCommands(
         id: `approval:${approval.id}:reject`,
         label: `Reject ${approval.provider}.${approval.action}`,
         description: approval.reason,
-        command: {
-          type: "invoke",
-          targetId: "session",
-          path: `/approvals/${approval.id}`,
-          action: "reject",
-        },
+        command: { type: "approval_resolve", approvalId: approval.id, resolution: "reject" },
       });
     }
   }
@@ -63,12 +53,7 @@ export function buildCommandPaletteCommands(
         id: `task:${task.id}:cancel`,
         label: `Cancel task ${task.providerTaskId}`,
         description: task.message,
-        command: {
-          type: "invoke",
-          targetId: "session",
-          path: `/tasks/${task.id}`,
-          action: "cancel",
-        },
+        command: { type: "task_cancel", taskId: task.id },
       });
     }
   }
@@ -86,9 +71,8 @@ export function buildCommandPaletteCommands(
         pluginId: projected.pluginId,
         actionId: projected.action.id,
         label: projected.action.label,
-        path: projected.action.invoke.path,
-        action: projected.action.invoke.action,
-        params: projected.action.invoke.params,
+        command: projected.action.command,
+        params: projected.action.params,
       },
     });
   }

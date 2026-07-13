@@ -319,7 +319,9 @@ describe("McpProvider", () => {
     const tools = await consumer.query("/servers/demo/tools", 2);
     expect(tools.children?.map((child) => child.id)).toEqual(["echo", "delete-record"]);
     const destructiveTool = await consumer.query("/servers/demo/tools/delete-record", 1);
-    expect(destructiveTool.affordances?.[0]?.dangerous).toBe(true);
+    expect(
+      destructiveTool.affordances?.find((affordance) => affordance.action === "call")?.dangerous,
+    ).toBe(true);
     const server = await consumer.query("/servers/demo", 1);
     expect(
       server.affordances?.some(
@@ -419,7 +421,10 @@ describe("McpProvider", () => {
     const server = await consumer.query("/servers/partial", 2);
     expect(server.properties?.status).toBe("connected");
     expect(server.properties?.resource_count).toBe(0);
-    expect(server.properties?.list_errors).toEqual({
+    expect(server.properties?.list_error_count).toBe(1);
+    expect(server.properties?.list_errors).toBeUndefined();
+    const inspected = await consumer.invoke("/servers/partial", "inspect", {});
+    expect((inspected.data as { list_errors: unknown }).list_errors).toEqual({
       resources: "resources not supported",
     });
   });

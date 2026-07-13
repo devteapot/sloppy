@@ -3,6 +3,7 @@ import type { NodeDescriptor } from "@slop-ai/server";
 
 import type { SloppyConfig } from "../../config/schema";
 import type { AgentRunResult, LocalRuntimeTool } from "../../core/agent";
+import type { RuntimeServiceKey } from "../../runtime/services";
 import type { SessionStore } from "../store";
 import type { SessionSnapshotMigrator, SessionSnapshotRecoverer } from "../store/persistence";
 import type {
@@ -11,7 +12,10 @@ import type {
   SessionSnapshotProjector,
   SessionStoreEventType,
 } from "../types";
-import type { UiContributionManifest } from "./ui-contributions";
+import type {
+  ClientCommandContribution,
+  ClientContributionDefinition,
+} from "./client-contributions";
 
 // Public type surface for session plugins. Plugins import these from
 // `../session/plugins` (or `./types`), never from store internals.
@@ -61,6 +65,7 @@ export type PluginRuntimeContext = {
   store: SessionStore;
   snapshot: () => AgentSessionSnapshot;
   ensureReady: () => Promise<void>;
+  getRuntimeService: <T>(key: RuntimeServiceKey<T>) => T | undefined;
   invokeProvider: (
     providerId: string,
     path: string,
@@ -128,5 +133,6 @@ export type SessionRuntimePlugin = {
   onTurnFailure?: (event: PluginTurnFailureEvent, ctx: PluginRuntimeContext) => void;
   sessionSummary?: (ctx: PluginRuntimeContext) => SessionSummaryContribution | null;
   autoCloseBlockers?: (ctx: PluginRuntimeContext) => AutoCloseBlocker[];
-  ui?: UiContributionManifest;
+  clientCommands?: (ctx: PluginRuntimeContext) => ClientCommandContribution[];
+  client?: ClientContributionDefinition;
 };

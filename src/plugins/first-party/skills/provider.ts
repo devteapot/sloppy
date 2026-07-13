@@ -23,8 +23,9 @@ import {
   writableScope,
 } from "./model";
 import { SkillRepository, type SkillRepositoryOptions } from "./repository";
+import type { SkillsService, SkillView } from "./service";
 
-export class SkillsProvider {
+export class SkillsProvider implements SkillsService {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
   private readonly repository: SkillRepository;
@@ -94,18 +95,7 @@ export class SkillsProvider {
     return this.repository.resolveFile(skill, filePath);
   }
 
-  private async viewSkill(
-    skillName: string,
-    filePath?: string,
-  ): Promise<{
-    name: string;
-    file_path: string;
-    skill_dir?: string;
-    supporting_files: string[];
-    view_count: number;
-    last_viewed_at: string;
-    content: string;
-  }> {
+  async viewSkill(skillName: string, filePath?: string): Promise<SkillView> {
     await this.ensureDiscovered();
     const skill = this.findSkill(skillName);
     if (!skill) {
@@ -197,10 +187,7 @@ export class SkillsProvider {
     return proposal;
   }
 
-  private async activateSkillProposal(
-    proposalId: string,
-    approved = false,
-  ): Promise<SkillProposal> {
+  async activateSkillProposal(proposalId: string, approved = false): Promise<SkillProposal> {
     await this.ensureDiscovered();
     const proposal = this.proposals.get(proposalId);
     if (!proposal) throw new Error(`Unknown skill proposal: ${proposalId}`);
@@ -306,7 +293,7 @@ export class SkillsProvider {
     return this.resolveSkillFile(skill, filePath);
   }
 
-  private async manageSkill(
+  async manageSkill(
     params: Record<string, unknown>,
     approved = false,
   ): Promise<Record<string, unknown>> {
@@ -377,6 +364,16 @@ export class SkillsProvider {
         if (!existing) throw new Error(`Unknown skill: ${name}`);
         return this.manageRemoveFile(params, existing);
     }
+  }
+
+  async getSkillProposal(proposalId: string): Promise<SkillProposal | undefined> {
+    await this.ensureDiscovered();
+    return this.proposals.get(proposalId);
+  }
+
+  async listSkills(): Promise<SkillInfo[]> {
+    await this.ensureDiscovered();
+    return [...this.skills];
   }
 
   private async manageCreate(
@@ -553,7 +550,6 @@ export class SkillsProvider {
         skill_views_count: skillViewsCount,
         tags_count: tagSet.size,
         categories,
-        installed: this.skills.map((s) => s.name),
         proposals_count: this.proposals.size,
         loading: this.discoveryLoading,
       },
@@ -569,27 +565,6 @@ export class SkillsProvider {
           {
             label: "Refresh Skills",
             description: "Re-scan the skills directories and update the skills list.",
-            idempotent: true,
-            estimate: "fast",
-          },
-        ),
-        view_skill: action(
-          {
-            name: {
-              type: "string",
-              description: "Skill name to open (for example: demo-skill).",
-            },
-            file_path: {
-              type: "string",
-              optional: true,
-              description: "Optional supporting file path relative to the skill directory.",
-            },
-          },
-          async ({ name, file_path }) =>
-            this.viewSkill(String(name), typeof file_path === "string" ? file_path : undefined),
-          {
-            label: "View Skill By Name",
-            description: "Read the full content of a skill or one of its supporting files.",
             idempotent: true,
             estimate: "fast",
           },
@@ -694,20 +669,12 @@ export class SkillsProvider {
         scope: skill.scope,
         category: skill.category,
         platforms: skill.platforms,
-        skill_path: skill.skill_path,
-        file_path: skill.file_path,
         supporting_files: skill.supporting_files,
-        metadata: skill.metadata,
+        dangerous: skill.dangerous,
         ...(skill.related_skills.length > 0 ? { related_skills: skill.related_skills } : {}),
       },
       summary: skill.description || skill.name,
       actions: {
-        view_skill: action(async () => this.viewSkill(skill.name), {
-          label: "View Skill",
-          description: "Read this skill's SKILL.md file.",
-          idempotent: true,
-          estimate: "fast",
-        }),
         skill_view: action(
           {
             file_path: {
@@ -741,10 +708,38 @@ export class SkillsProvider {
   private buildProposalsDescriptor() {
     const items: ItemDescriptor[] = [...this.proposals.values()].map((proposal) => ({
       id: proposal.id,
-      props: proposal,
+      props: {
+        id: proposal.id,
+        scope: proposal.scope,
+        name: proposal.name,
+        version: proposal.version,
+        status: proposal.status,
+        created_at: proposal.created_at,
+        activated_at: proposal.activated_at,
+        requires_approval: proposal.requires_approval,
+        body_preview:
+          proposal.body.length > 240
+            ? `${proposal.body.slice(0, 224)}...[truncated]`
+            : proposal.body,
+      },
       summary: proposal.name,
-      actions:
-        proposal.status === "proposed"
+      actions: {
+        view_proposal: action(
+          async () => ({
+            id: proposal.id,
+            name: proposal.name,
+            version: proposal.version,
+            scope: proposal.scope,
+            body: proposal.body,
+          }),
+          {
+            label: "View Skill Proposal",
+            description: "Read the complete proposed SKILL.md content.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
+        ...(proposal.status === "proposed"
           ? {
               activate_skill_proposal: action(async () => this.activateSkillProposal(proposal.id), {
                 label: "Activate Skill Proposal",
@@ -766,7 +761,8 @@ export class SkillsProvider {
                 },
               ),
             }
-          : undefined,
+          : {}),
+      },
     }));
 
     return {

@@ -2,6 +2,7 @@ import { action, createSlopServer, type ItemDescriptor, type SlopServer } from "
 
 import { ProviderApprovalManager } from "../../../providers/approvals";
 import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "../shared/message-envelope";
+import type { MessagingService, SendMessageResult } from "./service";
 
 type Message = {
   id: string;
@@ -22,7 +23,7 @@ type Channel = {
   unread_count: number;
 };
 
-export class MessagingProvider {
+export class MessagingProvider implements MessagingService {
   readonly server: SlopServer;
   private maxMessages: number;
   readonly approvals: ProviderApprovalManager;
@@ -61,11 +62,7 @@ export class MessagingProvider {
     return { id, name, transport };
   }
 
-  private sendMessage(
-    channelId: string,
-    message: string,
-    envelopeInput?: unknown,
-  ): { id: string; channel_id: string; sent_at: string; envelope_id?: string } {
+  sendMessage(channelId: string, message: string, envelopeInput?: unknown): SendMessageResult {
     const channel = this.channels.get(channelId);
     if (!channel) {
       throw new Error(`Unknown channel: ${channelId}`);
@@ -133,12 +130,6 @@ export class MessagingProvider {
       },
       summary: "Messaging session overview and channel management.",
       actions: {
-        list_channels: action(async () => this.listChannels(), {
-          label: "List Channels",
-          description: "Return all messaging channels.",
-          idempotent: true,
-          estimate: "instant",
-        }),
         add_channel: action(
           {
             name: "string",

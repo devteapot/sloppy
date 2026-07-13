@@ -28,7 +28,10 @@ src/            — Source code (TypeScript)
 ## Conventions
 
 - Use `bun` for all package management and scripts, not npm/yarn
-- Built-in tools are implemented as SLOP providers (state tree + affordances), not special-cased
+- Agent-visible built-in capabilities are projected as SLOP providers (state
+  tree + affordances); stable same-process dependencies use typed runtime services
+- UIs and other application clients use the typed Session/Supervisor SDK;
+  session SLOP providers are compact agent-context projections
 - Keep the core small — capabilities come from providers
 - Files in `src/core/` over 400 lines need a top-of-file comment explaining why they aren't split. Capability-specific logic belongs in `src/providers/` or `src/runtime/`.
 - The SLOP SDK packages live in `~/dev/slop-slop-slop/packages/typescript/`
@@ -42,7 +45,7 @@ src/            — Source code (TypeScript)
 - `docs/04-slop-protocol-reference.md` — Agent-relevant protocol summary
 - `docs/05-language-evaluation.md` — Why TypeScript
 - `docs/13-meta-runtime.md` — Optional meta-runtime provider and skill-led self-evolution boundary
-- `docs/16-tui-plan.md` — TypeScript/OpenTUI TUI plan
+- `docs/16-tui-plan.md` — TypeScript/pi-tui TUI plan
 - `docs/archive/session-provider-phase-2-plan.md` — Archived Phase 2 session-provider sketch
 - `docs/ui-design-system.md` — UI design system ("Nocturnal Observer")
 

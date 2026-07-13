@@ -1,5 +1,4 @@
 import type { SloppyConfig } from "../../config/schema";
-import type { UiContributionManifest } from "../../session/plugins";
 
 export type FirstPartyPluginMetadata = {
   id: keyof SloppyConfig["plugins"] & string;
@@ -8,7 +7,6 @@ export type FirstPartyPluginMetadata = {
   defaultEnabled: boolean;
   providerIds?: string[];
   extensionNamespaces?: string[];
-  ui?: UiContributionManifest;
 };
 
 export const FIRST_PARTY_PLUGIN_MANIFEST = [
@@ -60,7 +58,6 @@ export const FIRST_PARTY_PLUGIN_MANIFEST = [
     defaultEnabled: false,
     description: "Optional topology and self-evolution provider.",
     providerIds: ["meta-runtime"],
-    ui: {},
   },
   {
     id: "web",

@@ -3,9 +3,10 @@
 // single place that ordering lives. Keep it a function, not a framework.
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
+import { createFirstPartyPluginAssembly } from "../plugins/first-party/catalog";
 import type { RegisteredProvider } from "../providers/registry";
-import { createFirstPartyProviders } from "../providers/registry";
 import type { ChildSessionFactory } from "../runtime/child-session";
+import { RuntimeServiceRegistry } from "../runtime/services";
 import { ConsumerHub } from "./consumer";
 import { RoleRegistry, type RuntimeContext, type RuntimeEvent } from "./role";
 
@@ -33,9 +34,14 @@ export async function bootstrapProviderRuntime(options: {
   roleRegistry?: RoleRegistry;
   llmProfileManager?: LlmProfileManager;
   childSessionFactory?: ChildSessionFactory;
+  services?: RuntimeServiceRegistry;
   collectSystemPromptFragments?: boolean;
 }): Promise<ProviderRuntimeBootstrap> {
-  const providers = options.providers ?? createFirstPartyProviders(options.config);
+  const assembly = options.providers
+    ? undefined
+    : createFirstPartyPluginAssembly(options.config, options.services);
+  const providers = options.providers ?? assembly?.providers ?? [];
+  const services = options.services ?? assembly?.services ?? new RuntimeServiceRegistry();
   const hub = new ConsumerHub(providers, options.config);
   options.onHubCreated?.(hub);
   await hub.connect();
@@ -50,6 +56,7 @@ export async function bootstrapProviderRuntime(options: {
     roleRegistry: options.roleRegistry ?? new RoleRegistry(),
     llmProfileManager: options.llmProfileManager,
     childSessionFactory: options.childSessionFactory,
+    services,
   };
 
   const runtimeStops: Array<{ stop(): void }> = [];

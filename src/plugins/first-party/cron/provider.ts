@@ -313,10 +313,6 @@ export class CronProvider {
     return { id, deleted: true };
   }
 
-  private listJobs(): CronJob[] {
-    return [...this.jobs.values()];
-  }
-
   private clearExpired(): { removed: number } {
     let removed = 0;
     for (const [id, job] of this.jobs.entries()) {
@@ -365,12 +361,6 @@ export class CronProvider {
             estimate: "instant",
           },
         ),
-        list_jobs: action({}, () => this.listJobs(), {
-          label: "List Jobs",
-          description: "Return all cron jobs with full details.",
-          idempotent: true,
-          estimate: "instant",
-        }),
         clear_expired: action({}, () => this.clearExpired(), {
           label: "Clear Expired",
           description: "Remove all completed and errored jobs.",

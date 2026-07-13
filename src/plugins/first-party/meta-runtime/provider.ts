@@ -1,8 +1,9 @@
 import { createSlopServer, type SlopServer } from "@slop-ai/server";
 
-import type { ProviderRuntimeHub } from "../../../core/hub";
 import type { RuntimeEvent } from "../../../core/role";
 import { createApprovalRequiredError, ProviderApprovalManager } from "../../../providers/approvals";
+import { type RuntimeServiceKey, RuntimeServiceRegistry } from "../../../runtime/services";
+import { SKILLS_SERVICE } from "../service-keys";
 import { now } from "../shared/runtime-helpers";
 import {
   emptySkillImportSummary,
@@ -94,7 +95,7 @@ export type {
 export class MetaRuntimeProvider {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
-  private hub: ProviderRuntimeHub | null = null;
+  private readonly services: RuntimeServiceRegistry;
   private globalRoot: string;
   private workspaceRoot: string;
   private layers: Record<MetaScope, MetaStateMaps> = {
@@ -116,7 +117,14 @@ export class MetaRuntimeProvider {
   private events: MetaEvent[] = [];
   private publishEvent: ((event: RuntimeEvent) => void) | null = null;
 
-  constructor(options: { globalRoot?: string; workspaceRoot?: string } = {}) {
+  constructor(
+    options: {
+      globalRoot?: string;
+      workspaceRoot?: string;
+      services?: RuntimeServiceRegistry;
+    } = {},
+  ) {
+    this.services = options.services ?? new RuntimeServiceRegistry();
     this.globalRoot = resolveMetaRuntimeRoot(options.globalRoot ?? "~/.sloppy/meta-runtime");
     this.workspaceRoot = resolveMetaRuntimeRoot(options.workspaceRoot ?? ".sloppy/meta-runtime");
 
@@ -179,9 +187,12 @@ export class MetaRuntimeProvider {
     this.server.stop();
   }
 
-  setHub(hub: ProviderRuntimeHub | null, publishEvent?: (event: RuntimeEvent) => void): void {
-    this.hub = hub;
+  setEventPublisher(publishEvent?: (event: RuntimeEvent) => void): void {
     this.publishEvent = publishEvent ?? null;
+  }
+
+  bindRuntimeService<T>(key: RuntimeServiceKey<T>, service: T): void {
+    this.services.bind(key, service);
   }
 
   private load(): void {
@@ -337,9 +348,7 @@ export class MetaRuntimeProvider {
     if (activeSkillVersions.length === 0) {
       return [];
     }
-    if (!this.hub) {
-      throw new Error("Cannot export active skill contents without an attached skills provider.");
-    }
+    this.services.require(SKILLS_SERVICE, "Skills");
 
     const bySkillId = new Map<string, SkillVersion>();
     for (const skillVersion of activeSkillVersions) {
@@ -382,19 +391,7 @@ export class MetaRuntimeProvider {
   }
 
   private async invokeSkillView(name: string, filePath?: string): Promise<Record<string, unknown>> {
-    if (!this.hub) {
-      throw new Error("Cannot read skills without an attached runtime hub.");
-    }
-    const result = await this.hub.invoke("skills", "/session", "skill_view", {
-      name,
-      ...(filePath ? { file_path: filePath } : {}),
-    });
-    if (result.status === "error") {
-      throw new Error(result.error?.message ?? `Failed to read skill ${name}.`);
-    }
-    return result.data && typeof result.data === "object" && !Array.isArray(result.data)
-      ? (result.data as Record<string, unknown>)
-      : {};
+    return this.services.require(SKILLS_SERVICE, "Skills").viewSkill(name, filePath);
   }
 
   private async importBundle(
@@ -428,7 +425,9 @@ export class MetaRuntimeProvider {
         ? await this.planBundleSkillImport(bundle, skillOptions)
         : emptySkillImportSummary();
       const requiredSkillIds = this.requiredBundleSkillIds(bundle);
-      const existingSkillIds = this.hub ? await this.listExistingSkillNames() : new Set<string>();
+      const existingSkillIds = this.services.get(SKILLS_SERVICE)
+        ? await this.listExistingSkillNames()
+        : new Set<string>();
       const plannedSkillIds = new Set([...existingSkillIds, ...skills.created, ...skills.skipped]);
       const missing = [...requiredSkillIds].filter((skillId) => !plannedSkillIds.has(skillId));
       return {
@@ -503,24 +502,23 @@ export class MetaRuntimeProvider {
     if (bundle.skills.length === 0) {
       return summary;
     }
-    if (!this.hub) {
-      throw new Error("Cannot import bundled skills without an attached skills provider.");
-    }
+    const skillsService = this.services.require(SKILLS_SERVICE, "Skills");
     const plannedCreates = new Set(plan.created);
     for (const skill of bundle.skills) {
       if (!plannedCreates.has(skill.name)) {
         continue;
       }
-      const createResult = await this.hub.invoke("skills", "/session", "skill_manage", {
-        operation: "create",
-        name: skill.name,
-        scope: options.skillScope,
-        content: skill.content,
-      });
-      if (createResult.status === "error") {
+      try {
+        await skillsService.manageSkill({
+          operation: "create",
+          name: skill.name,
+          scope: options.skillScope,
+          content: skill.content,
+        });
+      } catch (error) {
         summary.failed.push({
           name: skill.name,
-          reason: createResult.error?.message ?? "Skill import failed.",
+          reason: error instanceof Error ? error.message : "Skill import failed.",
         });
         continue;
       }
@@ -529,17 +527,21 @@ export class MetaRuntimeProvider {
         if (options.skillScope === "session") {
           continue;
         }
-        const writeResult = await this.hub.invoke("skills", "/session", "skill_manage", {
-          operation: "write_file",
-          name: skill.name,
-          scope: options.skillScope,
-          file_path: file.path,
-          file_content: file.content,
-        });
-        if (writeResult.status === "error") {
+        try {
+          await skillsService.manageSkill({
+            operation: "write_file",
+            name: skill.name,
+            scope: options.skillScope,
+            file_path: file.path,
+            file_content: file.content,
+          });
+        } catch (error) {
           summary.failed.push({
             name: skill.name,
-            reason: writeResult.error?.message ?? `Failed to import supporting file ${file.path}.`,
+            reason:
+              error instanceof Error
+                ? error.message
+                : `Failed to import supporting file ${file.path}.`,
           });
         }
       }
@@ -555,7 +557,7 @@ export class MetaRuntimeProvider {
     if (bundle.skills.length === 0) {
       return summary;
     }
-    if (!this.hub) {
+    if (!this.services.get(SKILLS_SERVICE)) {
       for (const skill of bundle.skills) {
         summary.failed.push({
           name: skill.name,
@@ -632,7 +634,7 @@ export class MetaRuntimeProvider {
     if (requiredSkillIds.size === 0) {
       return;
     }
-    if (!this.hub) {
+    if (!this.services.get(SKILLS_SERVICE)) {
       throw new Error(
         "Runtime bundle contains active skill versions, but no skills provider is attached; topology was not imported.",
       );
@@ -659,18 +661,12 @@ export class MetaRuntimeProvider {
   }
 
   private async listExistingSkillNames(): Promise<Set<string>> {
-    if (!this.hub) return new Set();
-    const tree = await this.hub
-      .queryState({ providerId: "skills", path: "/skills", depth: 2 })
-      .catch(() => null);
+    const service = this.services.get(SKILLS_SERVICE);
+    if (!service) return new Set();
+    const skills = await service.listSkills().catch(() => []);
     const names = new Set<string>();
-    for (const child of tree?.children ?? []) {
-      const value = child.properties?.name;
-      if (typeof value !== "string") continue;
-      names.add(value);
-      if (value.startsWith("[DANGEROUS] ")) {
-        names.add(value.slice("[DANGEROUS] ".length));
-      }
+    for (const skill of skills) {
+      names.add(skill.name);
     }
     return names;
   }
@@ -768,7 +764,7 @@ export class MetaRuntimeProvider {
     validateTopologyChanges(proposal.ops, this.mergedMaps());
     const activatedSkillVersions = await activateLinkedSkills(
       proposal,
-      this.hub,
+      this.services.get(SKILLS_SERVICE) ?? null,
       (skillVersionId, reason) =>
         this.recordSkillActivationFailure(proposal, skillVersionId, reason),
     );
@@ -837,7 +833,6 @@ export class MetaRuntimeProvider {
   private experimentContext(): MetaRuntimeExperimentContext {
     return {
       approvals: this.approvals,
-      hub: this.hub,
       layers: this.layers,
       proposals: this.proposals,
       experiments: this.experiments,
@@ -904,7 +899,7 @@ export class MetaRuntimeProvider {
     const { source, message, envelope, fanout } = params;
     return dispatchMetaRuntimeRoute(
       {
-        hub: this.hub,
+        services: this.services,
         routes: listById(this.routes),
         agents: this.agents,
         profiles: this.profiles,
@@ -935,8 +930,6 @@ export class MetaRuntimeProvider {
           (proposal) => proposal.status === "proposed",
         ).length,
       },
-      globalRoot: this.globalRoot,
-      workspaceRoot: this.workspaceRoot,
       proposeChange: (params) => this.proposeChange(params),
       dispatchRoute: (params) => this.dispatchRoute(params),
       createExperiment: (params) => this.createExperiment(params),

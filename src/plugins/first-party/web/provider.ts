@@ -215,20 +215,33 @@ export class WebProvider {
   private buildSearchDescriptor() {
     if (!this.lastSearch) {
       return {
-        type: "context",
+        type: "collection",
         props: { query: null, result_count: 0 },
         summary: "No search has been performed yet.",
+        items: [],
       };
     }
 
     return {
-      type: "context",
+      type: "collection",
       props: {
         query: this.lastSearch.query,
         result_count: this.lastSearch.results.length,
-        results: this.lastSearch.results,
       },
       summary: `Search results for: ${this.lastSearch.query}`,
+      items: this.lastSearch.results.map((result, index) => ({
+        id: `result-${index + 1}`,
+        props: result,
+        summary: result.snippet || result.title,
+        actions: {
+          read: action(async () => this.doRead(result.url, 32768), {
+            label: "Read Result",
+            description: `Read ${result.url}.`,
+            idempotent: true,
+            estimate: "slow",
+          }),
+        },
+      })),
     };
   }
 

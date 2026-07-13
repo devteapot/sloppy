@@ -1,9 +1,4 @@
-/**
- * Standalone WS gateway: exposes a SLOP supervisor and its sessions over a
- * single WebSocket port. `/supervisor` relays the supervisor's unix socket;
- * `/sessions/<id>` relays that session's unix socket. The gateway owns all
- * remote-exposure policy (auth, origins) — the session core stays unix-only.
- */
+/** Standalone WebSocket gateway for the typed Session and Supervisor APIs. */
 
 import { createDefaultAuthorizer, type GatewayAuthorizer } from "./auth";
 import {
@@ -19,13 +14,9 @@ export type WsGatewayOptions = {
   supervisorSocketPath: string;
   port: number;
   host?: string;
-  /** Path that relays the supervisor socket. Default: "/supervisor". */
-  supervisorPath?: string;
-  /** Path prefix for per-session relays. Default: "/sessions/". */
-  sessionsPathPrefix?: string;
   /** Display/discovery URL override, e.g. a TLS-terminated proxy address. */
   publicUrl?: string;
-  /** Serve /.well-known/slop. Default: true. */
+  /** Serve /.well-known/sloppy. Default: true. */
   discovery?: boolean;
   /** Replaces the default token/origin/loopback policy entirely when set. */
   authorize?: GatewayAuthorizer;
@@ -44,24 +35,13 @@ export type WsGateway = {
 };
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_SUPERVISOR_PATH = "/supervisor";
-const DEFAULT_SESSIONS_PREFIX = "/sessions/";
-const GATEWAY_CAPABILITIES = [
-  "state",
-  "patches",
-  "affordances",
-  "attention",
-  "windowing",
-  "async",
-  "content_refs",
-];
+const DEFAULT_SUPERVISOR_PATH = "/api/supervisor";
+const DEFAULT_SESSIONS_PREFIX = "/api/sessions/";
 
 export async function startWsGateway(options: WsGatewayOptions): Promise<WsGateway> {
   const host = options.host ?? DEFAULT_HOST;
-  const supervisorPath = normalizeWebSocketPath(options.supervisorPath, DEFAULT_SUPERVISOR_PATH);
-  const sessionsPrefix = normalizeSessionsPrefix(
-    options.sessionsPathPrefix ?? DEFAULT_SESSIONS_PREFIX,
-  );
+  const supervisorPath = DEFAULT_SUPERVISOR_PATH;
+  const sessionsPrefix = DEFAULT_SESSIONS_PREFIX;
   const authorize =
     options.authorize ??
     createDefaultAuthorizer({ token: options.token, allowedOrigins: options.allowedOrigins });
@@ -71,7 +51,7 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
     );
   }
 
-  const routes = new SessionRouteTable({ supervisorSocketPath: options.supervisorSocketPath });
+  const routes = new SessionRouteTable(options.supervisorSocketPath);
   routes.start();
   const relays = new Set<Relay>();
 
@@ -84,9 +64,7 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
 
       if (isUpgrade && url.pathname === supervisorPath) {
         const rejected = await authorize(req, bunServer);
-        if (rejected) {
-          return rejected;
-        }
+        if (rejected) return rejected;
         return upgradeWithData(bunServer, req, {
           upstreamSocketPath: options.supervisorSocketPath,
           unavailableClose: RELAY_CLOSE.supervisorUnavailable,
@@ -95,17 +73,11 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
 
       if (isUpgrade && url.pathname.startsWith(sessionsPrefix)) {
         const rejected = await authorize(req, bunServer);
-        if (rejected) {
-          return rejected;
-        }
+        if (rejected) return rejected;
         const segment = url.pathname.slice(sessionsPrefix.length);
-        if (!segment || segment.includes("/")) {
-          return new Response("Not found", { status: 404 });
-        }
+        if (!segment || segment.includes("/")) return new Response("Not found", { status: 404 });
         const route = await routes.resolve(safeDecode(segment));
-        if (route.status === "unknown") {
-          return new Response("Unknown session", { status: 404 });
-        }
+        if (route.status === "unknown") return new Response("Unknown session", { status: 404 });
         if (route.status === "dormant") {
           return upgradeWithData(bunServer, req, {
             upstreamSocketPath: "",
@@ -119,16 +91,16 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
         });
       }
 
-      if (options.discovery !== false && url.pathname === "/.well-known/slop") {
+      if (options.discovery !== false && url.pathname === "/.well-known/sloppy") {
         return Response.json({
           id: "sloppy-ws-gateway",
           name: "Sloppy WS Gateway",
-          slop_version: "0.1",
+          protocol: "sloppy.client",
+          protocolVersion: 1,
           transport: { type: "ws", url: gatewayUrl() },
-          capabilities: GATEWAY_CAPABILITIES,
           paths: {
             supervisor: supervisorPath,
-            session_template: `${sessionsPrefix}{session_id}`,
+            sessionTemplate: `${sessionsPrefix}{sessionId}`,
           },
         });
       }
@@ -178,17 +150,13 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
     host,
     port,
     sessionUrl(sessionId: string): string {
-      const sessionPath = `${sessionsPrefix}${encodeURIComponent(sessionId)}`;
-      if (options.publicUrl) {
-        const url = new URL(options.publicUrl);
-        // A proxied public URL may mount the gateway under a prefix; keep it.
-        const prefix = url.pathname.endsWith(supervisorPath)
-          ? url.pathname.slice(0, -supervisorPath.length)
-          : "";
-        url.pathname = `${prefix}${sessionPath}`;
-        return url.toString();
-      }
-      return formatWebSocketUrl({ host, path: sessionPath }, port);
+      return formatGatewayPathUrl(
+        options.publicUrl,
+        host,
+        port,
+        supervisorPath,
+        `${sessionsPrefix}${encodeURIComponent(sessionId)}`,
+      );
     },
     async close(): Promise<void> {
       routes.stop();
@@ -201,6 +169,22 @@ export async function startWsGateway(options: WsGatewayOptions): Promise<WsGatew
   };
 }
 
+function formatGatewayPathUrl(
+  publicUrl: string | undefined,
+  host: string,
+  port: number,
+  supervisorPath: string,
+  path: string,
+): string {
+  if (!publicUrl) return formatWebSocketUrl({ host, path }, port);
+  const url = new URL(publicUrl);
+  const prefix = url.pathname.endsWith(supervisorPath)
+    ? url.pathname.slice(0, -supervisorPath.length)
+    : "";
+  url.pathname = `${prefix}${path}`;
+  return url.toString();
+}
+
 function upgradeWithData(
   server: Bun.Server<GatewaySocketData>,
   req: Request,
@@ -211,24 +195,12 @@ function upgradeWithData(
     : new Response("WebSocket upgrade failed", { status: 500 });
 }
 
-export function normalizeWebSocketPath(path: string | undefined, fallback: string): string {
-  if (!path || path === "/") {
-    return fallback;
-  }
-  return path.startsWith("/") ? path : `/${path}`;
-}
-
 function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
   } catch {
     return value;
   }
-}
-
-function normalizeSessionsPrefix(prefix: string): string {
-  const withLeading = prefix.startsWith("/") ? prefix : `/${prefix}`;
-  return withLeading.endsWith("/") ? withLeading : `${withLeading}/`;
 }
 
 export function formatWebSocketUrl(

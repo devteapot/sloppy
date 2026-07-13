@@ -5,6 +5,7 @@ import type { ProviderRuntimeHub } from "../../../core/hub";
 import { ProviderApprovalManager } from "../../../providers/approvals";
 import { parseOptionalRouteEnvelope, type RouteMessageEnvelope } from "../shared/message-envelope";
 import { type ExecutorBinding, executorBindingSchema } from "./runtime/executor-binding";
+import type { DelegationService, DelegationSpawnRequest, DelegationSpawnResult } from "./service";
 
 type AgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "closed";
 
@@ -105,7 +106,7 @@ export type ChildApprovalSnapshot = {
   dangerous?: boolean;
 };
 
-export class DelegationProvider {
+export class DelegationProvider implements DelegationService {
   readonly server: SlopServer;
   readonly approvals: ProviderApprovalManager;
   private maxAgents: number;
@@ -313,19 +314,8 @@ export class DelegationProvider {
     this.runnerFactory = factory;
   }
 
-  private spawnAgent(
-    name: string,
-    goal: string,
-    executor?: ExecutorBinding,
-    capabilityMasks?: RuntimeCapabilityMask[],
-    routeEnvelope?: RouteMessageEnvelope,
-  ): {
-    id: string;
-    status: AgentStatus;
-    created_at: string;
-    execution_mode: string;
-    session_provider_id?: string;
-  } {
+  spawnAgent(request: DelegationSpawnRequest): DelegationSpawnResult {
+    const { name, goal, executor, capabilityMasks, routeEnvelope } = request;
     const active = [...this.agents.values()].filter(
       (a) => a.status === "pending" || a.status === "running",
     ).length;
@@ -575,20 +565,21 @@ export class DelegationProvider {
             },
           },
           async ({ name, goal, executor, capabilityMasks, routeEnvelope }) =>
-            this.spawnAgent(
-              name as string,
-              goal as string,
-              executor === undefined || executor === null
-                ? undefined
-                : executorBindingSchema.parse(executor),
-              Array.isArray(capabilityMasks)
+            this.spawnAgent({
+              name: name as string,
+              goal: goal as string,
+              executor:
+                executor === undefined || executor === null
+                  ? undefined
+                  : executorBindingSchema.parse(executor),
+              capabilityMasks: Array.isArray(capabilityMasks)
                 ? (capabilityMasks as RuntimeCapabilityMask[])
                 : undefined,
-              parseOptionalRouteEnvelope(routeEnvelope, {
+              routeEnvelope: parseOptionalRouteEnvelope(routeEnvelope, {
                 fallbackSource: "agent",
                 fallbackBody: goal as string,
               }),
-            ),
+            }),
           {
             label: "Spawn Agent",
             description:
@@ -606,13 +597,12 @@ export class DelegationProvider {
       props: {
         id: agent.id,
         name: agent.name,
-        goal: agent.goal,
+        goal_preview: resultPreview(agent.goal, 240),
         status: agent.status,
         model: describeExecutorModel(agent.executor),
         execution_mode: describeExecutionMode(agent.executor),
-        executor: agent.executor,
-        capability_masks: agent.capabilityMasks,
-        route_envelope: agent.routeEnvelope,
+        capability_mask_count: agent.capabilityMasks?.length ?? 0,
+        route_envelope_id: agent.routeEnvelope?.id,
         created_at: agent.created_at,
         completed_at: agent.completed_at,
         result_preview: agent.result ? resultPreview(agent.result) : undefined,
@@ -621,9 +611,28 @@ export class DelegationProvider {
         session_provider_closed: agent.session_provider_closed === true,
         turn_state: agent.turn_state,
         turn_phase: agent.turn_phase,
-        pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
+        pending_approval_count: this.approvalMirrors.get(agent.id)?.pending.length ?? 0,
       },
       actions: {
+        inspect: action(
+          async () => ({
+            id: agent.id,
+            name: agent.name,
+            goal: agent.goal,
+            status: agent.status,
+            executor: agent.executor,
+            capability_masks: agent.capabilityMasks,
+            route_envelope: agent.routeEnvelope,
+            pending_approvals: this.approvalMirrors.get(agent.id)?.pending ?? [],
+          }),
+          {
+            label: "Inspect Agent",
+            description:
+              "Return full goal, execution binding, capability masks, route envelope, and pending approvals on demand.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
         ...(agent.result
           ? {
               get_result: action(async () => this.getResult(agent.id), {

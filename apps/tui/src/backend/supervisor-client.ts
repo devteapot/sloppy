@@ -1,13 +1,12 @@
+import type { ResultMessage } from "@slop-ai/consumer";
 import {
-  NodeSocketClientTransport,
-  type ResultMessage,
-  SlopConsumer,
-  type SlopNode,
-  WebSocketClientTransport,
-} from "@slop-ai/consumer";
+  type SupervisorClientSnapshot as ApiSupervisorSnapshot,
+  type PublicSessionRecord,
+  type ScopeRecord,
+  SupervisorApiClient,
+} from "sloppy/session";
 
 import {
-  connectWithTimeout,
   DEFAULT_CONNECT_TIMEOUT_MS,
   type ReconnectOptions,
   ReconnectScheduler,
@@ -78,58 +77,9 @@ export type SessionSupervisorClientOptions = {
   reconnect?: ReconnectOptions | false;
 };
 
-const SUBSCRIPTIONS: Array<{ path: string; depth: number }> = [
-  { path: "/session", depth: 1 },
-  { path: "/sessions", depth: 2 },
-  { path: "/scopes", depth: 2 },
-];
-
-function props(node: SlopNode | null | undefined): Record<string, unknown> {
-  return (node?.properties ?? {}) as Record<string, unknown>;
-}
-
-function children(node: SlopNode | null | undefined): SlopNode[] {
-  return node?.children ?? [];
-}
-
-function stringProp(props: Record<string, unknown>, name: string, fallback = ""): string {
-  const value = props[name];
-  return typeof value === "string" ? value : fallback;
-}
-
-function optionalStringProp(props: Record<string, unknown>, name: string): string | undefined {
-  const value = props[name];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function booleanProp(props: Record<string, unknown>, name: string): boolean {
-  return props[name] === true;
-}
-
-function numberProp(props: Record<string, unknown>, name: string, fallback = 0): number {
-  const value = props[name];
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function approvalModeProp(data: Record<string, unknown>): ApprovalMode {
-  const value =
-    optionalStringProp(data, "approvalMode") ?? optionalStringProp(data, "approval_mode");
-  if (value === "normal" || value === "auto") {
-    return value;
-  }
-  return "normal";
-}
-
-function affordanceActions(node: SlopNode): Set<string> {
-  return new Set(node.affordances?.map((affordance) => affordance.action) ?? []);
-}
-
-function emptySnapshot(socketPath: string): SupervisorSnapshot {
+function emptySnapshot(endpoint: string): SupervisorSnapshot {
   return {
-    connection: {
-      status: "idle",
-      socketPath,
-    },
+    connection: { status: "idle", socketPath: endpoint },
     autoCloseEnabled: false,
     clientLeaseCount: 0,
     sessions: [],
@@ -137,91 +87,79 @@ function emptySnapshot(socketPath: string): SupervisorSnapshot {
   };
 }
 
-function mapSessionItem(node: SlopNode): SupervisorSessionItem {
-  const p = props(node);
-  const actions = affordanceActions(node);
-  return mapSessionRecord(p, {
-    id: stringProp(p, "session_id", node.id),
-    isResumeSession: booleanProp(p, "is_resume_session"),
-    canSwitch: actions.has("select_session"),
-    canStop: actions.has("stop_session"),
-  });
-}
-
-function mapScopeItem(node: SlopNode): SupervisorScopeItem {
-  const p = props(node);
-  return {
-    id: stringProp(p, "id", node.id),
-    name: stringProp(p, "name", node.id),
-    description: optionalStringProp(p, "description"),
-    root: stringProp(p, "root"),
-    workspaceId: stringProp(p, "workspace_id"),
-    projectId: optionalStringProp(p, "project_id"),
-    canCreate: affordanceActions(node).has("create_session"),
-  };
-}
-
-function resultRecord(result: ResultMessage): Record<string, unknown> {
-  if (result.status === "error") {
-    throw new Error(result.error?.message ?? "Supervisor action failed.");
-  }
-  if (result.status !== "ok" || !result.data || typeof result.data !== "object") {
-    return {};
-  }
-  return result.data as Record<string, unknown>;
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function mapSessionRecord(
-  data: Record<string, unknown>,
-  overrides: Partial<SupervisorSessionItem> & Pick<SupervisorSessionItem, "id">,
+  record: PublicSessionRecord,
+  resumeSessionId?: string,
 ): SupervisorSessionItem {
+  const clientEndpoint = record.socketPath ?? "";
+  const runtimeStatus = record.runtimeStatus;
   return {
-    id: overrides.id,
-    title: optionalStringProp(data, "title"),
-    socketPath: stringProp(data, "socketPath", stringProp(data, "socket_path")),
-    runtimeStatus:
-      stringProp(data, "runtimeStatus", stringProp(data, "runtime_status")) === "dormant"
-        ? "dormant"
-        : "live",
-    workspaceRoot:
-      optionalStringProp(data, "workspaceRoot") ?? optionalStringProp(data, "workspace_root"),
-    workspaceId:
-      optionalStringProp(data, "workspaceId") ?? optionalStringProp(data, "workspace_id"),
-    projectId: optionalStringProp(data, "projectId") ?? optionalStringProp(data, "project_id"),
-    launchScopeKey:
-      optionalStringProp(data, "launchScopeKey") ?? optionalStringProp(data, "launch_scope_key"),
-    launchRoot: optionalStringProp(data, "launchRoot") ?? optionalStringProp(data, "launch_root"),
-    turnState: optionalStringProp(data, "turnState") ?? optionalStringProp(data, "turn_state"),
-    turnMessage:
-      optionalStringProp(data, "turnMessage") ?? optionalStringProp(data, "turn_message"),
-    goalStatus: optionalStringProp(data, "goalStatus") ?? optionalStringProp(data, "goal_status"),
-    goalObjective:
-      optionalStringProp(data, "goalObjective") ?? optionalStringProp(data, "goal_objective"),
-    goalTotalTokens: numberProp(data, "goalTotalTokens", numberProp(data, "goal_total_tokens")),
-    queuedCount: numberProp(data, "queuedCount", numberProp(data, "queued_count")),
-    pendingApprovalCount: numberProp(
-      data,
-      "pendingApprovalCount",
-      numberProp(data, "pending_approval_count"),
-    ),
-    runningTaskCount: numberProp(data, "runningTaskCount", numberProp(data, "running_task_count")),
-    approvalMode: approvalModeProp(data),
-    lastActivityAt:
-      optionalStringProp(data, "lastActivityAt") ?? optionalStringProp(data, "last_activity_at"),
-    isResumeSession: overrides.isResumeSession ?? booleanProp(data, "is_resume_session"),
-    createdAt: optionalStringProp(data, "createdAt") ?? optionalStringProp(data, "created_at"),
-    canSwitch: overrides.canSwitch ?? true,
-    canStop: overrides.canStop ?? true,
+    id: record.sessionId,
+    title: stringValue(record.title),
+    socketPath: clientEndpoint,
+    runtimeStatus,
+    workspaceRoot: record.workspaceRoot,
+    workspaceId: record.workspaceId,
+    projectId: record.projectId,
+    launchScopeKey: record.launchScopeKey,
+    launchRoot: record.launchRoot,
+    turnState: record.turnState,
+    turnMessage: record.turnMessage,
+    goalStatus: record.goalStatus,
+    goalObjective: record.goalObjective,
+    goalTotalTokens: record.goalTotalTokens ?? 0,
+    queuedCount: record.queuedCount ?? 0,
+    pendingApprovalCount: record.pendingApprovalCount ?? 0,
+    runningTaskCount: record.runningTaskCount ?? 0,
+    approvalMode: record.approvalMode === "auto" ? "auto" : "normal",
+    lastActivityAt: record.lastActivityAt,
+    isResumeSession: record.isResumeSession || record.sessionId === resumeSessionId,
+    createdAt: record.createdAt,
+    canSwitch: true,
+    canStop: runtimeStatus === "live",
+  };
+}
+
+function mapScope(scope: ScopeRecord): SupervisorScopeItem {
+  return {
+    id: scope.id,
+    name: scope.name,
+    root: scope.root,
+    workspaceId: scope.workspaceId,
+    projectId: scope.projectId,
+    description: scope.description,
+    canCreate: true,
+  };
+}
+
+function mapSnapshot(
+  snapshot: ApiSupervisorSnapshot,
+  endpoint: string,
+  connection: SupervisorSnapshot["connection"],
+): SupervisorSnapshot {
+  const resumeSessionId = snapshot.supervisor.resumeSessionId ?? undefined;
+  const sessions = snapshot.sessions.map((record) => mapSessionRecord(record, resumeSessionId));
+  return {
+    connection: { ...connection, socketPath: endpoint },
+    resumeSessionId,
+    resumeSocketPath: sessions.find((session) => session.id === resumeSessionId)?.socketPath,
+    autoCloseEnabled: snapshot.supervisor.autoCloseEnabled,
+    clientLeaseCount: snapshot.supervisor.clientLeaseCount,
+    sessions,
+    scopes: snapshot.scopes.map(mapScope),
   };
 }
 
 export class SessionSupervisorClient {
-  private consumer: SlopConsumer | null = null;
+  private api: SupervisorApiClient | null = null;
   private connectPromise: Promise<SupervisorSnapshot> | null = null;
   private snapshot: SupervisorSnapshot;
   private listeners = new Set<SupervisorClientListener>();
-  private pathBySubscriptionId = new Map<string, string>();
-
+  private readonly endpoint: string;
   private readonly leaseLabel: string;
   private readonly connectTimeoutMs: number;
   private readonly reconnect: ReconnectScheduler | null;
@@ -231,10 +169,11 @@ export class SessionSupervisorClient {
     readonly socketPath: string,
     options: SessionSupervisorClientOptions = {},
   ) {
+    this.endpoint = socketPath;
     this.leaseLabel = options.leaseLabel ?? "tui";
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.reconnect = options.reconnect === false ? null : new ReconnectScheduler(options.reconnect);
-    this.snapshot = emptySnapshot(socketPath);
+    this.snapshot = emptySnapshot(this.endpoint);
   }
 
   getSnapshot(): SupervisorSnapshot {
@@ -244,15 +183,11 @@ export class SessionSupervisorClient {
   on(listener: SupervisorClientListener): () => void {
     this.listeners.add(listener);
     this.dispatch(listener, { type: "snapshot", snapshot: this.snapshot });
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return () => this.listeners.delete(listener);
   }
 
   async connect(): Promise<SupervisorSnapshot> {
-    if (this.connectPromise) {
-      return this.connectPromise;
-    }
+    if (this.connectPromise) return this.connectPromise;
     this.connectPromise = this.connectInternal().finally(() => {
       this.connectPromise = null;
     });
@@ -262,16 +197,10 @@ export class SessionSupervisorClient {
   disconnect(): void {
     this.suppressReconnect = true;
     this.reconnect?.reset();
-    this.consumer?.disconnect();
-    this.consumer = null;
-    this.pathBySubscriptionId.clear();
-    this.updateSnapshot({
-      ...this.snapshot,
-      connection: {
-        ...this.snapshot.connection,
-        status: "disconnected",
-      },
-    });
+    const api = this.api;
+    this.api = null;
+    api?.disconnect();
+    this.updateConnection("disconnected");
   }
 
   async createSession(
@@ -283,211 +212,119 @@ export class SessionSupervisorClient {
       approvalMode?: ApprovalMode;
     } = {},
   ): Promise<SupervisorSessionItem> {
-    const result = await this.invoke("/session", "create_session", {
-      ...(input.workspaceId && { workspace_id: input.workspaceId }),
-      ...(input.projectId && { project_id: input.projectId }),
-      ...(input.title && { title: input.title }),
-      ...(input.sessionId && { session_id: input.sessionId }),
-      ...(input.approvalMode && { approval_mode: input.approvalMode }),
+    const record = await this.ensureApi().createSession({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      title: input.title,
+      sessionId: input.sessionId,
+      approvalMode: input.approvalMode,
     });
-    const data = resultRecord(result);
-    return mapSessionRecord(data, {
-      id: stringProp(data, "sessionId", stringProp(data, "session_id")),
-      isResumeSession: true,
-      canSwitch: true,
-      canStop: true,
-    });
+    return mapSessionRecord(record, record.sessionId);
   }
 
   async createSessionInScope(
     scopeId: string,
-    input: {
-      title?: string;
-      sessionId?: string;
-      approvalMode?: ApprovalMode;
-    } = {},
+    input: { title?: string; sessionId?: string; approvalMode?: ApprovalMode } = {},
   ): Promise<SupervisorSessionItem> {
-    const result = await this.invoke(`/scopes/${encodeURIComponent(scopeId)}`, "create_session", {
-      ...(input.title && { title: input.title }),
-      ...(input.sessionId && { session_id: input.sessionId }),
-      ...(input.approvalMode && { approval_mode: input.approvalMode }),
+    const scope = this.snapshot.scopes.find((candidate) => candidate.id === scopeId);
+    if (!scope) throw new Error(`Unknown session scope: ${scopeId}`);
+    const record = await this.ensureApi().createScopedSession({
+      workspaceId: scope.workspaceId,
+      projectId: scope.projectId,
+      title: input.title,
+      sessionId: input.sessionId,
+      approvalMode: input.approvalMode,
     });
-    const data = resultRecord(result);
-    return mapSessionRecord(data, {
-      id: stringProp(data, "sessionId", stringProp(data, "session_id")),
-      isResumeSession: true,
-      canSwitch: true,
-      canStop: true,
-    });
+    return mapSessionRecord(record, record.sessionId);
   }
 
-  async reloadConfig(): Promise<ResultMessage> {
-    return this.invoke("/session", "reload_config");
+  reloadConfig(): Promise<ResultMessage> {
+    return this.call(() => this.ensureApi().reloadConfig());
   }
 
   async switchSession(sessionId: string): Promise<SupervisorSessionItem> {
-    const result = await this.invoke(
-      `/sessions/${encodeURIComponent(sessionId)}`,
-      "select_session",
-    );
-    const data = resultRecord(result);
-    return mapSessionRecord(data, {
-      id: stringProp(data, "sessionId", stringProp(data, "session_id", sessionId)),
-      isResumeSession: true,
-      canSwitch: true,
-      canStop: true,
-    });
+    const record = await this.ensureApi().selectSession(sessionId);
+    return mapSessionRecord(record, sessionId);
   }
 
-  async stopSession(sessionId: string): Promise<ResultMessage> {
-    const result = await this.invoke(`/sessions/${encodeURIComponent(sessionId)}`, "stop_session");
-    resultRecord(result);
-    return result;
+  stopSession(sessionId: string): Promise<ResultMessage> {
+    return this.call(() => this.ensureApi().stopSession(sessionId));
   }
 
-  async registerClientLease(selectedSessionId?: string): Promise<ResultMessage> {
-    return this.invoke("/session", "register_client_lease", {
-      label: this.leaseLabel,
-      ...(selectedSessionId && { selected_session_id: selectedSessionId }),
-    });
+  registerClientLease(selectedSessionId?: string): Promise<ResultMessage> {
+    return this.call(() => this.ensureApi().registerLease(selectedSessionId, this.leaseLabel));
   }
 
-  async updateClientLease(selectedSessionId?: string): Promise<ResultMessage> {
-    return this.invoke("/session", "update_client_lease", {
-      label: this.leaseLabel,
-      ...(selectedSessionId && { selected_session_id: selectedSessionId }),
-    });
+  updateClientLease(selectedSessionId?: string): Promise<ResultMessage> {
+    return this.call(() => this.ensureApi().updateLease(selectedSessionId, this.leaseLabel));
   }
 
-  async unregisterClientLease(): Promise<ResultMessage> {
-    return this.invoke("/session", "unregister_client_lease");
+  unregisterClientLease(): Promise<ResultMessage> {
+    return this.call(() => this.ensureApi().unregisterLease());
   }
 
   private async connectInternal(): Promise<SupervisorSnapshot> {
-    this.consumer?.disconnect();
-    this.consumer = null;
-    this.pathBySubscriptionId.clear();
-    this.updateSnapshot({
-      ...this.snapshot,
-      connection: {
-        ...this.snapshot.connection,
-        status: "connecting",
-        error: undefined,
-      },
-    });
-
+    const previous = this.api;
+    this.api = null;
+    previous?.disconnect();
+    this.updateConnection("connecting", undefined);
     try {
-      const consumer = new SlopConsumer(createTransportFromEndpoint(this.socketPath));
-      this.consumer = consumer;
-      await connectWithTimeout(consumer, this.connectTimeoutMs, this.socketPath);
+      const api = new SupervisorApiClient(this.endpoint);
+      this.api = api;
+      api.onSnapshot((snapshot) => {
+        if (this.api !== api) return;
+        this.updateSnapshot(
+          mapSnapshot(snapshot, this.endpoint, {
+            status: "connected",
+            socketPath: this.endpoint,
+          }),
+        );
+      });
+      api.onDisconnect((error) => {
+        if (this.api !== api) return;
+        this.api = null;
+        if (error) this.emit({ type: "error", message: error.message });
+        if (this.suppressReconnect || !this.reconnect) this.updateConnection("disconnected");
+        else this.scheduleReconnect();
+      });
+      const initial = await api.connect(this.connectTimeoutMs);
       this.reconnect?.reset();
-      this.updateSnapshot({
-        ...this.snapshot,
-        connection: {
-          ...this.snapshot.connection,
-          status: "connected",
-          error: undefined,
-          reconnectAttempt: undefined,
-        },
-      });
-
-      consumer.on("patch", (subscriptionId: string) => {
-        const path = this.pathBySubscriptionId.get(subscriptionId);
-        const tree = consumer.getTree(subscriptionId);
-        if (path && tree) {
-          this.applyPath(path, tree);
-        }
-      });
-      consumer.on("disconnect", () => {
-        if (this.consumer !== consumer) {
-          return;
-        }
-        this.consumer = null;
-        this.pathBySubscriptionId.clear();
-        if (this.suppressReconnect || !this.reconnect) {
-          this.updateSnapshot({
-            ...this.snapshot,
-            connection: {
-              ...this.snapshot.connection,
-              status: "disconnected",
-            },
-          });
-          return;
-        }
-        this.scheduleReconnect();
-      });
-      consumer.onError((error) => {
-        this.emit({ type: "error", message: error.message });
-      });
-
-      for (const subscription of SUBSCRIPTIONS) {
-        const { id, snapshot } = await consumer.subscribe(subscription.path, subscription.depth);
-        this.pathBySubscriptionId.set(id, subscription.path);
-        this.applyPath(subscription.path, snapshot);
-      }
-
+      this.updateSnapshot(
+        mapSnapshot(initial, this.endpoint, { status: "connected", socketPath: this.endpoint }),
+      );
       return this.snapshot;
     } catch (error) {
+      const api = this.api;
+      this.api = null;
+      api?.disconnect();
       const message = error instanceof Error ? error.message : String(error);
-      this.updateSnapshot({
-        ...this.snapshot,
-        connection: {
-          ...this.snapshot.connection,
-          status: "error",
-          error: message,
-        },
-      });
+      this.updateConnection("error", message);
       throw error;
     }
   }
 
-  private async invoke(
-    path: string,
-    action: string,
-    params?: Record<string, unknown>,
-  ): Promise<ResultMessage> {
-    const result = await (await this.ensureConsumer()).invoke(path, action, params);
+  private ensureApi(): SupervisorApiClient {
+    if (!this.api) throw new Error("Supervisor client is not connected.");
+    return this.api;
+  }
+
+  private async call(run: () => Promise<unknown>): Promise<ResultMessage> {
+    const data = await run();
+    const result: ResultMessage = {
+      type: "result",
+      id: crypto.randomUUID(),
+      status: "ok",
+      data,
+    };
     this.emit({ type: "result", result });
     return result;
   }
 
-  private async ensureConsumer(): Promise<SlopConsumer> {
-    if (!this.consumer) {
-      await this.connect();
-    }
-    if (!this.consumer) {
-      throw new Error("Supervisor client is not connected.");
-    }
-    return this.consumer;
-  }
-
-  private applyPath(path: string, node: SlopNode): void {
-    if (path === "/session") {
-      const p = props(node);
-      this.updateSnapshot({
-        ...this.snapshot,
-        resumeSessionId: optionalStringProp(p, "resume_session_id"),
-        resumeSocketPath: optionalStringProp(p, "resume_socket_path"),
-        autoCloseEnabled: booleanProp(p, "auto_close_enabled"),
-        clientLeaseCount: numberProp(p, "client_lease_count"),
-      });
-      return;
-    }
-
-    if (path === "/sessions") {
-      this.updateSnapshot({
-        ...this.snapshot,
-        sessions: children(node).map(mapSessionItem),
-      });
-      return;
-    }
-
-    if (path === "/scopes") {
-      this.updateSnapshot({
-        ...this.snapshot,
-        scopes: children(node).map(mapScopeItem),
-      });
-    }
+  private updateConnection(status: ConnectionStatus, error?: string): void {
+    this.updateSnapshot({
+      ...this.snapshot,
+      connection: { ...this.snapshot.connection, status, error },
+    });
   }
 
   private updateSnapshot(snapshot: SupervisorSnapshot): void {
@@ -496,32 +333,19 @@ export class SessionSupervisorClient {
   }
 
   private scheduleReconnect(): void {
-    if (!this.reconnect) {
-      return;
-    }
+    if (!this.reconnect) return;
     const scheduled = this.reconnect.schedule(() => {
       this.connect().catch(() => {
-        // connectInternal already published status "error"; keep retrying
-        // until the budget runs out.
-        if (!this.suppressReconnect) {
-          this.scheduleReconnect();
-        }
+        if (!this.suppressReconnect) this.scheduleReconnect();
       });
     });
     if (!scheduled) {
       const attempts = this.reconnect.attemptCount;
       this.reconnect.reset();
-      this.updateSnapshot({
-        ...this.snapshot,
-        connection: {
-          ...this.snapshot.connection,
-          status: "disconnected",
-          reconnectAttempt: undefined,
-        },
-      });
+      this.updateConnection("disconnected");
       this.emit({
         type: "error",
-        message: `Lost connection to ${this.socketPath}; gave up after ${attempts} attempts.`,
+        message: `Lost connection to ${this.endpoint}; gave up after ${attempts} attempts.`,
       });
       return;
     }
@@ -536,18 +360,13 @@ export class SessionSupervisorClient {
   }
 
   private emit(event: SupervisorClientEvent): void {
-    for (const listener of this.listeners) {
-      this.dispatch(listener, event);
-    }
+    for (const listener of this.listeners) this.dispatch(listener, event);
   }
 
   private dispatch(listener: SupervisorClientListener, event: SupervisorClientEvent): void {
     try {
       listener(event);
     } catch {
-      // Deliberately swallowed: a throwing UI listener must not break event
-      // fan-out or crash the client, and stderr writes would corrupt the
-      // TUI screen. Set SLOPPY_TUI_DEBUG=1 and redirect stderr to inspect.
       if (process.env.SLOPPY_TUI_DEBUG) {
         console.error("[sloppy-tui] supervisor listener threw on event:", event.type);
       }
@@ -555,20 +374,7 @@ export class SessionSupervisorClient {
   }
 }
 
-function createTransportFromEndpoint(endpoint: string) {
-  if (endpoint.startsWith("ws://") || endpoint.startsWith("wss://")) {
-    return new WebSocketClientTransport(endpoint);
-  }
-  return new NodeSocketClientTransport(endpoint);
-}
-
-/**
- * Derives the endpoint a session should be dialed at. Local supervisors hand
- * out unix socket paths directly. When the supervisor itself was reached over
- * the WS gateway, session endpoints are sibling paths on the same gateway:
- * ws://host:port/<prefix>/supervisor -> ws://host:port/<prefix>/sessions/<id>,
- * preserving any proxy prefix and auth query parameters (e.g. ?token=...).
- */
+/** Derives the typed Session API endpoint for a selected session. */
 export function endpointForSession(
   session: { id: string; socketPath: string },
   supervisorEndpoint: string | null | undefined,
@@ -576,11 +382,10 @@ export function endpointForSession(
   const isWebSocket =
     supervisorEndpoint?.startsWith("ws://") === true ||
     supervisorEndpoint?.startsWith("wss://") === true;
-  if (!isWebSocket || !supervisorEndpoint) {
-    return session.socketPath;
-  }
+  if (!isWebSocket || !supervisorEndpoint) return session.socketPath;
   const url = new URL(supervisorEndpoint);
-  const base = url.pathname.replace(/\/[^/]*$/, "");
-  url.pathname = `${base}/sessions/${encodeURIComponent(session.id)}`;
+  url.pathname =
+    url.pathname.replace(/\/api\/supervisor\/?$/, "") +
+    `/api/sessions/${encodeURIComponent(session.id)}`;
   return url.toString();
 }

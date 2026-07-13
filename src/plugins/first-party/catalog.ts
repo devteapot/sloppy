@@ -4,6 +4,7 @@ import { getHomeConfigPath } from "../../config/load";
 import type { SloppyConfig } from "../../config/schema";
 import { InProcessTransport } from "../../providers/in-process";
 import type { RegisteredProvider } from "../../providers/registry";
+import { RuntimeServiceRegistry } from "../../runtime/services";
 import { A2AProvider } from "./a2a/provider";
 import { AppsProvider } from "./apps/provider";
 import { BrowserProvider } from "./browser/provider";
@@ -20,6 +21,7 @@ import { McpProvider } from "./mcp/provider";
 import { MemoryProvider } from "./memory/provider";
 import { MessagingProvider } from "./messaging/provider";
 import { MetaRuntimeProvider } from "./meta-runtime/provider";
+import { DELEGATION_SERVICE, MESSAGING_SERVICE, SKILLS_SERVICE } from "./service-keys";
 import { SkillsProvider } from "./skills/provider";
 import { SpecProvider } from "./spec/provider";
 import { TerminalProvider } from "./terminal/provider";
@@ -37,7 +39,15 @@ function registeredProvider(
 }
 
 export type FirstPartyPluginDescriptor = FirstPartyPluginMetadata & {
-  createProviders?: (config: SloppyConfig) => RegisteredProvider[];
+  createProviders?: (
+    config: SloppyConfig,
+    services: RuntimeServiceRegistry,
+  ) => RegisteredProvider[];
+};
+
+export type FirstPartyPluginAssembly = {
+  providers: RegisteredProvider[];
+  services: RuntimeServiceRegistry;
 };
 
 export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
@@ -141,7 +151,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
   {
     ...firstPartyPluginMetadata("skills"),
-    createProviders: (config) => {
+    createProviders: (config, services) => {
       const plugin = config.plugins.skills;
       const metaRuntime = config.plugins["meta-runtime"];
       const skills = new SkillsProvider({
@@ -153,6 +163,7 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
         templateVars: plugin.templateVars ?? true,
         viewMaxBytes: plugin.viewMaxBytes ?? 65536,
       });
+      services.bind(SKILLS_SERVICE, skills);
       return [
         registeredProvider({
           id: "skills",
@@ -174,11 +185,12 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
   {
     ...firstPartyPluginMetadata("meta-runtime"),
-    createProviders: (config) => {
+    createProviders: (config, services) => {
       const plugin = config.plugins["meta-runtime"];
       const metaRuntime = new MetaRuntimeProvider({
         globalRoot: plugin.globalRoot,
         workspaceRoot: plugin.workspaceRoot,
+        services,
       });
       return [
         registeredProvider({
@@ -188,11 +200,11 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
           transportLabel: "in-process",
           stop: () => metaRuntime.stop(),
           approvals: metaRuntime.approvals,
-          attachRuntime: (hub, _hubConfig, ctx) => {
-            metaRuntime.setHub(hub, ctx?.publishEvent);
+          attachRuntime: (_hub, _hubConfig, ctx) => {
+            metaRuntime.setEventPublisher(ctx?.publishEvent);
             return {
               stop() {
-                metaRuntime.setHub(null);
+                metaRuntime.setEventPublisher();
               },
             };
           },
@@ -264,10 +276,11 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
   {
     ...firstPartyPluginMetadata("messaging"),
-    createProviders: (config) => {
+    createProviders: (config, services) => {
       const messaging = new MessagingProvider({
         maxMessages: config.plugins.messaging.maxMessages,
       });
+      services.bind(MESSAGING_SERVICE, messaging);
       return [
         registeredProvider({
           id: "messaging",
@@ -282,10 +295,11 @@ export const FIRST_PARTY_PLUGINS: FirstPartyPluginDescriptor[] = [
   },
   {
     ...firstPartyPluginMetadata("delegation"),
-    createProviders: (config) => {
+    createProviders: (config, services) => {
       const delegation = new DelegationProvider({
         maxAgents: config.plugins.delegation.maxAgents,
       });
+      services.bind(DELEGATION_SERVICE, delegation);
       return [
         registeredProvider({
           id: "delegation",
@@ -449,9 +463,17 @@ export function activeFirstPartyPlugins(config: SloppyConfig): FirstPartyPluginD
 }
 
 export function createFirstPartyPluginProviders(config: SloppyConfig): RegisteredProvider[] {
-  return activeFirstPartyPlugins(config).flatMap(
-    (plugin) => plugin.createProviders?.(config) ?? [],
+  return createFirstPartyPluginAssembly(config).providers;
+}
+
+export function createFirstPartyPluginAssembly(
+  config: SloppyConfig,
+  services = new RuntimeServiceRegistry(),
+): FirstPartyPluginAssembly {
+  const providers = activeFirstPartyPlugins(config).flatMap(
+    (plugin) => plugin.createProviders?.(config, services) ?? [],
   );
+  return { providers, services };
 }
 
 export {

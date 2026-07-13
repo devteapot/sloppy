@@ -1,7 +1,8 @@
-import { action, type ItemDescriptor, type NodeDescriptor } from "@slop-ai/server";
+import type { ItemDescriptor, NodeDescriptor } from "@slop-ai/server";
 
 import type { LocalRuntimeTool } from "../../core/agent";
 import type { QueuedSessionMessage } from "../types";
+import type { ClientContributionManifest } from "./client-contributions";
 import type {
   ActivePluginTurn,
   PluginRuntimeContext,
@@ -22,6 +23,7 @@ export class SessionPluginManager {
     private readonly ctx: PluginRuntimeContext,
   ) {
     validateSessionPluginIds(plugins);
+    validateClientContributions(plugins, ctx);
   }
 
   list(): SessionRuntimePlugin[] {
@@ -58,6 +60,57 @@ export class SessionPluginManager {
     );
   }
 
+  clientPlugins(): Array<{
+    id: string;
+    version: string;
+    status: "active";
+    description?: string;
+    providerIds: string[];
+    extensionNamespaces: string[];
+    contributions: ClientContributionManifest;
+  }> {
+    const snapshot = this.ctx.snapshot();
+    return this.plugins.map((plugin) => {
+      const commands = new Map(
+        (plugin.clientCommands?.(this.ctx) ?? []).map((command) => [command.id, command]),
+      );
+      return {
+        id: plugin.id,
+        version: plugin.version,
+        status: "active",
+        description: plugin.description,
+        providerIds: plugin.providerIds ?? [],
+        extensionNamespaces: plugin.extensionNamespaces ?? [],
+        contributions: {
+          actions: (plugin.client?.actions ?? []).map((action) => ({
+            ...action,
+            available:
+              commands.get(action.command)?.available?.(snapshot) ?? commands.has(action.command),
+          })),
+          indicators: plugin.client?.indicators ?? [],
+          notifications: plugin.client?.notifications ?? [],
+        },
+      };
+    });
+  }
+
+  async invokeClientCommand(
+    pluginId: string,
+    commandId: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const plugin = this.plugins.find((candidate) => candidate.id === pluginId);
+    if (!plugin) throw new Error(`Unknown session plugin: ${pluginId}`);
+    const command = plugin
+      .clientCommands?.(this.ctx)
+      .find((candidate) => candidate.id === commandId);
+    if (!command) throw new Error(`Unknown client command ${pluginId}:${commandId}`);
+    if (command.available && !command.available(this.ctx.snapshot())) {
+      throw new Error(`Client command is not currently available: ${pluginId}:${commandId}`);
+    }
+    return command.execute(this.ctx, params);
+  }
+
   async onStartup(): Promise<void> {
     for (const plugin of this.plugins) {
       await plugin.onStartup?.(this.ctx);
@@ -86,17 +139,8 @@ export class SessionPluginManager {
           provider_ids: plugin.providerIds ?? [],
           extension_namespaces: plugin.extensionNamespaces ?? [],
           session_paths: sessionPaths,
-          ui: plugin.ui ?? {},
         },
         summary: plugin.description ?? plugin.id,
-        actions: {
-          inspect_manifest: action(async () => ({ status: "ok", manifest: plugin.ui ?? {} }), {
-            label: "Inspect UI Manifest",
-            description: "Return this session plugin's declarative UI contribution manifest.",
-            estimate: "instant",
-            idempotent: true,
-          }),
-        },
       };
     });
 
@@ -105,7 +149,6 @@ export class SessionPluginManager {
       props: {
         count: items.length,
         ids: items.map((item) => item.id),
-        ui_manifest_version: 2,
       },
       summary: "Active first-party session runtime plugins.",
       items,
@@ -163,6 +206,36 @@ export class SessionPluginManager {
   onTurnFailure(event: PluginTurnFailureEvent): void {
     const plugin = this.plugins.find((candidate) => candidate.id === event.pluginTurn.pluginId);
     plugin?.onTurnFailure?.(event, this.ctx);
+  }
+}
+
+function validateClientContributions(
+  plugins: SessionRuntimePlugin[],
+  ctx: PluginRuntimeContext,
+): void {
+  for (const plugin of plugins) {
+    const commands = plugin.clientCommands?.(ctx) ?? [];
+    const commandIds = new Set<string>();
+    for (const command of commands) {
+      if (!command.id)
+        throw new Error(`Session plugin ${plugin.id} has an empty client command id.`);
+      if (commandIds.has(command.id)) {
+        throw new Error(`Duplicate client command ${plugin.id}:${command.id}.`);
+      }
+      commandIds.add(command.id);
+    }
+    const actionIds = new Set<string>();
+    for (const action of plugin.client?.actions ?? []) {
+      if (actionIds.has(action.id)) {
+        throw new Error(`Duplicate client action ${plugin.id}:${action.id}.`);
+      }
+      actionIds.add(action.id);
+      if (!commandIds.has(action.command)) {
+        throw new Error(
+          `Client action ${plugin.id}:${action.id} references unknown command ${action.command}.`,
+        );
+      }
+    }
   }
 }
 

@@ -13,7 +13,6 @@ export type SessionScopeInput = {
 
 export type SessionRecord = {
   sessionId: string;
-  providerId: string;
   socketPath: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
@@ -32,7 +31,6 @@ export type SessionRecord = {
 
 export type PublicSessionRecord = {
   sessionId: string;
-  providerId: string;
   socketPath?: string;
   runtimeStatus: "live" | "dormant";
   workspaceRoot?: string;
@@ -43,25 +41,16 @@ export type PublicSessionRecord = {
   title?: string;
   createdAt: string;
   lastActivityAt: string;
-  session_id: string;
-  provider_id: string;
-  socket_path?: string;
-  runtime_status: "live" | "dormant";
-  workspace_root?: string;
-  workspace_id?: string;
-  project_id?: string;
-  launch_scope_key?: string;
-  launch_root?: string;
-  created_at: string;
-  last_activity_at: string;
-  is_resume_session: boolean;
-  turn_state?: string;
-  turn_message?: string;
-  queued_count?: number;
-  pending_approval_count?: number;
-  running_task_count?: number;
+  isResumeSession: boolean;
+  turnState?: string;
+  turnMessage?: string;
+  queuedCount?: number;
+  pendingApprovalCount?: number;
+  runningTaskCount?: number;
   approvalMode?: ApprovalMode;
-  approval_mode?: ApprovalMode;
+  goalStatus?: string;
+  goalObjective?: string;
+  goalTotalTokens?: number;
   [key: string]: unknown;
 };
 
@@ -111,7 +100,6 @@ export function defaultTitle(input: {
 export function recordFromRegistry(record: SessionRegistryRecord): SessionRecord {
   return {
     sessionId: record.sessionId,
-    providerId: `sloppy-session-${record.sessionId}`,
     socketPath: "",
     runtimeStatus: "dormant",
     title: record.title,

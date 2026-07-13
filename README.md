@@ -34,6 +34,10 @@ Current checked-in implementation includes:
   - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
 - consumer hub for first-party plugin and live-discovered SLOP providers
+- typed runtime-service registry for stable same-process collaboration between
+  first-party capabilities, without sending internal calls through SLOP
+- focused SDK entrypoints for core embedding, SLOP consumers, sessions, and
+  first-party plugin composition
 - first-party in-process plugin providers:
   - `apps`
   - `terminal`
@@ -68,9 +72,9 @@ Current checked-in implementation includes:
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
-- session-provider `/plugins` registry for first-party session runtime plugins,
-  including declarative TUI manifests for contributed subscriptions and slash
-  command, palette action, and notification discovery
+- typed session plugin registry with client-agnostic commands, indicators,
+  notifications, and optional presentation hints; the compact SLOP `/plugins`
+  projection exposes only agent-relevant ownership metadata
 - session-provider `/usage` state for session-owned token accounting, showing
   provider-reported model usage when available and `N/A` semantics otherwise,
   alongside provider-counted SLOP state-tail size when supported and the known
@@ -87,7 +91,7 @@ Current checked-in implementation includes:
 - durable session snapshots that restore visible transcript/activity state and mark stale in-flight work explicitly after process restart
 - first-party `apps` provider for agent-visible external app discovery plus explicit load/unload controls
 - session-provider `/apps` attachment state for UI/API external provider visibility and debugging
-- TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session-provider sockets, with launch-scope managed supervisor startup, `sloppy --continue` resume selection, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
+- TypeScript/pi-tui TUI under `apps/tui/` that consumes the typed Session and Supervisor APIs over Unix sockets or WebSocket, with launch-scope managed supervisor startup, `sloppy --continue` resume selection, scoped session create/switch/stop controls, supervised session comparison in the inspector, meta-runtime proposal review/apply/revert controls, route/event/capability visibility, runtime bundle export, shared route tabs, function-key shortcuts, and a live command palette
 - optional meta-runtime provider for agent profiles, nodes, channels, typed route envelopes, fanout/canary dispatch, enforced child capability masks, executor bindings, selected skill-version context for routed children, topology experiments/evaluations, proposals, topology pattern records, scoped storage, events, state import/export, and portable runtime bundles with active skill contents. Reusable self-evolution strategy lives in skills over this substrate.
 - Hermes-style skill discovery with lightweight `skill_view` usage telemetry and a first-party `skill-curator` workflow for skill-managed procedural memory
 - end-to-end tests for transport, consumer/runtime wiring, session state, and all first-party plugin providers
@@ -100,14 +104,15 @@ Near-term direction:
 
 - keep the core runtime headless
 - add richer interfaces under `apps/`, starting with `apps/tui/`
-- expose the running agent session through a public bridge or provider surface
+- expose the running agent session through a typed, client-agnostic API
 - have first-party and third-party UIs use that same public contract
 - allow multiple UIs to attach to the same session concurrently
 
 This means the agent process is expected to act both as:
 
 - a **consumer** of workspace and application providers
-- a **provider** of agent-session state to UIs and other clients
+- a **typed Session API server** for UIs and other application clients
+- a **SLOP provider** of deliberate model-facing session state and actions
 
 ## Architecture at a glance
 
@@ -137,12 +142,46 @@ SLOP providers
 
 The important detail is that provider-native tool calling is only the LLM adapter layer.
 
-The actual runtime model is still SLOP:
+The model-facing and dynamic provider integration model is SLOP:
 
 - `query`
 - `subscribe`
 - `patch`
 - `invoke`
+
+Known same-process collaborators use typed runtime services instead of
+round-tripping through provider ids, paths, action names, and protocol result
+messages. A capability can implement a typed service and a SLOP provider: the
+service is its internal binding, while the provider is its deliberate
+agent/external projection. Meta-runtime uses this boundary for skills,
+delegation, and messaging.
+
+Application clients use the typed Session and Supervisor APIs instead. The APIs
+carry canonical snapshots, revisioned updates, and explicit commands over
+in-process bindings, local Unix sockets, or `/api/*` WebSocket gateway
+routes. They do not require a UI to reconstruct an SDK from SLOP paths and
+affordances. SLOP providers remain deliberate agent-context projections.
+
+Default provider state is intentionally compact. It exposes what a model needs
+to decide its next action—status, counts, summaries, bounded previews, and
+collection items—while verbose diagnostics and raw integration payloads live
+behind explicit `inspect`, `view`, or `read` affordances. An inventory already
+represented as state does not also need a `list_*` action.
+
+### SDK entrypoints
+
+The package exposes narrow entrypoints so embedders do not need to import
+internal file paths:
+
+- `sloppy/core` — lean Agent, roles, policy types, and typed runtime services
+- `sloppy/slop` — ConsumerHub, transports, and provider registration
+- `sloppy/session` — public session runtime, typed client APIs, and plugin contracts
+- `sloppy/plugins` — first-party catalog, service interfaces, and assembly
+
+The root `sloppy` export remains the default application composition, including
+the session-backed child factory used by delegation. `sloppy/core` is the lean
+embedding surface and requires a child-session factory only when the embedder
+enables delegated child sessions.
 
 Implementation modules follow the same boundary discipline. Provider entrypoints own live state and
 orchestration, while sibling modules own protocol parsing, descriptor construction, pure state
@@ -336,7 +375,7 @@ export ANTHROPIC_API_KEY=...
 bun run src/cli.ts
 ```
 
-Run the session provider surface:
+Run the session service:
 
 ```sh
 bun run session:serve
@@ -350,28 +389,27 @@ workspace/project config layers by default. You can pin a scope explicitly:
 bun run session:serve -- --workspace-id sloppy --project-id runtime
 ```
 
-The session server always opens its local Unix socket. Add an opt-in WebSocket
-listener for remote SLOP clients:
+The service opens `<socket>` as the canonical typed Session API. It does not
+open a second SLOP compatibility socket. For remote UI/API clients, run the
+standalone gateway against a supervisor:
 
 ```sh
 SLOPPY_WS_TOKEN="$(openssl rand -hex 24)" \
-  bun run session:serve -- \
-    --ws-host 0.0.0.0 \
-    --ws-port 8787 \
-    --ws-token-env SLOPPY_WS_TOKEN
+  sloppy gateway \
+    --host 0.0.0.0 \
+    --port 8787 \
+    --token-env SLOPPY_WS_TOKEN \
+    --supervisor-socket /tmp/slop/sloppy-supervisor.sock
 ```
 
-WebSocket listeners bind to `127.0.0.1` by default. Non-loopback connections are
-rejected unless `--ws-token-env <name>` or `--ws-token <token>` is configured;
-clients can pass the token as `?token=...` or an `Authorization: Bearer ...`
-header. Browser clients must also match an explicit `--ws-allow-origin
-<origin>` allowlist. Use `--ws-path <path>` to change the default `/slop`, and
-`--ws-public-url <ws-or-wss-url>` when publishing behind a proxy.
+The gateway exposes `/api/supervisor` and `/api/sessions/<session-id>` only.
+Non-loopback exposure requires an auth token; browser clients must also match
+an explicit origin allowlist. Discovery is available at `/.well-known/sloppy`.
 
 The TUI client can attach directly to either transport:
 
 ```sh
-bun run tui -- --socket ws://runtime.example.test:8787/slop?token=...
+bun run tui -- --socket ws://runtime.example.test:8787/api/sessions/<session-id>?token=...
 ```
 
 Run a public session supervisor, which exposes session creation/switching while
@@ -387,15 +425,13 @@ For the packaged CLI, the equivalent operator command is:
 sloppy session supervisor --socket /tmp/slop/sloppy-supervisor.sock
 ```
 
-The same `--ws-*` flags expose the supervisor provider itself over WebSocket.
-Ordinary supervised sessions still expose their own per-session endpoint; use a
-standalone `session serve --ws-port ...` when a remote client needs to attach
-directly to one running session.
+Use `sloppy gateway` when a remote client needs the supervisor and its sessions
+on one authenticated WebSocket listener.
 
 Add `--managed --no-initial-session --auto-close-enabled` when you want the
 same launch-scope supervisor shape used by the TUI launcher.
 
-Run the TypeScript/OpenTUI TUI from the source checkout:
+Run the TypeScript/pi-tui TUI from the source checkout:
 
 ```sh
 bun run tui
@@ -409,7 +445,7 @@ sloppy
 
 By default `sloppy` resolves the real current working directory into a launch
 scope, starts or reuses that scope's managed supervisor, creates a fresh
-session, and attaches to that session's public provider socket. Later `sloppy`
+session, and attaches to that session's typed client socket. Later `sloppy`
 runs from the same directory reuse the same supervisor but still start a fresh
 session.
 
@@ -438,13 +474,13 @@ or any other existing-session path, it mutates that Session's shared approval
 mode to `auto` until a client sets `/approval normal`. Plain `sloppy --continue`
 restores the Session's persisted approval mode without resetting it.
 
-To attach to an existing session provider socket directly, use:
+To attach to an existing session directly, pass its typed Session API socket:
 
 ```sh
 bun run tui -- --socket /tmp/slop/sloppy-session-<id>.sock
 ```
 
-`--socket` also accepts `ws://` and `wss://` session provider URLs.
+`--socket` also accepts typed `ws://` and `wss://` `/api/sessions/...` URLs.
 
 To attach through an existing supervisor socket, use:
 
@@ -452,7 +488,7 @@ To attach through an existing supervisor socket, use:
 bun run tui -- --supervisor-socket /tmp/slop/sloppy-supervisor.sock
 ```
 
-`--supervisor-socket` also accepts a WebSocket supervisor URL.
+`--supervisor-socket` also accepts a typed WebSocket `/api/supervisor` URL.
 
 Managed TUI sessions accept the same workspace/project scope flags. The command
 palette and slash commands can create, switch, and stop additional scoped
@@ -460,7 +496,7 @@ sessions through the supervisor. Switching selects a session for the current
 TUI's supervisor client lease; it does not change a global active session for
 other connected TUIs. Stop ends a live session process while keeping its
 snapshot and registry entry restorable; it is blocked when another connected TUI
-has selected that session. The supervisor `/sessions` state also exposes
+has selected that session. The typed supervisor snapshot also exposes
 per-session runtime status, resume-session marker, turn state, goal status,
 queue pressure, pending approvals, and running task counts so the TUI can
 compare sessions through `/inspector sessions` without reading runtime
@@ -642,7 +678,7 @@ Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
 that expose OpenAI-style reasoning controls. Prefer protocol-specific
 `thinking` blocks for new config.
 
-First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute session nodes, extension event projections, TUI manifests, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summary fields. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute typed runtime services, deliberate SLOP provider/session projections, extension events, client-agnostic commands and presentation contributions, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summaries. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:
@@ -818,11 +854,12 @@ API keys are not written to YAML:
 - selecting a managed profile keeps using its stored key; env-backed profiles are an explicit choice instead of an implicit override
 - one-shot runs explicitly routed with `SLOPPY_LLM_ENDPOINT` or `SLOPPY_MODEL` use a temporary runtime profile for that run
 
-The current TUI uses the session provider's `/llm` state to onboard and manage
-profiles, its `/apps` state to surface external provider attachment status, and
-the connected `meta-runtime` app's `/proposals` state for runtime proposal
-review. The Agent sees the same external app catalog through the first-party
-`apps` provider and controls app load/unload from `/available`.
+The current TUI uses the typed session snapshot to onboard and manage profiles,
+surface external provider attachment status, and render plugin contributions.
+Its generic inspector can explicitly query the connected `meta-runtime`
+provider's `/proposals` state for runtime proposal review. The Agent sees the
+external app catalog through the first-party `apps` SLOP provider and controls
+app load/unload from `/available`.
 
 Useful TUI slash commands:
 
@@ -838,7 +875,7 @@ Useful TUI slash commands:
 - `/session-stop <session-id>` stops a live supervised session while keeping it restorable.
 - `/inspector sessions` shows supervised sessions with turn, goal, queue, approval, and task state.
 - `/runtime refresh`, `/runtime export`, `/runtime inspect [proposal-id]`, `/runtime apply <proposal-id>`, and `/runtime revert <proposal-id>` review meta-runtime state, export a portable runtime bundle, and act on topology proposals.
-- `/query /llm 2` inspects the session provider; `/query <app-id>:/ 2` inspects a connected external provider listed under `/apps`.
+- `/query /llm 2` inspects the typed session snapshot; `/query <app-id>:/ 2` explicitly inspects a connected SLOP provider listed by the session.
 - `/invoke [app-id:]<path> <action> <json-object>` invokes a contextual affordance from the explicit inspector path.
 
 The composer stays immediately editable when focused. Pending approvals interrupt
@@ -855,7 +892,7 @@ the normal input loop with `[o/a] approve once` and `[d/esc] deny`.
 - `docs/05-language-evaluation.md` for language/runtime choices
 - `docs/06-agent-session-provider.md` for the concrete public UI/session provider shape
 - `docs/13-meta-runtime.md` for the optional topology/evaluation provider and skill-led self-evolution boundary
-- `docs/16-tui-plan.md` for the TypeScript/OpenTUI TUI architecture
+- `docs/16-tui-plan.md` for the TypeScript/pi-tui TUI architecture
 - `~/dev/slop-slop-slop/spec/` for the full SLOP protocol spec
 
 ## License

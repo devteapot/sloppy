@@ -14,8 +14,6 @@ export type MetaRuntimeSessionDescriptorContext = {
     patterns: number;
     pendingProposals: number;
   };
-  globalRoot: string;
-  workspaceRoot: string;
   proposeChange: (params: Record<string, unknown>) => Proposal;
   dispatchRoute: (params: Record<string, unknown>) => unknown;
   createExperiment: (params: Record<string, unknown>) => TopologyExperiment;
@@ -42,8 +40,6 @@ export function buildMetaRuntimeSessionDescriptor(context: MetaRuntimeSessionDes
       proposals_count: context.counts.proposals,
       patterns_count: context.counts.patterns,
       pending_proposals_count: context.counts.pendingProposals,
-      global_root: context.globalRoot,
-      workspace_root: context.workspaceRoot,
       strategy_surface: "skills",
     },
     summary:

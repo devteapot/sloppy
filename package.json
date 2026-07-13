@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./core": "./src/sdk/core.ts",
+    "./slop": "./src/sdk/slop.ts",
+    "./session": "./src/sdk/session.ts",
+    "./plugins": "./src/sdk/plugins.ts"
   },
   "bin": {
     "sloppy": "./dist/bin/sloppy.js"
@@ -19,7 +23,7 @@
     "benchmark:headless-view-edits": "bun run scripts/benchmark-headless-view-edits.ts",
     "tui": "bun run src/bin/sloppy.ts tui",
     "tui:typecheck": "bunx tsc -p apps/tui/tsconfig.json --noEmit",
-    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/bin/sloppy.ts src/session/server.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/index.ts src/sdk/core.ts src/sdk/slop.ts src/sdk/session.ts src/sdk/plugins.ts src/cli.ts src/bin/sloppy.ts src/session/server.ts --outdir dist --target bun --format esm && bunx tsc --emitDeclarationOnly --outDir dist",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write .",
     "preflight": "bun run lint && bun run typecheck && bun run tui:typecheck && bun run test && bun run build",

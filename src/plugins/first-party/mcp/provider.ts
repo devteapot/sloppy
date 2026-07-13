@@ -656,16 +656,31 @@ export class McpProvider {
         resource_count: server.resources.length,
         resource_template_count: server.resourceTemplates.length,
         prompt_count: server.prompts.length,
-        list_errors: server.listErrors,
+        list_error_count: Object.keys(server.listErrors).length,
         server_version: server.serverVersion ?? null,
-        capabilities: server.capabilities ?? null,
-        instructions: server.instructions ?? null,
+        instructions_preview:
+          server.instructions && server.instructions.length > 240
+            ? `${server.instructions.slice(0, 224)}...[truncated]`
+            : (server.instructions ?? null),
       },
       summary:
         server.status === "error"
           ? `${server.config.name ?? server.id}: ${server.error ?? "MCP server error"}`
           : `${server.config.name ?? server.id}: ${server.tools.length} tools, ${server.resources.length} resources, ${server.prompts.length} prompts`,
       actions: {
+        inspect: action(
+          async () => ({
+            capabilities: server.capabilities ?? null,
+            instructions: server.instructions ?? null,
+            list_errors: server.listErrors,
+          }),
+          {
+            label: "Inspect Server",
+            description: "Return full MCP server capabilities, instructions, and list errors.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
         refresh: action(async () => this.refreshServer(server.id), {
           label: "Refresh",
           description: "Connect to this MCP server and refresh tools/resources/prompts.",
@@ -754,11 +769,21 @@ export class McpProvider {
         title: tool.title ?? tool.annotations?.title ?? null,
         description: tool.description ?? null,
         input_schema: tool.inputSchema ?? null,
-        output_schema: tool.outputSchema ?? null,
-        annotations: tool.annotations ?? null,
       },
       summary: tool.description ?? tool.title ?? tool.name,
       actions: {
+        inspect: action(
+          async () => ({
+            output_schema: tool.outputSchema ?? null,
+            annotations: tool.annotations ?? null,
+          }),
+          {
+            label: "Inspect Tool",
+            description: "Return the MCP tool output schema and raw annotations.",
+            idempotent: true,
+            estimate: "instant",
+          },
+        ),
         call: action(
           {
             arguments: {

@@ -49,7 +49,6 @@ describe("MessagingProvider", () => {
         unread_count: 0,
       });
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
-        "list_channels",
         "add_channel",
         "remove_channel",
       ]);
@@ -69,7 +68,7 @@ describe("MessagingProvider", () => {
     }
   });
 
-  test("creates a channel and lists it from session", async () => {
+  test("creates a channel and projects it as state", async () => {
     const { provider, consumer } = createMessagingHarness();
 
     try {
@@ -93,17 +92,7 @@ describe("MessagingProvider", () => {
         "view_history",
       ]);
 
-      const listResult = await consumer.invoke("/session", "list_channels", {});
-      expect(listResult.status).toBe("ok");
-      expect(listResult.data).toEqual([
-        {
-          id: channelId,
-          name: "Ops",
-          transport: "slack",
-          messages: [],
-          unread_count: 0,
-        },
-      ]);
+      expect(channels.children?.[0]?.properties?.messages).toBeUndefined();
     } finally {
       provider.stop();
     }

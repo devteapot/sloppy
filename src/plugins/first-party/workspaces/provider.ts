@@ -237,12 +237,6 @@ export class WorkspacesProvider {
             estimate: "instant",
           },
         ),
-        get_config_layers: action(async () => this.configLayers(), {
-          label: "Get Config Layers",
-          description: "Return the active global/workspace/project config layer order.",
-          idempotent: true,
-          estimate: "instant",
-        }),
       },
     };
   }
@@ -352,14 +346,6 @@ export class WorkspacesProvider {
       },
       summary:
         "Active config layer order. Later layers override earlier layers when a session is created for this scope.",
-      actions: {
-        get_layers: action(async () => this.configLayers(), {
-          label: "Get Layers",
-          description: "Return the active config layer order.",
-          idempotent: true,
-          estimate: "instant",
-        }),
-      },
     };
   }
 }

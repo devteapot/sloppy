@@ -157,7 +157,11 @@ describe("WebProvider", () => {
       const search = await consumer.query("/search", 2);
       expect(search.properties?.query).toBe("sloppy protocol");
       expect(search.properties?.result_count).toBe(2);
-      expect(search.properties?.results).toEqual(data.results);
+      expect(search.properties?.results).toBeUndefined();
+      expect(search.children?.map((child) => child.properties)).toEqual(data.results);
+      expect(search.children?.[0]?.affordances?.map((affordance) => affordance.action)).toEqual([
+        "read",
+      ]);
     } finally {
       provider.stop();
     }

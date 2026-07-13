@@ -1,12 +1,16 @@
-# Agent Session Provider
+# Session Client API and Agent Projection
 
 ## Goal
 
-Define the public SLOP shape for one running Sloppy agent session.
+Define the client-agnostic API for one running Sloppy agent session and its
+deliberate SLOP projection.
 
-This provider is the boundary that first-party and third-party UIs should consume.
+First-party and third-party application clients consume `SessionApiClient` from
+`sloppy/session`. The TUI is one such client, not the owner of the contract.
+The SLOP provider described later in this document is the model-facing
+projection; it is not an application transport.
 
-The current first-party consumer is the TypeScript/OpenTUI TUI under
+The current first-party consumer is the TypeScript/pi-tui TUI under
 `apps/tui/`.
 
 It is intentionally session-scoped:
@@ -15,7 +19,25 @@ It is intentionally session-scoped:
 - multiple consumers may attach to that same session
 - the runtime stays headless behind this boundary
 
-The agent runtime remains a consumer of workspace and application providers. The agent-session provider is the separate provider surface exposed upward to UIs and other clients.
+The agent runtime remains a consumer of workspace and application providers.
+The Session API exposes runtime-owned session state upward without serializing
+the runtime itself or requiring clients to traverse a protocol tree.
+
+## Canonical Client Protocol
+
+`SessionClientSnapshot` contains the canonical `AgentSessionSnapshot`, a small
+set of server-computed controls, and active plugin client contributions. A
+versioned request/response protocol exposes explicit methods for message send,
+turn cancellation, queue cancellation, approvals, tasks, LLM profiles, config
+reload, provider attachment, plugin commands, and generic provider inspection.
+
+The local typed endpoint is the configured `<session>.sock`. Remote clients use
+`/api/sessions/{sessionId}` through `sloppy gateway`. Snapshots are pushed with
+monotonic revisions; clients do not subscribe to individual runtime paths.
+
+The Supervisor API follows the same pattern at `<supervisor>.sock` and
+`/api/supervisor`. It owns session create/select/stop/restore, scope discovery,
+resume metadata, and connection-bound leases.
 
 ---
 
@@ -33,18 +55,17 @@ Explicit non-goals for v1:
 
 If richer inspection is needed later, it should be added as an explicit extension rather than by turning the session provider into a mirror of all downstream providers.
 
-Multi-session lifecycle is handled by a separate public session-supervisor
-provider. The supervisor exposes launch-scope metadata, a launch-scope resume
-session id for `sloppy --continue`, live and dormant session records, configured
-workspace/project scopes, and create/select/stop affordances. It does not expose
+Multi-session lifecycle is handled by the separate typed Supervisor API. Its
+snapshot exposes launch-scope metadata, a launch-scope resume session id for
+`sloppy --continue`, live and dormant session records, and configured
+workspace/project scopes. It does not expose
 one global active session; each connected UI keeps its selected session through a
 connection-bound supervisor client lease. Its `/sessions` items include runtime
 status plus compact live turn, goal, queue, pending approval, running task, and
 last-activity summary fields, plus each session's approval mode (`normal` or
 `auto`), so UIs can compare supervised sessions without reading runtime
-internals. Live session records include `socket_path` for the local Unix
-transport; remote clients connected through the WS gateway derive each
-session's endpoint as `ws(s)://…/sessions/<session_id>` from the gateway base
+internals. Live session records include `socketPath` for the typed local
+transport; remote clients derive `ws(s)://…/api/sessions/<sessionId>` from the gateway base
 URL. Supervisor session items expose approval mode for visibility only;
 approval-mode mutation stays on the selected Session provider's `/approvals`
 affordance. When
@@ -59,9 +80,11 @@ context and only honor explicit `approval_mode` plus launch-scope fallback.
 
 ---
 
-## Session Model
+## SLOP Agent Projection
 
-The recommended model is one provider instance per session. That matches the current SLOP reality that session scoping is an application concern rather than a protocol primitive.
+One provider instance projects the subset of state and actions useful to agents.
+It is consumed through the agent/provider boundary and does not define or expose
+the typed application transport.
 
 Recommended properties of a session provider instance:
 
@@ -70,7 +93,8 @@ Recommended properties of a session provider instance:
 - shared state across all connected consumers of that session
 - patch-driven updates for transcript, activity, approvals, and async tasks
 
-The provider may expose session metadata in the `hello` payload, but the state tree described below is the primary contract.
+The state tree described below is the compatibility/agent contract. Application
+clients should use the typed snapshot and commands above.
 
 ---
 
@@ -105,7 +129,7 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
     [item] openai-main (kind="native", endpoint_id="openai", protocol="openai-chat", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
   [context] usage (last_model_call_input_tokens=4200, last_model_call_output_tokens=700, last_state_context_tokens=1800, last_state_context_token_source=provider, model_context_window_tokens=1050000, available_context_tokens=1045800, total_tokens=4900)
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
-  [collection] plugins (count=1, ui_manifest_version=1)
+  [collection] plugins (count=1)
     [item] persistent-goal (version="1.0.0", status="active", session_paths=["/goal"])
   [control] goal (exists=true, status="active", objective="Ship the runtime", total_tokens=12000, token_budget=200000, elapsed_ms=900000)  actions: {create_goal, pause_goal, complete_goal, clear_goal}
   [control] composer (accepts_attachments=false, max_attachments=0, ready=false, queued_count=1, disabled_reason="Add an API key for openai gpt-5.4 or set OPENAI_API_KEY.")
@@ -330,36 +354,37 @@ Rules:
 
 Node type: `collection`
 
-`/plugins` lists active first-party session runtime plugins. It is a discovery
-surface for generic consumers and a declarative manifest surface for first-party
-TUI features. It is not an external plugin loader.
+`/plugins` lists active first-party session runtime plugins for generic SLOP
+agent consumers. It is an agent projection, not an external plugin loader and
+not the canonical client contribution registry.
+
+Typed clients receive `ClientPluginSnapshot` records. Their contribution
+manifests are client-agnostic:
+
+- `actions` declare an id, label, description, typed plugin `command`,
+  server-computed `available` flag, optional argument metadata, and optional
+  presentation hints such as `presentation.tui.slash`
+- `indicators` declare templates over stable typed snapshot source paths
+- `notifications` declare transitions over stable typed snapshot source paths
+
+Clients invoke `{pluginId, command, params}`. The runtime validates that the
+command exists and is currently available. Client manifests never require a
+SLOP subscription, path, affordance name, or TUI-specific execution branch.
 
 Per-plugin item props:
 
-- `id`: stable unique plugin id; must be non-empty and cannot contain whitespace or `:` so it can be used as the raw TUI slash namespace
+- `id`: stable unique plugin id
 - `version`: plugin implementation version
 - `status`: currently `active`
 - `description`: optional human-readable summary
+- `provider_ids`: providers owned by the plugin
+- `extension_namespaces`: durable extension namespaces owned by the plugin
 - `session_paths`: public session paths contributed by the plugin
-- `ui`: declarative UI contribution manifest
 
-The current UI manifest version is declared by `/plugins.ui_manifest_version`.
-Manifest fields are intentionally data-only:
-
-- `subscriptions`: `{path, depth}` entries the UI may subscribe to
-- `actions`: discoverable invocations with `id`, `label`, `description`,
-  mandatory `invoke.path` plus `invoke.action`, optional `invoke.params`,
-  optional `whenAvailable`, optional single free-text `argument`, and optional
-  presentation metadata such as `presentation.tui.slash` with `name`, `aliases`,
-  and `signature`. TUI slash completion projects plugin action names under the
-  raw plugin id namespace as `/<plugin-id>:<name>` when their required live
-  affordance is present; built-in TUI slash names remain unqualified, and
-  invocations still go through the public session provider affordance.
-- `notifications`: declarative state transitions with `id`, source `path`/`prop`,
-  `to`, and `message`; the TUI watches subscribed snapshots and emits notices
-  when the transition occurs.
-- `indicators`: compact status segments declared as templates over public state
-  paths, with optional formatting and visibility metadata.
+The SLOP projection intentionally omits client manifests and has no
+`inspect_manifest` affordance. An agent can already inspect the plugin's
+projected session paths and provider state; presentation metadata would be
+irrelevant context noise.
 
 ### `/goal`
 
@@ -1018,7 +1043,9 @@ Rules:
 - use content references for large or binary artifacts
 - expose enough metadata for a UI to render or defer loading safely
 
-This keeps the provider useful across TUI, web, IDE, voice, and future agent consumers without forcing one presentation model.
+This keeps the session model useful across TUI, web, IDE, voice, and future
+clients without forcing one presentation model. Those clients consume the typed
+API; agent and generic provider consumers use the deliberate SLOP projection.
 
 ---
 
@@ -1031,4 +1058,5 @@ Likely future extensions include:
 - optional richer inspection subtrees, if explicitly justified
 - separate delegation-oriented affordances for agent-to-agent workflows
 
-Those should extend this provider deliberately rather than collapsing it into a generic mirror of the runtime internals.
+Those should extend the typed client API and, only where agent relevance
+justifies it, the SLOP projection, rather than mirroring runtime internals.

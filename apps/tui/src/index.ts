@@ -60,7 +60,6 @@ export function supervisorLaunchArgv(input: {
     "5000",
     "--socket",
     input.socketPath,
-    "--no-register",
   ];
   // Built output is a bundled dist/bin/sloppy.js; a .ts entry means we are
   // running from source under `bun run`.

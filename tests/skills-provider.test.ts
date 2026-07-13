@@ -122,7 +122,7 @@ tags: [demo]
       const shared = skills.children?.filter((child) => child.properties?.name === "shared-skill");
       expect(shared?.map((child) => child.properties?.scope)).toEqual(["workspace", "imported"]);
 
-      const viewed = await consumer.invoke("/session", "view_skill", { name: "shared-skill" });
+      const viewed = await consumer.invoke("/session", "skill_view", { name: "shared-skill" });
       expect(viewed.status).toBe("ok");
       expect((viewed.data as { content: string }).content).toContain("# Workspace Skill");
     } finally {
@@ -224,7 +224,7 @@ tags: [demo]
     }
   });
 
-  test("exposes session counts, installed names, and refresh affordance", async () => {
+  test("exposes compact session counts and progressive-disclosure affordances", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);
     await createSkill(root, "alpha", "---\nname: alpha\ntags: [one, shared]\n---");
@@ -239,10 +239,9 @@ tags: [demo]
       expect(session.type).toBe("context");
       expect(session.properties?.skills_count).toBe(2);
       expect(session.properties?.tags_count).toBe(3);
-      expect(session.properties?.installed).toEqual(["alpha", "beta"]);
+      expect(session.properties?.installed).toBeUndefined();
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
         "refresh_skills",
-        "view_skill",
         "skill_view",
         "propose_skill",
         "skill_manage",
@@ -279,7 +278,8 @@ related_skills: [helper-skill]
       expect(skill?.properties?.version).toBe("2.3.4");
       expect(skill?.properties?.tags).toEqual(["metadata", "test"]);
       expect(skill?.properties?.related_skills).toEqual(["helper-skill"]);
-      expect(typeof skill?.properties?.file_path).toBe("string");
+      expect(skill?.properties?.file_path).toBeUndefined();
+      expect(skill?.properties?.metadata).toBeUndefined();
     } finally {
       provider.stop();
     }
@@ -306,7 +306,7 @@ related_skills: [helper-skill]
     }
   });
 
-  test("view_skill action reads skill content from session", async () => {
+  test("skill_view action reads skill content from session", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);
     await createSkill(
@@ -321,7 +321,7 @@ related_skills: [helper-skill]
     try {
       await connectAndRefresh(consumer);
 
-      const viewResult = await consumer.invoke("/session", "view_skill", { name: "reader" });
+      const viewResult = await consumer.invoke("/session", "skill_view", { name: "reader" });
       expect(viewResult.status).toBe("ok");
       expect((viewResult.data as { name: string; content: string }).name).toBe("reader");
       expect((viewResult.data as { content: string }).content).toContain("# Reader Skill");
@@ -355,7 +355,7 @@ related_skills: [helper-skill]
     }
   });
 
-  test("skill items expose a view_skill affordance", async () => {
+  test("skill items expose one progressive-disclosure affordance", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-skills-"));
     tempPaths.push(root);
     await createSkill(root, "item-reader", "---\nname: item-reader\n---", "# Item Reader\n");
@@ -370,10 +370,7 @@ related_skills: [helper-skill]
       expect(typeof skillId).toBe("string");
 
       const skill = skills.children?.[0];
-      expect(skill?.affordances?.map((affordance) => affordance.action)).toEqual([
-        "view_skill",
-        "skill_view",
-      ]);
+      expect(skill?.affordances?.map((affordance) => affordance.action)).toEqual(["skill_view"]);
       expect(skill?.affordances?.[0]?.idempotent).toBe(true);
     } finally {
       provider.stop();
@@ -594,7 +591,7 @@ metadata:
 
       const skills = await consumer.query("/skills", 2);
       expect(skills.children?.map((child) => child.properties?.name)).toEqual(["session-skill"]);
-      const viewed = await consumer.invoke("/session", "view_skill", { name: "session-skill" });
+      const viewed = await consumer.invoke("/session", "skill_view", { name: "session-skill" });
       expect(viewed.status).toBe("ok");
       expect((viewed.data as { content: string }).content).toContain("# Session Skill");
     } finally {

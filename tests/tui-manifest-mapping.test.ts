@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
 
-import { applyPathSnapshot, EMPTY_SESSION_VIEW } from "../apps/tui/src/backend/node-mappers";
+import { EMPTY_SESSION_VIEW } from "../apps/tui/src/backend/node-mappers";
 import type { SupervisorSnapshot } from "../apps/tui/src/backend/supervisor-client";
 import {
   parseLocalCommand,
@@ -64,77 +64,66 @@ function stripAnsiForTest(value: string): string {
     .replace(TEST_CSI_PATTERN, "");
 }
 
-describe("TUI v2 manifest mapping", () => {
-  test("maps plugin UI manifests into actions, notifications, indicators, and slash entries", () => {
-    const next = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
-      id: "plugins",
-      type: "collection",
-      properties: {
-        count: 1,
-        ui_manifest_version: 2,
-      },
-      children: [
+describe("TUI client contribution mapping", () => {
+  test("projects client plugin contributions into actions, notifications, indicators, and slash entries", () => {
+    const next = {
+      ...EMPTY_SESSION_VIEW,
+      plugins: [
         {
           id: "persistent-goal",
-          type: "item",
-          properties: {
-            id: "persistent-goal",
-            version: "1.0.0",
-            status: "active",
-            description: "Persistent long-running session objective controls.",
-            session_paths: ["/goal"],
-            ui: {
-              subscriptions: [{ path: "/goal", depth: 1 }],
-              actions: [
-                {
-                  id: "goal:create",
-                  label: "Create Goal",
-                  description: "Create a persistent session goal",
-                  invoke: { path: "/goal", action: "create_goal" },
-                  whenAvailable: "create_goal",
-                  argument: { name: "objective", required: true, param: "objective" },
-                  presentation: {
-                    tui: {
-                      slash: {
-                        name: "goal",
-                        signature: "<objective>|pause|resume|complete|clear",
-                      },
+          version: "1.0.0",
+          status: "active",
+          description: "Persistent long-running session objective controls.",
+          ui: {
+            actions: [
+              {
+                id: "goal:create",
+                label: "Create Goal",
+                description: "Create a persistent session goal",
+                command: "create",
+                available: true,
+                argument: { name: "objective", required: true, param: "objective" },
+                presentation: {
+                  tui: {
+                    slash: {
+                      name: "goal",
+                      signature: "<objective>|pause|resume|complete|clear",
                     },
                   },
                 },
-              ],
-              notifications: [
-                {
-                  id: "goal-complete",
-                  source: { path: "/goal", prop: "status" },
-                  to: "complete",
-                  message: "Goal complete: {objective}",
-                },
-              ],
-              indicators: [
-                {
-                  id: "goal-status",
-                  path: "/goal",
-                  template: "goal {status}",
-                },
-              ],
-            },
+              },
+            ],
+            notifications: [
+              {
+                id: "goal-complete",
+                source: "goal",
+                field: "status",
+                to: "complete",
+                message: "Goal complete: {objective}",
+              },
+            ],
+            indicators: [
+              {
+                id: "goal-status",
+                source: "goal",
+                template: "goal {status}",
+              },
+            ],
           },
         },
       ],
-    });
+    };
 
     expect(next.plugins[0]?.id).toBe("persistent-goal");
-    expect(next.plugins[0]?.sessionPaths).toEqual(["/goal"]);
-    expect(next.plugins[0]?.ui.subscriptions?.[0]).toEqual({ path: "/goal", depth: 1 });
     expect(next.plugins[0]?.ui.actions?.[0]).toMatchObject({
       id: "goal:create",
-      invoke: { path: "/goal", action: "create_goal" },
-      whenAvailable: "create_goal",
+      command: "create",
+      available: true,
     });
     expect(next.plugins[0]?.ui.notifications?.[0]).toEqual({
       id: "goal-complete",
-      source: { path: "/goal", prop: "status" },
+      source: "goal",
+      field: "status",
       to: "complete",
       message: "Goal complete: {objective}",
     });
@@ -143,22 +132,6 @@ describe("TUI v2 manifest mapping", () => {
     expect(buildSlashEntries().some((entry) => entry.name === "persistent-goal:goal")).toBe(false);
     expect(
       buildSlashEntries(next.plugins).some((entry) => entry.name === "persistent-goal:goal"),
-    ).toBe(true);
-    expect(
-      buildSlashEntries(next.plugins, { actionsByPath: next.actionsByPath }).some(
-        (entry) => entry.name === "persistent-goal:goal",
-      ),
-    ).toBe(false);
-    const withGoalAction = applyPathSnapshot(next, "/goal", {
-      id: "goal",
-      type: "control",
-      properties: { exists: false },
-      affordances: [{ action: "create_goal" }],
-    });
-    expect(
-      buildSlashEntries(withGoalAction.plugins, {
-        actionsByPath: withGoalAction.actionsByPath,
-      }).some((entry) => entry.name === "persistent-goal:goal"),
     ).toBe(true);
     expect(buildSlashEntries(next.plugins).some((entry) => entry.name === "runtime")).toBe(true);
     expect(matchSlashEntries("/persistent-goal:go", 8, next.plugins)[0]?.entry.name).toBe(
@@ -173,23 +146,23 @@ describe("TUI v2 manifest mapping", () => {
         id: "custom-plugin",
         version: "1.0.0",
         status: "active",
-        sessionPaths: [],
         ui: {
           actions: [
             {
               id: "custom:run",
               label: "Run Custom",
               description: "Run a custom plugin action",
-              invoke: { path: "/custom", action: "do_it" },
+              command: "run",
+              available: true,
               presentation: { tui: { slash: { name: "custom", signature: "<text>" } } },
             },
           ],
+          notifications: [],
+          indicators: [],
         },
       },
     ];
-    const provider = new SlashAutocompleteProvider(
-      buildSlashEntries(plugins, { actionsByPath: { "/custom": ["do_it"] } }),
-    );
+    const provider = new SlashAutocompleteProvider(buildSlashEntries(plugins));
     const builtIn = await provider.getSuggestions(["/ver"], 0, 4, {
       signal: new AbortController().signal,
     });
@@ -216,7 +189,15 @@ describe("TUI v2 manifest mapping", () => {
     expect(plugin?.items[0]?.description).toContain("Run a custom plugin action");
 
     const unavailableProvider = new SlashAutocompleteProvider(
-      buildSlashEntries(plugins, { actionsByPath: {} }),
+      buildSlashEntries([
+        {
+          ...plugins[0],
+          ui: {
+            ...plugins[0]!.ui,
+            actions: plugins[0]!.ui.actions.map((action) => ({ ...action, available: false })),
+          },
+        },
+      ]),
     );
     expect(
       await unavailableProvider.getSuggestions(["/cu"], 0, 3, {
@@ -231,31 +212,35 @@ describe("TUI v2 manifest mapping", () => {
         id: "shadow-plugin",
         version: "1.0.0",
         status: "active",
-        sessionPaths: [],
         ui: {
           actions: [
             {
               id: "shadow:help",
               label: "Shadow Help",
               description: "Attempt to shadow help",
-              invoke: { path: "/shadow", action: "help" },
+              command: "help",
+              available: true,
               presentation: { tui: { slash: { name: "help" } } },
             },
             {
               id: "shadow:alias",
               label: "Shadow Alias",
               description: "Namespaced built-in alias",
-              invoke: { path: "/shadow", action: "alias" },
+              command: "alias",
+              available: true,
               presentation: { tui: { slash: { name: "custom", aliases: ["q"] } } },
             },
             {
               id: "shadow:duplicate",
               label: "Shadow Duplicate",
               description: "Duplicate plugin command",
-              invoke: { path: "/shadow", action: "duplicate" },
+              command: "duplicate",
+              available: true,
               presentation: { tui: { slash: { name: "help" } } },
             },
           ],
+          notifications: [],
+          indicators: [],
         },
       },
     ];
@@ -286,27 +271,29 @@ describe("TUI v2 manifest mapping", () => {
     ).toContain("shadow-plugin:help");
   });
 
-  test("parses plugin slash commands into public session affordance invocations", () => {
+  test("parses plugin slash commands into typed plugin commands", () => {
     const snapshot = {
       ...EMPTY_SESSION_VIEW,
-      actionsByPath: { "/custom": ["do_it"] },
       plugins: [
         {
           id: "custom-plugin",
           version: "1.0.0",
           status: "active",
-          sessionPaths: [],
           ui: {
             actions: [
               {
                 id: "custom:run",
                 label: "Run Custom",
                 description: "Run a custom plugin action",
-                invoke: { path: "/custom", action: "do_it", params: { mode: "fast" } },
+                command: "run",
+                available: true,
+                params: { mode: "fast" },
                 argument: { name: "text", required: true, param: "text" },
                 presentation: { tui: { slash: { name: "custom", signature: "<text>" } } },
               },
             ],
+            notifications: [],
+            indicators: [],
           },
         },
       ],
@@ -317,8 +304,7 @@ describe("TUI v2 manifest mapping", () => {
       pluginId: "custom-plugin",
       actionId: "custom:run",
       label: "Run Custom",
-      path: "/custom",
-      action: "do_it",
+      command: "run",
       params: { mode: "fast", text: "hello world" },
     });
     expect(parsePluginSlashCommand("/custom-plugin:custom", snapshot)).toEqual({
@@ -328,23 +314,24 @@ describe("TUI v2 manifest mapping", () => {
 
     const shadowingSnapshot = {
       ...snapshot,
-      actionsByPath: { "/custom": ["do_it"], "/shadow": ["help"] },
       plugins: [
         {
           id: "shadow-plugin",
           version: "1.0.0",
           status: "active",
-          sessionPaths: [],
           ui: {
             actions: [
               {
                 id: "shadow:help",
                 label: "Shadow Help",
                 description: "Attempt to shadow help",
-                invoke: { path: "/shadow", action: "help" },
+                command: "help",
+                available: true,
                 presentation: { tui: { slash: { name: "help" } } },
               },
             ],
+            notifications: [],
+            indicators: [],
           },
         },
       ],
@@ -355,8 +342,7 @@ describe("TUI v2 manifest mapping", () => {
       pluginId: "shadow-plugin",
       actionId: "shadow:help",
       label: "Shadow Help",
-      path: "/shadow",
-      action: "help",
+      command: "help",
       params: undefined,
     });
   });
@@ -460,45 +446,37 @@ describe("TUI v2 manifest mapping", () => {
   });
 
   test("slash catalog and command parser agree on plugin slash presentations", () => {
-    const withPlugin = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
-      id: "plugins",
-      type: "collection",
-      properties: { count: 1, ui_manifest_version: 2 },
-      children: [
+    const snapshot = {
+      ...EMPTY_SESSION_VIEW,
+      plugins: [
         {
           id: "demo",
-          type: "item",
-          properties: {
-            id: "demo",
-            status: "active",
-            ui: {
-              actions: [
-                {
-                  id: "demo:deploy",
-                  label: "Deploy",
-                  description: "Deploy a target",
-                  invoke: { path: "/deploy", action: "run_deploy" },
-                  argument: { name: "target", required: true, param: "target" },
-                  presentation: {
-                    tui: { slash: { name: "deploy", aliases: ["ship"], signature: "<target>" } },
-                  },
+          version: "1.0.0",
+          status: "active",
+          ui: {
+            actions: [
+              {
+                id: "demo:deploy",
+                label: "Deploy",
+                description: "Deploy a target",
+                command: "deploy",
+                available: true,
+                argument: { name: "target", required: true, param: "target" },
+                presentation: {
+                  tui: { slash: { name: "deploy", aliases: ["ship"], signature: "<target>" } },
                 },
-              ],
-            },
+              },
+            ],
+            indicators: [],
+            notifications: [],
           },
         },
       ],
-    });
-    const snapshot = applyPathSnapshot(withPlugin, "/deploy", {
-      id: "deploy",
-      type: "control",
-      properties: {},
-      affordances: [{ action: "run_deploy" }],
-    });
+    };
 
-    const entry = buildSlashEntries(snapshot.plugins, {
-      actionsByPath: snapshot.actionsByPath,
-    }).find((candidate) => candidate.name === "demo:deploy");
+    const entry = buildSlashEntries(snapshot.plugins).find(
+      (candidate) => candidate.name === "demo:deploy",
+    );
     expect(entry).toMatchObject({
       name: "demo:deploy",
       aliases: ["demo:ship"],
@@ -508,8 +486,7 @@ describe("TUI v2 manifest mapping", () => {
     const expected = {
       type: "plugin_action",
       pluginId: "demo",
-      path: "/deploy",
-      action: "run_deploy",
+      command: "deploy",
       params: { target: "prod" },
     };
     expect(parsePluginSlashCommand("/demo:deploy prod", snapshot)).toMatchObject(expected);
@@ -517,49 +494,44 @@ describe("TUI v2 manifest mapping", () => {
   });
 
   test("projects plugin actions, indicators, and command palette entries from live state", () => {
-    const withPlugins = applyPathSnapshot(EMPTY_SESSION_VIEW, "/plugins", {
-      id: "plugins",
-      type: "collection",
-      properties: { count: 1, ui_manifest_version: 2 },
-      children: [
+    const withGoal = {
+      ...EMPTY_SESSION_VIEW,
+      goal: {
+        ...EMPTY_SESSION_VIEW.goal,
+        exists: true,
+        status: "active",
+        objective: "Ship the typed client",
+        totalTokens: 1200,
+      },
+      plugins: [
         {
           id: "persistent-goal",
-          type: "item",
-          properties: {
-            id: "persistent-goal",
-            version: "1.0.0",
-            status: "active",
-            ui: {
-              subscriptions: [{ path: "/goal", depth: 1 }],
-              actions: [
-                {
-                  id: "goal:pause",
-                  label: "Pause Goal",
-                  description: "Pause automatic goal continuation",
-                  invoke: { path: "/goal", action: "pause_goal" },
-                  whenAvailable: "pause_goal",
-                },
-              ],
-              indicators: [
-                {
-                  id: "goal-status",
-                  path: "/goal",
-                  template: "goal {status} {total_tokens}",
-                  fields: { total_tokens: { format: "number" } },
-                  visibleWhen: { prop: "exists", equals: true },
-                },
-              ],
-            },
+          version: "1.0.0",
+          status: "active",
+          ui: {
+            actions: [
+              {
+                id: "goal:pause",
+                label: "Pause Goal",
+                description: "Pause automatic goal continuation",
+                command: "pause",
+                available: true,
+              },
+            ],
+            indicators: [
+              {
+                id: "goal-status",
+                source: "goal",
+                template: "goal {status} {totalTokens}",
+                fields: { totalTokens: { format: "number" as const } },
+                visibleWhen: { field: "exists", equals: true },
+              },
+            ],
+            notifications: [],
           },
         },
       ],
-    });
-    const withGoal = applyPathSnapshot(withPlugins, "/goal", {
-      id: "goal",
-      type: "control",
-      properties: { exists: true, status: "active", total_tokens: 1200 },
-      affordances: [{ action: "pause_goal" }],
-    });
+    };
 
     expect(projectPluginActions(withGoal)).toMatchObject([
       {
@@ -691,18 +663,21 @@ describe("TUI v2 manifest mapping", () => {
         ...EMPTY_SESSION_VIEW.goal,
         exists: true,
         status: "active",
+        objective: "Ship the typed client",
       },
       plugins: [
         {
           id: "persistent-goal",
           version: "1.0.0",
           status: "active",
-          sessionPaths: ["/goal"],
           ui: {
+            actions: [],
+            indicators: [],
             notifications: [
               {
                 id: "goal-complete",
-                source: { path: "/goal", prop: "status" },
+                source: "goal",
+                field: "status",
                 to: "complete",
                 message: "Goal complete: {objective}",
               },
@@ -713,7 +688,7 @@ describe("TUI v2 manifest mapping", () => {
     };
     const previousValues = new Map<string, string | undefined>();
 
-    expect(readPluginNotificationValue(pending, "/goal", "status")).toBe("active");
+    expect(readPluginNotificationValue(pending, "goal", "status")).toBe("active");
     expect(evaluatePluginNotifications(pending, previousValues)).toEqual([]);
 
     const complete = {
@@ -726,7 +701,7 @@ describe("TUI v2 manifest mapping", () => {
     expect(evaluatePluginNotifications(complete, previousValues)).toMatchObject([
       {
         key: "persistent-goal:goal-complete",
-        message: "Goal complete: {objective}",
+        message: "Goal complete: Ship the typed client",
       },
     ]);
   });

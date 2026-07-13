@@ -18,7 +18,7 @@
 - `docs/05-language-evaluation.md` for stack decisions.
 - `docs/06-agent-session-provider.md` for the concrete session-provider state and affordance shape.
 - `docs/13-meta-runtime.md` for the optional topology/evaluation provider and skill-led self-evolution boundary.
-- `docs/16-tui-plan.md` for the TypeScript/OpenTUI TUI architecture and UX plan.
+- `docs/16-tui-plan.md` for the TypeScript/pi-tui TUI architecture and UX plan.
 - `docs/17-operator-runbook.md` for production-style runtime checks, audit, recovery, and operational procedures.
 - External SLOP spec: `~/dev/slop-slop-slop/spec/`.
 
@@ -27,11 +27,17 @@
 - State observation is primary; affordance invocation is secondary.
 - Provider-native tool calling is only the LLM adapter layer, not the architecture.
 - Built-in capabilities are implemented as SLOP providers.
-- The current implementation includes default first-party plugin providers for `apps`, `terminal`, and `filesystem`, opt-in first-party plugin providers for `memory`, `skills`, `meta-runtime`, `spec`, `delegation`, `mcp` compatibility, `workspaces` scope, and `a2a` interoperability, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, a native OpenAI Codex subscription adapter that reuses the Codex CLI auth store, ACP-backed `SessionAgent` paths for delegated third-party child agents and first-class main-session LLM profiles, a public session FIFO `/queue` for submitted messages while another turn is active, generic public session `/extensions` metadata, a public session `/plugins` registry for first-party session runtime plugins and declarative TUI manifests for slash discovery, palette actions, and notifications, plugin-contributed doctor checks and subprocess probes, an opt-in public session `/goal` projection contributed by the `persistent-goal` session plugin over extension-backed `persistent-goal` skill state for long-running objectives, a public session supervisor for scoped session create/select/stop/restore over ordinary session-provider sockets or WebSocket endpoints with launch-scope resume metadata and connection-bound client leases, durable public session snapshots with explicit stale-turn recovery, and a managed LLM-profile layer with secure credential storage for macOS and Linux. First-party plugin config now lives under top-level `plugins.<plugin-id>`; `providers.*` is reserved for live provider discovery. The model sees provider state as an ephemeral escaped `<slop-state>` tail, not persisted history. The `apps` plugin provider projects discovered external provider descriptors as unloaded-by-default app cards under `/available` and exposes explicit load/unload controls for agent-driven context management. The `mcp` plugin provider projects configured MCP server tools, resources, templates, and prompts into SLOP state under `/servers`; it is compatibility glue, not the core architecture. The `workspaces` plugin provider exposes configured workspaces/projects and their global/workspace/project config layer order as SLOP state; it is a scope foundation, not privileged multi-session orchestration. The session supervisor exposes lifecycle state at `/session`, `/sessions`, and `/scopes`; it owns session bookkeeping only, not scheduling or provider rewiring. The `a2a` plugin provider projects external Agent Cards, declared skills, selected JSON-RPC interfaces, and remote task lifecycle into SLOP state under `/agents` and `/tasks`; it is an external interoperability bridge, not the internal agent-to-agent architecture. The `skills` plugin provider supports Hermes-style `SKILL.md` discovery, builtin/global/workspace/imported/session scopes, progressive `skill_view`, supporting files, `metadata.sloppy`, startup readiness, lightweight usage telemetry, and approval-gated `skill_manage` writes. ACP delegated adapters declare capabilities in config, default to a minimal subprocess environment, enforce hard prompt timeouts, and routed or allow-masked ACP spawns are rejected when the adapter declaration does not satisfy the child surface. The `meta-runtime` plugin provider supports typed proposals for agent profiles, nodes, channels, typed route envelopes, capability masks, executor bindings, selected skill versions whose content is frozen into routed child goals, topology experiments/evaluations, canary route sampling, scoped global/workspace/session storage, topology pattern records, and capability-mask enforcement in delegated child runtimes. Hermes-style skill-led self-evolution means reusable diagnosis, repair, architect prompts, scoring rubrics, skill curation, extension-specific behavior such as persistent goals, and topology-pattern playbooks live in skills over provider state, not as hardcoded runtime policy.
+- Stable same-process dependencies are assembled through typed runtime services;
+  SLOP is the agent-context projection and dynamic provider integration
+  boundary, not the internal dependency-injection or ordinary UI transport.
+- Application clients use the typed Session/Supervisor SDK over in-process,
+  Unix-socket, or WebSocket transports. The SLOP session provider is a compact
+  deliberate agent-context projection.
+- The current implementation includes default first-party plugin providers for `apps`, `terminal`, and `filesystem`, opt-in first-party plugin providers for `memory`, `skills`, `meta-runtime`, `spec`, `delegation`, `mcp` compatibility, `workspaces` scope, and `a2a` interoperability, a consumer hub, dynamic affordance tools, fixed observation tools, a native Anthropic adapter, a native Gemini adapter, an OpenAI-compatible adapter for OpenAI, OpenRouter, and Ollama, a native OpenAI Codex subscription adapter that reuses the Codex CLI auth store, ACP-backed `SessionAgent` paths for delegated third-party child agents and first-class main-session LLM profiles, a typed Session API with FIFO queued input, generic extension metadata, client-agnostic plugin commands and contributions, plus a compact SLOP session projection for agent context, plugin-contributed doctor checks and subprocess probes, an opt-in public session `/goal` projection contributed by the `persistent-goal` session plugin over extension-backed `persistent-goal` skill state for long-running objectives, a typed public session supervisor for scoped session create/select/stop/restore over Unix sockets or `/api/*` WebSocket endpoints with launch-scope resume metadata and connection-bound client leases, durable public session snapshots with explicit stale-turn recovery, and a managed LLM-profile layer with secure credential storage for macOS and Linux. First-party plugin config now lives under top-level `plugins.<plugin-id>`; `providers.*` is reserved for live provider discovery. The model sees provider state as an ephemeral escaped `<slop-state>` tail, not persisted history. The `apps` plugin provider projects discovered external provider descriptors as unloaded-by-default app cards under `/available` and exposes explicit load/unload controls for agent-driven context management. The `mcp` plugin provider projects configured MCP server tools, resources, templates, and prompts into SLOP state under `/servers`; it is compatibility glue, not the core architecture. The `workspaces` plugin provider exposes configured workspaces/projects and their global/workspace/project config layer order as SLOP state; it is a scope foundation, not privileged multi-session orchestration. The Supervisor owns typed session bookkeeping only, not scheduling, provider rewiring, or a SLOP transport. The `a2a` plugin provider projects external Agent Cards, declared skills, selected JSON-RPC interfaces, and remote task lifecycle into SLOP state under `/agents` and `/tasks`; it is an external interoperability bridge, not the internal agent-to-agent architecture. The `skills` plugin provider supports Hermes-style `SKILL.md` discovery, builtin/global/workspace/imported/session scopes, progressive `skill_view`, supporting files, `metadata.sloppy`, startup readiness, lightweight usage telemetry, and approval-gated `skill_manage` writes. ACP delegated adapters declare capabilities in config, default to a minimal subprocess environment, enforce hard prompt timeouts, and routed or allow-masked ACP spawns are rejected when the adapter declaration does not satisfy the child surface. The `meta-runtime` plugin provider supports typed proposals for agent profiles, nodes, channels, typed route envelopes, capability masks, executor bindings, selected skill versions whose content is frozen into routed child goals, topology experiments/evaluations, canary route sampling, scoped global/workspace/session storage, topology pattern records, and capability-mask enforcement in delegated child runtimes. Hermes-style skill-led self-evolution means reusable diagnosis, repair, architect prompts, scoring rubrics, skill curation, extension-specific behavior such as persistent goals, and topology-pattern playbooks live in skills over provider state, not as hardcoded runtime policy.
 - The agent loop may execute contiguous same-turn `query_state` calls and explicitly idempotent, non-dangerous affordance calls concurrently with bounded fanout. It keeps result blocks in original model order; focus changes, local/session controls, malformed calls, unknown tools, approvals, and unmarked or mutating affordances remain sequential barriers.
-- `session:serve`, `session:serve -- --supervisor`, and managed TUI sessions can load selected workspace/project config layers with `--workspace-id` and `--project-id`; the launcher pins terminal/filesystem roots to the selected scope while keeping provider wiring in normal config. `session:serve` and `sloppy session serve` can add an opt-in WebSocket listener with `--ws-port`, `--ws-host`, `--ws-path`, `--ws-token-env`, `--ws-token`, `--ws-allow-origin`, and `--ws-public-url`. Managed TUI launch resolves a launch scope from `realpath(process.cwd())`, reuses that scope's supervisor, creates a fresh Session by default, and selects the launch-scope resume Session only for `sloppy --continue`.
-- The session provider exposes `/extensions` for generic extension metadata and `/plugins` for first-party session runtime plugin metadata and TUI manifests. When the opt-in `persistent-goal` plugin is enabled, it contributes `/goal` as the stable public projection for persistent long-running objectives with create/pause/resume/complete/clear controls, usage accounting, cleanup retention, and automatic continuation while active. Plugin-owned TUI palette actions should invoke public session affordances from the manifest, not hardcoded TUI feature branches. Keep reusable goal strategy in the `persistent-goal` skill; do not add planner-specific DAG policy to core.
-- The current checked-in interfaces are a CLI/REPL, a headless `src/session/` agent-session surface with `/llm` onboarding state, `/apps` external-provider attachment visibility, a public session supervisor, and a TypeScript/OpenTUI TUI under `apps/tui/` that consumes public session/supervisor sockets or WebSocket endpoints.
+- `session:serve`, `session:serve -- --supervisor`, and managed TUI sessions can load selected workspace/project config layers with `--workspace-id` and `--project-id`; the launcher pins terminal/filesystem roots to the selected scope while keeping provider wiring in normal config. Session and Supervisor Unix sockets speak only the typed client protocol; `sloppy gateway` exposes `/api/supervisor` and `/api/sessions/{id}` without legacy SLOP routes. Managed TUI launch resolves a launch scope from `realpath(process.cwd())`, reuses that scope's supervisor, creates a fresh Session by default, and selects the launch-scope resume Session only for `sloppy --continue`.
+- The typed session snapshot exposes generic extension metadata and client-agnostic plugin contributions. Its compact SLOP projection exposes `/extensions`, plugin ownership metadata at `/plugins`, and deliberate feature projections such as opt-in `/goal`. Plugin-owned client actions invoke typed plugin commands; presentation hints may include TUI slash metadata but execution must not branch on the TUI. Keep reusable goal strategy in the `persistent-goal` skill; do not add planner-specific DAG policy to core.
+- The current checked-in interfaces are a CLI/REPL, a headless typed `src/session/` API with a compact SLOP agent projection, a typed public session supervisor, and a TypeScript/pi-tui TUI under `apps/tui/` that consumes typed session/supervisor Unix sockets or `/api/*` WebSocket endpoints.
 
 ## Package Manager, Runtime, And Commands
 - Use `bun` for package management and script execution.
@@ -119,11 +125,18 @@ src/
       doctor-facets.ts
       manifest.ts
       policy-facets.ts
+      service-keys.ts
       session-facets.ts
   runtime/
     acp/
     child-session.ts
     delegation/
+    services.ts
+  sdk/
+    core.ts
+    plugins.ts
+    session.ts
+    slop.ts
   session/
     runtime-assembly.ts
     runtime-contracts.ts
@@ -132,8 +145,13 @@ docs/
 ```
 
 ## Architecture Rules
-- Everything is a SLOP provider.
+- Everything visible to agents has a deliberate SLOP provider projection.
+  Stable same-process dependencies use typed runtime services; ordinary app
+  clients use typed Session/Supervisor APIs.
 - Prefer state-first design over tool-first design.
+- Treat a Default projection as a decision surface, not a serialization dump:
+  prefer summaries, counts, previews, and collection children, with verbose
+  detail behind focused query or inspect/view/read affordances.
 - Keep the core small; push capability-specific logic into providers.
 - Keep providers small when behavior can be expressed as instructions plus existing affordances; reusable self-evolution strategy belongs in skills.
 - Do not add built-in orchestration DAGs, schedulers, or task-lifecycle hooks to core.
@@ -142,7 +160,8 @@ docs/
 - Use protocol vocabulary consistently: `provider`, `consumer`, `state tree`, `affordance`, `snapshot`, `patch`, `query`, `invoke`, `salience`, `summary`.
 - Do not reintroduce MCP-style flat tool catalogs into the core architecture.
 - Observation tools such as `query_state`, `focus_state`, and `unfocus_state` are Hub-owned consumer controls, not provider capabilities.
-- Prefer a public session provider or bridge for UIs over privileged in-process UI integrations.
+- Prefer the public typed Session/Supervisor SDK for UIs over SLOP path/action
+  coupling or privileged in-process UI integrations.
 - Treat first-party UIs as consumers of the same boundary that third-party UIs will use.
 - Keep provider and runtime entrypoints focused on state ownership and orchestration. Move protocol
   parsing, descriptor assembly, pure state transitions, and reusable contracts into domain-named
@@ -157,6 +176,8 @@ docs/
 - Group imports in this order: platform/external packages, workspace modules, relative modules.
 - Avoid circular dependencies between `core`, `providers`, and `llm`.
 - Keep config loading, provider wiring, protocol handling, and model logic separate.
+- Use `sloppy/core`, `sloppy/slop`, `sloppy/session`, and `sloppy/plugins` as the
+  public embedding boundaries; do not make consumers import implementation files.
 - Prefer the browser-safe consumer entrypoint: `@slop-ai/consumer/browser` for browser-safe code.
 - Use the top-level `@slop-ai/consumer` entrypoint only for Node/Bun-only consumers such as `apps/tui`, where `NodeSocketClientTransport` is required.
 - Use the npm-installed SLOP SDK packages for TypeScript code, not local workspace links to the sibling SLOP repo.

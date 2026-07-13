@@ -21,6 +21,7 @@ import {
   createAcpProfileSessionAgent,
 } from "../plugins/first-party/delegation/acp-profile";
 import type { ChildSessionFactory } from "../runtime/child-session";
+import type { RuntimeServiceKey } from "../runtime/services";
 import type { SessionAgent } from "./runtime";
 
 type ProfileSessionAgentOptions = {
@@ -91,6 +92,10 @@ export class ProfileSessionAgent implements SessionAgent {
 
   listConnectedProviders(): { id: string; name: string }[] {
     return this.inner?.listConnectedProviders?.() ?? [];
+  }
+
+  getRuntimeService<T>(key: RuntimeServiceKey<T>): T | undefined {
+    return this.inner?.getRuntimeService?.(key);
   }
 
   async chat(userMessage: string): Promise<AgentRunResult> {

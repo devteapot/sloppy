@@ -1,16 +1,9 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 
-import {
-  type Action,
-  action,
-  createSlopServer,
-  type ItemDescriptor,
-  type SlopServer,
-} from "@slop-ai/server";
-
-import { getHomeConfigPath, getWorkspaceConfigPath, loadScopedConfig } from "../config/load";
+import { loadScopedConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
+import { listenSupervisorClientProtocol } from "./client-protocol/supervisor-server";
+import type { SupervisorClientSnapshot } from "./client-protocol/types";
 import type { LaunchScope } from "./launch-scope";
 import {
   loadSessionRegistry,
@@ -20,11 +13,8 @@ import {
   snapshotPathForSession,
 } from "./registry";
 import { SessionService } from "./service";
-import type { Listener } from "./socket";
 import { loadPersistedSessionSnapshot } from "./store/persistence";
-import { listenSessionSupervisor } from "./supervisor-listener";
 import {
-  approvalModeParam,
   type ClientLease,
   defaultTitle,
   now,
@@ -35,7 +25,6 @@ import {
   type SessionRecord,
   type SessionScopeInput,
   scopesFromConfig,
-  sessionScopeInputFromParams,
   sessionSocketPath,
   stringParam,
 } from "./supervisor-model";
@@ -43,8 +32,7 @@ import type { ApprovalMode } from "./types";
 
 export type { SessionRecord, SessionScopeInput } from "./supervisor-model";
 
-export class SessionSupervisorProvider {
-  readonly server: SlopServer;
+export class SessionSupervisor {
   private readonly records = new Map<string, SessionRecord>();
   private readonly clientLeases = new Map<object, ClientLease>();
   private readonly lifecycleListeners = new Set<() => void>();
@@ -64,14 +52,6 @@ export class SessionSupervisorProvider {
       autoCloseEnabled?: boolean;
     } = {},
   ) {
-    this.server = createSlopServer({
-      id: "sloppy-session-supervisor",
-      name: "Sloppy Session Supervisor",
-    });
-
-    this.server.register("session", () => this.buildSessionDescriptor());
-    this.server.register("sessions", () => this.buildSessionsDescriptor());
-    this.server.register("scopes", () => this.buildScopesDescriptor());
     this.initializePromise = this.initialize();
   }
 
@@ -93,6 +73,31 @@ export class SessionSupervisorProvider {
     };
   }
 
+  async getClientSnapshot(): Promise<SupervisorClientSnapshot> {
+    await this.ensureInitialized();
+    let scopes: ScopeRecord[] = [];
+    try {
+      scopes = scopesFromConfig(await this.baseConfig());
+    } catch {
+      // baseConfig records scopeError for client diagnostics.
+    }
+    return {
+      supervisor: {
+        resumeSessionId: this.resumeSessionId,
+        launchScopeKey: this.options.launchScope?.key,
+        launchRoot: this.options.launchScope?.root,
+        clientLeaseCount: this.clientLeases.size,
+        autoCloseEnabled: this.options.autoCloseEnabled === true,
+        ...(this.scopeError && { scopeError: this.scopeError }),
+      },
+      sessions: [...this.records.values()]
+        .filter((record) => !record.archived)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .map((record) => this.publicSessionRecord(record)),
+      scopes,
+    };
+  }
+
   stop(): void {
     for (const record of this.records.values()) {
       this.stopLiveRecord(record);
@@ -100,7 +105,6 @@ export class SessionSupervisorProvider {
     this.records.clear();
     this.clientLeases.clear();
     this.resumeSessionId = null;
-    this.server.stop();
     this.notifyLifecycle();
   }
 
@@ -127,7 +131,6 @@ export class SessionSupervisorProvider {
       connectedAt: now(),
     };
     this.clientLeases.set(owner, lease);
-    this.server.refresh();
     this.notifyLifecycle();
     return { lease_id: lease.leaseId };
   }
@@ -143,7 +146,6 @@ export class SessionSupervisorProvider {
     lease.selectedSessionId = stringParam(params, "selected_session_id");
     lease.label = stringParam(params, "label") ?? lease.label;
     this.clientLeases.set(owner, lease);
-    this.server.refresh();
     this.notifyLifecycle();
     return { lease_id: lease.leaseId };
   }
@@ -151,14 +153,12 @@ export class SessionSupervisorProvider {
   unregisterClientLease(owner: object): { lease_id?: string } {
     const leaseId = this.clientLeases.get(owner)?.leaseId;
     this.clientLeases.delete(owner);
-    this.server.refresh();
     this.notifyLifecycle();
     return { lease_id: leaseId };
   }
 
   removeConnection(owner: object): void {
     if (this.clientLeases.delete(owner)) {
-      this.server.refresh();
       this.notifyLifecycle();
     }
   }
@@ -198,7 +198,6 @@ export class SessionSupervisorProvider {
       this.updateClientLease(owner, { selected_session_id: sessionId });
     }
     this.persistRegistry();
-    this.server.refresh();
     this.notifyLifecycle();
     return record;
   }
@@ -211,7 +210,6 @@ export class SessionSupervisorProvider {
     await this.ensureInitialized();
     this.cachedConfig = null;
     const config = await this.baseConfig();
-    this.server.refresh();
     this.notifyLifecycle();
     return {
       status: "ok",
@@ -265,7 +263,6 @@ export class SessionSupervisorProvider {
       this.updateClientLease(owner, { selected_session_id: sessionId });
     }
     this.persistRegistry();
-    this.server.refresh();
     this.notifyLifecycle();
     return record;
   }
@@ -273,14 +270,14 @@ export class SessionSupervisorProvider {
   async stopSession(
     sessionId: string,
     owner?: object,
-  ): Promise<{ stopped: true; session_id: string }> {
+  ): Promise<{ stopped: true; sessionId: string }> {
     await this.ensureInitialized();
     const record = this.records.get(sessionId);
     if (!record) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
     if (record.runtimeStatus !== "live") {
-      return { stopped: true, session_id: sessionId };
+      return { stopped: true, sessionId };
     }
     const ownerLease = owner ? this.clientLeases.get(owner) : undefined;
     if (ownerLease?.selectedSessionId === sessionId) {
@@ -299,9 +296,8 @@ export class SessionSupervisorProvider {
     record.service = undefined;
     record.unsubscribe = undefined;
     this.persistRegistry();
-    this.server.refresh();
     this.notifyLifecycle();
-    return { stopped: true, session_id: sessionId };
+    return { stopped: true, sessionId };
   }
 
   publicSessionRecord(record: SessionRecord): PublicSessionRecord {
@@ -315,7 +311,6 @@ export class SessionSupervisorProvider {
       const runningTaskCount = snapshot.tasks.filter((task) => task.status === "running").length;
       return {
         sessionId: record.sessionId,
-        providerId: record.providerId,
         socketPath: record.socketPath,
         runtimeStatus: "live",
         workspaceRoot: snapshot.session.workspaceRoot,
@@ -326,25 +321,13 @@ export class SessionSupervisorProvider {
         title: snapshot.session.title,
         createdAt: record.createdAt,
         lastActivityAt: snapshot.session.lastActivityAt,
-        session_id: record.sessionId,
-        provider_id: record.providerId,
-        socket_path: record.socketPath,
-        runtime_status: "live",
-        workspace_root: snapshot.session.workspaceRoot,
-        workspace_id: snapshot.session.workspaceId,
-        project_id: snapshot.session.projectId,
-        launch_scope_key: snapshot.session.launchScope?.key,
-        launch_root: snapshot.session.launchScope?.root,
-        created_at: record.createdAt,
-        last_activity_at: snapshot.session.lastActivityAt,
-        is_resume_session: record.sessionId === this.resumeSessionId,
-        turn_state: snapshot.turn.state,
-        turn_message: snapshot.turn.message,
-        queued_count: snapshot.queue.length,
-        pending_approval_count: pendingApprovalCount,
-        running_task_count: runningTaskCount,
+        isResumeSession: record.sessionId === this.resumeSessionId,
+        turnState: snapshot.turn.state,
+        turnMessage: snapshot.turn.message,
+        queuedCount: snapshot.queue.length,
+        pendingApprovalCount,
+        runningTaskCount,
         approvalMode: snapshot.approvalPolicy.mode,
-        approval_mode: snapshot.approvalPolicy.mode,
         ...pluginSummary.props,
       };
     }
@@ -352,7 +335,6 @@ export class SessionSupervisorProvider {
     const approvalMode = this.approvalModeForSession(record.sessionId) ?? "normal";
     return {
       sessionId: record.sessionId,
-      providerId: record.providerId,
       runtimeStatus: "dormant",
       workspaceRoot: record.workspaceRoot,
       workspaceId: record.workspaceId,
@@ -362,86 +344,9 @@ export class SessionSupervisorProvider {
       title: record.title,
       createdAt: record.createdAt,
       lastActivityAt: record.lastActivityAt,
-      session_id: record.sessionId,
-      provider_id: record.providerId,
-      runtime_status: "dormant",
-      workspace_root: record.workspaceRoot,
-      workspace_id: record.workspaceId,
-      project_id: record.projectId,
-      launch_scope_key: record.launchScopeKey,
-      launch_root: record.launchRoot,
-      created_at: record.createdAt,
-      last_activity_at: record.lastActivityAt,
-      is_resume_session: record.sessionId === this.resumeSessionId,
+      isResumeSession: record.sessionId === this.resumeSessionId,
       approvalMode,
-      approval_mode: approvalMode,
     };
-  }
-
-  async handleConnectionInvoke(
-    owner: object,
-    path: string,
-    actionName: string,
-    params: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown> | null> {
-    if (path === "/session") {
-      if (actionName === "create_session") {
-        return this.publicSessionRecord(
-          await this.createSession(sessionScopeInputFromParams(params), owner),
-        );
-      }
-      if (actionName === "select_session") {
-        const sessionId = stringParam(params, "session_id");
-        if (!sessionId) {
-          throw new Error("session_id is required.");
-        }
-        return this.publicSessionRecord(await this.selectSession(sessionId, owner));
-      }
-      if (actionName === "register_client_lease") {
-        return this.registerClientLease(owner, params);
-      }
-      if (actionName === "update_client_lease") {
-        return this.updateClientLease(owner, params);
-      }
-      if (actionName === "unregister_client_lease") {
-        return this.unregisterClientLease(owner);
-      }
-    }
-    const sessionMatch = path.match(/^\/sessions\/(.+)$/);
-    if (sessionMatch) {
-      const sessionId = decodeURIComponent(sessionMatch[1] ?? "");
-      if (actionName === "select_session") {
-        return this.publicSessionRecord(await this.selectSession(sessionId, owner));
-      }
-      if (actionName === "stop_session") {
-        return this.stopSession(sessionId, owner);
-      }
-    }
-    const scopeMatch = path.match(/^\/scopes\/(.+)$/);
-    if (scopeMatch && actionName === "create_session") {
-      // Scope item creation needs the tracked connection owner so approval mode
-      // can inherit from the caller's selected Session lease.
-      await this.ensureInitialized();
-      const scopeId = decodeURIComponent(scopeMatch[1] ?? "");
-      const config = await this.baseConfig();
-      const scope = scopesFromConfig(config).find((item) => item.id === scopeId);
-      if (!scope) {
-        throw new Error(`Unknown scope: ${scopeId}`);
-      }
-      return this.publicSessionRecord(
-        await this.createSession(
-          {
-            workspace_id: scope.workspaceId,
-            project_id: scope.projectId,
-            title: stringParam(params, "title"),
-            session_id: stringParam(params, "session_id"),
-            approval_mode: approvalModeParam(params, "approval_mode"),
-          },
-          owner,
-        ),
-      );
-    }
-    return null;
   }
 
   private async initialize(): Promise<void> {
@@ -466,7 +371,6 @@ export class SessionSupervisorProvider {
       }
       this.initialized = true;
     } finally {
-      this.server.refresh();
       this.notifyLifecycle();
     }
   }
@@ -552,13 +456,11 @@ export class SessionSupervisorProvider {
       options.record ??
       ({
         sessionId: snapshot.session.sessionId,
-        providerId: service.providerId,
         socketPath: service.socketPath,
         runtimeStatus: "live",
         createdAt: options.createdAt,
         lastActivityAt: snapshot.session.lastActivityAt,
       } satisfies SessionRecord);
-    record.providerId = service.providerId;
     record.socketPath = service.socketPath;
     record.runtimeStatus = "live";
     record.service = service;
@@ -568,7 +470,6 @@ export class SessionSupervisorProvider {
     const refresh = () => {
       this.syncRecordFromService(record);
       this.persistRegistry();
-      this.server.refresh();
       this.notifyLifecycle();
     };
     const unsubscribers = [
@@ -632,267 +533,6 @@ export class SessionSupervisorProvider {
       listener();
     }
   }
-
-  private buildSessionDescriptor() {
-    const resume = this.resumeSessionId ? this.records.get(this.resumeSessionId) : undefined;
-    return {
-      type: "context",
-      props: {
-        session_count: this.records.size,
-        live_session_count: [...this.records.values()].filter(
-          (record) => record.runtimeStatus === "live",
-        ).length,
-        resume_session_id: resume?.sessionId ?? null,
-        resume_socket_path: resume?.runtimeStatus === "live" ? resume.socketPath : null,
-        client_lease_count: this.clientLeases.size,
-        auto_close_enabled: this.options.autoCloseEnabled === true,
-        launch_scope_key: this.options.launchScope?.key,
-        launch_root: this.options.launchScope?.root,
-        registry_path: this.registryPath,
-        home_config_path: this.options.homeConfigPath ?? getHomeConfigPath(),
-        workspace_config_path:
-          this.options.workspaceConfigPath ??
-          getWorkspaceConfigPath(resolve(this.options.cwd ?? process.cwd())),
-      },
-      summary: "Supervisor for multiple Sloppy session providers.",
-      actions: {
-        create_session: action(
-          {
-            workspace_id: { type: "string", optional: true },
-            project_id: { type: "string", optional: true },
-            title: { type: "string", optional: true },
-            session_id: { type: "string", optional: true },
-            approval_mode: {
-              type: "string",
-              optional: true,
-              description: "Initial approval mode: normal or auto.",
-            },
-          },
-          async (input) =>
-            this.publicSessionRecord(
-              await this.createSession({
-                ...input,
-                approval_mode: approvalModeParam(input, "approval_mode"),
-              }),
-            ),
-          {
-            label: "New Session",
-            description: "Start a new scoped session provider and select it.",
-            estimate: "slow",
-          },
-        ),
-        select_session: action(
-          { session_id: "string" },
-          async ({ session_id }) => this.publicSessionRecord(await this.selectSession(session_id)),
-          {
-            label: "Select Session",
-            description: "Select or restore a session.",
-            idempotent: true,
-            estimate: "instant",
-          },
-        ),
-        reload_config: action(async () => this.reloadConfig(), {
-          label: "Reload Config",
-          description: "Reload supervisor config and refresh available workspace/project scopes.",
-          estimate: "fast",
-        }),
-        register_client_lease: action(
-          {
-            selected_session_id: { type: "string", optional: true },
-            label: { type: "string", optional: true },
-          },
-          async () => {
-            throw new Error("Client leases require the tracked supervisor listener.");
-          },
-          {
-            label: "Register Client Lease",
-            description: "Register this supervisor client connection.",
-            estimate: "instant",
-          },
-        ),
-        update_client_lease: action(
-          {
-            selected_session_id: { type: "string", optional: true },
-            label: { type: "string", optional: true },
-          },
-          async () => {
-            throw new Error("Client leases require the tracked supervisor listener.");
-          },
-          {
-            label: "Update Client Lease",
-            description: "Update this supervisor client connection lease.",
-            estimate: "instant",
-          },
-        ),
-        unregister_client_lease: action(
-          async () => {
-            throw new Error("Client leases require the tracked supervisor listener.");
-          },
-          {
-            label: "Unregister Client Lease",
-            description: "Clear this supervisor client connection lease.",
-            estimate: "instant",
-          },
-        ),
-      },
-    };
-  }
-
-  private buildSessionsDescriptor() {
-    const items: ItemDescriptor[] = [...this.records.values()]
-      .filter((record) => !record.archived)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .map((record) => this.buildSessionItem(record));
-    return {
-      type: "collection",
-      props: {
-        count: items.length,
-        resume_session_id: this.resumeSessionId,
-      },
-      summary: "Sloppy sessions managed by this supervisor.",
-      items,
-    };
-  }
-
-  private buildSessionItem(record: SessionRecord): ItemDescriptor {
-    const publicRecord = this.publicSessionRecord(record);
-    const summaryParts = [
-      `status=${publicRecord.runtime_status}`,
-      ...(publicRecord.turn_state ? [`turn=${publicRecord.turn_state}`] : []),
-      ...(typeof publicRecord.queued_count === "number"
-        ? [`queued=${publicRecord.queued_count}`]
-        : []),
-      ...(publicRecord.approval_mode ? [`approval=${publicRecord.approval_mode}`] : []),
-    ];
-    const actions: Record<string, Action> = {
-      select_session: action(
-        async () => this.publicSessionRecord(await this.selectSession(record.sessionId)),
-        {
-          label: "Select",
-          description: "Select or restore this session.",
-          idempotent: true,
-          estimate: record.runtimeStatus === "live" ? "instant" : "slow",
-        },
-      ),
-    };
-    if (record.runtimeStatus === "live") {
-      actions.stop_session = action(async () => this.stopSession(record.sessionId), {
-        label: "Stop Session",
-        description: "Stop this live session process while keeping its history restorable.",
-        dangerous: true,
-        idempotent: true,
-        estimate: "fast",
-      });
-    }
-    return {
-      id: encodeURIComponent(record.sessionId),
-      props: {
-        session_id: record.sessionId,
-        provider_id: record.providerId,
-        socket_path: publicRecord.socket_path ?? null,
-        runtime_status: publicRecord.runtime_status,
-        workspace_root: publicRecord.workspace_root ?? null,
-        workspace_id: publicRecord.workspace_id ?? null,
-        project_id: publicRecord.project_id ?? null,
-        launch_scope_key: publicRecord.launch_scope_key ?? null,
-        launch_root: publicRecord.launch_root ?? null,
-        title: publicRecord.title ?? null,
-        created_at: publicRecord.created_at,
-        last_activity_at: publicRecord.last_activity_at,
-        is_resume_session: publicRecord.is_resume_session,
-        turn_state: publicRecord.turn_state ?? null,
-        turn_message: publicRecord.turn_message ?? null,
-        queued_count: publicRecord.queued_count ?? null,
-        pending_approval_count: publicRecord.pending_approval_count ?? null,
-        running_task_count: publicRecord.running_task_count ?? null,
-        approval_mode: publicRecord.approval_mode ?? null,
-      },
-      summary: `${publicRecord.title ?? record.sessionId}: ${summaryParts.join(" ")}`,
-      actions,
-    };
-  }
-
-  private buildScopesDescriptor() {
-    if (!this.cachedConfig && !this.scopeError) {
-      void this.baseConfig()
-        .then(() => this.server.refresh())
-        .catch(() => this.server.refresh());
-    }
-
-    return {
-      type: "collection",
-      props: {
-        ready: this.cachedConfig !== null,
-        count: this.cachedConfig ? scopesFromConfig(this.cachedConfig).length : 0,
-        error: this.scopeError,
-      },
-      summary: "Configured workspace/project scopes available for new sessions.",
-      actions: {
-        refresh: action(
-          async () => {
-            this.cachedConfig = null;
-            this.scopeError = null;
-            const config = await this.baseConfig();
-            this.server.refresh();
-            return { count: scopesFromConfig(config).length };
-          },
-          {
-            label: "Refresh Scopes",
-            description: "Reload configured workspace/project scopes.",
-            idempotent: true,
-            estimate: "fast",
-          },
-        ),
-      },
-      items: this.cachedConfig
-        ? scopesFromConfig(this.cachedConfig).map((scope) => this.buildScopeItem(scope))
-        : [],
-    };
-  }
-
-  private buildScopeItem(scope: ScopeRecord): ItemDescriptor {
-    return {
-      id: encodeURIComponent(scope.id),
-      props: {
-        id: scope.id,
-        workspace_id: scope.workspaceId,
-        project_id: scope.projectId ?? null,
-        name: scope.name,
-        description: scope.description ?? null,
-        root: scope.root,
-        config_path: scope.configPath,
-      },
-      summary: scope.description ?? `${scope.name}: ${scope.root}`,
-      actions: {
-        create_session: action(
-          {
-            title: { type: "string", optional: true },
-            session_id: { type: "string", optional: true },
-            approval_mode: {
-              type: "string",
-              optional: true,
-              description: "Initial approval mode: normal or auto.",
-            },
-          },
-          async ({ title, session_id, approval_mode }) =>
-            this.publicSessionRecord(
-              await this.createSession({
-                workspace_id: scope.workspaceId,
-                project_id: scope.projectId,
-                title,
-                session_id,
-                approval_mode: approvalModeParam({ approval_mode }, "approval_mode"),
-              }),
-            ),
-          {
-            label: "New Session",
-            description: "Start a new session in this scope.",
-            estimate: "slow",
-          },
-        ),
-      },
-    };
-  }
 }
 
 export async function startSessionSupervisor(options: {
@@ -900,18 +540,17 @@ export async function startSessionSupervisor(options: {
   initial?: SessionScopeInput | false;
   cwd?: string;
   launchScope?: LaunchScope;
-  register?: boolean;
   autoClose?: {
     enabled: boolean;
     idleTimeoutMs?: number;
     onClose?: () => void;
   };
 }): Promise<{
-  provider: SessionSupervisorProvider;
-  listener: Listener;
+  supervisor: SessionSupervisor;
+  listener: { close(): void };
   initialSession?: SessionRecord;
 }> {
-  const provider = new SessionSupervisorProvider({
+  const supervisor = new SessionSupervisor({
     cwd: options.cwd,
     launchScope: options.launchScope,
     autoCloseEnabled: options.autoClose?.enabled === true,
@@ -926,14 +565,14 @@ export async function startSessionSupervisor(options: {
   const closeForIdle = () => {
     clearAutoCloseTimer();
     listener.close();
-    provider.stop();
+    supervisor.stop();
     options.autoClose?.onClose?.();
   };
   const scheduleAutoClose = () => {
     if (options.autoClose?.enabled !== true) {
       return;
     }
-    if (!provider.canAutoClose()) {
+    if (!supervisor.canAutoClose()) {
       clearAutoCloseTimer();
       return;
     }
@@ -941,29 +580,27 @@ export async function startSessionSupervisor(options: {
       autoCloseTimer = setTimeout(closeForIdle, options.autoClose.idleTimeoutMs ?? 5000);
     }
   };
-  provider.onLifecycleChange(scheduleAutoClose);
+  supervisor.onLifecycleChange(scheduleAutoClose);
 
   let initialSession: SessionRecord | undefined;
   try {
     if (options.initial !== false) {
-      initialSession = await provider.startInitialSession(options.initial ?? {});
+      initialSession = await supervisor.startInitialSession(options.initial ?? {});
     }
   } catch (error) {
-    provider.stop();
+    supervisor.stop();
     throw error;
   }
-  const unixListener = listenSessionSupervisor(provider, options.socketPath, {
-    register: options.register ?? true,
-  });
-  const listener: Listener = {
+  const clientListener = listenSupervisorClientProtocol(supervisor, options.socketPath);
+  const listener = {
     close: () => {
       clearAutoCloseTimer();
-      unixListener.close();
+      clientListener.close();
     },
   };
   scheduleAutoClose();
   return {
-    provider,
+    supervisor,
     listener,
     initialSession,
   };

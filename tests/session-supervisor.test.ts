@@ -3,16 +3,15 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listenUnix } from "@slop-ai/server/unix";
 
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
-import { SessionSupervisorProvider, startSessionSupervisor } from "../src/session/supervisor";
-import { listenSessionSupervisor } from "../src/session/supervisor-listener";
+import { listenSupervisorClientProtocol } from "../src/session/client-protocol";
+import { SessionSupervisor, startSessionSupervisor } from "../src/session/supervisor";
 
 const tempPaths: string[] = [];
 const listeners: Array<{ close: () => void }> = [];
-const providers: SessionSupervisorProvider[] = [];
+const supervisors: SessionSupervisor[] = [];
 const originalHome = process.env.HOME;
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -52,8 +51,8 @@ afterEach(async () => {
   for (const listener of listeners.splice(0)) {
     listener.close();
   }
-  for (const provider of providers.splice(0)) {
-    provider.stop();
+  for (const supervisor of supervisors.splice(0)) {
+    supervisor.stop();
   }
   if (originalHome == null) {
     delete process.env.HOME;
@@ -78,8 +77,8 @@ async function waitForScopes(client: SessionSupervisorClient): Promise<void> {
   throw new Error("Timed out waiting for supervisor scopes.");
 }
 
-describe("SessionSupervisorProvider", () => {
-  test("creates, switches, and stops scoped sessions through a public SLOP supervisor", async () => {
+describe("SessionSupervisor", () => {
+  test("creates, switches, and stops scoped sessions through the typed supervisor", async () => {
     const home = await createTempDir("sloppy-supervisor-home-");
     const workspace = await createTempDir("sloppy-supervisor-workspace-");
     const projectRoot = join(workspace, "apps/app");
@@ -128,14 +127,14 @@ describe("SessionSupervisorProvider", () => {
     );
     process.env.HOME = home;
 
-    const provider = new SessionSupervisorProvider({
+    const provider = new SessionSupervisor({
       cwd: workspace,
       homeConfigPath: join(home, ".sloppy/config.yaml"),
       workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
     });
-    providers.push(provider);
+    supervisors.push(provider);
     const supervisorSocket = `/tmp/slop/sloppy-supervisor-test-${crypto.randomUUID()}.sock`;
-    listeners.push(listenUnix(provider.server, supervisorSocket, { register: false }));
+    listeners.push(listenSupervisorClientProtocol(provider, supervisorSocket));
     const supervisor = new SessionSupervisorClient(supervisorSocket);
     await supervisor.connect();
     await waitForScopes(supervisor);
@@ -212,7 +211,7 @@ describe("SessionSupervisorProvider", () => {
     supervisor.disconnect();
 
     provider.stop();
-    providers.splice(providers.indexOf(provider), 1);
+    supervisors.splice(supervisors.indexOf(provider), 1);
     expect(existsSync(appSession.socketPath)).toBe(false);
   });
 
@@ -222,14 +221,14 @@ describe("SessionSupervisorProvider", () => {
     await writeConfig(workspace, llmProfileConfigLines("lease-model").join("\n"));
     process.env.HOME = home;
 
-    const provider = new SessionSupervisorProvider({
+    const provider = new SessionSupervisor({
       cwd: workspace,
       homeConfigPath: join(home, ".sloppy/config.yaml"),
       workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
     });
-    providers.push(provider);
+    supervisors.push(provider);
     const socketPath = `/tmp/slop/sloppy-supervisor-lease-${crypto.randomUUID()}.sock`;
-    listeners.push(listenSessionSupervisor(provider, socketPath, { register: false }));
+    listeners.push(listenSupervisorClientProtocol(provider, socketPath));
 
     const client = new SessionSupervisorClient(socketPath);
     await client.connect();
@@ -267,18 +266,19 @@ describe("SessionSupervisorProvider", () => {
     const running = await startSessionSupervisor({
       socketPath: supervisorSocket,
       cwd: workspace,
-      register: false,
       initial: {
         session_id: "initial-cleanup",
         title: "Initial Cleanup",
         approval_mode: "auto",
       },
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
 
     expect(existsSync(supervisorSocket)).toBe(true);
+    expect(existsSync(`${supervisorSocket}.client`)).toBe(false);
     expect(existsSync(running.initialSession!.socketPath)).toBe(true);
+    expect(existsSync(`${running.initialSession!.socketPath}.client`)).toBe(false);
     const initialClient = new SessionClient(running.initialSession!.socketPath);
     try {
       const snapshot = await initialClient.connect();
@@ -289,8 +289,8 @@ describe("SessionSupervisorProvider", () => {
 
     running.listener.close();
     listeners.splice(listeners.indexOf(running.listener), 1);
-    running.provider.stop();
-    providers.splice(providers.indexOf(running.provider), 1);
+    running.supervisor.stop();
+    supervisors.splice(supervisors.indexOf(running.supervisor), 1);
 
     expect(existsSync(supervisorSocket)).toBe(false);
     expect(existsSync(running.initialSession!.socketPath)).toBe(false);
@@ -317,10 +317,9 @@ describe("SessionSupervisorProvider", () => {
       socketPath: firstSocket,
       cwd: workspace,
       launchScope,
-      register: false,
       initial: false,
     });
-    providers.push(first.provider);
+    supervisors.push(first.supervisor);
     listeners.push(first.listener);
 
     const firstClient = new SessionSupervisorClient(firstSocket);
@@ -343,18 +342,17 @@ describe("SessionSupervisorProvider", () => {
     firstClient.disconnect();
     first.listener.close();
     listeners.splice(listeners.indexOf(first.listener), 1);
-    first.provider.stop();
-    providers.splice(providers.indexOf(first.provider), 1);
+    first.supervisor.stop();
+    supervisors.splice(supervisors.indexOf(first.supervisor), 1);
 
     const secondSocket = `/tmp/slop/sloppy-supervisor-registry-b-${crypto.randomUUID()}.sock`;
     const second = await startSessionSupervisor({
       socketPath: secondSocket,
       cwd: workspace,
       launchScope,
-      register: false,
       initial: false,
     });
-    providers.push(second.provider);
+    supervisors.push(second.supervisor);
     listeners.push(second.listener);
     const secondClient = new SessionSupervisorClient(secondSocket);
     await secondClient.connect();
@@ -394,10 +392,9 @@ describe("SessionSupervisorProvider", () => {
       socketPath,
       cwd: workspace,
       launchScope: { key: "lease-scope", root: workspace },
-      register: false,
       initial: false,
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
     const first = new SessionSupervisorClient(socketPath);
     const second = new SessionSupervisorClient(socketPath);
@@ -445,10 +442,9 @@ describe("SessionSupervisorProvider", () => {
       socketPath,
       cwd: workspace,
       launchScope: { key: "approval-scope", root: workspace },
-      register: false,
       initial: false,
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
 
     const supervisor = new SessionSupervisorClient(socketPath);
@@ -507,10 +503,9 @@ describe("SessionSupervisorProvider", () => {
       socketPath,
       cwd: workspace,
       launchScope: { key: "scope-approval", root: workspace },
-      register: false,
       initial: false,
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
 
     const supervisor = new SessionSupervisorClient(socketPath);
@@ -564,10 +559,9 @@ describe("SessionSupervisorProvider", () => {
     const running = await startSessionSupervisor({
       socketPath,
       cwd: workspace,
-      register: false,
       initial: false,
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
 
     const supervisor = new SessionSupervisorClient(socketPath);
@@ -633,16 +627,15 @@ describe("SessionSupervisorProvider", () => {
       socketPath,
       cwd: workspace,
       launchScope: { key: "autoclose-scope", root: workspace },
-      register: false,
       initial: false,
       autoClose: { enabled: true, idleTimeoutMs: 30 },
     });
-    providers.push(running.provider);
+    supervisors.push(running.supervisor);
     listeners.push(running.listener);
     expect(existsSync(socketPath)).toBe(true);
     await Bun.sleep(120);
     expect(existsSync(socketPath)).toBe(false);
-    providers.splice(providers.indexOf(running.provider), 1);
+    supervisors.splice(supervisors.indexOf(running.supervisor), 1);
     listeners.splice(listeners.indexOf(running.listener), 1);
   });
 });

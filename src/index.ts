@@ -30,9 +30,13 @@ export {
   hasExplicitRuntimeLlmRouting,
 } from "./llm/runtime-config";
 export { BrowserProvider } from "./plugins/first-party/browser/provider";
-export type { FirstPartyPluginDescriptor } from "./plugins/first-party/catalog";
+export type {
+  FirstPartyPluginAssembly,
+  FirstPartyPluginDescriptor,
+} from "./plugins/first-party/catalog";
 export {
   activeFirstPartyPlugins,
+  createFirstPartyPluginAssembly,
   createFirstPartyPluginPolicyRules,
   createFirstPartyPluginProviders,
   createFirstPartySessionPlugins,
@@ -86,6 +90,11 @@ export type {
   ChildSessionFactoryOptions,
   ChildSessionHandle,
 } from "./runtime/child-session";
+export type { RuntimeServiceKey } from "./runtime/services";
+export {
+  createRuntimeServiceKey,
+  RuntimeServiceRegistry,
+} from "./runtime/services";
 export type { AgentSessionSnapshot } from "./session";
 export {
   AgentSessionProvider,
@@ -93,6 +102,6 @@ export {
   SessionRuntime,
   SessionService,
   SessionStore,
-  SessionSupervisorProvider,
+  SessionSupervisor,
   startSessionSupervisor,
 } from "./session";

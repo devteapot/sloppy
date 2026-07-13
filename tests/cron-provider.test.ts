@@ -93,7 +93,6 @@ describe("CronProvider", () => {
       });
       expect(session.affordances?.map((affordance) => affordance.action)).toEqual([
         "add_job",
-        "list_jobs",
         "clear_expired",
       ]);
 
@@ -110,7 +109,7 @@ describe("CronProvider", () => {
     }
   });
 
-  test("adds a job and lists full job details", async () => {
+  test("adds a job and projects its operational state", async () => {
     const { provider, consumer } = createCronHarness();
 
     try {
@@ -139,17 +138,6 @@ describe("CronProvider", () => {
         last_output_preview: null,
         error_preview: null,
       });
-
-      const listResult = await consumer.invoke("/session", "list_jobs", {});
-      expect(listResult.status).toBe("ok");
-      expect(listResult.data).toMatchObject([
-        {
-          id: added.id,
-          name: "hourly-echo",
-          command: "printf cron-ok",
-          status: "idle",
-        },
-      ]);
     } finally {
       provider.stop();
     }

@@ -443,7 +443,7 @@ describe("AgentSessionProvider — runtime and goals", () => {
     }
   });
 
-  test("exposes session plugin manifests and contributed session nodes", async () => {
+  test("exposes typed client plugin manifests and a compact SLOP plugin projection", async () => {
     const runtime = new SessionRuntime({
       config: TEST_CONFIG,
       sessionId: "sess-plugins",
@@ -461,27 +461,20 @@ describe("AgentSessionProvider — runtime and goals", () => {
 
       const plugins = await consumer.query("/plugins", 2);
       expect(plugins.properties?.count).toBeGreaterThanOrEqual(1);
-      expect(plugins.properties?.ui_manifest_version).toBe(2);
 
       const goalPlugin = plugins.children?.find((item) => item.id === "persistent-goal");
       expect(goalPlugin?.properties?.status).toBe("active");
       expect(goalPlugin?.properties?.session_paths).toContain("/goal");
+      expect(goalPlugin?.properties?.ui).toBeUndefined();
+      expect(goalPlugin?.affordances).toBeUndefined();
 
-      const ui = goalPlugin?.properties?.ui as
-        | {
-            actions?: Array<Record<string, unknown>>;
-            subscriptions?: Array<Record<string, unknown>>;
-          }
-        | undefined;
-      expect(ui?.subscriptions?.[0]).toMatchObject({ path: "/goal", depth: 1 });
-      expect(ui?.actions?.some((action) => action.id === "goal:create")).toBe(true);
-
-      const manifest = await consumer.invoke("/plugins/persistent-goal", "inspect_manifest", {});
-      expect(manifest.status).toBe("ok");
-      const manifestData = manifest.data as {
-        manifest?: { actions?: Array<{ id?: string }> };
-      };
-      expect(manifestData.manifest?.actions?.[0]?.id).toBe("goal:create");
+      const clientPlugin = runtime
+        .getClientSnapshot()
+        .plugins.find((plugin) => plugin.id === "persistent-goal");
+      expect(clientPlugin?.contributions.actions).toContainEqual(
+        expect.objectContaining({ command: "create", available: true }),
+      );
+      expect(clientPlugin?.contributions.indicators[0]?.source).toBe("session.goal");
 
       const goal = await consumer.query("/goal", 1);
       expect(goal.properties?.status).toBe("none");
