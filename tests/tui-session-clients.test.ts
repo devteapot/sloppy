@@ -281,6 +281,49 @@ describe("typed client resilience", () => {
     }
   });
 
+  test("lets cancellation pass a detached remote waitForIdle request", async () => {
+    const socketPath = `/tmp/slop/tui-typed-wait-cancel-${crypto.randomUUID()}.sock`;
+    let resolveIdle: (() => void) | undefined;
+    const idle = new Promise<void>((resolve) => {
+      resolveIdle = resolve;
+    });
+    let cancelled = false;
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => ({ state: cancelled ? "idle" : "running" }),
+        subscribe: () => () => {},
+        concurrentRequestMethods: new Set(["turn.waitForIdle"]),
+        handleRequest: async (_owner, method) => {
+          if (method === "turn.waitForIdle") {
+            await idle;
+            return;
+          }
+          if (method === "turn.cancel") {
+            cancelled = true;
+            resolveIdle?.();
+            return { status: "cancelled" };
+          }
+          throw new Error(`Unexpected method: ${method}`);
+        },
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ state: string }>(socketPath, "sloppy.test-client");
+    try {
+      await client.connect();
+      const waiting = client.request("turn.waitForIdle");
+      const cancellation = client.request("turn.cancel");
+      await expect(cancellation).resolves.toEqual({ status: "cancelled" });
+      await expect(waiting).resolves.toBeUndefined();
+      expect(cancelled).toBe(true);
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("serializes concurrent in-process connects and cancels a pending connect", async () => {
     let releaseStart: (() => void) | undefined;
     let startCalls = 0;

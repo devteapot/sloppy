@@ -39,6 +39,7 @@ export function listenSessionClientProtocol(
     version: CLIENT_PROTOCOL_VERSION,
     snapshot: () => runtime.getClientSnapshot(),
     subscribe: (listener) => runtime.store.onChange(() => listener()),
+    concurrentRequestMethods: new Set(["turn.waitForIdle"]),
     onConnect: (owner) => runtime.store.registerClient(`client-${connectionId(owner)}`),
     onDisconnect: (owner) => runtime.store.unregisterClient(`client-${connectionId(owner)}`),
     handleRequest: async (_owner, method, params) => {

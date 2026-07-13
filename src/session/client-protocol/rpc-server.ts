@@ -45,6 +45,7 @@ export function listenClientProtocol<TSnapshot>(options: {
     method: string,
     params: Record<string, unknown>,
   ) => unknown | Promise<unknown>;
+  concurrentRequestMethods?: ReadonlySet<string>;
   onConnect?: (owner: object) => void;
   onDisconnect?: (owner: object) => void;
 }): { close(): void } {
@@ -184,6 +185,29 @@ export function listenClientProtocol<TSnapshot>(options: {
       });
     let requestChain = hello;
 
+    const executeRequest = async (request: ClientRequest) => {
+      try {
+        const result = await options.handleRequest(owner, request.method, request.params ?? {});
+        try {
+          await publishCurrentSnapshot();
+        } catch {
+          // Publication failures are logged by publishCurrentSnapshot. The
+          // command already committed and must not be reported as failed.
+        }
+        connection.send({ type: "response", id: request.id, ok: true, result });
+      } catch (error) {
+        connection.send({
+          type: "response",
+          id: request.id,
+          ok: false,
+          error: {
+            code: "request_failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+    };
+
     socket.on("data", (chunk: string) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer) > MAX_INPUT_BUFFER_BYTES) {
@@ -222,26 +246,11 @@ export function listenClientProtocol<TSnapshot>(options: {
             return;
           }
           const request = requestResult.data satisfies ClientRequest;
-          try {
-            const result = await options.handleRequest(owner, request.method, request.params ?? {});
-            try {
-              await publishCurrentSnapshot();
-            } catch {
-              // Publication failures are logged by publishCurrentSnapshot. The
-              // command already committed and must not be reported as failed.
-            }
-            connection.send({ type: "response", id: request.id, ok: true, result });
-          } catch (error) {
-            connection.send({
-              type: "response",
-              id: request.id,
-              ok: false,
-              error: {
-                code: "request_failed",
-                message: error instanceof Error ? error.message : String(error),
-              },
-            });
+          if (options.concurrentRequestMethods?.has(request.method)) {
+            void executeRequest(request);
+            return;
           }
+          await executeRequest(request);
         });
       }
     });
