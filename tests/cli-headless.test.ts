@@ -259,7 +259,7 @@ async function withEventLog<T>(logPath: string, run: () => Promise<T>): Promise<
 }
 
 describe("runHeadlessSingleShot", () => {
-  test("drives single-shot CLI through the public session provider surface", async () => {
+  test("drives single-shot CLI through the typed in-process Session API", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-cli-headless-"));
     tempPaths.push(root);
     const logPath = join(root, "events.jsonl");
@@ -274,7 +274,6 @@ describe("runHeadlessSingleShot", () => {
         llmProfileManager: createTestProfileManager(),
         agentFactory: createCompletedAgentFactory(),
         sessionId: "cli-test-success",
-        providerId: "sloppy-session-cli-test-success",
         metricsPath,
         writeStdout: (chunk) => {
           stdout += chunk;
@@ -319,11 +318,11 @@ describe("runHeadlessSingleShot", () => {
     expect(metrics.responseChars).toBeGreaterThan(0);
     expect(metrics.toolCalls).toBe(1);
     expect(metrics.toolResults).toBe(1);
-    expect(metrics.usage?.current_turn_input_tokens).toBe(12);
-    expect(metrics.usage?.current_turn_output_tokens).toBe(4);
+    expect(metrics.usage?.currentTurnInputTokens).toBe(12);
+    expect(metrics.usage?.currentTurnOutputTokens).toBe(4);
   });
 
-  test("cancels approval-gated single-shot turns through /turn.cancel_turn", async () => {
+  test("cancels approval-gated single-shot turns through the typed Session API", async () => {
     const root = await mkdtemp(join(tmpdir(), "sloppy-cli-approval-"));
     tempPaths.push(root);
     const logPath = join(root, "events.jsonl");
@@ -339,7 +338,6 @@ describe("runHeadlessSingleShot", () => {
         llmProfileManager: createTestProfileManager(),
         agentFactory: harness.factory,
         sessionId: "cli-test-approval",
-        providerId: "sloppy-session-cli-test-approval",
         metricsPath,
         writeStdout: (chunk) => {
           stdout += chunk;
@@ -387,7 +385,6 @@ describe("runHeadlessSingleShot", () => {
       llmProfileManager: createTestProfileManager(),
       agentFactory: harness.factory,
       sessionId: "cli-test-yolo",
-      providerId: "sloppy-session-cli-test-yolo",
       writeStdout: (chunk) => {
         stdout += chunk;
       },
@@ -416,7 +413,6 @@ describe("runHeadlessSingleShot", () => {
       llmProfileManager: createTestProfileManager(),
       agentFactory: createCompletedAgentFactory(),
       sessionId: "cli-test-metrics",
-      providerId: "sloppy-session-cli-test-metrics",
       metricsPath: join(notDirectory, "metrics.json"),
       writeStdout: (chunk) => {
         stdout += chunk;

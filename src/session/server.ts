@@ -38,10 +38,10 @@ if (supervisor) {
     initial: noInitialSession
       ? false
       : {
-          workspace_id: workspaceId,
-          project_id: projectId,
+          workspaceId,
+          projectId,
           title,
-          session_id: sessionId,
+          sessionId,
         },
     autoClose: autoCloseEnabled
       ? {

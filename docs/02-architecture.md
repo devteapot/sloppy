@@ -33,10 +33,12 @@ affordances. Dynamically discovered or remote providers also speak SLOP.
 
 Ordinary application clients use the typed Session API and Supervisor API. The
 same API is available in process and as versioned JSON RPC over local Unix
-sockets or WebSocket gateway routes. It carries session snapshots and explicit
-commands without forcing clients to reconstruct an application API from a SLOP
-tree. The TUI is one consumer of this API; web, IDE, voice, and automation
-clients use the same contract.
+sockets or WebSocket gateway routes. It carries initial snapshots, coalesced
+incremental patches, and explicit commands without forcing clients to
+reconstruct an application API from a SLOP tree. Streamed text is represented
+as append patches, while each backpressured connection retains only the latest
+pending snapshot update. The TUI and headless CLI are consumers of this API;
+web, IDE, voice, and automation clients use the same contract.
 
 It is not the dependency-injection mechanism for known same-process modules.
 First-party runtime collaborators use typed service interfaces assembled in a
@@ -132,7 +134,10 @@ Session services expose one local Unix socket speaking the versioned typed
 client protocol. Remote clients connect through `sloppy gateway` at
 `/api/supervisor` and `/api/sessions/{id}`. There are no legacy SLOP Session or
 Supervisor transport routes. SLOP remains inside the agent/provider boundary;
-auth and exposure policy live entirely in the gateway.
+auth and exposure policy live entirely in the gateway. The canonical typed SDK
+uses camelCase in both its in-process and transported forms; snake_case remains
+limited to durable on-disk formats and provider projections where it is part of
+the SLOP vocabulary.
 
 ## MCP Compatibility
 

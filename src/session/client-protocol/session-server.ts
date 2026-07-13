@@ -45,6 +45,8 @@ export function listenSessionClientProtocol(
       switch (method) {
         case "session.sendMessage":
           return runtime.sendMessage(requiredString(params, "text"));
+        case "turn.waitForIdle":
+          return runtime.waitForIdle();
         case "turn.cancel":
           return runtime.cancelTurn();
         case "queue.cancel":

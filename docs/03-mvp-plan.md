@@ -29,10 +29,13 @@ Checked in now:
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
   `a2a`, `meta-runtime`
 - typed Session and Supervisor APIs on one Unix socket each, with the standalone
-  WS gateway (`sloppy gateway`) exposing only typed `/api/*` routes
+  WS gateway (`sloppy gateway`) exposing only typed `/api/*` routes, plus a
+  typed in-process Session binding used by the headless CLI
+- coalesced incremental client snapshot patches with append operations for
+  streamed text and bounded per-connection output queues
 - typed public session supervisor for scoped session creation, per-client session
   selection, launch-scope resume metadata, stopping/restoring sessions, and
-  keeping each session on its own provider socket
+  keeping each session on its own typed API socket
 - first-party session runtime plugin manager, surfaced through typed client
   contributions and a compact agent-facing `/plugins` projection, for
   contributed session nodes, extension event projections, runtime-local turn
@@ -47,11 +50,11 @@ Checked in now:
   Supervisor APIs, starts or reuses a launch-scope managed
   supervisor by default, can attach through an explicit session supervisor, and
   exposes a runtime route for meta-runtime proposal review/apply/revert
-- ACP-backed delegated child sessions behind the same session-provider boundary,
+- ACP-backed delegated child sessions behind the same session runtime boundary,
   with explicit `slop_wait_for_delegation_event` joins plus child follow-up,
   result retrieval, approval forwarding, and close controls
 - ACP adapters selectable as first-class main-session LLM profiles behind the
-  same session-provider boundary
+  same session runtime boundary
 - native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
   by the Codex CLI auth store created by `codex login`; auth-file discovery and
   OAuth refresh are isolated from the model protocol adapter

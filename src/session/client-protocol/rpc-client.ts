@@ -1,11 +1,73 @@
 import { z } from "zod";
-
+import { applySnapshotPatch } from "./snapshot-patch";
 import { createJsonClientTransport, type JsonClientTransport } from "./transport";
-import type { ClientRequest, ClientServerMessage } from "./types";
+import { CLIENT_PROTOCOL_VERSION, type ClientRequest } from "./types";
 
-const serverMessageSchema = z
-  .object({ type: z.enum(["hello", "snapshot", "response"]) })
-  .passthrough();
+const serverMessageTypeSchema = z.object({
+  type: z.enum(["hello", "snapshot", "patch", "response"]),
+});
+
+const helloMessageSchema = z
+  .object({
+    type: z.literal("hello"),
+    protocol: z.string(),
+    version: z.number().int().nonnegative(),
+    revision: z.number().int().nonnegative(),
+    snapshot: z.unknown(),
+  })
+  .strict()
+  .refine((message) => Object.hasOwn(message, "snapshot"));
+
+const snapshotMessageSchema = z
+  .object({
+    type: z.literal("snapshot"),
+    revision: z.number().int().nonnegative(),
+    snapshot: z.unknown(),
+  })
+  .strict()
+  .refine((message) => Object.hasOwn(message, "snapshot"));
+
+const patchMessageSchema = z.object({
+  type: z.literal("patch"),
+  revision: z.number().int().nonnegative(),
+  operations: z.array(
+    z.discriminatedUnion("op", [
+      z.object({
+        op: z.literal("set"),
+        path: z.array(z.union([z.string(), z.number().int()])),
+        value: z.unknown(),
+      }),
+      z.object({
+        op: z.literal("delete"),
+        path: z.array(z.union([z.string(), z.number().int()])),
+      }),
+      z.object({
+        op: z.literal("append"),
+        path: z.array(z.union([z.string(), z.number().int()])),
+        value: z.string(),
+      }),
+    ]),
+  ),
+});
+
+const responseMessageSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      type: z.literal("response"),
+      id: z.string(),
+      ok: z.literal(true),
+      result: z.unknown().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("response"),
+      id: z.string(),
+      ok: z.literal(false),
+      error: z.object({ code: z.string(), message: z.string() }).strict(),
+    })
+    .strict(),
+]);
 
 export class ClientProtocolError extends Error {
   constructor(
@@ -45,15 +107,18 @@ export class RpcSnapshotClient<TSnapshot> {
       this.helloResolve = resolve;
       this.helloReject = reject;
     });
-    await transport.connect({
-      message: (message) => this.handleMessage(message),
-      close: (error) => this.handleClose(error),
-    });
+    // A dial failure can occur before connect() begins awaiting hello. Keep the
+    // rejection handled while preserving the original promise for that await.
+    void hello.catch(() => {});
     const timer = setTimeout(() => {
       this.helloReject?.(new Error(`Timed out waiting for ${this.protocol} hello.`));
       this.disconnect();
     }, timeoutMs);
     try {
+      await transport.connect({
+        message: (message) => this.handleMessage(message),
+        close: (error) => this.handleClose(error),
+      });
       return await hello;
     } catch (error) {
       this.disconnect();
@@ -107,37 +172,76 @@ export class RpcSnapshotClient<TSnapshot> {
   disconnect(): void {
     const transport = this.transport;
     this.transport = null;
+    const reason = new Error(`${this.protocol} client disconnected.`);
+    this.helloReject?.(reason);
     transport?.close();
-    this.rejectPending(new Error(`${this.protocol} client disconnected.`));
+    this.rejectPending(reason);
   }
 
   private handleMessage(input: unknown): void {
-    const envelope = serverMessageSchema.safeParse(input);
+    const envelope = serverMessageTypeSchema.safeParse(input);
     if (!envelope.success) {
       this.handleClose(new Error(`Invalid ${this.protocol} server envelope.`));
       return;
     }
-    const message = input as ClientServerMessage<TSnapshot>;
-    if (message.type === "hello") {
-      if (message.protocol !== this.protocol || message.version !== 1) {
+    if (envelope.data.type === "hello") {
+      const hello = helloMessageSchema.safeParse(input);
+      if (!hello.success) {
+        this.handleClose(new Error(`Invalid ${this.protocol} hello message.`));
+        return;
+      }
+      const message = hello.data;
+      if (message.protocol !== this.protocol || message.version !== CLIENT_PROTOCOL_VERSION) {
         this.helloReject?.(
           new Error(
-            `Unsupported client protocol ${message.protocol}@${message.version}; expected ${this.protocol}@1.`,
+            `Unsupported client protocol ${message.protocol}@${message.version}; expected ${this.protocol}@${CLIENT_PROTOCOL_VERSION}.`,
           ),
         );
         return;
       }
       this.revision = message.revision;
-      this.publishSnapshot(message.snapshot);
-      this.helloResolve?.(message.snapshot);
+      this.publishSnapshot(message.snapshot as TSnapshot);
+      this.helloResolve?.(message.snapshot as TSnapshot);
       return;
     }
-    if (message.type === "snapshot") {
+    if (envelope.data.type === "snapshot") {
+      const update = snapshotMessageSchema.safeParse(input);
+      if (!update.success) {
+        this.handleClose(new Error(`Invalid ${this.protocol} snapshot message.`));
+        return;
+      }
+      const message = update.data;
       if (message.revision <= this.revision) return;
       this.revision = message.revision;
-      this.publishSnapshot(message.snapshot);
+      this.publishSnapshot(message.snapshot as TSnapshot);
       return;
     }
+    if (envelope.data.type === "patch") {
+      const patch = patchMessageSchema.safeParse(input);
+      if (!patch.success || !this.snapshot) {
+        this.handleClose(new Error(`Invalid ${this.protocol} snapshot patch.`));
+        return;
+      }
+      if (patch.data.revision <= this.revision) return;
+      try {
+        const snapshot = applySnapshotPatch(this.snapshot, patch.data.operations);
+        this.revision = patch.data.revision;
+        this.publishSnapshot(snapshot);
+      } catch (error) {
+        this.handleClose(
+          new Error(
+            `Invalid ${this.protocol} snapshot patch: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+      }
+      return;
+    }
+    const response = responseMessageSchema.safeParse(input);
+    if (!response.success) {
+      this.handleClose(new Error(`Invalid ${this.protocol} response message.`));
+      return;
+    }
+    const message = response.data;
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
@@ -150,16 +254,34 @@ export class RpcSnapshotClient<TSnapshot> {
 
   private publishSnapshot(snapshot: TSnapshot): void {
     this.snapshot = snapshot;
-    for (const listener of this.listeners) listener(snapshot);
+    for (const listener of this.listeners) {
+      try {
+        listener(snapshot);
+      } catch (error) {
+        console.warn(
+          `[sloppy] ${this.protocol} snapshot listener failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   private handleClose(error?: Error): void {
-    if (!this.transport) return;
+    const transport = this.transport;
+    if (!transport) return;
     this.transport = null;
+    transport.close();
     const reason = error ?? new Error(`${this.protocol} connection closed.`);
     this.helloReject?.(reason);
     this.rejectPending(reason);
-    for (const listener of this.disconnectListeners) listener(error);
+    for (const listener of this.disconnectListeners) {
+      try {
+        listener(error);
+      } catch (listenerError) {
+        console.warn(
+          `[sloppy] ${this.protocol} disconnect listener failed: ${listenerError instanceof Error ? listenerError.message : String(listenerError)}`,
+        );
+      }
+    }
   }
 
   private rejectPending(error: Error): void {

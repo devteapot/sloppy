@@ -14,21 +14,28 @@ export interface JsonClientTransport {
 export class UnixJsonClientTransport implements JsonClientTransport {
   private socket: Socket | null = null;
   private buffer = "";
+  private rejectConnect: ((error: Error) => void) | null = null;
+  private closed = false;
 
   constructor(private readonly socketPath: string) {}
 
   connect(handlers: JsonTransportHandlers): Promise<void> {
+    this.closed = false;
     return new Promise((resolve, reject) => {
+      this.rejectConnect = reject;
       let settled = false;
       let failedBeforeConnect = false;
       const socket = createConnection(this.socketPath);
       this.socket = socket;
       socket.setEncoding("utf8");
       socket.once("connect", () => {
+        if (this.closed) return;
         settled = true;
+        this.rejectConnect = null;
         resolve();
       });
       socket.on("data", (chunk: string) => {
+        if (this.closed) return;
         this.buffer += chunk;
         const lines = this.buffer.split("\n");
         this.buffer = lines.pop() ?? "";
@@ -46,14 +53,23 @@ export class UnixJsonClientTransport implements JsonClientTransport {
         }
       });
       socket.once("error", (error) => {
+        if (this.closed) return;
         if (!settled) {
           failedBeforeConnect = true;
+          this.rejectConnect = null;
           reject(error);
           return;
         }
         handlers.close(error);
       });
       socket.once("close", () => {
+        if (this.closed) return;
+        if (!settled) {
+          failedBeforeConnect = true;
+          this.rejectConnect = null;
+          reject(new Error(`Unix socket connection closed before connect: ${this.socketPath}`));
+          return;
+        }
         if (!failedBeforeConnect) handlers.close();
       });
     });
@@ -67,6 +83,9 @@ export class UnixJsonClientTransport implements JsonClientTransport {
   }
 
   close(): void {
+    this.closed = true;
+    this.rejectConnect?.(new Error(`Unix socket connection cancelled: ${this.socketPath}`));
+    this.rejectConnect = null;
     this.socket?.end();
     this.socket = null;
   }
@@ -74,20 +93,27 @@ export class UnixJsonClientTransport implements JsonClientTransport {
 
 export class WebSocketJsonClientTransport implements JsonClientTransport {
   private socket: WebSocket | null = null;
+  private rejectConnect: ((error: Error) => void) | null = null;
+  private closed = false;
 
   constructor(private readonly url: string) {}
 
   connect(handlers: JsonTransportHandlers): Promise<void> {
+    this.closed = false;
     return new Promise((resolve, reject) => {
+      this.rejectConnect = reject;
       let settled = false;
       let failedBeforeConnect = false;
       const socket = new WebSocket(this.url);
       this.socket = socket;
       socket.addEventListener("open", () => {
+        if (this.closed) return;
         settled = true;
+        this.rejectConnect = null;
         resolve();
       });
       socket.addEventListener("message", (event) => {
+        if (this.closed) return;
         try {
           const text =
             typeof event.data === "string"
@@ -105,15 +131,24 @@ export class WebSocketJsonClientTransport implements JsonClientTransport {
         }
       });
       socket.addEventListener("error", () => {
+        if (this.closed) return;
         const error = new Error(`WebSocket connection failed: ${this.url}`);
         if (!settled) {
           failedBeforeConnect = true;
+          this.rejectConnect = null;
           reject(error);
           return;
         }
         handlers.close(error);
       });
       socket.addEventListener("close", () => {
+        if (this.closed) return;
+        if (!settled) {
+          failedBeforeConnect = true;
+          this.rejectConnect = null;
+          reject(new Error(`WebSocket closed before connect: ${this.url}`));
+          return;
+        }
         if (!failedBeforeConnect) handlers.close();
       });
     });
@@ -127,7 +162,15 @@ export class WebSocketJsonClientTransport implements JsonClientTransport {
   }
 
   close(): void {
-    this.socket?.close();
+    this.closed = true;
+    this.rejectConnect?.(new Error(`WebSocket connection cancelled: ${this.url}`));
+    this.rejectConnect = null;
+    const socket = this.socket;
+    if (socket && "terminate" in socket && typeof socket.terminate === "function") {
+      socket.terminate();
+    } else {
+      socket?.close();
+    }
     this.socket = null;
   }
 }

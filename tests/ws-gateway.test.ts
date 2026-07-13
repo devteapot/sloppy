@@ -80,7 +80,7 @@ async function startSupervisor(options?: { initial?: false }) {
     socketPath,
     cwd: workspace,
     initial:
-      options?.initial === false ? false : { session_id: "gw-initial", title: "Gateway Initial" },
+      options?.initial === false ? false : { sessionId: "gw-initial", title: "Gateway Initial" },
   });
   supervisors.push(running.supervisor);
   listeners.push(running.listener);

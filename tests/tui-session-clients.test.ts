@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
+import {
+  applySnapshotPatch,
+  createSnapshotPatch,
+  InProcessSessionApi,
+  RpcSnapshotClient,
+  SessionApiClient,
+} from "../src/session/client-protocol";
 import { listenClientProtocol } from "../src/session/client-protocol/rpc-server";
 import {
   CLIENT_PROTOCOL_VERSION,
@@ -12,6 +19,7 @@ import {
   SUPERVISOR_CLIENT_PROTOCOL,
   type SupervisorClientSnapshot,
 } from "../src/session/client-protocol/types";
+import type { SessionRuntime } from "../src/session/runtime";
 import { SessionStore } from "../src/session/store";
 
 const listeners: Array<{ close: () => void }> = [];
@@ -194,6 +202,204 @@ describe("SessionClient typed protocol", () => {
 });
 
 describe("typed client resilience", () => {
+  test("streams growing snapshot text as a compact append patch", () => {
+    const previous = { transcript: [{ text: "a".repeat(10_000) }] };
+    const next = { transcript: [{ text: `${"a".repeat(10_000)}tail` }] };
+    const operations = createSnapshotPatch(previous, next);
+    expect(operations).toEqual([{ op: "append", path: ["transcript", 0, "text"], value: "tail" }]);
+    expect(applySnapshotPatch(previous, operations)).toEqual(next);
+    expect(JSON.stringify(operations).length).toBeLessThan(JSON.stringify(next).length / 10);
+  });
+
+  test("coalesces rapid snapshot publications to their latest state", async () => {
+    const socketPath = `/tmp/slop/tui-typed-coalesce-${crypto.randomUUID()}.sock`;
+    const subscribers = new Set<() => void>();
+    let snapshot = { text: "" };
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => snapshot,
+        subscribe: (subscriber) => {
+          subscribers.add(subscriber);
+          return () => subscribers.delete(subscriber);
+        },
+        handleRequest: () => ({ ok: true }),
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ text: string }>(socketPath, "sloppy.test-client");
+    const seen: string[] = [];
+    client.onSnapshot((next) => seen.push(next.text));
+    try {
+      await client.connect();
+      await Bun.sleep(30);
+      seen.length = 0;
+      for (let index = 0; index < 100; index += 1) {
+        snapshot = { text: `${snapshot.text}x` };
+        for (const subscriber of subscribers) subscriber();
+      }
+      await waitFor(() => (client.getSnapshot()?.text.length === 100 ? true : null));
+      expect(seen.length).toBeLessThanOrEqual(2);
+      expect(client.getSnapshot()?.text).toBe("x".repeat(100));
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("does not report a committed command as failed when snapshot publication fails", async () => {
+    const socketPath = `/tmp/slop/tui-typed-projection-failure-${crypto.randomUUID()}.sock`;
+    let count = 0;
+    let projectionFails = false;
+    listeners.push(
+      listenClientProtocol({
+        socketPath,
+        protocol: "sloppy.test-client",
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () => {
+          if (projectionFails) throw new Error("projection boom");
+          return { count };
+        },
+        subscribe: () => () => {},
+        handleRequest: () => {
+          count += 1;
+          projectionFails = true;
+          return { count };
+        },
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new RpcSnapshotClient<{ count: number }>(socketPath, "sloppy.test-client");
+    try {
+      await client.connect();
+      await expect(client.request("increment")).resolves.toEqual({ count: 1 });
+      expect(count).toBe(1);
+    } finally {
+      projectionFails = false;
+      client.disconnect();
+    }
+  });
+
+  test("serializes concurrent in-process connects and cancels a pending connect", async () => {
+    let releaseStart: (() => void) | undefined;
+    let startCalls = 0;
+    let registrations = 0;
+    let unregistrations = 0;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const runtime = {
+      start: () => {
+        startCalls += 1;
+        return startGate;
+      },
+      getClientSnapshot: () => sessionSnapshot(),
+      store: {
+        registerClient: () => {
+          registrations += 1;
+        },
+        unregisterClient: () => {
+          unregistrations += 1;
+        },
+        onChange: () => () => {},
+      },
+    } as unknown as SessionRuntime;
+    const api = new InProcessSessionApi(runtime);
+    const first = api.connect();
+    const second = api.connect();
+    expect(startCalls).toBe(1);
+    releaseStart?.();
+    await expect(first).resolves.toEqual(await second);
+    expect(registrations).toBe(1);
+    api.disconnect();
+    expect(unregistrations).toBe(1);
+
+    let releaseCancelledStart: (() => void) | undefined;
+    const cancelledGate = new Promise<void>((resolve) => {
+      releaseCancelledStart = resolve;
+    });
+    const cancelledRuntime = {
+      ...runtime,
+      start: () => cancelledGate,
+    } as unknown as SessionRuntime;
+    const cancelledApi = new InProcessSessionApi(cancelledRuntime);
+    const cancelled = cancelledApi.connect();
+    const cancelledResult = cancelled.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    cancelledApi.disconnect();
+    releaseCancelledStart?.();
+    expect(await cancelledResult).toBeInstanceOf(Error);
+    expect(registrations).toBe(1);
+
+    const failingRuntime = {
+      ...runtime,
+      start: () => Promise.resolve(),
+      getClientSnapshot: () => {
+        throw new Error("snapshot projection failed");
+      },
+    } as unknown as SessionRuntime;
+    const failingApi = new InProcessSessionApi(failingRuntime);
+    await expect(failingApi.connect()).rejects.toThrow("snapshot projection failed");
+    expect(registrations).toBe(2);
+    expect(unregistrations).toBe(2);
+  });
+
+  test("allows the same SDK client to retry after its first dial fails", async () => {
+    const socketPath = `/tmp/slop/tui-typed-retry-${crypto.randomUUID()}.sock`;
+    const client = new SessionApiClient(socketPath);
+    try {
+      await expect(client.connect(50)).rejects.toThrow();
+      listeners.push(listenMockSession(socketPath));
+      await waitFor(() => (existsSync(socketPath) ? true : null));
+      const snapshot = await client.connect(500);
+      expect(snapshot.session.session.sessionId).toBe("sess-typed");
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("does not register a client that disconnects before hello is ready", async () => {
+    const socketPath = `/tmp/slop/tui-typed-late-hello-${crypto.randomUUID()}.sock`;
+    let resolveSnapshot: ((snapshot: SessionClientSnapshot) => void) | undefined;
+    const connected: object[] = [];
+    const disconnected: object[] = [];
+    listeners.push(
+      listenClientProtocol<SessionClientSnapshot>({
+        socketPath,
+        protocol: SESSION_CLIENT_PROTOCOL,
+        version: CLIENT_PROTOCOL_VERSION,
+        snapshot: () =>
+          new Promise<SessionClientSnapshot>((resolve) => {
+            resolveSnapshot = resolve;
+          }),
+        subscribe: () => () => {},
+        handleRequest: () => ({ ok: true }),
+        onConnect: (owner) => connected.push(owner),
+        onDisconnect: (owner) => disconnected.push(owner),
+      }),
+    );
+    await waitFor(() => (existsSync(socketPath) ? true : null));
+    const client = new SessionApiClient(socketPath);
+    const connecting = client.connect(500);
+    const connectionError = connecting.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await waitFor(() => (resolveSnapshot ? true : null));
+    client.disconnect();
+    await Bun.sleep(20);
+    resolveSnapshot?.(sessionSnapshot());
+    const error = await connectionError;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/disconnected/);
+    await Bun.sleep(20);
+    expect(connected).toEqual([]);
+    expect(disconnected).toEqual([]);
+  });
+
   test("rejects when a server accepts but never sends hello", async () => {
     const socketPath = `/tmp/slop/tui-typed-timeout-${crypto.randomUUID()}.sock`;
     const silent = createServer(() => {});
@@ -205,6 +411,44 @@ describe("typed client resilience", () => {
     } finally {
       client.disconnect();
       silent.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  test("times out a WebSocket that never completes its upgrade", async () => {
+    const stalled = createServer(() => {});
+    await new Promise<void>((resolve) => stalled.listen(0, "127.0.0.1", resolve));
+    const address = stalled.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test address.");
+    const client = new RpcSnapshotClient<SessionClientSnapshot>(
+      `ws://127.0.0.1:${address.port}/api/session`,
+      SESSION_CLIENT_PROTOCOL,
+    );
+    const startedAt = Date.now();
+    try {
+      await expect(client.connect(50)).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(500);
+    } finally {
+      client.disconnect();
+      stalled.close();
+    }
+  });
+
+  test("rejects a malformed hello without publishing an undefined snapshot", async () => {
+    const socketPath = `/tmp/slop/tui-typed-malformed-hello-${crypto.randomUUID()}.sock`;
+    const malformed = createServer((socket) => {
+      socket.write(
+        `${JSON.stringify({ type: "hello", protocol: SESSION_CLIENT_PROTOCOL, version: 1 })}\n`,
+      );
+    });
+    await new Promise<void>((resolve) => malformed.listen(socketPath, resolve));
+    const client = new SessionApiClient(socketPath);
+    try {
+      await expect(client.connect(200)).rejects.toThrow(/Invalid .* hello/);
+      expect(client.getSnapshot()).toBeNull();
+    } finally {
+      client.disconnect();
+      malformed.close();
       rmSync(socketPath, { force: true });
     }
   });

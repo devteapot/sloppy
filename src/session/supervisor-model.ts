@@ -4,11 +4,16 @@ import type { SessionService } from "./service";
 import type { ApprovalMode } from "./types";
 
 export type SessionScopeInput = {
-  workspace_id?: string;
-  project_id?: string;
+  workspaceId?: string;
+  projectId?: string;
   title?: string;
-  session_id?: string;
-  approval_mode?: ApprovalMode;
+  sessionId?: string;
+  approvalMode?: ApprovalMode;
+};
+
+export type ClientLeaseInput = {
+  selectedSessionId?: string;
+  label?: string;
 };
 
 export type SessionRecord = {
@@ -152,11 +157,11 @@ export function approvalModeParam(
 
 export function sessionScopeInputFromParams(params: Record<string, unknown>): SessionScopeInput {
   return {
-    workspace_id: stringParam(params, "workspace_id"),
-    project_id: stringParam(params, "project_id"),
+    workspaceId: stringParam(params, "workspaceId"),
+    projectId: stringParam(params, "projectId"),
     title: stringParam(params, "title"),
-    session_id: stringParam(params, "session_id"),
-    approval_mode: approvalModeParam(params, "approval_mode"),
+    sessionId: stringParam(params, "sessionId"),
+    approvalMode: approvalModeParam(params, "approvalMode"),
   };
 }
 

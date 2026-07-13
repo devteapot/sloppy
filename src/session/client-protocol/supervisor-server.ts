@@ -24,12 +24,12 @@ export function listenSupervisorClientProtocol(
           return supervisor.getClientSnapshot();
         case "lease.register":
           return supervisor.registerClientLease(owner, {
-            selected_session_id: stringParam(params, "selectedSessionId"),
+            selectedSessionId: stringParam(params, "selectedSessionId"),
             label: stringParam(params, "label"),
           });
         case "lease.update":
           return supervisor.updateClientLease(owner, {
-            selected_session_id: stringParam(params, "selectedSessionId"),
+            selectedSessionId: stringParam(params, "selectedSessionId"),
             label: stringParam(params, "label"),
           });
         case "lease.unregister":
@@ -38,11 +38,11 @@ export function listenSupervisorClientProtocol(
           return supervisor.publicSessionRecord(
             await supervisor.createSession(
               sessionScopeInputFromParams({
-                workspace_id: params.workspaceId,
-                project_id: params.projectId,
+                workspaceId: params.workspaceId,
+                projectId: params.projectId,
                 title: params.title,
-                session_id: params.sessionId,
-                approval_mode: params.approvalMode,
+                sessionId: params.sessionId,
+                approvalMode: params.approvalMode,
               }),
               owner,
             ),
@@ -65,13 +65,13 @@ export function listenSupervisorClientProtocol(
           return supervisor.publicSessionRecord(
             await supervisor.createSession(
               {
-                workspace_id: workspaceId,
-                project_id: stringParam(params, "projectId"),
+                workspaceId,
+                projectId: stringParam(params, "projectId"),
                 title: stringParam(params, "title"),
-                session_id: stringParam(params, "sessionId"),
-                approval_mode: approvalModeParam(
-                  { approval_mode: params.approvalMode },
-                  "approval_mode",
+                sessionId: stringParam(params, "sessionId"),
+                approvalMode: approvalModeParam(
+                  { approvalMode: params.approvalMode },
+                  "approvalMode",
                 ),
               },
               owner,

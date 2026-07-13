@@ -32,6 +32,7 @@ export class SessionRouteTable {
     this.retryTimer = null;
     const client = this.client;
     this.client = null;
+    this.snapshot = null;
     client?.disconnect();
   }
 
@@ -66,6 +67,7 @@ export class SessionRouteTable {
       client.onDisconnect(() => {
         if (this.client !== client) return;
         this.client = null;
+        this.snapshot = null;
         this.scheduleReconnect();
       });
       const snapshot = await client.connect();

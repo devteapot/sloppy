@@ -46,6 +46,10 @@ export class SessionApiClient implements SessionClientApi {
     return this.rpc.request("session.sendMessage", { text });
   }
 
+  waitForIdle(): Promise<void> {
+    return this.rpc.request("turn.waitForIdle");
+  }
+
   cancelTurn(): Promise<unknown> {
     return this.rpc.request("turn.cancel");
   }

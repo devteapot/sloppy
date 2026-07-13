@@ -157,10 +157,13 @@ agent/external projection. Meta-runtime uses this boundary for skills,
 delegation, and messaging.
 
 Application clients use the typed Session and Supervisor APIs instead. The APIs
-carry canonical snapshots, revisioned updates, and explicit commands over
-in-process bindings, local Unix sockets, or `/api/*` WebSocket gateway
-routes. They do not require a UI to reconstruct an SDK from SLOP paths and
-affordances. SLOP providers remain deliberate agent-context projections.
+carry canonical snapshots, coalesced incremental patches, and explicit commands
+over in-process bindings, local Unix sockets, or `/api/*` WebSocket gateway
+routes. Slow socket clients retain only the latest pending snapshot patch, and
+growing streamed text uses append operations instead of repeatedly sending the
+whole transcript. They do not require a UI to reconstruct an SDK from SLOP
+paths and affordances. The headless CLI uses the same typed in-process Session
+binding; SLOP providers remain deliberate agent-context projections.
 
 Default provider state is intentionally compact. It exposes what a model needs
 to decide its next action—status, counts, summaries, bounded previews, and

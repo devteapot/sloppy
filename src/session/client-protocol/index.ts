@@ -1,6 +1,9 @@
 export { ClientProtocolError, RpcSnapshotClient } from "./rpc-client";
 export { SessionApiClient } from "./session-client";
+export { InProcessSessionApi } from "./session-in-process";
 export { listenSessionClientProtocol } from "./session-server";
+export type { SnapshotPatchOperation, SnapshotPatchPath } from "./snapshot-patch";
+export { applySnapshotPatch, createSnapshotPatch } from "./snapshot-patch";
 export { SupervisorApiClient } from "./supervisor-client";
 export { listenSupervisorClientProtocol } from "./supervisor-server";
 export type {

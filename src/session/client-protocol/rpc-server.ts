@@ -5,7 +5,12 @@ import { dirname } from "node:path";
 import { z } from "zod";
 
 import { unlinkSocketPath } from "../socket";
+import { createSnapshotPatch } from "./snapshot-patch";
 import type { ClientRequest, ClientServerMessage } from "./types";
+
+const SNAPSHOT_COALESCE_MS = 16;
+const MAX_QUEUED_MESSAGES = 100;
+const MAX_INPUT_BUFFER_BYTES = 1024 * 1024;
 
 const requestSchema = z
   .object({
@@ -19,7 +24,14 @@ const requestSchema = z
 type RpcConnection<TSnapshot> = {
   owner: object;
   socket: Socket;
+  ready: boolean;
+  snapshot: TSnapshot | null;
+  backpressured: boolean;
+  pendingSnapshot: { revision: number; snapshot: TSnapshot } | null;
+  queuedMessages: ClientServerMessage<TSnapshot>[];
   send(message: ClientServerMessage<TSnapshot>): void;
+  sendSnapshot(revision: number, snapshot: TSnapshot): void;
+  flush(): void;
 };
 
 export function listenClientProtocol<TSnapshot>(options: {
@@ -40,41 +52,110 @@ export function listenClientProtocol<TSnapshot>(options: {
   mkdirSync(dirname(options.socketPath), { recursive: true });
   const connections = new Set<RpcConnection<TSnapshot>>();
   let revision = 1;
-  let publishChain = Promise.resolve();
+  let stopped = false;
+  let publishDirty = false;
+  let publishInFlight = false;
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
+  let publicationChain = Promise.resolve();
+
+  const publishCurrentSnapshot = (): Promise<void> => {
+    const publication = publicationChain.then(async () => {
+      if (stopped) return;
+      const snapshot = await options.snapshot();
+      if (stopped) return;
+      revision += 1;
+      for (const connection of connections) {
+        if (connection.ready) connection.sendSnapshot(revision, snapshot);
+      }
+    });
+    publicationChain = publication.catch((error) => {
+      console.warn(
+        `[sloppy] ${options.protocol} snapshot publication failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return publication;
+  };
+
+  const schedulePublication = () => {
+    if (stopped || publishTimer || publishInFlight || !publishDirty) return;
+    publishTimer = setTimeout(() => {
+      publishTimer = null;
+      publishInFlight = true;
+      publishDirty = false;
+      void publishCurrentSnapshot()
+        .catch(() => {})
+        .finally(() => {
+          publishInFlight = false;
+          schedulePublication();
+        });
+    }, SNAPSHOT_COALESCE_MS);
+  };
 
   const publishSnapshot = () => {
-    publishChain = publishChain
-      .then(async () => {
-        revision += 1;
-        const snapshot = await options.snapshot();
-        for (const connection of connections) {
-          connection.send({ type: "snapshot", revision, snapshot });
-        }
-      })
-      .catch((error) => {
-        console.warn(
-          `[sloppy] ${options.protocol} snapshot publication failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+    publishDirty = true;
+    schedulePublication();
   };
   const unsubscribe = options.subscribe(publishSnapshot);
 
   const server = createServer((socket) => {
     const owner = {};
     let buffer = "";
-    let requestChain = Promise.resolve();
+    let closed = false;
+    let registered = false;
     const connection: RpcConnection<TSnapshot> = {
       owner,
       socket,
+      ready: false,
+      snapshot: null,
+      backpressured: false,
+      pendingSnapshot: null,
+      queuedMessages: [],
       send(message) {
-        if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
+        if (socket.destroyed) return;
+        if (connection.backpressured) {
+          if (connection.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
+            socket.destroy(
+              new Error(`${options.protocol} client output queue exceeded its limit.`),
+            );
+            return;
+          }
+          connection.queuedMessages.push(message);
+          return;
+        }
+        connection.backpressured = !socket.write(`${JSON.stringify(message)}\n`);
+      },
+      sendSnapshot(nextRevision, snapshot) {
+        if (socket.destroyed || !connection.ready) return;
+        if (connection.backpressured || connection.queuedMessages.length > 0) {
+          connection.pendingSnapshot = { revision: nextRevision, snapshot };
+          return;
+        }
+        const operations = createSnapshotPatch(connection.snapshot, snapshot);
+        connection.snapshot = snapshot;
+        if (operations.length > 0) {
+          connection.send({ type: "patch", revision: nextRevision, operations });
+        }
+      },
+      flush() {
+        if (socket.destroyed) return;
+        connection.backpressured = false;
+        while (!connection.backpressured && connection.queuedMessages.length > 0) {
+          const message = connection.queuedMessages.shift();
+          if (message) connection.send(message);
+        }
+        if (!connection.backpressured && connection.pendingSnapshot) {
+          const pending = connection.pendingSnapshot;
+          connection.pendingSnapshot = null;
+          connection.sendSnapshot(pending.revision, pending.snapshot);
+        }
       },
     };
     connections.add(connection);
     socket.setEncoding("utf8");
 
-    void Promise.resolve(options.snapshot())
+    const hello = Promise.resolve(options.snapshot())
       .then((snapshot) => {
+        if (closed) return;
         connection.send({
           type: "hello",
           protocol: options.protocol,
@@ -82,9 +163,14 @@ export function listenClientProtocol<TSnapshot>(options: {
           revision,
           snapshot,
         });
+        connection.snapshot = snapshot;
+        connection.ready = true;
+        registered = true;
         options.onConnect?.(owner);
+        publishSnapshot();
       })
       .catch((error) => {
+        if (closed) return;
         connection.send({
           type: "response",
           id: "hello",
@@ -96,14 +182,20 @@ export function listenClientProtocol<TSnapshot>(options: {
         });
         socket.end();
       });
+    let requestChain = hello;
 
     socket.on("data", (chunk: string) => {
       buffer += chunk;
+      if (Buffer.byteLength(buffer) > MAX_INPUT_BUFFER_BYTES) {
+        socket.destroy(new Error(`${options.protocol} client input exceeded its limit.`));
+        return;
+      }
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
         requestChain = requestChain.then(async () => {
+          if (!connection.ready) return;
           let parsed: unknown;
           try {
             parsed = JSON.parse(line);
@@ -132,6 +224,12 @@ export function listenClientProtocol<TSnapshot>(options: {
           const request = requestResult.data satisfies ClientRequest;
           try {
             const result = await options.handleRequest(owner, request.method, request.params ?? {});
+            try {
+              await publishCurrentSnapshot();
+            } catch {
+              // Publication failures are logged by publishCurrentSnapshot. The
+              // command already committed and must not be reported as failed.
+            }
             connection.send({ type: "response", id: request.id, ok: true, result });
           } catch (error) {
             connection.send({
@@ -147,10 +245,15 @@ export function listenClientProtocol<TSnapshot>(options: {
         });
       }
     });
+    socket.on("drain", () => connection.flush());
 
     socket.once("close", () => {
+      closed = true;
+      connection.ready = false;
+      connection.queuedMessages.length = 0;
+      connection.pendingSnapshot = null;
       connections.delete(connection);
-      options.onDisconnect?.(owner);
+      if (registered) options.onDisconnect?.(owner);
     });
     socket.once("error", () => {
       connections.delete(connection);
@@ -167,7 +270,10 @@ export function listenClientProtocol<TSnapshot>(options: {
 
   return {
     close() {
+      stopped = true;
       unsubscribe();
+      if (publishTimer) clearTimeout(publishTimer);
+      publishTimer = null;
       for (const connection of connections) connection.socket.end();
       connections.clear();
       server.close();

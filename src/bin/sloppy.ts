@@ -78,11 +78,11 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
     initial: hasFlag(args, "--no-initial-session")
       ? false
       : {
-          workspace_id: readOption(args, "--workspace-id"),
-          project_id: readOption(args, "--project-id"),
+          workspaceId: readOption(args, "--workspace-id"),
+          projectId: readOption(args, "--project-id"),
           title: readOption(args, "--title"),
-          session_id: readOption(args, "--session-id"),
-          approval_mode: approvalModeFromArgs(args),
+          sessionId: readOption(args, "--session-id"),
+          approvalMode: approvalModeFromArgs(args),
         },
     autoClose: hasFlag(args, "--auto-close-enabled")
       ? {

@@ -16,6 +16,7 @@ import { SessionService } from "./service";
 import { loadPersistedSessionSnapshot } from "./store/persistence";
 import {
   type ClientLease,
+  type ClientLeaseInput,
   defaultTitle,
   now,
   type PublicSessionRecord,
@@ -26,7 +27,6 @@ import {
   type SessionScopeInput,
   scopesFromConfig,
   sessionSocketPath,
-  stringParam,
 } from "./supervisor-model";
 import type { ApprovalMode } from "./types";
 
@@ -123,19 +123,19 @@ export class SessionSupervisor {
     return true;
   }
 
-  registerClientLease(owner: object, params: Record<string, unknown>): { lease_id: string } {
+  registerClientLease(owner: object, input: ClientLeaseInput = {}): { leaseId: string } {
     const lease = {
       leaseId: crypto.randomUUID(),
-      selectedSessionId: stringParam(params, "selected_session_id"),
-      label: stringParam(params, "label"),
+      selectedSessionId: input.selectedSessionId,
+      label: input.label,
       connectedAt: now(),
     };
     this.clientLeases.set(owner, lease);
     this.notifyLifecycle();
-    return { lease_id: lease.leaseId };
+    return { leaseId: lease.leaseId };
   }
 
-  updateClientLease(owner: object, params: Record<string, unknown>): { lease_id: string } {
+  updateClientLease(owner: object, input: ClientLeaseInput = {}): { leaseId: string } {
     const existing = this.clientLeases.get(owner);
     const lease =
       existing ??
@@ -143,18 +143,18 @@ export class SessionSupervisor {
         leaseId: crypto.randomUUID(),
         connectedAt: now(),
       } satisfies ClientLease);
-    lease.selectedSessionId = stringParam(params, "selected_session_id");
-    lease.label = stringParam(params, "label") ?? lease.label;
+    lease.selectedSessionId = input.selectedSessionId;
+    lease.label = input.label ?? lease.label;
     this.clientLeases.set(owner, lease);
     this.notifyLifecycle();
-    return { lease_id: lease.leaseId };
+    return { leaseId: lease.leaseId };
   }
 
-  unregisterClientLease(owner: object): { lease_id?: string } {
+  unregisterClientLease(owner: object): { leaseId?: string } {
     const leaseId = this.clientLeases.get(owner)?.leaseId;
     this.clientLeases.delete(owner);
     this.notifyLifecycle();
-    return { lease_id: leaseId };
+    return { leaseId };
   }
 
   removeConnection(owner: object): void {
@@ -166,7 +166,7 @@ export class SessionSupervisor {
   async createSession(input: SessionScopeInput = {}, owner?: object): Promise<SessionRecord> {
     await this.ensureInitialized();
     const config = await this.resolveConfig(input);
-    const sessionId = input.session_id ?? crypto.randomUUID();
+    const sessionId = input.sessionId ?? crypto.randomUUID();
     if (this.records.has(sessionId)) {
       throw new Error(`Session already exists: ${sessionId}`);
     }
@@ -176,15 +176,15 @@ export class SessionSupervisor {
       fallback: input.title,
     });
     const reloadScope = {
-      workspace_id: config.workspaces?.activeWorkspaceId,
-      project_id: config.workspaces?.activeProjectId,
+      workspaceId: config.workspaces?.activeWorkspaceId,
+      projectId: config.workspaces?.activeProjectId,
     };
     const service = new SessionService({
       config,
       sessionId,
       title,
       socketPath: sessionSocketPath(sessionId),
-      approvalMode: input.approval_mode ?? this.inheritedApprovalMode(owner),
+      approvalMode: input.approvalMode ?? this.inheritedApprovalMode(owner),
       configReloader: () => this.resolveConfig(reloadScope),
       launchScope: this.options.launchScope,
     });
@@ -195,7 +195,7 @@ export class SessionSupervisor {
     });
     this.resumeSessionId = sessionId;
     if (owner) {
-      this.updateClientLease(owner, { selected_session_id: sessionId });
+      this.updateClientLease(owner, { selectedSessionId: sessionId });
     }
     this.persistRegistry();
     this.notifyLifecycle();
@@ -204,8 +204,8 @@ export class SessionSupervisor {
 
   async reloadConfig(): Promise<{
     status: "ok";
-    scope_count: number;
-    registry_path: string | null;
+    scopeCount: number;
+    registryPath: string | null;
   }> {
     await this.ensureInitialized();
     this.cachedConfig = null;
@@ -213,8 +213,8 @@ export class SessionSupervisor {
     this.notifyLifecycle();
     return {
       status: "ok",
-      scope_count: scopesFromConfig(config).length,
-      registry_path: this.registryPath,
+      scopeCount: scopesFromConfig(config).length,
+      registryPath: this.registryPath,
     };
   }
 
@@ -260,7 +260,7 @@ export class SessionSupervisor {
     }
     this.resumeSessionId = sessionId;
     if (owner) {
-      this.updateClientLease(owner, { selected_session_id: sessionId });
+      this.updateClientLease(owner, { selectedSessionId: sessionId });
     }
     this.persistRegistry();
     this.notifyLifecycle();
@@ -406,15 +406,15 @@ export class SessionSupervisor {
       cwd: this.options.cwd,
       homeConfigPath: this.options.homeConfigPath,
       workspaceConfigPath: this.options.workspaceConfigPath,
-      workspaceId: input.workspace_id,
-      projectId: input.project_id,
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
     });
   }
 
   private async restoreSession(record: SessionRecord): Promise<SessionRecord> {
     const config = await this.resolveConfig({
-      workspace_id: record.workspaceId,
-      project_id: record.projectId,
+      workspaceId: record.workspaceId,
+      projectId: record.projectId,
     });
     const snapshotPath = record.snapshotPath ?? snapshotPathForSession(config, record.sessionId);
     if (!snapshotPath || !existsSync(snapshotPath)) {
@@ -430,8 +430,8 @@ export class SessionSupervisor {
       sessionPersistencePath: snapshotPath,
       configReloader: () =>
         this.resolveConfig({
-          workspace_id: record.workspaceId,
-          project_id: record.projectId,
+          workspaceId: record.workspaceId,
+          projectId: record.projectId,
         }),
       launchScope: this.options.launchScope,
     });

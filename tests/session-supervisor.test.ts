@@ -267,9 +267,9 @@ describe("SessionSupervisor", () => {
       socketPath: supervisorSocket,
       cwd: workspace,
       initial: {
-        session_id: "initial-cleanup",
+        sessionId: "initial-cleanup",
         title: "Initial Cleanup",
-        approval_mode: "auto",
+        approvalMode: "auto",
       },
     });
     supervisors.push(running.supervisor);

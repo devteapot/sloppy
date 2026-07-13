@@ -2,6 +2,7 @@ import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 import type { ClientContributionManifest } from "../plugins/client-contributions";
 import type { PublicSessionRecord, ScopeRecord } from "../supervisor-model";
 import type { AgentSessionSnapshot, ApprovalMode } from "../types";
+import type { SnapshotPatchOperation } from "./snapshot-patch";
 
 export const SESSION_CLIENT_PROTOCOL = "sloppy.session-client";
 export const SUPERVISOR_CLIENT_PROTOCOL = "sloppy.supervisor-client";
@@ -63,6 +64,12 @@ export type ClientSnapshotEvent<TSnapshot> = {
   snapshot: TSnapshot;
 };
 
+export type ClientSnapshotPatchEvent = {
+  type: "patch";
+  revision: number;
+  operations: SnapshotPatchOperation[];
+};
+
 export type ClientResponse =
   | { type: "response"; id: string; ok: true; result?: unknown }
   | {
@@ -75,6 +82,7 @@ export type ClientResponse =
 export type ClientServerMessage<TSnapshot> =
   | ClientHello<TSnapshot>
   | ClientSnapshotEvent<TSnapshot>
+  | ClientSnapshotPatchEvent
   | ClientResponse;
 
 export type SaveLlmProfileInput = {
@@ -124,6 +132,7 @@ export type SupervisorCreateSessionInput = {
 
 export type SessionClientApi = SnapshotClientApi<SessionClientSnapshot> & {
   sendMessage(text: string): Promise<unknown>;
+  waitForIdle(): Promise<void>;
   cancelTurn(): Promise<unknown>;
   cancelQueuedMessage(queuedMessageId: string): Promise<unknown>;
   setApprovalMode(mode: ApprovalMode): Promise<unknown>;
