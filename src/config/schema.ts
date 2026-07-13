@@ -15,6 +15,7 @@ export const llmReasoningEffortSchema = z.enum([
   "medium",
   "high",
   "xhigh",
+  "max",
 ]);
 
 export const llmThinkingDisplaySchema = z.enum(["visible", "hidden"]);

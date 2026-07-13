@@ -109,8 +109,8 @@ describe("OpenAICodexAdapter", () => {
       ];
 
       const adapter = new OpenAICodexAdapter({
-        model: "gpt-5.5",
-        reasoningEffort: "low",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
         authPath,
         fetchFn,
       });
@@ -127,9 +127,9 @@ describe("OpenAICodexAdapter", () => {
       expect(capturedHeaders?.get("chatgpt-account-id")).toBe("codex-account");
       expect(capturedHeaders?.get("accept")).toBe("text/event-stream");
       expect(capturedBody).toMatchObject({
-        model: "gpt-5.5",
+        model: "gpt-5.6-sol",
         instructions: "system prompt",
-        reasoning: { effort: "low" },
+        reasoning: { effort: "max" },
         tool_choice: "auto",
         stream: true,
       });
