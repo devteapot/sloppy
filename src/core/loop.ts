@@ -1,15 +1,22 @@
 import type { SloppyConfig } from "../config/schema";
 import type {
+  ConversationMessage,
   LlmAdapter,
   LlmChatOptions,
   LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "../llm/types";
-import { isLlmAbortError, LlmAbortError } from "../llm/types";
+import {
+  getLlmRuntimeDescriptor,
+  isLlmAbortError,
+  LlmAbortError,
+  LlmRequestError,
+  resolveLlmMaxTokens,
+} from "../llm/types";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
-import type { ConversationHistory } from "./history";
+import { CANCELLED_TOOL_BATCH_RESULT, type ConversationHistory } from "./history";
 import type { ProviderRuntimeHub } from "./hub";
 import {
   type ApprovalState,
@@ -39,6 +46,36 @@ export type {
 } from "./loop/contracts";
 
 export { truncateToolResult } from "./loop/result-format";
+
+export function buildToolFreeRequestHistory(
+  messages: ConversationMessage[],
+): ConversationMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.flatMap((block) => {
+      if (block.type === "tool_use") {
+        return [
+          {
+            type: "text" as const,
+            text: `[Previous tool call '${block.name}': ${JSON.stringify(block.input)}]`,
+          },
+        ];
+      }
+      if (block.type === "tool_result") {
+        return [
+          {
+            type: "text" as const,
+            text: `[Previous tool result for '${block.toolUseId}': ${block.content}]`,
+          },
+        ];
+      }
+      if (block.type === "provider_continuation" && block.purpose === "tool_call") {
+        return [];
+      }
+      return [block];
+    }),
+  }));
+}
 
 export async function countStateContextTokens(
   llm: LlmAdapter,
@@ -102,10 +139,6 @@ export async function runLoop(options: {
   const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
-    if (options.signal?.aborted) {
-      throw new LlmAbortError();
-    }
-
     const plan = planIteration(approval, iteration);
     if (plan.kind === "skip") continue;
 
@@ -132,6 +165,14 @@ export async function runLoop(options: {
       if (resumedExecution.status === "waiting_approval") {
         return { ...suspendedResult(resumedExecution.pending), usage: { ...usage } };
       }
+      if (resumedExecution.status === "cancelled") {
+        options.history.addToolBatchResults(
+          plan.continuation.toolCalls,
+          resumedExecution.toolResults,
+          CANCELLED_TOOL_BATCH_RESULT,
+        );
+        throw new LlmAbortError();
+      }
 
       options.history.addToolResults(resumedExecution.toolResults);
       approval = idleApproval;
@@ -141,21 +182,58 @@ export async function runLoop(options: {
       continue;
     }
 
+    if (options.signal?.aborted) {
+      throw new LlmAbortError();
+    }
+
     const stateContext = buildStateContext(options.hub.getProviderViews(), options.config);
     const stateContextTokenCount = await countStateContextTokens(
       options.llm,
       stateContext,
       options.signal,
     );
+    const runtime = getLlmRuntimeDescriptor(options.llm);
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
+    const portableMessages = options.history.buildRequestMessages(stateContext);
+    const messages =
+      runtime?.capabilities.tools === false
+        ? buildToolFreeRequestHistory(portableMessages)
+        : portableMessages;
+    if (
+      runtime?.capabilities.images === false &&
+      messages.some((message) => message.content.some((block) => block.type === "image"))
+    ) {
+      throw new LlmRequestError(
+        `LLM model '${runtime.model}' on endpoint '${runtime.endpointId}' does not support image input.`,
+        {
+          code: "invalid_request",
+          retryable: false,
+        },
+      );
+    }
+    const tools =
+      runtime?.capabilities.tools === false
+        ? []
+        : [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)];
+    let emittedOutput = false;
     const response = await options.llm.chat({
       system,
-      messages: options.history.buildRequestMessages(stateContext),
-      tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
-      maxTokens: options.config.llm.maxTokens,
-      onText: options.onText,
-      onThinking: options.onThinking,
+      messages,
+      tools,
+      maxTokens: resolveLlmMaxTokens(options.llm, options.config.llm.maxTokens),
+      onText: options.onText
+        ? (chunk) => {
+            emittedOutput ||= chunk.length > 0;
+            options.onText?.(chunk);
+          }
+        : undefined,
+      onThinking: options.onThinking
+        ? (delta) => {
+            emittedOutput ||= delta.delta.length > 0;
+            options.onThinking?.(delta);
+          }
+        : undefined,
       signal: options.signal,
     });
     const reportedInput = response.usage.inputTokens;
@@ -175,10 +253,20 @@ export async function runLoop(options: {
       stateContextTokenSource: stateContextTokenCount.source,
     });
 
-    options.history.addAssistantContent(response.content);
     const toolCalls = response.content.filter(
       (block): block is ToolUseContentBlock => block.type === "tool_use",
     );
+    if (runtime?.capabilities.tools === false && toolCalls.length > 0) {
+      throw new LlmRequestError(
+        `LLM model '${runtime.model}' on endpoint '${runtime.endpointId}' returned a tool call even though tools are disabled for that model.`,
+        {
+          code: "provider",
+          retryable: false,
+          partialOutput: emittedOutput,
+        },
+      );
+    }
+    options.history.addAssistantContent(response.content);
     debug("loop", "turn", {
       iteration,
       stop_reason: response.stopReason,
@@ -211,6 +299,14 @@ export async function runLoop(options: {
     });
     if (execution.status === "waiting_approval") {
       return { ...suspendedResult(execution.pending), usage: { ...usage } };
+    }
+    if (execution.status === "cancelled") {
+      options.history.addToolBatchResults(
+        toolCalls,
+        execution.toolResults,
+        CANCELLED_TOOL_BATCH_RESULT,
+      );
+      throw new LlmAbortError();
     }
 
     options.history.addToolResults(execution.toolResults);

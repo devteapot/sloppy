@@ -45,7 +45,16 @@ describe("AgentSessionProvider — runtime and goals", () => {
       const llm = await consumer.query("/llm", 3);
       expect(llm.properties?.status).toBe("needs_credentials");
       expect(llm.properties?.active_profile_id).toBe("test-openai");
+      expect(llm.properties?.selected_max_output_tokens).toBe(128_000);
+      expect(llm.properties?.selected_capabilities).toEqual({ tools: true, images: true });
+      expect(llm.properties?.selected_owns_tool_loop).toBe(false);
       expect(llm.children?.[0]?.properties?.ready).toBe(false);
+      expect(llm.children?.[0]?.properties?.max_output_tokens).toBe(128_000);
+      expect(llm.children?.[0]?.properties?.capabilities).toEqual({
+        tools: true,
+        images: true,
+      });
+      expect(llm.children?.[0]?.properties?.owns_tool_loop).toBe(false);
       expect(llm.children?.[0]?.properties?.thinking_enabled).toBe(true);
       expect(llm.children?.[0]?.properties?.thinking_display).toBe("visible");
       expect(llm.children?.[0]?.properties?.thinking_effective_enabled).toBe(true);
@@ -59,6 +68,49 @@ describe("AgentSessionProvider — runtime and goals", () => {
         composer.affordances?.some((affordance) => affordance.action === "send_message") ?? false,
       ).toBe(false);
       expect(composer.properties?.disabled_reason).toBeTruthy();
+    } finally {
+      provider.stop();
+      runtime.shutdown();
+    }
+  });
+
+  test("does not project an enforceable output ceiling for Codex subscription profiles", async () => {
+    const config = {
+      ...TEST_CONFIG,
+      llm: {
+        ...TEST_CONFIG.llm,
+        defaultProfileId: "test-codex",
+        profiles: [
+          {
+            kind: "native" as const,
+            id: "test-codex",
+            endpointId: "openai-codex",
+            model: "gpt-5.6-sol",
+          },
+        ],
+      },
+    };
+    const llmProfileManager = createTestProfileManager({ secrets: {} });
+    llmProfileManager.updateConfig(config);
+    const runtime = new SessionRuntime({
+      config,
+      sessionId: "sess-codex-limit",
+      agentFactory: createStreamingAgentFactory(),
+      llmProfileManager,
+    });
+    const provider = new AgentSessionProvider(runtime, {
+      providerId: "sloppy-session-codex-limit",
+    });
+    const consumer = new SlopConsumer(new InProcessTransport(provider.server));
+
+    try {
+      await runtime.start();
+      await consumer.connect();
+
+      const llm = await consumer.query("/llm", 3);
+      expect(llm.properties?.selected_protocol).toBe("openai-codex");
+      expect(llm.properties).not.toHaveProperty("selected_max_output_tokens");
+      expect(llm.children?.[0]?.properties).not.toHaveProperty("max_output_tokens");
     } finally {
       provider.stop();
       runtime.shutdown();
@@ -722,6 +774,9 @@ describe("AgentSessionProvider — runtime and goals", () => {
       ],
     };
     const llmProfileManager = {
+      acquireProfileBinding: () => Symbol("restart-required-profile-binding"),
+      moveProfileBinding: () => undefined,
+      releaseProfileBinding: () => undefined,
       getState: async () => readyState,
       ensureReady: async () => readyState,
       getConfig: () => changedConfig,

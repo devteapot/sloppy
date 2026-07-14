@@ -9,11 +9,26 @@ built-in orchestrator.
 Checked in now:
 
 - Bun/TypeScript runtime scaffold
-- native Anthropic, Gemini, OpenAI-compatible, and OpenAI Codex subscription
-  adapters
+- native Anthropic, Gemini, OpenAI Responses, OpenAI-compatible Chat
+  Completions, and OpenAI Codex subscription adapters
 - endpoint/protocol-based LLM config with built-in endpoint catalog,
   config-defined custom OpenAI-compatible endpoints, env/secure-store/no-auth
-  auth modes, and `session-agent` profiles for adapter-backed main sessions
+  auth modes, trusted-home endpoint routing, credential-safe endpoint URL
+  validation, and `session-agent` profiles for adapter-backed main sessions
+- a typed internal protocol-driver registry, portable native conversation
+  history across profile changes, and wire-origin/account-scoped exact-issuer
+  private continuation replay
+  for Anthropic signatures, Gemini signed Parts, Responses encrypted reasoning
+  items, and OpenRouter reasoning details
+- executable model limits/capabilities/compatibility metadata plus bounded
+  native request deadlines, retries, and structured model-error activity
+- supervisor-shared profile binding leases that follow each live Session's
+  effective and in-flight inner routes, reject deletion of in-use profiles,
+  release after active work settles on shutdown, pin native approval adapters,
+  exclude overlapping or stale profile/credential mutations, validate stable
+  config/credential generations during async adapter construction, expose
+  deferred cleanup as non-selectable `stopping`, and project removed explicit
+  routes as unavailable instead of stale-ready
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order

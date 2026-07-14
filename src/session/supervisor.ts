@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 
 import { loadScopedConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
+import { LlmProfileBindingRegistry } from "../llm/profile-manager";
 import { listenSupervisorClientProtocol } from "./client-protocol/supervisor-server";
 import type { SupervisorClientSnapshot } from "./client-protocol/types";
 import type { LaunchScope } from "./launch-scope";
@@ -32,16 +33,29 @@ import type { ApprovalMode } from "./types";
 
 export type { SessionRecord, SessionScopeInput } from "./supervisor-model";
 
+function throwCleanupErrors(errors: readonly unknown[], message: string): void {
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, message);
+  }
+}
+
 export class SessionSupervisor {
   private readonly records = new Map<string, SessionRecord>();
   private readonly clientLeases = new Map<object, ClientLease>();
   private readonly lifecycleListeners = new Set<() => void>();
+  private readonly llmProfileBindingRegistry = new LlmProfileBindingRegistry();
   private resumeSessionId: string | null = null;
   private cachedConfig: SloppyConfig | null = null;
   private registryPath: string | null = null;
   private initialized = false;
   private initializePromise: Promise<void>;
   private scopeError: string | null = null;
+  private shutdownRequested = false;
+  private shutdownImmediateErrors: unknown[] = [];
+  private shutdownCompletion: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly options: {
@@ -57,6 +71,7 @@ export class SessionSupervisor {
 
   async startInitialSession(input: SessionScopeInput = {}): Promise<SessionRecord> {
     await this.ensureInitialized();
+    this.assertRunning();
     if (this.resumeSessionId) {
       const record = this.records.get(this.resumeSessionId);
       if (record?.runtimeStatus === "live") {
@@ -99,13 +114,56 @@ export class SessionSupervisor {
   }
 
   stop(): void {
-    for (const record of this.records.values()) {
-      this.stopLiveRecord(record);
+    if (this.shutdownRequested) {
+      return;
     }
-    this.records.clear();
+    this.shutdownRequested = true;
+    const completions: Promise<void>[] = [];
+    for (const record of this.records.values()) {
+      const stopping = this.beginStoppingRecord(record);
+      for (const error of stopping.errors) {
+        if (!this.shutdownImmediateErrors.includes(error)) {
+          this.shutdownImmediateErrors.push(error);
+        }
+      }
+      const completion = this.completeGlobalRecordStop(record, stopping);
+      completions.push(completion);
+      if (record.service?.isStopped() ?? true) {
+        this.finalizeGlobalRecordStop(record, false);
+      }
+    }
     this.clientLeases.clear();
     this.resumeSessionId = null;
-    this.notifyLifecycle();
+    this.shutdownCompletion = this.collectShutdownCompletions(completions);
+    void this.shutdownCompletion.catch(() => undefined);
+    try {
+      this.notifyLifecycle();
+    } catch (error) {
+      if (!this.shutdownImmediateErrors.includes(error)) {
+        this.shutdownImmediateErrors.push(error);
+      }
+    }
+    throwCleanupErrors(this.shutdownImmediateErrors, "Session supervisor shutdown failed.");
+  }
+
+  async stopAndWait(): Promise<void> {
+    const cleanupErrors: unknown[] = [];
+    try {
+      this.stop();
+    } catch {}
+    cleanupErrors.push(...this.shutdownImmediateErrors);
+    try {
+      await this.shutdownCompletion;
+    } catch (error) {
+      if (!cleanupErrors.includes(error)) {
+        cleanupErrors.push(error);
+      }
+    }
+    throwCleanupErrors(cleanupErrors, "Session supervisor shutdown failed.");
+  }
+
+  async waitForShutdown(): Promise<void> {
+    await this.shutdownCompletion;
   }
 
   canAutoClose(): boolean {
@@ -113,6 +171,9 @@ export class SessionSupervisor {
       return false;
     }
     for (const record of this.records.values()) {
+      if (record.runtimeStatus === "stopping") {
+        return false;
+      }
       if (
         record.runtimeStatus === "live" &&
         record.service?.runtime.buildAutoCloseBlockers().length
@@ -124,6 +185,7 @@ export class SessionSupervisor {
   }
 
   registerClientLease(owner: object, input: ClientLeaseInput = {}): { leaseId: string } {
+    this.assertRunning();
     const lease = {
       leaseId: crypto.randomUUID(),
       selectedSessionId: input.selectedSessionId,
@@ -136,6 +198,7 @@ export class SessionSupervisor {
   }
 
   updateClientLease(owner: object, input: ClientLeaseInput = {}): { leaseId: string } {
+    this.assertRunning();
     const existing = this.clientLeases.get(owner);
     const lease =
       existing ??
@@ -165,7 +228,9 @@ export class SessionSupervisor {
 
   async createSession(input: SessionScopeInput = {}, owner?: object): Promise<SessionRecord> {
     await this.ensureInitialized();
-    const config = await this.resolveConfig(input);
+    this.assertRunning();
+    const { config, revision: llmProfileRevision } =
+      await this.resolveConfigAtStableLlmRevision(input);
     const sessionId = input.sessionId ?? crypto.randomUUID();
     if (this.records.has(sessionId)) {
       throw new Error(`Session already exists: ${sessionId}`);
@@ -186,6 +251,8 @@ export class SessionSupervisor {
       socketPath: sessionSocketPath(sessionId),
       approvalMode: input.approvalMode ?? this.inheritedApprovalMode(owner),
       configReloader: () => this.resolveConfig(reloadScope),
+      llmProfileBindingRegistry: this.llmProfileBindingRegistry,
+      llmProfileRevision,
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -208,6 +275,7 @@ export class SessionSupervisor {
     registryPath: string | null;
   }> {
     await this.ensureInitialized();
+    this.assertRunning();
     this.cachedConfig = null;
     const config = await this.baseConfig();
     this.notifyLifecycle();
@@ -234,7 +302,13 @@ export class SessionSupervisor {
     if (!record) {
       return undefined;
     }
-    const liveMode = record.service?.runtime.store.getSnapshot().approvalPolicy.mode;
+    if (record.approvalMode) {
+      return record.approvalMode;
+    }
+    const liveMode =
+      record.runtimeStatus === "live"
+        ? record.service?.runtime.store.getSnapshot().approvalPolicy.mode
+        : undefined;
     if (liveMode === "normal" || liveMode === "auto") {
       return liveMode;
     }
@@ -251,9 +325,13 @@ export class SessionSupervisor {
 
   async selectSession(sessionId: string, owner?: object): Promise<SessionRecord> {
     await this.ensureInitialized();
+    this.assertRunning();
     let record = this.records.get(sessionId);
     if (!record) {
       throw new Error(`Unknown session: ${sessionId}`);
+    }
+    if (record.runtimeStatus === "stopping") {
+      throw new Error(`Session is stopping and cannot be selected: ${sessionId}`);
     }
     if (record.runtimeStatus === "dormant") {
       record = await this.restoreSession(record);
@@ -272,31 +350,45 @@ export class SessionSupervisor {
     owner?: object,
   ): Promise<{ stopped: true; sessionId: string }> {
     await this.ensureInitialized();
+    this.assertRunning();
     const record = this.records.get(sessionId);
     if (!record) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
-    if (record.runtimeStatus !== "live") {
+    if (record.runtimeStatus === "dormant") {
       return { stopped: true, sessionId };
     }
-    const ownerLease = owner ? this.clientLeases.get(owner) : undefined;
-    if (ownerLease?.selectedSessionId === sessionId) {
-      throw new Error("Use New Session or switch away before stopping the selected session.");
-    }
-    const otherClientCount = [...this.clientLeases.entries()].filter(
-      ([leaseOwner, lease]) => leaseOwner !== owner && lease.selectedSessionId === sessionId,
-    ).length;
-    if (otherClientCount > 0) {
-      throw new Error(`Cannot stop session: selected by ${otherClientCount} other clients.`);
+    if (record.runtimeStatus === "live") {
+      const ownerLease = owner ? this.clientLeases.get(owner) : undefined;
+      if (ownerLease?.selectedSessionId === sessionId) {
+        throw new Error("Use New Session or switch away before stopping the selected session.");
+      }
+      const otherClientCount = [...this.clientLeases.entries()].filter(
+        ([leaseOwner, lease]) => leaseOwner !== owner && lease.selectedSessionId === sessionId,
+      ).length;
+      if (otherClientCount > 0) {
+        throw new Error(`Cannot stop session: selected by ${otherClientCount} other clients.`);
+      }
     }
 
-    this.stopLiveRecord(record);
-    record.runtimeStatus = "dormant";
-    record.socketPath = "";
-    record.service = undefined;
-    record.unsubscribe = undefined;
+    const stopping = this.beginStoppingRecord(record);
     this.persistRegistry();
     this.notifyLifecycle();
+    const cleanupErrors = [...stopping.errors];
+    try {
+      await stopping.completion;
+    } catch (error) {
+      if (!cleanupErrors.includes(error)) {
+        cleanupErrors.push(error);
+      }
+    } finally {
+      for (const error of this.finalizeDormantRecordStop(record)) {
+        if (!cleanupErrors.includes(error)) {
+          cleanupErrors.push(error);
+        }
+      }
+    }
+    throwCleanupErrors(cleanupErrors, `Failed to stop Session '${record.sessionId}'.`);
     return { stopped: true, sessionId };
   }
 
@@ -311,8 +403,8 @@ export class SessionSupervisor {
       const runningTaskCount = snapshot.tasks.filter((task) => task.status === "running").length;
       return {
         sessionId: record.sessionId,
-        socketPath: record.socketPath,
-        runtimeStatus: "live",
+        socketPath: record.runtimeStatus === "live" ? record.socketPath : undefined,
+        runtimeStatus: record.runtimeStatus,
         workspaceRoot: snapshot.session.workspaceRoot,
         workspaceId: snapshot.session.workspaceId,
         projectId: snapshot.session.projectId,
@@ -332,10 +424,11 @@ export class SessionSupervisor {
       };
     }
 
-    const approvalMode = this.approvalModeForSession(record.sessionId) ?? "normal";
+    const approvalMode =
+      record.approvalMode ?? this.approvalModeForSession(record.sessionId) ?? "normal";
     return {
       sessionId: record.sessionId,
-      runtimeStatus: "dormant",
+      runtimeStatus: record.runtimeStatus,
       workspaceRoot: record.workspaceRoot,
       workspaceId: record.workspaceId,
       projectId: record.projectId,
@@ -411,8 +504,23 @@ export class SessionSupervisor {
     });
   }
 
+  private async resolveConfigAtStableLlmRevision(
+    input: SessionScopeInput,
+  ): Promise<{ config: SloppyConfig; revision: number }> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = this.llmProfileBindingRegistry.getRevision();
+      const config = await this.resolveConfig(input);
+      if (this.llmProfileBindingRegistry.isStableRevision(revision)) {
+        return { config, revision };
+      }
+    }
+    throw new Error(
+      "LLM profile configuration kept changing while the Session config was loading. Retry Session creation.",
+    );
+  }
+
   private async restoreSession(record: SessionRecord): Promise<SessionRecord> {
-    const config = await this.resolveConfig({
+    const { config, revision: llmProfileRevision } = await this.resolveConfigAtStableLlmRevision({
       workspaceId: record.workspaceId,
       projectId: record.projectId,
     });
@@ -433,6 +541,8 @@ export class SessionSupervisor {
           workspaceId: record.workspaceId,
           projectId: record.projectId,
         }),
+      llmProfileBindingRegistry: this.llmProfileBindingRegistry,
+      llmProfileRevision,
       launchScope: this.options.launchScope,
     });
     await service.start();
@@ -464,6 +574,8 @@ export class SessionSupervisor {
     record.socketPath = service.socketPath;
     record.runtimeStatus = "live";
     record.service = service;
+    record.stopErrors = undefined;
+    record.stopCompletion = undefined;
     record.snapshotPath =
       options.snapshotPath ?? snapshot.session.persistencePath ?? record.snapshotPath;
     this.syncRecordFromService(record);
@@ -503,13 +615,122 @@ export class SessionSupervisor {
     record.launchRoot = registryRecord.launchRoot;
     record.lastActivityAt = registryRecord.lastActivityAt;
     record.snapshotPath = registryRecord.snapshotPath;
+    record.approvalMode = snapshot.approvalPolicy.mode;
   }
 
-  private stopLiveRecord(record: SessionRecord): void {
-    record.unsubscribe?.();
+  private beginStoppingRecord(record: SessionRecord): {
+    errors: readonly unknown[];
+    completion: Promise<void>;
+  } {
+    if (record.runtimeStatus === "stopping") {
+      return {
+        errors: record.stopErrors ?? [],
+        completion: record.stopCompletion ?? Promise.resolve(),
+      };
+    }
+    if (record.runtimeStatus === "dormant") {
+      return { errors: [], completion: Promise.resolve() };
+    }
+
+    record.runtimeStatus = "stopping";
+    record.socketPath = "";
+    const errors: unknown[] = [];
+    try {
+      record.unsubscribe?.();
+    } catch (error) {
+      errors.push(error);
+    }
     record.unsubscribe = undefined;
-    record.service?.stop();
+    try {
+      record.service?.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    const serviceCompletion = record.service?.waitForStopCompletion() ?? Promise.resolve();
+    const completion = serviceCompletion.catch((error: unknown) => {
+      if (!errors.includes(error)) {
+        throw error;
+      }
+    });
+    record.stopErrors = errors;
+    record.stopCompletion = completion;
+    return { errors, completion };
+  }
+
+  private finalizeDormantRecordStop(record: SessionRecord): unknown[] {
+    record.runtimeStatus = "dormant";
+    record.socketPath = "";
     record.service = undefined;
+    record.unsubscribe = undefined;
+    record.stopErrors = undefined;
+    record.stopCompletion = undefined;
+    const errors: unknown[] = [];
+    try {
+      this.persistRegistry();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.notifyLifecycle();
+    } catch (error) {
+      errors.push(error);
+    }
+    return errors;
+  }
+
+  private async completeGlobalRecordStop(
+    record: SessionRecord,
+    stopping: { errors: readonly unknown[]; completion: Promise<void> },
+  ): Promise<void> {
+    const errors: unknown[] = [];
+    try {
+      await stopping.completion;
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      for (const error of this.finalizeGlobalRecordStop(record, true)) {
+        if (!errors.includes(error)) {
+          errors.push(error);
+        }
+      }
+    }
+    throwCleanupErrors(errors, `Failed to finish stopping Session '${record.sessionId}'.`);
+  }
+
+  private finalizeGlobalRecordStop(record: SessionRecord, notify: boolean): unknown[] {
+    record.runtimeStatus = "dormant";
+    record.socketPath = "";
+    record.service = undefined;
+    record.unsubscribe = undefined;
+    record.stopErrors = undefined;
+    record.stopCompletion = undefined;
+    if (this.records.get(record.sessionId) !== record) {
+      return [];
+    }
+    this.records.delete(record.sessionId);
+    if (!notify) {
+      return [];
+    }
+    try {
+      this.notifyLifecycle();
+      return [];
+    } catch (error) {
+      return [error];
+    }
+  }
+
+  private async collectShutdownCompletions(completions: Promise<void>[]): Promise<void> {
+    const errors = (
+      await Promise.all(
+        completions.map((completion) =>
+          completion.then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        ),
+      )
+    ).filter((error) => error !== undefined);
+    throwCleanupErrors(errors, "Session supervisor asynchronous shutdown failed.");
   }
 
   private persistRegistry(): void {
@@ -531,6 +752,12 @@ export class SessionSupervisor {
   private notifyLifecycle(): void {
     for (const listener of this.lifecycleListeners) {
       listener();
+    }
+  }
+
+  private assertRunning(): void {
+    if (this.shutdownRequested) {
+      throw new Error("Session supervisor has been shut down.");
     }
   }
 }
@@ -562,10 +789,10 @@ export async function startSessionSupervisor(options: {
       autoCloseTimer = null;
     }
   };
-  const closeForIdle = () => {
+  const closeForIdle = async () => {
     clearAutoCloseTimer();
     listener.close();
-    supervisor.stop();
+    await supervisor.stopAndWait();
     options.autoClose?.onClose?.();
   };
   const scheduleAutoClose = () => {
@@ -577,7 +804,10 @@ export async function startSessionSupervisor(options: {
       return;
     }
     if (!autoCloseTimer) {
-      autoCloseTimer = setTimeout(closeForIdle, options.autoClose.idleTimeoutMs ?? 5000);
+      autoCloseTimer = setTimeout(
+        () => void closeForIdle(),
+        options.autoClose.idleTimeoutMs ?? 5000,
+      );
     }
   };
   supervisor.onLifecycleChange(scheduleAutoClose);
@@ -588,7 +818,7 @@ export async function startSessionSupervisor(options: {
       initialSession = await supervisor.startInitialSession(options.initial ?? {});
     }
   } catch (error) {
-    supervisor.stop();
+    await supervisor.stopAndWait();
     throw error;
   }
   const clientListener = listenSupervisorClientProtocol(supervisor, options.socketPath);

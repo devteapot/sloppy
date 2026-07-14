@@ -1,7 +1,17 @@
-import type { TranscriptMessage, TranscriptMessageRole, TranscriptTextBlock } from "../types";
+import type {
+  ActivityItem,
+  TranscriptMessage,
+  TranscriptMessageRole,
+  TranscriptTextBlock,
+} from "../types";
 import { buildId, deriveTitle, nextSeq, now, updateActivity, updateTurn } from "./helpers";
 import { trimResolvedApprovals, trimResolvedTasks } from "./mirrors";
 import type { SessionStoreState } from "./state";
+
+export type ModelErrorDetails = Pick<
+  ActivityItem,
+  "errorCode" | "retryable" | "requestId" | "retryAfterMs" | "httpStatus" | "partialOutput"
+>;
 
 export function beginTurn(
   state: SessionStoreState,
@@ -174,12 +184,19 @@ function nextBlockSeq(state: SessionStoreState, message: TranscriptMessage): num
   return message.content.length === 0 ? message.seq : nextSeq(state);
 }
 
-export function failTurn(state: SessionStoreState, turnId: string, message: string): void {
+export function failTurn(
+  state: SessionStoreState,
+  turnId: string,
+  message: string,
+  details: ModelErrorDetails = {},
+): void {
   const time = now();
   if (state.activeModelActivityId) {
     updateActivity(state, state.activeModelActivityId, {
       status: "error",
       summary: message,
+      errorMessage: message,
+      ...details,
       updatedAt: time,
       completedAt: time,
     });
@@ -195,6 +212,8 @@ export function failTurn(state: SessionStoreState, turnId: string, message: stri
     updatedAt: time,
     completedAt: time,
     turnId,
+    errorMessage: message,
+    ...details,
   });
 
   const assistantMessage =

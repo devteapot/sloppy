@@ -4,6 +4,7 @@ import type {
   MessageContentBlock,
   TextContentBlock,
   ToolResultContentBlock,
+  ToolUseContentBlock,
 } from "../llm/types";
 
 type HistoryKind = "user" | "assistant" | "tool";
@@ -11,6 +12,11 @@ type HistoryKind = "user" | "assistant" | "tool";
 interface HistoryEntry extends ConversationMessage {
   kind: HistoryKind;
 }
+
+export const CANCELLED_TOOL_BATCH_RESULT = {
+  content: "Tool execution cancelled before the suspended batch completed.",
+  isError: true,
+} as const;
 
 function truncateLargeResult(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -29,6 +35,10 @@ function extractTextBlocks(content: AssistantContentBlock[]): string {
     .join("");
 }
 
+/**
+ * Provider-neutral conversation state that can outlive a concrete native
+ * model adapter or Agent runtime instance.
+ */
 export class ConversationHistory {
   private entries: HistoryEntry[] = [];
   private historyTurns: number;
@@ -74,6 +84,26 @@ export class ConversationHistory {
     });
   }
 
+  addToolBatchResults(
+    toolCalls: ToolUseContentBlock[],
+    resolvedResults: ToolResultContentBlock[],
+    unresolvedResult: Pick<ToolResultContentBlock, "content" | "isError">,
+  ): void {
+    const resolvedByToolUseId = new Map(
+      resolvedResults.map((result) => [result.toolUseId, result]),
+    );
+    this.addToolResults(
+      toolCalls.map(
+        (toolCall): ToolResultContentBlock =>
+          resolvedByToolUseId.get(toolCall.id) ?? {
+            type: "tool_result",
+            toolUseId: toolCall.id,
+            ...unresolvedResult,
+          },
+      ),
+    );
+  }
+
   buildRequestMessages(stateContext: string): ConversationMessage[] {
     const limited = this.limitToRecentTurns().map(({ kind: _kind, ...entry }) => entry);
     return [
@@ -107,6 +137,7 @@ export class ConversationHistory {
 
   private limitToRecentTurns(): HistoryEntry[] {
     let seenTurns = 0;
+    let firstIncludedTurnIndex = 0;
 
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index];
@@ -117,8 +148,9 @@ export class ConversationHistory {
       if (entry.kind === "user") {
         seenTurns += 1;
         if (seenTurns > this.historyTurns) {
-          return this.entries.slice(index + 1);
+          return this.entries.slice(firstIncludedTurnIndex);
         }
+        firstIncludedTurnIndex = index;
       }
     }
 

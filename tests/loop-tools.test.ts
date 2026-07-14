@@ -3,7 +3,13 @@ import { action, createSlopServer } from "@slop-ai/server";
 
 import { ConsumerHub } from "../src/core/consumer";
 import { ConversationHistory } from "../src/core/history";
-import { type AgentToolEvent, runLoop, truncateToolResult } from "../src/core/loop";
+import {
+  type AgentToolEvent,
+  buildToolFreeRequestHistory,
+  runLoop,
+  truncateToolResult,
+} from "../src/core/loop";
+import { createLlmAdapter } from "../src/llm/factory";
 import type {
   LlmAdapter,
   LlmChatOptions,
@@ -16,6 +22,108 @@ import { createTestConfig } from "./helpers/config";
 
 const TEST_CONFIG = createTestConfig({
   agent: { maxIterations: 3 },
+});
+
+describe("buildToolFreeRequestHistory", () => {
+  test("converts replayed tool blocks into portable text summaries", () => {
+    expect(
+      buildToolFreeRequestHistory([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call-1",
+              name: "filesystem__read",
+              input: { path: "README.md" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              toolUseId: "call-1",
+              content: "read ok",
+            },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: '[Previous tool call \'filesystem__read\': {"path":"README.md"}]',
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "[Previous tool result for 'call-1': read ok]",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("preserves opaque reasoning continuation while removing portable tool blocks", () => {
+    expect(
+      buildToolFreeRequestHistory([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "provider_continuation",
+              purpose: "reasoning",
+              issuer: {
+                protocol: "openai-responses",
+                provider: "openai",
+                model: "test-model",
+                scope: "test-scope",
+              },
+              data: { kind: "response_output_item", item: { type: "reasoning" } },
+            },
+            {
+              type: "provider_continuation",
+              purpose: "tool_call",
+              issuer: {
+                protocol: "openai-responses",
+                provider: "openai",
+                model: "test-model",
+                scope: "test-scope",
+              },
+              data: { kind: "response_output_item", item: { type: "function_call" } },
+            },
+            { type: "text", text: "Portable answer" },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "provider_continuation",
+            purpose: "reasoning",
+            issuer: {
+              protocol: "openai-responses",
+              provider: "openai",
+              model: "test-model",
+              scope: "test-scope",
+            },
+            data: { kind: "response_output_item", item: { type: "reasoning" } },
+          },
+          { type: "text", text: "Portable answer" },
+        ],
+      },
+    ]);
+  });
 });
 
 class InvalidToolArgumentsLlm implements LlmAdapter {
@@ -171,6 +279,100 @@ describe("truncateToolResult", () => {
 });
 
 describe("runLoop tool execution", () => {
+  test("rejects tool calls returned by a model declared tools=false", async () => {
+    let providerInvocations = 0;
+    const server = createSlopServer({ id: "demo", name: "Demo" });
+    server.register("workspace", () => ({
+      type: "collection",
+      actions: {
+        inspect: action(async () => {
+          providerInvocations += 1;
+          return { value: 42 };
+        }),
+      },
+    }));
+    const hub = new ConsumerHub(
+      [
+        {
+          id: "demo",
+          name: "Demo",
+          kind: "first-party",
+          transport: new InProcessTransport(server),
+          transportLabel: "in-process:test",
+          stop: () => server.stop(),
+        },
+      ],
+      TEST_CONFIG,
+    );
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    history.addUserText("inspect");
+    const llm = createLlmAdapter({
+      endpointId: "tool-free",
+      protocol: "openai-chat",
+      authType: "none",
+      model: "tool-free-model",
+      capabilities: { tools: false },
+    });
+    llm.chat = async () => ({
+      content: [
+        {
+          type: "tool_use",
+          id: "forged-call",
+          name: "demo__workspace__inspect",
+          input: {},
+        },
+      ],
+      stopReason: "tool_use",
+      usage: {},
+    });
+
+    try {
+      await hub.connect();
+      await expect(runLoop({ config: TEST_CONFIG, hub, history, llm })).rejects.toMatchObject({
+        code: "provider",
+        retryable: false,
+      });
+      expect(providerInvocations).toBe(0);
+    } finally {
+      hub.shutdown();
+    }
+  });
+
+  test("reports unsupported image input as a structured model error", async () => {
+    const hub = new ConsumerHub([], TEST_CONFIG);
+    const history = new ConversationHistory({
+      historyTurns: TEST_CONFIG.agent.historyTurns,
+      toolResultMaxChars: TEST_CONFIG.agent.toolResultMaxChars,
+    });
+    history.addUserMessage([
+      { type: "text", text: "Describe this image." },
+      { type: "image", mediaType: "image/png", data: "aW1hZ2U=" },
+    ]);
+    const llm = createLlmAdapter({
+      endpointId: "text-only",
+      protocol: "openai-chat",
+      authType: "none",
+      model: "text-only-model",
+      capabilities: { images: false },
+    });
+    llm.chat = async () => {
+      throw new Error("The adapter must not be called.");
+    };
+
+    try {
+      await hub.connect();
+      await expect(runLoop({ config: TEST_CONFIG, hub, history, llm })).rejects.toMatchObject({
+        code: "invalid_request",
+        retryable: false,
+      });
+    } finally {
+      hub.shutdown();
+    }
+  });
+
   test("returns malformed tool arguments to the model without invoking the provider", async () => {
     let providerInvocations = 0;
     const server = createSlopServer({ id: "demo", name: "Demo" });

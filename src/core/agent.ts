@@ -12,7 +12,7 @@ import { createDefaultConfig } from "../config/load";
 import type { SloppyConfig } from "../config/schema";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../llm/runtime-config";
-import type { ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
+import type { LlmAdapter, ThinkingOutputDelta, ToolResultContentBlock } from "../llm/types";
 import { createFirstPartyPluginAssembly } from "../plugins/first-party/catalog";
 import { createFirstPartyPluginPolicyRules } from "../plugins/first-party/policy-facets";
 import {
@@ -28,7 +28,7 @@ import type { ApprovalRecord } from "./approvals";
 import { bootstrapProviderRuntime } from "./bootstrap";
 import type { ConsumerHub, ExternalProviderState, ProviderLifecycleEvent } from "./consumer";
 import { buildSystemPrompt } from "./context";
-import { ConversationHistory } from "./history";
+import { CANCELLED_TOOL_BATCH_RESULT, ConversationHistory } from "./history";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
@@ -105,6 +105,7 @@ export interface AgentCallbacks {
 
 export type AgentOptions = {
   config?: SloppyConfig;
+  conversationHistory?: ConversationHistory;
   llmProfileManager?: LlmProfileManager;
   llmProfileId?: string;
   llmModelOverride?: string;
@@ -135,6 +136,7 @@ export class Agent {
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
   private unsubscribeProviderLifecycleEvents: (() => void) | null = null;
   private pendingApproval: PendingApprovalContinuation | null = null;
+  private pendingApprovalLlmAdapter: LlmAdapter | null = null;
   private pendingApprovalSourceId: string | null = null;
   private activeRunAbortController: AbortController | null = null;
   private role: RoleProfile;
@@ -182,10 +184,12 @@ export class Agent {
     ];
     this.localTools = options?.localTools;
     this.childSessionFactory = options?.childSessionFactory;
-    this.history = new ConversationHistory({
-      historyTurns: this.config.agent.historyTurns,
-      toolResultMaxChars: this.config.agent.toolResultMaxChars,
-    });
+    this.history =
+      options?.conversationHistory ??
+      new ConversationHistory({
+        historyTurns: this.config.agent.historyTurns,
+        toolResultMaxChars: this.config.agent.toolResultMaxChars,
+      });
     this.llmProfileManager =
       options?.llmProfileManager ??
       createRuntimeLlmProfileManager({
@@ -330,6 +334,7 @@ export class Agent {
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
         }),
+        llm,
       );
     });
   }
@@ -343,6 +348,10 @@ export class Agent {
     if (!pendingApproval) {
       throw new Error("No pending approval continuation exists for this agent.");
     }
+    const llm = this.pendingApprovalLlmAdapter;
+    if (!llm) {
+      throw new Error("Pending approval continuation is missing its native LLM adapter.");
+    }
 
     const hub = this.hub;
     if (!hub) {
@@ -350,6 +359,7 @@ export class Agent {
     }
 
     this.pendingApproval = null;
+    this.pendingApprovalLlmAdapter = null;
     this.callbacks.onToolEvent?.({
       kind: "completed",
       invocation: pendingApproval.blockedInvocation,
@@ -362,10 +372,6 @@ export class Agent {
     });
 
     return this.runLoopWithAbort(async (signal) => {
-      const llm = await this.llmProfileManager.createAdapter(
-        this.llmProfileId,
-        this.llmModelOverride,
-      );
       return this.executeLoop(
         await runLoop({
           config: this.config,
@@ -386,6 +392,7 @@ export class Agent {
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
         }),
+        llm,
       );
     });
   }
@@ -599,7 +606,21 @@ export class Agent {
   }
 
   clearPendingApproval(): void {
+    const pendingApproval = this.pendingApproval;
+    if (pendingApproval) {
+      // The assistant batch is already portable history. Complete every
+      // tool_use so cancelling the turn cannot poison the next provider request.
+      this.history.addToolBatchResults(
+        pendingApproval.toolCalls,
+        [
+          ...pendingApproval.toolResults,
+          ...(pendingApproval.deferredToolResults ?? []).map(({ result }) => result),
+        ],
+        CANCELLED_TOOL_BATCH_RESULT,
+      );
+    }
     this.pendingApproval = null;
+    this.pendingApprovalLlmAdapter = null;
     this.pendingApprovalSourceId = null;
   }
 
@@ -612,12 +633,16 @@ export class Agent {
     return true;
   }
 
-  updateConfig(config: SloppyConfig): void {
+  updateConfig(config: SloppyConfig, options: { syncLlmProfileManager?: boolean } = {}): void {
     this.config = config;
-    this.llmProfileManager.updateConfig(config);
+    if (options.syncLlmProfileManager !== false) {
+      this.llmProfileManager.updateConfig(config);
+    }
   }
 
   shutdown(): void {
+    this.activeRunAbortController?.abort();
+
     for (const runtimeStop of this.runtimeStops) {
       try {
         runtimeStop.stop();
@@ -646,16 +671,17 @@ export class Agent {
     this.hub = null;
     hub?.shutdown();
 
-    this.pendingApproval = null;
+    this.clearPendingApproval();
     this.discovery.setFirstPartyProviderIds([]);
     this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
     this.runtimeServices.clear();
   }
 
-  private executeLoop(result: RunLoopResult): AgentRunResult {
+  private executeLoop(result: RunLoopResult, llm: LlmAdapter): AgentRunResult {
     if (result.status === "waiting_approval") {
       this.pendingApproval = result.pending;
+      this.pendingApprovalLlmAdapter = llm;
       return {
         status: "waiting_approval",
         invocation: result.pending.blockedInvocation,
@@ -664,6 +690,7 @@ export class Agent {
     }
 
     this.pendingApproval = null;
+    this.pendingApprovalLlmAdapter = null;
     return {
       status: "completed",
       response: result.response,

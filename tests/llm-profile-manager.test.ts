@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
-import { LlmProfileManager } from "../src/llm/profile-manager";
+import { getLlmRuntimeDescriptor } from "../src/llm/factory";
+import {
+  LlmConfigurationError,
+  LlmProfileBindingRegistry,
+  LlmProfileManager,
+} from "../src/llm/profile-manager";
 import { createRuntimeLlmProfileManager } from "../src/llm/runtime-config";
+import { createDefaultChildSession, SessionRuntime } from "../src/session/runtime";
+import { createStreamingAgentFactory } from "./helpers/agent-session-provider-harness";
 import { createTestConfig } from "./helpers/config";
 
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
@@ -16,6 +23,8 @@ const originalProfile = process.env.SLOPPY_LLM_PROFILE;
 const originalModel = process.env.SLOPPY_MODEL;
 const originalReasoningEffort = process.env.SLOPPY_LLM_REASONING_EFFORT;
 const originalCodexAuthPath = process.env.SLOPPY_CODEX_AUTH_PATH;
+const originalTestHeader = process.env.TEST_LLM_AUTH_HEADER;
+const originalSecuredKey = process.env.SLOPPY_TEST_MISSING_SECURED_KEY;
 
 const TEST_CONFIG = createTestConfig({
   llm: {
@@ -57,6 +66,48 @@ class MemoryCredentialStore implements CredentialStore {
   }
 }
 
+class BlockingStatusCredentialStore extends MemoryCredentialStore {
+  private callCount = 0;
+
+  constructor(
+    private readonly signalStarted: () => void,
+    private readonly allowed: Promise<void>,
+  ) {
+    super("available");
+  }
+
+  override async getStatus(): Promise<CredentialStoreStatus> {
+    this.callCount += 1;
+    if (this.callCount === 1) {
+      this.signalStarted();
+      await this.allowed;
+    }
+    return super.getStatus();
+  }
+}
+
+class BlockingReadCredentialStore extends MemoryCredentialStore {
+  private shouldBlock = true;
+
+  constructor(
+    secrets: Map<string, string>,
+    private readonly signalStarted: () => void,
+    private readonly allowed: Promise<void>,
+  ) {
+    super("available", secrets);
+  }
+
+  override async get(endpointId: string): Promise<string | null> {
+    const value = await super.get(endpointId);
+    if (this.shouldBlock) {
+      this.shouldBlock = false;
+      this.signalStarted();
+      await this.allowed;
+    }
+    return value;
+  }
+}
+
 afterEach(() => {
   const restore = (name: string, value: string | undefined) => {
     if (value == null) {
@@ -74,6 +125,8 @@ afterEach(() => {
   restore("SLOPPY_MODEL", originalModel);
   restore("SLOPPY_LLM_REASONING_EFFORT", originalReasoningEffort);
   restore("SLOPPY_CODEX_AUTH_PATH", originalCodexAuthPath);
+  restore("TEST_LLM_AUTH_HEADER", originalTestHeader);
+  restore("SLOPPY_TEST_MISSING_SECURED_KEY", originalSecuredKey);
 });
 
 describe("LlmProfileManager", () => {
@@ -442,6 +495,399 @@ describe("LlmProfileManager", () => {
     expect(store.secrets.has("openai")).toBe(false);
   });
 
+  test("rejects overlapping profile mutations while deletion is in flight", async () => {
+    let signalWriteStarted: (() => void) | undefined;
+    let allowWrite: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      signalWriteStarted = resolve;
+    });
+    const writeAllowed = new Promise<void>((resolve) => {
+      allowWrite = resolve;
+    });
+    const manager = new LlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => {
+        signalWriteStarted?.();
+        await writeAllowed;
+      },
+    });
+
+    const deletion = manager.deleteProfile("openai-main");
+    await writeStarted;
+    await expect(
+      manager.saveProfile({ profileId: "openai-main", model: "gpt-5.4" }),
+    ).rejects.toThrow("being modified");
+    allowWrite?.();
+    await expect(deletion).resolves.toMatchObject({ status: "needs_credentials" });
+  });
+
+  test("prevents a stale manager from resurrecting a profile deleted by a sibling", async () => {
+    const config = createTestConfig({
+      llm: {
+        defaultProfileId: "openai-main",
+        profiles: [
+          {
+            kind: "native",
+            id: "openai-main",
+            endpointId: "openai",
+            model: "gpt-5.4",
+          },
+          {
+            kind: "native",
+            id: "openai-alt",
+            endpointId: "openai",
+            model: "gpt-5.4-mini",
+          },
+        ],
+      },
+    });
+    const registry = new LlmProfileBindingRegistry();
+    const initialRevision = registry.getRevision();
+    const persistedProfileIds: string[][] = [];
+    const createManager = () =>
+      new LlmProfileManager({
+        config,
+        profileBindingRegistry: registry,
+        expectedRevision: initialRevision,
+        credentialStore: new MemoryCredentialStore("available"),
+        writeConfig: async (llm) => {
+          persistedProfileIds.push(llm.profiles.map((profile) => profile.id));
+        },
+      });
+    const deletingManager = createManager();
+    const staleManager = createManager();
+
+    await deletingManager.deleteProfile("openai-main");
+
+    staleManager.updateConfig(staleManager.getConfig());
+    await expect(staleManager.setDefaultProfile("openai-alt")).rejects.toThrow(
+      "configuration changed in another session",
+    );
+    expect(persistedProfileIds).toEqual([["openai-alt"]]);
+
+    const reloadRevision = staleManager.captureConfigRevision();
+    staleManager.updateConfig(deletingManager.getConfig(), {
+      expectedRevision: reloadRevision,
+    });
+    await staleManager.setDefaultProfile("openai-alt");
+    expect(persistedProfileIds).toEqual([["openai-alt"], ["openai-alt"]]);
+  });
+
+  test("does not stale sibling profile config after a credential-only mutation", async () => {
+    const registry = new LlmProfileBindingRegistry();
+    const initialRevision = registry.getRevision();
+    const credentials = new MemoryCredentialStore("available", new Map([["openai", "shared-key"]]));
+    const createManager = () =>
+      new LlmProfileManager({
+        config: TEST_CONFIG,
+        profileBindingRegistry: registry,
+        expectedRevision: initialRevision,
+        credentialStore: credentials,
+        writeConfig: async () => undefined,
+      });
+    const credentialManager = createManager();
+    const siblingManager = createManager();
+
+    await credentialManager.deleteApiKey("openai-main");
+
+    await expect(siblingManager.setDefaultProfile("openai-main")).resolves.toMatchObject({
+      activeProfileId: "openai-main",
+    });
+  });
+
+  test("rejects config replacement while a profile mutation is in flight", async () => {
+    let signalWriteStarted: (() => void) | undefined;
+    let allowWrite: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      signalWriteStarted = resolve;
+    });
+    const writeAllowed = new Promise<void>((resolve) => {
+      allowWrite = resolve;
+    });
+    const manager = new LlmProfileManager({
+      config: TEST_CONFIG,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => {
+        signalWriteStarted?.();
+        await writeAllowed;
+      },
+    });
+    const reloadedConfig = createTestConfig({
+      llm: {
+        defaultProfileId: "reloaded",
+        profiles: [
+          {
+            kind: "native",
+            id: "reloaded",
+            endpointId: "openai",
+            model: "gpt-5.4-mini",
+          },
+        ],
+      },
+    });
+
+    const deletion = manager.deleteProfile("openai-main");
+    await writeStarted;
+    expect(() => manager.updateConfig(reloadedConfig)).toThrow(
+      "Cannot reload LLM configuration while profile 'openai-main' is being modified",
+    );
+    allowWrite?.();
+    await deletion;
+
+    expect(manager.getConfig().llm.profiles).toEqual([]);
+  });
+
+  test("retries adapter creation from one stable config snapshot after a routing reload", async () => {
+    let signalStateReadStarted: (() => void) | undefined;
+    let allowStateRead: (() => void) | undefined;
+    const stateReadStarted = new Promise<void>((resolve) => {
+      signalStateReadStarted = resolve;
+    });
+    const stateReadAllowed = new Promise<void>((resolve) => {
+      allowStateRead = resolve;
+    });
+    const initialConfig = createTestConfig({
+      llm: {
+        endpoints: {
+          legacy: {
+            protocol: "openai-chat",
+            baseUrl: "https://legacy-old.example.test/v1",
+            auth: { type: "none" },
+            models: { "old-model": {} },
+          },
+          modern: {
+            protocol: "openai-responses",
+            baseUrl: "https://modern.example.test/v1",
+            auth: { type: "none" },
+            models: { "new-model": {} },
+          },
+        },
+        defaultProfileId: "routed",
+        profiles: [
+          {
+            kind: "native",
+            id: "routed",
+            endpointId: "legacy",
+            model: "old-model",
+          },
+        ],
+      },
+    });
+    const reloadedConfig = createTestConfig({
+      llm: {
+        endpoints: {
+          legacy: {
+            protocol: "openai-chat",
+            baseUrl: "https://legacy-new.example.test/v1",
+            auth: { type: "none" },
+            models: { "old-model": {} },
+          },
+          modern: {
+            protocol: "openai-responses",
+            baseUrl: "https://modern.example.test/v1",
+            auth: { type: "none" },
+            models: { "new-model": {} },
+          },
+        },
+        defaultProfileId: "routed",
+        profiles: [
+          {
+            kind: "native",
+            id: "routed",
+            endpointId: "modern",
+            model: "new-model",
+          },
+        ],
+      },
+    });
+    const manager = new LlmProfileManager({
+      config: initialConfig,
+      credentialStore: new BlockingStatusCredentialStore(
+        () => signalStateReadStarted?.(),
+        stateReadAllowed,
+      ),
+      writeConfig: async () => undefined,
+    });
+
+    const creatingAdapter = manager.createAdapter();
+    await stateReadStarted;
+    manager.updateConfig(reloadedConfig);
+    allowStateRead?.();
+
+    const adapter = await creatingAdapter;
+    expect(getLlmRuntimeDescriptor(adapter)).toMatchObject({
+      endpointId: "modern",
+      protocol: "openai-responses",
+      model: "new-model",
+    });
+    await expect(manager.createAdapter()).resolves.toBe(adapter);
+  });
+
+  test("invalidates adapter creation that overlaps a credential-only mutation", async () => {
+    delete process.env.SLOPPY_TEST_MISSING_SECURED_KEY;
+    let signalCredentialReadStarted: (() => void) | undefined;
+    let allowCredentialRead: (() => void) | undefined;
+    const credentialReadStarted = new Promise<void>((resolve) => {
+      signalCredentialReadStarted = resolve;
+    });
+    const credentialReadAllowed = new Promise<void>((resolve) => {
+      allowCredentialRead = resolve;
+    });
+    const config = createTestConfig({
+      llm: {
+        endpoints: {
+          secured: {
+            protocol: "openai-chat",
+            baseUrl: "https://secured.example.test/v1",
+            auth: { type: "env", env: "SLOPPY_TEST_MISSING_SECURED_KEY" },
+            models: { "secured-model": {} },
+          },
+        },
+        defaultProfileId: "secured",
+        profiles: [
+          {
+            kind: "native",
+            id: "secured",
+            endpointId: "secured",
+            model: "secured-model",
+          },
+        ],
+      },
+    });
+    const credentialStore = new BlockingReadCredentialStore(
+      new Map([["secured", "stored-secret"]]),
+      () => signalCredentialReadStarted?.(),
+      credentialReadAllowed,
+    );
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore,
+      writeConfig: async () => undefined,
+    });
+
+    const creatingAdapter = manager.createAdapter();
+    await credentialReadStarted;
+    await manager.deleteApiKey("secured");
+    allowCredentialRead?.();
+
+    await expect(creatingAdapter).rejects.toThrow("Add an API key");
+  });
+
+  test("rejects a reload snapshot captured before a committed profile mutation", async () => {
+    const config = createTestConfig({
+      llm: {
+        defaultProfileId: "openai-main",
+        profiles: [
+          {
+            kind: "native",
+            id: "openai-main",
+            endpointId: "openai",
+            model: "gpt-5.4",
+          },
+          {
+            kind: "native",
+            id: "openai-alt",
+            endpointId: "openai",
+            model: "gpt-5.4-mini",
+          },
+        ],
+      },
+    });
+    const persistedProfileIds: string[][] = [];
+    let signalLoadStarted: (() => void) | undefined;
+    let allowLoad: (() => void) | undefined;
+    const loadStarted = new Promise<void>((resolve) => {
+      signalLoadStarted = resolve;
+    });
+    const loadAllowed = new Promise<void>((resolve) => {
+      allowLoad = resolve;
+    });
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async (llm) => {
+        persistedProfileIds.push(llm.profiles.map((profile) => profile.id));
+      },
+    });
+    const staleReload = {
+      ...config,
+      llm: {
+        ...config.llm,
+        profiles: [...config.llm.profiles],
+      },
+    };
+    const runtime = new SessionRuntime({
+      config,
+      llmProfileManager: manager,
+      requiresLlmProfile: false,
+      sessionPersistencePath: false,
+      configReloader: async () => {
+        signalLoadStarted?.();
+        await loadAllowed;
+        return staleReload;
+      },
+    });
+
+    try {
+      const reload = runtime.reloadConfig();
+      await loadStarted;
+      await manager.deleteProfile("openai-main");
+      allowLoad?.();
+
+      await expect(reload).rejects.toThrow("configuration changed while config was loading");
+      await manager.setDefaultProfile("openai-alt");
+      expect(persistedProfileIds).toEqual([["openai-alt"], ["openai-alt"]]);
+    } finally {
+      allowLoad?.();
+      runtime.shutdown();
+    }
+  });
+
+  test("rejects late construction from a profile snapshot loaded at an older revision", async () => {
+    const config = createTestConfig({
+      llm: {
+        defaultProfileId: "openai-main",
+        profiles: [
+          {
+            kind: "native",
+            id: "openai-main",
+            endpointId: "openai",
+            model: "gpt-5.4",
+          },
+          {
+            kind: "native",
+            id: "openai-alt",
+            endpointId: "openai",
+            model: "gpt-5.4-mini",
+          },
+        ],
+      },
+    });
+    const registry = new LlmProfileBindingRegistry();
+    const loadedRevision = registry.getRevision();
+    const deletingManager = new LlmProfileManager({
+      config,
+      profileBindingRegistry: registry,
+      expectedRevision: loadedRevision,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    await deletingManager.deleteProfile("openai-main");
+
+    expect(
+      () =>
+        new LlmProfileManager({
+          config,
+          profileBindingRegistry: registry,
+          expectedRevision: loadedRevision,
+          credentialStore: new MemoryCredentialStore("available"),
+          writeConfig: async () => undefined,
+        }),
+    ).toThrow("configuration changed while it was loading");
+  });
+
   test("treats session-agent profiles as ready model profiles without API keys", async () => {
     const manager = new LlmProfileManager({
       config: createTestConfig({
@@ -457,6 +903,16 @@ describe("LlmProfileManager", () => {
             },
           ],
         },
+        plugins: {
+          delegation: {
+            acp: {
+              enabled: true,
+              adapters: {
+                claude: { command: ["claude"] },
+              },
+            },
+          },
+        },
       }),
       credentialStore: new MemoryCredentialStore("available"),
       writeConfig: async () => undefined,
@@ -470,6 +926,400 @@ describe("LlmProfileManager", () => {
     expect(state.profiles[0]?.adapterId).toBe("claude");
     expect(state.profiles[0]?.keySource).toBe("not_required");
     expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
+    expect(state.profiles[0]?.ownsToolLoop).toBe(true);
+  });
+
+  test("keeps parent ACP profile readiness when a child runtime uses reduced config", async () => {
+    const parentConfig = createTestConfig({
+      llm: {
+        defaultProfileId: "claude-sonnet",
+        profiles: [
+          {
+            kind: "session-agent",
+            id: "claude-sonnet",
+            model: "sonnet",
+            adapterId: "claude",
+          },
+        ],
+      },
+      plugins: {
+        delegation: {
+          acp: {
+            enabled: true,
+            adapters: {
+              claude: { command: ["claude"] },
+            },
+          },
+        },
+      },
+    });
+    const childConfig = {
+      ...parentConfig,
+      plugins: {
+        ...parentConfig.plugins,
+        delegation: {
+          ...parentConfig.plugins.delegation,
+          enabled: false,
+          acp: {
+            ...parentConfig.plugins.delegation.acp,
+            enabled: false,
+            adapters: parentConfig.plugins.delegation.acp?.adapters ?? {},
+          },
+        },
+      },
+    };
+    const manager = new LlmProfileManager({
+      config: parentConfig,
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+    const child = createDefaultChildSession({
+      config: childConfig,
+      sessionId: "reduced-config-child",
+      title: "Reduced config child",
+      providerId: "reduced-config-child",
+      providerName: "Reduced config child",
+      llmProfileManager: manager,
+      agentFactory: createStreamingAgentFactory(),
+    });
+
+    try {
+      await child.runtime.start();
+      expect(manager.getConfig()).toBe(parentConfig);
+      expect(child.runtime.config.plugins.delegation.acp?.enabled).toBe(false);
+      await expect(manager.getState()).resolves.toMatchObject({
+        status: "ready",
+        activeProfileId: "claude-sonnet",
+      });
+    } finally {
+      child.runtime.shutdown();
+    }
+  });
+
+  test("does not apply native request-policy validation to session-agent profiles", async () => {
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          requestPolicy: {
+            timeoutMs: 999,
+            maxRetries: 2,
+            baseRetryDelayMs: 500,
+            maxRetryDelayMs: 10_000,
+          },
+          defaultProfileId: "claude-sonnet",
+          profiles: [
+            {
+              kind: "session-agent",
+              id: "claude-sonnet",
+              model: "sonnet",
+              adapterId: "claude",
+            },
+          ],
+        },
+        plugins: {
+          delegation: {
+            acp: {
+              enabled: true,
+              adapters: {
+                claude: { command: ["claude"] },
+              },
+            },
+          },
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.status).toBe("ready");
+    expect(state.profiles[0]?.ready).toBe(true);
+    expect(state.profiles[0]?.invalidReason).toBeUndefined();
+  });
+
+  test("marks session-agent profiles unready when their ACP adapter is unavailable", async () => {
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          defaultProfileId: "missing-acp",
+          profiles: [
+            {
+              kind: "session-agent",
+              id: "missing-acp",
+              model: "sonnet",
+              adapterId: "missing",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.status).toBe("needs_credentials");
+    expect(state.profiles[0]?.ready).toBe(false);
+    expect(state.profiles[0]?.invalidReason).toContain("plugins.delegation.acp.enabled");
+  });
+
+  test("accepts OpenAI Responses profiles during readiness checks", async () => {
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            responses: {
+              protocol: "openai-responses",
+              auth: { type: "none" },
+              models: { "test-model": {} },
+            },
+          },
+          defaultProfileId: "responses",
+          profiles: [
+            {
+              kind: "native",
+              id: "responses",
+              endpointId: "responses",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.profiles[0]?.ready).toBe(true);
+    expect(state.profiles[0]?.protocol).toBe("openai-responses");
+    const adapter = await manager.createAdapter();
+    expect(getLlmRuntimeDescriptor(adapter)?.protocol).toBe("openai-responses");
+  });
+
+  test("rejects invalid native protocol auth combinations during readiness checks", async () => {
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            invalidCodex: {
+              protocol: "openai-codex",
+              auth: { type: "none" },
+              models: { "test-model": {} },
+            },
+          },
+          defaultProfileId: "invalid-codex",
+          profiles: [
+            {
+              kind: "native",
+              id: "invalid-codex",
+              endpointId: "invalidCodex",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.profiles[0]?.ready).toBe(false);
+    expect(state.profiles[0]?.invalidReason).toContain("requires auth.type=codex");
+    await expect(manager.createAdapter()).rejects.toThrow("requires auth.type=codex");
+  });
+
+  test("resolves env-backed endpoint headers and preserves runtime model metadata", async () => {
+    process.env.TEST_LLM_AUTH_HEADER = "secret-bearer";
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            routed: {
+              protocol: "openai-chat",
+              baseUrl: "https://llm.example.test/v1",
+              auth: { type: "none" },
+              headers: { "x-route": "blue" },
+              headerEnv: { Authorization: "TEST_LLM_AUTH_HEADER" },
+              models: {
+                "test-model": {
+                  maxOutputTokens: 512,
+                  capabilities: { tools: false, images: false },
+                },
+              },
+            },
+          },
+          defaultProfileId: "routed",
+          profiles: [
+            {
+              kind: "native",
+              id: "routed",
+              endpointId: "routed",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+    const adapter = await manager.createAdapter();
+
+    expect(state.profiles[0]).toMatchObject({
+      ready: true,
+      maxOutputTokens: 512,
+      capabilities: { tools: false, images: false },
+      ownsToolLoop: false,
+    });
+    expect(adapter.constructor.name).toBe("ResilientLlmAdapter");
+    expect(getLlmRuntimeDescriptor(adapter)).toMatchObject({
+      maxOutputTokens: 512,
+      capabilities: { tools: false, images: false },
+    });
+  });
+
+  test("marks missing env-backed or literal sensitive headers unready", async () => {
+    delete process.env.TEST_LLM_AUTH_HEADER;
+    const base = {
+      protocol: "openai-chat" as const,
+      baseUrl: "https://llm.example.test/v1",
+      auth: { type: "none" as const },
+      models: { "test-model": {} },
+    };
+    const missingEnvManager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            routed: {
+              ...base,
+              headerEnv: { Authorization: "TEST_LLM_AUTH_HEADER" },
+            },
+          },
+          defaultProfileId: "routed",
+          profiles: [
+            {
+              kind: "native",
+              id: "routed",
+              endpointId: "routed",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+    const literalManager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            routed: {
+              ...base,
+              headers: { Authorization: "do-not-persist" },
+            },
+          },
+          defaultProfileId: "routed",
+          profiles: [
+            {
+              kind: "native",
+              id: "routed",
+              endpointId: "routed",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    expect((await missingEnvManager.getState()).message).toContain("TEST_LLM_AUTH_HEADER");
+    expect((await literalManager.getState()).message).toContain("headerEnv");
+  });
+
+  test("marks programmatic credential-bearing HTTP endpoint config unready", async () => {
+    process.env.TEST_LLM_AUTH_HEADER = "secret-bearer";
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          endpoints: {
+            insecure: {
+              protocol: "openai-chat",
+              baseUrl: "http://llm.example.test/v1",
+              auth: { type: "none" },
+              headerEnv: { Authorization: "TEST_LLM_AUTH_HEADER" },
+              models: { "test-model": {} },
+            },
+          },
+          defaultProfileId: "insecure",
+          profiles: [
+            {
+              kind: "native",
+              id: "insecure",
+              endpointId: "insecure",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.profiles[0]?.ready).toBe(false);
+    expect(state.profiles[0]?.invalidReason).toContain("must use https");
+    await expect(manager.createAdapter()).rejects.toThrow("must use https");
+  });
+
+  test("marks native profiles with an invalid programmatic request policy unready", async () => {
+    const manager = new LlmProfileManager({
+      config: createTestConfig({
+        llm: {
+          requestPolicy: {
+            timeoutMs: 999,
+            maxRetries: 2,
+            baseRetryDelayMs: 500,
+            maxRetryDelayMs: 10_000,
+          },
+          endpoints: {
+            local: {
+              protocol: "openai-responses",
+              auth: { type: "none" },
+              models: { "test-model": {} },
+            },
+          },
+          defaultProfileId: "local",
+          profiles: [
+            {
+              kind: "native",
+              id: "local",
+              endpointId: "local",
+              model: "test-model",
+            },
+          ],
+        },
+      }),
+      credentialStore: new MemoryCredentialStore("available"),
+      writeConfig: async () => undefined,
+    });
+
+    const state = await manager.getState();
+
+    expect(state.profiles[0]?.ready).toBe(false);
+    expect(state.profiles[0]?.invalidReason).toContain(
+      "timeoutMs must be greater than or equal to 1000",
+    );
+    const failure = await manager.createAdapter().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(LlmConfigurationError);
+    expect(failure).toMatchObject({
+      message: expect.stringContaining("timeoutMs must be greater than or equal to 1000"),
+    });
   });
 
   test("treats OpenAI Codex profiles as ready when Codex auth is available", async () => {
@@ -516,7 +1366,7 @@ describe("LlmProfileManager", () => {
       expect(state.selectedModel).toBe("gpt-5.6-sol");
       expect(state.profiles[0]?.reasoningEffort).toBe("max");
       expect(state.profiles[0]?.contextWindowTokens).toBe(258_400);
-      expect(state.profiles[0]?.maxOutputTokens).toBe(128_000);
+      expect(state.profiles[0]?.maxOutputTokens).toBeUndefined();
       expect(state.profiles[0]?.keySource).toBe("external_auth");
       expect(state.profiles[0]?.canDeleteApiKey).toBe(false);
       expect(state.message).toContain("external auth");
@@ -532,6 +1382,16 @@ describe("LlmProfileManager", () => {
         llm: {
           defaultProfileId: undefined,
           profiles: [],
+        },
+        plugins: {
+          delegation: {
+            acp: {
+              enabled: true,
+              adapters: {
+                claude: { command: ["claude"] },
+              },
+            },
+          },
         },
       }),
       credentialStore: new MemoryCredentialStore("available"),

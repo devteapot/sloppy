@@ -415,6 +415,8 @@ describe("AcpSessionAgent", () => {
       const llm = await consumer.query("/llm", 2);
       expect(llm.properties?.status).toBe("ready");
       expect(llm.properties?.selected_protocol).toBe("session-agent");
+      expect(llm.properties?.selected_owns_tool_loop).toBe(true);
+      expect(llm.children?.[0]?.properties?.owns_tool_loop).toBe(true);
 
       const sendResult = await consumer.invoke("/composer", "send_message", {
         text: "hello",

@@ -166,6 +166,12 @@ export type ActivityItem = {
   toolUseId?: string;
   paramsPreview?: string;
   errorMessage?: string;
+  errorCode?: string;
+  retryable?: boolean;
+  requestId?: string;
+  retryAfterMs?: number;
+  httpStatus?: number;
+  partialOutput?: boolean;
   result?: ToolCallResult;
 };
 
@@ -248,6 +254,12 @@ export type LlmProfileSnapshot = {
   authEnv?: string;
   baseUrl?: string;
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  capabilities?: {
+    tools?: boolean;
+    images?: boolean;
+  };
+  ownsToolLoop?: boolean;
   isDefault: boolean;
   hasKey: boolean;
   keySource: LlmKeySource;
@@ -290,6 +302,12 @@ export type LlmStateSnapshot = {
   selectedProtocol?: string;
   selectedModel: string;
   selectedContextWindowTokens?: number;
+  selectedMaxOutputTokens?: number;
+  selectedCapabilities?: {
+    tools?: boolean;
+    images?: boolean;
+  };
+  selectedOwnsToolLoop?: boolean;
   secureStoreKind: string;
   secureStoreStatus: LlmSecureStoreStatus;
   profiles: LlmProfileSnapshot[];

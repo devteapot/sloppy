@@ -29,8 +29,10 @@ export interface SessionAgent {
   rejectApprovalDirect(approvalId: string, reason?: string): void;
   cancelActiveTurn(): boolean;
   clearPendingApproval(): void;
-  updateConfig?(config: SloppyConfig): void;
+  updateConfig?(config: SloppyConfig, options?: { syncLlmProfileManager?: boolean }): void;
   shutdown(): void;
+  waitForShutdown?(): Promise<void>;
+  isShutdownComplete?(): boolean;
 }
 
 export type SessionAgentFactory = (

@@ -147,6 +147,12 @@ function buildActivityItem(item: ActivityItem): ItemDescriptor {
       tool_use_id: item.toolUseId,
       params_preview: item.paramsPreview,
       error_message: item.errorMessage,
+      error_code: item.errorCode,
+      retryable: item.retryable,
+      request_id: item.requestId,
+      retry_after_ms: item.retryAfterMs,
+      http_status: item.httpStatus,
+      partial_output: item.partialOutput,
       result: item.result,
     },
     summary: item.summary,
@@ -173,6 +179,11 @@ function buildLlmProfileItem(profile: LlmProfileSnapshot): ItemDescriptor {
       auth_env: profile.authEnv,
       base_url: profile.baseUrl,
       context_window_tokens: profile.contextWindowTokens,
+      ...(profile.maxOutputTokens === undefined
+        ? {}
+        : { max_output_tokens: profile.maxOutputTokens }),
+      capabilities: profile.capabilities,
+      owns_tool_loop: profile.ownsToolLoop,
       is_default: profile.isDefault,
       has_key: profile.hasKey,
       key_source: profile.keySource,
@@ -401,6 +412,11 @@ export class AgentSessionProvider {
         selected_protocol: snapshot.llm.selectedProtocol,
         selected_model: snapshot.llm.selectedModel,
         selected_context_window_tokens: snapshot.llm.selectedContextWindowTokens,
+        ...(snapshot.llm.selectedMaxOutputTokens === undefined
+          ? {}
+          : { selected_max_output_tokens: snapshot.llm.selectedMaxOutputTokens }),
+        selected_capabilities: snapshot.llm.selectedCapabilities,
+        selected_owns_tool_loop: snapshot.llm.selectedOwnsToolLoop,
         secure_store_kind: snapshot.llm.secureStoreKind,
         secure_store_status: snapshot.llm.secureStoreStatus,
         count: snapshot.llm.profiles.length,
