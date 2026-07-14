@@ -140,6 +140,13 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
           model: "sonnet",
           adapterId: "fake",
         },
+        {
+          kind: "session-agent",
+          id: "fake-acp-opus",
+          label: "Fake ACP Opus",
+          model: "opus",
+          adapterId: "fake",
+        },
       ],
       maxTokens: 4096,
     },
@@ -534,6 +541,72 @@ describe("ProfileSessionAgent", () => {
     }
 
     expect(roleStops).toBe(3);
+  });
+
+  test("restores durable native history into a fresh runtime", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-native-history-restore-"));
+    try {
+      const persistencePath = join(workspaceRoot, "session.json");
+      const requests: ConversationMessage[][] = [];
+      const createManager = (config: SloppyConfig): LlmProfileManager => {
+        const manager = new LlmProfileManager({
+          config,
+          credentialStore: new MemoryCredentialStore(),
+          writeConfig: async () => undefined,
+        });
+        manager.createAdapter = async () =>
+          ({
+            async chat(options) {
+              requests.push(options.messages);
+              const text = `native: ${latestPortableUserText(options)}`;
+              options.onText?.(text);
+              return {
+                content: [{ type: "text", text }],
+                stopReason: "end_turn",
+                usage: { inputTokens: 1, outputTokens: 1 },
+              };
+            },
+          }) satisfies LlmAdapter;
+        return manager;
+      };
+
+      const firstConfig = buildNativeSwitchConfig();
+      const firstRuntime = new SessionRuntime({
+        config: firstConfig,
+        sessionId: "native-history-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: createManager(firstConfig),
+      });
+      await firstRuntime.start();
+      await firstRuntime.sendMessage("before restart");
+      await firstRuntime.waitForIdle();
+      firstRuntime.shutdown();
+      await firstRuntime.waitForShutdown();
+
+      const restoredConfig = buildNativeSwitchConfig();
+      const restoredRuntime = new SessionRuntime({
+        config: restoredConfig,
+        sessionId: "native-history-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: createManager(restoredConfig),
+      });
+      try {
+        await restoredRuntime.start();
+        await restoredRuntime.sendMessage("after restart");
+        await restoredRuntime.waitForIdle();
+
+        expect(portableTranscript(requests.at(-1) ?? [])).toEqual([
+          { role: "user", text: "before restart" },
+          { role: "assistant", text: "native: before restart" },
+          { role: "user", text: "after restart" },
+        ]);
+      } finally {
+        restoredRuntime.shutdown();
+        await restoredRuntime.waitForShutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   test("pins a native approval continuation until the next new chat", async () => {

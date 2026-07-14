@@ -1,3 +1,4 @@
+import type { ConversationHistorySnapshot } from "../../llm/types";
 import type {
   ActivityStatus,
   AgentSessionSnapshot,
@@ -24,7 +25,7 @@ import { ListenerRegistry } from "./listeners";
 import * as llm from "./llm";
 import * as mirrors from "./mirrors";
 import {
-  loadPersistedSessionSnapshot,
+  loadPersistedSessionData,
   persistSessionSnapshot,
   recoverPersistedSessionSnapshot,
   type SessionSnapshotMigrator,
@@ -47,6 +48,8 @@ export class SessionStore {
   private state: SessionStoreState;
   private registry = new ListenerRegistry();
   private persistencePath?: string;
+  private conversationHistory?: ConversationHistorySnapshot;
+  private readonly recoveredInterruptedTurn: boolean;
   private readonly extensionEventTypes: Record<string, SessionStoreEventType[]>;
   private readonly snapshotProjections: readonly SessionSnapshotProjector[];
 
@@ -82,13 +85,17 @@ export class SessionStore {
       ]),
     );
     const persisted = options.persistencePath
-      ? loadPersistedSessionSnapshot(options.persistencePath, {
+      ? loadPersistedSessionData(options.persistencePath, {
           migrators: options.snapshotMigrators,
         })
       : null;
+    this.conversationHistory = persisted?.conversation;
+    this.recoveredInterruptedTurn =
+      persisted?.snapshot.turn.state === "running" ||
+      persisted?.snapshot.turn.state === "waiting_approval";
     this.state = persisted
       ? createStateFromSnapshot(
-          recoverPersistedSessionSnapshot(persisted, options.persistencePath ?? "", {
+          recoverPersistedSessionSnapshot(persisted.snapshot, options.persistencePath ?? "", {
             recoverers: options.snapshotRecoverers,
           }),
           this.snapshotProjections,
@@ -102,6 +109,19 @@ export class SessionStore {
 
   getSnapshot(): AgentSessionSnapshot {
     return cloneSnapshot(this.state.snapshot, this.snapshotProjections);
+  }
+
+  getConversationHistory(): ConversationHistorySnapshot | undefined {
+    return this.conversationHistory ? structuredClone(this.conversationHistory) : undefined;
+  }
+
+  didRecoverInterruptedTurn(): boolean {
+    return this.recoveredInterruptedTurn;
+  }
+
+  syncConversationHistory(snapshot: ConversationHistorySnapshot): void {
+    this.conversationHistory = structuredClone(snapshot);
+    this.persist();
   }
 
   getApproval(approvalId: string): ApprovalItem | undefined {
@@ -533,7 +553,7 @@ export class SessionStore {
       return;
     }
     try {
-      persistSessionSnapshot(this.persistencePath, this.state.snapshot);
+      persistSessionSnapshot(this.persistencePath, this.state.snapshot, this.conversationHistory);
     } catch (error) {
       console.warn(
         `[sloppy] failed to persist session snapshot ${this.persistencePath}: ${error instanceof Error ? error.message : String(error)}`,

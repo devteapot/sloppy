@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { ConversationHistory } from "../src/core/history";
 
 describe("ConversationHistory", () => {
-  test("trims complete turns without retaining an orphaned assistant message", () => {
+  test("retains complete turns until the loop performs semantic compaction", () => {
     const history = new ConversationHistory({ historyTurns: 1, toolResultMaxChars: 1_000 });
     history.addUserText("first user");
     history.addAssistantContent([{ type: "text", text: "first assistant" }]);
@@ -11,6 +11,8 @@ describe("ConversationHistory", () => {
     history.addAssistantContent([{ type: "text", text: "second assistant" }]);
 
     expect(history.buildRequestMessages("current state")).toEqual([
+      { role: "user", content: [{ type: "text", text: "first user" }] },
+      { role: "assistant", content: [{ type: "text", text: "first assistant" }] },
       { role: "user", content: [{ type: "text", text: "second user" }] },
       { role: "assistant", content: [{ type: "text", text: "second assistant" }] },
       { role: "user", content: [{ type: "text", text: "current state" }] },

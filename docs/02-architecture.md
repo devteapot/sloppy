@@ -342,6 +342,43 @@ follows the SLOP integration pattern in
 history remains before the volatile state tail so prompt-cache prefixes stay
 usable while the model still reasons over fresh state.
 
+## Conversation History And Compaction
+
+Native LLM profiles share one provider-neutral conversation history owned by
+the Session runtime. The durable private session envelope keeps both the full
+archive and the active model context; it is separate from the public transcript
+and is not copied into typed client snapshots. Recreating an adapter, changing
+the selected native profile, or restoring a Session therefore does not discard
+model-visible continuity. An ACP main-session adapter remains a separate
+protocol boundary and owns its live
+transcript and compaction policy; native history is neither imported nor
+exported across that boundary.
+Stale-turn recovery closes any unmatched tool calls with synthetic error
+results and adds an explicit runtime-recovery note before accepting new input,
+so restored native requests never replay an invalid half-finished tool exchange.
+
+Before each native model request, the loop estimates the complete input:
+system prompt, active conversation, tool schemas, and the freshly rebuilt
+`<slop-state>` tail. When model context-window metadata is available it reserves
+space for output and compacts before the request would cross the remaining
+input budget. `agent.historyTurns` is also a semantic-compaction threshold,
+not a hard slice.
+
+Compaction summarizes an old prefix with the active model and retains a recent
+suffix. Split points may begin at a real user or assistant message but never at
+a tool-result message, so a retained tool result cannot be orphaned from its
+tool call. The summary replaces only the active prefix; the full archive stays
+durable. Summary requests are counted in normal turn usage. They contain no
+SLOP state tail: live provider state is always regenerated for the next normal
+request.
+
+All native adapters normalize provider-specific context-window failures to one
+runtime error. The loop may force one additional compaction and retry exactly
+once. If the system prompt, tool catalog, current input, or provider state is
+still irreducible, the runtime fails with an actionable error instead of
+retrying indefinitely; the Agent can unfocus or unload state, close large File
+views, or select a model with a larger context window.
+
 External app provider discovery registers descriptor-backed apps as lightweight
 `status=unloaded` app cards by default. It does not connect discovered apps into
 the agent Hub until the Agent explicitly loads them through the first-party

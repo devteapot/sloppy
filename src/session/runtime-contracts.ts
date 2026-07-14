@@ -2,6 +2,7 @@ import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import type { SloppyConfig } from "../config/schema";
 import type { AgentCallbacks, AgentRunResult, ResolvedApprovalToolResult } from "../core/agent";
+import type { ConversationHistory } from "../core/history";
 import type { LlmProfileManager } from "../llm/profile-manager";
 import type { RuntimeServiceKey } from "../runtime/services";
 
@@ -39,6 +40,7 @@ export type SessionAgentFactory = (
   callbacks: AgentCallbacks,
   config: SloppyConfig,
   llmProfileManager: LlmProfileManager,
+  conversationHistory?: ConversationHistory,
 ) => SessionAgent;
 
 export type SendMessageResult =

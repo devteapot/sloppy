@@ -40,6 +40,13 @@ export function createTestConfig(
       detailDepth: 4,
       historyTurns: 8,
       toolResultMaxChars: 16000,
+      contextCompaction: {
+        enabled: true,
+        reserveTokens: 8192,
+        keepRecentTokens: 20000,
+        summaryMaxTokens: 2048,
+        retryOnOverflow: true,
+      },
       ...overrides.agent,
     },
     plugins: testPlugins(overrides.plugins),

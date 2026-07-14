@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   LlmAdapter,
   LlmChatOptions,
+  LlmResponse,
   LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
@@ -10,10 +11,18 @@ import type {
 import {
   getLlmRuntimeDescriptor,
   isLlmAbortError,
+  isLlmContextOverflowError,
   LlmAbortError,
+  LlmContextOverflowError,
   LlmRequestError,
+  normalizeLlmError,
   resolveLlmMaxTokens,
 } from "../llm/types";
+import {
+  buildContextBudget,
+  compactConversationHistory,
+  estimateRequestTokens,
+} from "./compaction";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import { CANCELLED_TOOL_BATCH_RESULT, type ConversationHistory } from "./history";
@@ -104,6 +113,7 @@ export async function runLoop(options: {
   hub: ProviderRuntimeHub;
   history: ConversationHistory;
   llm: LlmAdapter;
+  contextWindowTokens?: number;
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
   onThinking?: LlmChatOptions["onThinking"];
@@ -137,6 +147,24 @@ export async function runLoop(options: {
   const roleId = options.hooks?.roleId;
   const localTools = options.hooks?.localTools;
   const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
+  const recordUsage = (response: LlmResponse, stateContextTokenCount?: LlmTokenCount): void => {
+    const reportedInput = response.usage.inputTokens;
+    const reportedOutput = response.usage.outputTokens;
+    const reportedThinking = response.usage.thinkingTokens;
+    usage.inputTokens += reportedInput ?? 0;
+    usage.outputTokens += reportedOutput ?? 0;
+    usage.thinkingTokens += reportedThinking ?? 0;
+    options.onTurnUsage?.({
+      inputTokens: reportedInput,
+      outputTokens: reportedOutput,
+      thinkingTokens: reportedThinking,
+      inputTokenSource: reportedInput === undefined ? "unavailable" : "reported",
+      outputTokenSource: reportedOutput === undefined ? "unavailable" : "reported",
+      thinkingTokenSource: reportedThinking === undefined ? "unavailable" : "reported",
+      stateContextTokens: stateContextTokenCount?.tokens,
+      stateContextTokenSource: stateContextTokenCount?.source ?? "unavailable",
+    });
+  };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
     const plan = planIteration(approval, iteration);
@@ -195,11 +223,38 @@ export async function runLoop(options: {
     const runtime = getLlmRuntimeDescriptor(options.llm);
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
-    const portableMessages = options.history.buildRequestMessages(stateContext);
-    const messages =
+    const tools =
       runtime?.capabilities.tools === false
+        ? []
+        : [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)];
+    const maxTokens = resolveLlmMaxTokens(options.llm, options.config.llm.maxTokens);
+    const buildMessages = (): ConversationMessage[] => {
+      const portableMessages = options.history.buildRequestMessages(stateContext);
+      return runtime?.capabilities.tools === false
         ? buildToolFreeRequestHistory(portableMessages)
         : portableMessages;
+    };
+    const requestTokens = () =>
+      estimateRequestTokens({
+        system,
+        messages: buildMessages(),
+        tools,
+      });
+    const compact = async (force = false) =>
+      compactConversationHistory({
+        history: options.history,
+        llm: options.llm,
+        config: options.config,
+        contextWindowTokens: options.contextWindowTokens,
+        estimatedTokensBefore: requestTokens(),
+        maxOutputTokens: maxTokens,
+        force,
+        signal: options.signal,
+        onSummaryCall: (summaryResponse) => recordUsage(summaryResponse),
+      });
+
+    await compact();
+    const messages = buildMessages();
     if (
       runtime?.capabilities.images === false &&
       messages.some((message) => message.content.some((block) => block.type === "image"))
@@ -212,46 +267,71 @@ export async function runLoop(options: {
         },
       );
     }
-    const tools =
-      runtime?.capabilities.tools === false
-        ? []
-        : [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)];
+    const assertRequestFits = (): void => {
+      const estimatedInputTokens = requestTokens();
+      const budget = buildContextBudget({
+        config: options.config,
+        contextWindowTokens: options.contextWindowTokens,
+        estimatedInputTokens,
+        outputReserveTokens: maxTokens,
+      });
+      if (
+        budget.usableInputTokens !== undefined &&
+        estimatedInputTokens > budget.usableInputTokens
+      ) {
+        throw new LlmContextOverflowError(
+          `The request still needs approximately ${estimatedInputTokens} input tokens after compaction, but only ${budget.usableInputTokens} are available after reserving model output. Unfocus or unload provider state, close large filesystem views, or use a model with a larger context window.`,
+        );
+      }
+    };
+    assertRequestFits();
+
     let emittedOutput = false;
-    const response = await options.llm.chat({
-      system,
-      messages,
-      tools,
-      maxTokens: resolveLlmMaxTokens(options.llm, options.config.llm.maxTokens),
-      onText: options.onText
-        ? (chunk) => {
-            emittedOutput ||= chunk.length > 0;
-            options.onText?.(chunk);
-          }
-        : undefined,
-      onThinking: options.onThinking
-        ? (delta) => {
-            emittedOutput ||= delta.delta.length > 0;
-            options.onThinking?.(delta);
-          }
-        : undefined,
-      signal: options.signal,
-    });
-    const reportedInput = response.usage.inputTokens;
-    const reportedOutput = response.usage.outputTokens;
-    const reportedThinking = response.usage.thinkingTokens;
-    usage.inputTokens += reportedInput ?? 0;
-    usage.outputTokens += reportedOutput ?? 0;
-    usage.thinkingTokens += reportedThinking ?? 0;
-    options.onTurnUsage?.({
-      inputTokens: reportedInput,
-      outputTokens: reportedOutput,
-      thinkingTokens: reportedThinking,
-      inputTokenSource: reportedInput === undefined ? "unavailable" : "reported",
-      outputTokenSource: reportedOutput === undefined ? "unavailable" : "reported",
-      thinkingTokenSource: reportedThinking === undefined ? "unavailable" : "reported",
-      stateContextTokens: stateContextTokenCount.tokens,
-      stateContextTokenSource: stateContextTokenCount.source,
-    });
+    const chat = () =>
+      options.llm.chat({
+        system,
+        messages: buildMessages(),
+        tools,
+        maxTokens,
+        onText: options.onText
+          ? (chunk) => {
+              emittedOutput ||= chunk.length > 0;
+              options.onText?.(chunk);
+            }
+          : undefined,
+        onThinking: options.onThinking
+          ? (delta) => {
+              emittedOutput ||= delta.delta.length > 0;
+              options.onThinking?.(delta);
+            }
+          : undefined,
+        signal: options.signal,
+      });
+    let response: LlmResponse;
+    try {
+      response = await chat();
+    } catch (error) {
+      const normalized = normalizeLlmError(error, options.signal);
+      if (
+        !options.config.agent.contextCompaction.retryOnOverflow ||
+        !isLlmContextOverflowError(normalized) ||
+        emittedOutput ||
+        (error instanceof LlmRequestError && error.partialOutput)
+      ) {
+        throw normalized;
+      }
+      const recovery = await compact(true);
+      if (!recovery.compacted) {
+        throw normalized;
+      }
+      assertRequestFits();
+      try {
+        response = await chat();
+      } catch (retryError) {
+        throw normalizeLlmError(retryError, options.signal);
+      }
+    }
+    recordUsage(response, stateContextTokenCount);
 
     const toolCalls = response.content.filter(
       (block): block is ToolUseContentBlock => block.type === "tool_use",

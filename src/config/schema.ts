@@ -616,6 +616,21 @@ export const sloppyConfigSchema = z.object({
       detailDepth: z.number().int().min(1).default(4),
       historyTurns: z.number().int().min(1).default(8),
       toolResultMaxChars: z.number().int().min(512).default(16000),
+      contextCompaction: z
+        .object({
+          enabled: z.boolean().default(true),
+          reserveTokens: z.number().int().min(256).default(8192),
+          keepRecentTokens: z.number().int().min(256).default(20000),
+          summaryMaxTokens: z.number().int().min(256).default(2048),
+          retryOnOverflow: z.boolean().default(true),
+        })
+        .default({
+          enabled: true,
+          reserveTokens: 8192,
+          keepRecentTokens: 20000,
+          summaryMaxTokens: 2048,
+          retryOnOverflow: true,
+        }),
     })
     .default({
       maxIterations: 32,
@@ -623,6 +638,13 @@ export const sloppyConfigSchema = z.object({
       detailDepth: 4,
       historyTurns: 8,
       toolResultMaxChars: 16000,
+      contextCompaction: {
+        enabled: true,
+        reserveTokens: 8192,
+        keepRecentTokens: 20000,
+        summaryMaxTokens: 2048,
+        retryOnOverflow: true,
+      },
     }),
   session: z
     .object({

@@ -29,6 +29,10 @@ Checked in now:
   config/credential generations during async adapter construction, expose
   deferred cleanup as non-selectable `stopping`, and project removed explicit
   routes as unavailable instead of stale-ready
+- provider-neutral durable native conversation history with full-request
+  context budgeting, safe semantic compaction, normalized one-shot overflow
+  recovery, fresh SLOP state tails, and continuity across native profile
+  changes and Session restore
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order

@@ -7,6 +7,7 @@ import {
   type SloppyConfig,
 } from "../config/schema";
 import type { AgentCallbacks, LocalRuntimeTool, RoleProfile } from "../core/agent";
+import { ConversationHistory } from "../core/history";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
@@ -48,7 +49,7 @@ import {
 } from "./runtime-helpers";
 import type { SessionStore } from "./store";
 import { TurnCoordinator } from "./turn-coordinator";
-import type { ApprovalMode } from "./types";
+import type { ApprovalMode, TranscriptMessage } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 export type { SessionRuntimeOptions } from "./runtime-assembly";
@@ -67,6 +68,7 @@ function createDefaultSessionAgent(
   llmProfileManager: LlmProfileManager,
   ignoredProviderIds: string[] = [],
   role?: RoleProfile,
+  conversationHistory?: ConversationHistory,
   extras?: {
     roleId?: string;
     roleRegistry?: RoleRegistry;
@@ -92,8 +94,46 @@ function createDefaultSessionAgent(
     policyRules: extras?.policyRules,
     localTools: extras?.localTools,
     childSessionFactory: extras?.childSessionFactory,
+    conversationHistory:
+      conversationHistory ??
+      new ConversationHistory({
+        historyTurns: config.agent.historyTurns,
+        toolResultMaxChars: config.agent.toolResultMaxChars,
+      }),
     callbacks,
   });
+}
+
+function historyFromTranscript(
+  transcript: TranscriptMessage[],
+  config: SloppyConfig,
+): ConversationHistory {
+  const history = new ConversationHistory({
+    historyTurns: config.agent.historyTurns,
+    toolResultMaxChars: config.agent.toolResultMaxChars,
+  });
+  for (const message of transcript) {
+    const text = message.content
+      .flatMap((block) => {
+        if (block.type === "text") return [block.text];
+        if (block.type === "media") {
+          return [
+            block.summary ??
+              block.preview ??
+              `[${block.mime} attachment: ${block.name ?? "media"}]`,
+          ];
+        }
+        return [];
+      })
+      .join("\n");
+    if (!text) continue;
+    if (message.role === "assistant") {
+      history.addAssistantContent([{ type: "text", text }]);
+    } else {
+      history.addUserText(message.role === "system" ? `[System continuation]\n${text}` : text);
+    }
+  }
+  return history;
 }
 
 export function createDefaultChildSession(
@@ -126,6 +166,8 @@ export class SessionRuntime {
   readonly store: SessionStore;
 
   private agent: SessionAgent;
+  private readonly conversationHistory: ConversationHistory;
+  private unsubscribeConversationHistory: (() => void) | null = null;
   private llmProfileManager: LlmProfileManager;
   private eventBus: AgentEventBus | null = null;
   private requiresLlmProfile = true;
@@ -170,6 +212,24 @@ export class SessionRuntime {
     this.localProviderIds = createLocalProviderIds(sessionId, options.ignoredProviderIds);
     const sessionPlugins = createFirstPartySessionPlugins(this.config);
     this.store = createSessionStore(options, this.config, sessionId, sessionPlugins);
+    const persistedConversation = this.store.getConversationHistory();
+    const restoredSnapshot = this.store.getSnapshot();
+    const transcript = restoredSnapshot.transcript;
+    this.conversationHistory =
+      persistedConversation && (persistedConversation.archive.length > 0 || transcript.length === 0)
+        ? new ConversationHistory({
+            historyTurns: this.config.agent.historyTurns,
+            toolResultMaxChars: this.config.agent.toolResultMaxChars,
+            snapshot: persistedConversation,
+          })
+        : historyFromTranscript(transcript, this.config);
+    if (this.store.didRecoverInterruptedTurn()) {
+      this.conversationHistory.recoverInterruptedTurn();
+    }
+    this.unsubscribeConversationHistory = this.conversationHistory.subscribe((snapshot) =>
+      this.store.syncConversationHistory(snapshot),
+    );
+    this.store.syncConversationHistory(this.conversationHistory.snapshot());
     if (options.approvalMode) {
       this.store.setApprovalMode(options.approvalMode);
     }
@@ -198,13 +258,14 @@ export class SessionRuntime {
 
     const agentFactory =
       options.agentFactory ??
-      ((callbacks, config, llmProfileManager) =>
+      ((callbacks, config, llmProfileManager, conversationHistory) =>
         createDefaultSessionAgent(
           callbacks,
           config,
           llmProfileManager,
           options.ignoredProviderIds,
           options.role,
+          conversationHistory,
           {
             roleId: options.roleId,
             roleRegistry: options.roleRegistry,
@@ -216,7 +277,12 @@ export class SessionRuntime {
             childSessionFactory: options.childSessionFactory ?? createDefaultChildSession,
           },
         ));
-    this.agent = agentFactory(finalCallbacks, this.config, this.llmProfileManager);
+    this.agent = agentFactory(
+      finalCallbacks,
+      this.config,
+      this.llmProfileManager,
+      this.conversationHistory,
+    );
     this.turns = new TurnCoordinator({
       store: this.store,
       plugins: this.plugins,
@@ -632,6 +698,11 @@ export class SessionRuntime {
       cleanupErrors.push(error);
       this.shutdownCompletion = Promise.resolve();
     }
+    this.shutdownCompletion = this.shutdownCompletion.finally(() => {
+      this.store.syncConversationHistory(this.conversationHistory.snapshot());
+      this.unsubscribeConversationHistory?.();
+      this.unsubscribeConversationHistory = null;
+    });
     try {
       this.turns.shutdown();
     } catch (error) {

@@ -101,6 +101,27 @@ export interface ConversationMessage {
   content: MessageContentBlock[];
 }
 
+export type ConversationHistoryEntryKind = "user" | "assistant" | "tool" | "summary";
+
+export type ConversationHistoryEntrySnapshot = {
+  kind: ConversationHistoryEntryKind;
+  message: ConversationMessage;
+};
+
+export type ConversationCompactionSnapshot = {
+  compactedAt: string;
+  summary: string;
+  archivedEntryCount: number;
+  retainedEntryCount: number;
+};
+
+export type ConversationHistorySnapshot = {
+  version: 1;
+  archive: ConversationHistoryEntrySnapshot[];
+  active: ConversationHistoryEntrySnapshot[];
+  compactions: ConversationCompactionSnapshot[];
+};
+
 export interface LlmResponse {
   content: AssistantContentBlock[];
   thinking?: ThinkingOutputBlock[];
@@ -203,8 +224,50 @@ export class LlmAbortError extends Error {
   }
 }
 
+export class LlmContextOverflowError extends Error {
+  readonly code = "context_overflow";
+
+  constructor(message = "The model context window was exceeded.", options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "LlmContextOverflowError";
+  }
+}
+
 export function isLlmAbortError(error: unknown): error is LlmAbortError {
   return error instanceof LlmAbortError;
+}
+
+export function isLlmContextOverflowError(error: unknown): error is LlmContextOverflowError {
+  return error instanceof LlmContextOverflowError;
+}
+
+function errorCode(error: Error & { code?: unknown; type?: unknown }): string {
+  const value = error.code ?? error.type;
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function looksLikeContextOverflow(error: Error & { code?: unknown; type?: unknown }): boolean {
+  const code = errorCode(error);
+  if (
+    code === "context_length_exceeded" ||
+    code === "context_window_exceeded" ||
+    code === "prompt_too_long" ||
+    code === "request_too_large"
+  ) {
+    return true;
+  }
+
+  const message = error.message.toLowerCase();
+  return [
+    "context length exceeded",
+    "context window exceeded",
+    "maximum context length",
+    "exceeds the context window",
+    "prompt is too long",
+    "input is too long",
+    "too many input tokens",
+    "request too large for model",
+  ].some((pattern) => message.includes(pattern));
 }
 
 export function normalizeLlmAbortError(error: unknown, signal?: AbortSignal): unknown {
@@ -237,6 +300,32 @@ export function normalizeLlmAbortError(error: unknown, signal?: AbortSignal): un
     return normalizeLlmAbortError(candidate.cause, signal);
   }
 
+  return error;
+}
+
+export function normalizeLlmError(error: unknown, signal?: AbortSignal): unknown {
+  const abortError = normalizeLlmAbortError(error, signal);
+  if (abortError instanceof LlmAbortError || abortError instanceof LlmContextOverflowError) {
+    return abortError;
+  }
+  if (!(abortError instanceof Error)) {
+    return abortError;
+  }
+
+  const candidate = abortError as Error & {
+    code?: unknown;
+    type?: unknown;
+    cause?: unknown;
+  };
+  if (looksLikeContextOverflow(candidate)) {
+    return new LlmContextOverflowError(candidate.message, { cause: candidate });
+  }
+  if (candidate.cause) {
+    const normalizedCause = normalizeLlmError(candidate.cause, signal);
+    if (normalizedCause instanceof LlmContextOverflowError) {
+      return new LlmContextOverflowError(candidate.message, { cause: candidate });
+    }
+  }
   return error;
 }
 

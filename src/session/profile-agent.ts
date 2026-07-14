@@ -40,6 +40,7 @@ type ProfileSessionAgentOptions = {
   policyRules?: InvokePolicy[];
   localTools?: () => LocalRuntimeTool[];
   childSessionFactory?: ChildSessionFactory;
+  conversationHistory?: ConversationHistory;
   callbacks: AgentCallbacks;
 };
 
@@ -103,10 +104,12 @@ export class ProfileSessionAgent implements SessionAgent {
       this.rejectShutdownCompletion = (error) => reject(error);
     });
     void this.shutdownCompletion.catch(() => undefined);
-    this.nativeHistory = new ConversationHistory({
-      historyTurns: this.config.agent.historyTurns,
-      toolResultMaxChars: this.config.agent.toolResultMaxChars,
-    });
+    this.nativeHistory =
+      options.conversationHistory ??
+      new ConversationHistory({
+        historyTurns: this.config.agent.historyTurns,
+        toolResultMaxChars: this.config.agent.toolResultMaxChars,
+      });
     this.innerProfileBindingLease = this.llmProfileManager.acquireProfileBinding();
   }
 
@@ -341,7 +344,18 @@ export class ProfileSessionAgent implements SessionAgent {
       profile.endpointId ?? profile.adapterId ?? "native",
       profile.id,
       model,
+      this.contextWindowTokens(profile) ?? "unknown-context",
     ].join(":");
+  }
+
+  private contextWindowTokens(profile: LlmProfileState): number | undefined {
+    if (profile.kind === "native" && profile.endpointId && this.llmModelOverride) {
+      return (
+        this.config.llm.endpoints[profile.endpointId]?.models[this.llmModelOverride]
+          ?.contextWindowTokens ?? profile.contextWindowTokens
+      );
+    }
+    return profile.contextWindowTokens;
   }
 
   private createInner(profile: LlmProfileState): SessionAgent {
@@ -376,6 +390,7 @@ export class ProfileSessionAgent implements SessionAgent {
       policyRules: this.policyRules,
       localTools: this.localTools,
       childSessionFactory: this.childSessionFactory,
+      contextWindowTokens: profile ? this.contextWindowTokens(profile) : undefined,
       ...this.callbacks,
     });
   }
