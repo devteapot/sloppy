@@ -23,7 +23,7 @@ import type {
   MessageContentBlock,
   ThinkingOutputBlock,
 } from "./types";
-import { LlmAbortError, normalizeLlmAbortError } from "./types";
+import { LlmAbortError, normalizeLlmError } from "./types";
 
 interface AnthropicMessageStream {
   abort(): void;
@@ -208,7 +208,7 @@ export class AnthropicAdapter implements LlmAdapter {
       );
       return { tokens: count.input_tokens, source: "provider" };
     } catch (error) {
-      throw normalizeLlmAbortError(error, options?.signal);
+      throw normalizeLlmError(error, options?.signal);
     }
   }
 
@@ -321,7 +321,7 @@ export class AnthropicAdapter implements LlmAdapter {
         },
       } satisfies LlmResponse;
     } catch (error) {
-      throw normalizeLlmAbortError(error, options.signal);
+      throw normalizeLlmError(error, options.signal);
     } finally {
       options.signal?.removeEventListener("abort", abortStream);
     }

@@ -349,6 +349,11 @@ Rules:
   the adapter to avoid double-counting
 - `/usage` is the only public token-accounting surface; `/llm` is reserved for
   profile and credential state
+- hidden conversation-summary calls are model calls and contribute to
+  `current_turn_model_calls` and the normal input/output token aggregates
+- the canonical conversation archive, active compacted context, and compaction
+  records are private durable runtime state; they are not added to the public
+  Session snapshot or transcript
 
 ### `/plugins`
 

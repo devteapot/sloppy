@@ -118,6 +118,8 @@ export type AgentOptions = {
   localTools?: () => LocalRuntimeTool[];
   /** Required by custom composition roots that enable delegated child sessions. */
   childSessionFactory?: ChildSessionFactory;
+  conversationHistory?: ConversationHistory;
+  contextWindowTokens?: number;
 } & AgentCallbacks;
 
 export class Agent {
@@ -130,6 +132,7 @@ export class Agent {
   private llmProfileManager: LlmProfileManager;
   private llmProfileId?: string;
   private llmModelOverride?: string;
+  private contextWindowTokens?: number;
   private callbacks: AgentCallbacks;
   private providerWatchStops = new Map<string, Array<() => void>>();
   private unsubscribeExternalProviderStateChanges: (() => void) | null = null;
@@ -182,10 +185,12 @@ export class Agent {
     ];
     this.localTools = options?.localTools;
     this.childSessionFactory = options?.childSessionFactory;
-    this.history = new ConversationHistory({
-      historyTurns: this.config.agent.historyTurns,
-      toolResultMaxChars: this.config.agent.toolResultMaxChars,
-    });
+    this.history =
+      options?.conversationHistory ??
+      new ConversationHistory({
+        historyTurns: this.config.agent.historyTurns,
+        toolResultMaxChars: this.config.agent.toolResultMaxChars,
+      });
     this.llmProfileManager =
       options?.llmProfileManager ??
       createRuntimeLlmProfileManager({
@@ -193,6 +198,7 @@ export class Agent {
       });
     this.llmProfileId = options?.llmProfileId;
     this.llmModelOverride = options?.llmModelOverride;
+    this.contextWindowTokens = options?.contextWindowTokens;
   }
 
   async start(): Promise<void> {
@@ -292,6 +298,10 @@ export class Agent {
         },
       });
     }
+
+    if (this.contextWindowTokens === undefined) {
+      this.contextWindowTokens = await this.resolveContextWindowTokens();
+    }
   }
 
   async chat(userMessage: string): Promise<AgentRunResult> {
@@ -320,6 +330,7 @@ export class Agent {
           hub,
           history: this.history,
           llm,
+          contextWindowTokens: this.contextWindowTokens,
           signal,
           onText: this.callbacks.onText,
           onThinking: this.callbacks.onThinking,
@@ -372,6 +383,7 @@ export class Agent {
           hub,
           history: this.history,
           llm,
+          contextWindowTokens: this.contextWindowTokens,
           signal,
           onText: this.callbacks.onText,
           onThinking: this.callbacks.onThinking,
@@ -392,6 +404,20 @@ export class Agent {
 
   private buildSystemPrompt(): string {
     return buildSystemPrompt(this.config, this.systemPromptFragments);
+  }
+
+  private async resolveContextWindowTokens(): Promise<number | undefined> {
+    const state = await this.llmProfileManager.getState();
+    const profile = this.llmProfileId
+      ? state.profiles.find((candidate) => candidate.id === this.llmProfileId)
+      : state.profiles.find((candidate) => candidate.id === state.activeProfileId);
+    if (profile?.kind === "native" && profile.endpointId && this.llmModelOverride) {
+      return (
+        this.config.llm.endpoints[profile.endpointId]?.models[this.llmModelOverride]
+          ?.contextWindowTokens ?? profile.contextWindowTokens
+      );
+    }
+    return profile?.contextWindowTokens ?? state.selectedContextWindowTokens;
   }
 
   private buildHooks(): RunLoopHooks {

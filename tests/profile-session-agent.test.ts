@@ -91,6 +91,13 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
           model: "sonnet",
           adapterId: "fake",
         },
+        {
+          kind: "session-agent",
+          id: "fake-acp-opus",
+          label: "Fake ACP Opus",
+          model: "opus",
+          adapterId: "fake",
+        },
       ],
       maxTokens: 4096,
     },
@@ -163,6 +170,96 @@ describe("ProfileSessionAgent", () => {
         );
       } finally {
         runtime.shutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("hands canonical conversation context to a newly selected profile", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-switch-"));
+    try {
+      const scriptPath = await createFakeAcpAgent(workspaceRoot);
+      const config = buildConfig(workspaceRoot, scriptPath);
+      const runtime = new SessionRuntime({
+        config,
+        sessionId: "profile-switch",
+        llmProfileManager: new LlmProfileManager({
+          config,
+          credentialStore: new MemoryCredentialStore(),
+          writeConfig: async () => undefined,
+        }),
+      });
+
+      try {
+        await runtime.start();
+        await runtime.sendMessage("first provider message");
+        await runtime.waitForIdle();
+        await runtime.setDefaultLlmProfile("fake-acp-opus");
+        await runtime.sendMessage("continue with the second provider");
+        await runtime.waitForIdle();
+
+        const lastBlock = runtime.store.getSnapshot().transcript.at(-1)?.content[0];
+        const text = lastBlock?.type === "text" ? lastBlock.text : "";
+        expect(text).toContain("main opus:");
+        expect(text).toContain("<conversation-handoff>");
+        expect(text).toContain("first provider message");
+        expect(text).toContain("main sonnet: first provider message");
+        expect(text).toContain("<current-user-message>\ncontinue with the second provider");
+      } finally {
+        runtime.shutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("restores canonical conversation context for a fresh provider session", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-restore-"));
+    try {
+      const scriptPath = await createFakeAcpAgent(workspaceRoot);
+      const persistencePath = join(workspaceRoot, "session.json");
+      const config = buildConfig(workspaceRoot, scriptPath);
+      const firstRuntime = new SessionRuntime({
+        config,
+        sessionId: "profile-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: new LlmProfileManager({
+          config,
+          credentialStore: new MemoryCredentialStore(),
+          writeConfig: async () => undefined,
+        }),
+      });
+
+      await firstRuntime.start();
+      await firstRuntime.sendMessage("persist this provider-neutral context");
+      await firstRuntime.waitForIdle();
+      firstRuntime.shutdown();
+
+      const restoredConfig = buildConfig(workspaceRoot, scriptPath);
+      const restoredRuntime = new SessionRuntime({
+        config: restoredConfig,
+        sessionId: "profile-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: new LlmProfileManager({
+          config: restoredConfig,
+          credentialStore: new MemoryCredentialStore(),
+          writeConfig: async () => undefined,
+        }),
+      });
+      try {
+        await restoredRuntime.start();
+        await restoredRuntime.sendMessage("continue after process restore");
+        await restoredRuntime.waitForIdle();
+
+        const lastBlock = restoredRuntime.store.getSnapshot().transcript.at(-1)?.content[0];
+        const text = lastBlock?.type === "text" ? lastBlock.text : "";
+        expect(text).toContain("<conversation-handoff>");
+        expect(text).toContain("persist this provider-neutral context");
+        expect(text).toContain("main sonnet: persist this provider-neutral context");
+        expect(text).toContain("<current-user-message>\ncontinue after process restore");
+      } finally {
+        restoredRuntime.shutdown();
       }
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });

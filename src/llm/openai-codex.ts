@@ -21,7 +21,7 @@ import type {
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
-import { LlmAbortError, normalizeLlmAbortError } from "./types";
+import { LlmAbortError, normalizeLlmError } from "./types";
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -610,7 +610,7 @@ export class OpenAICodexAdapter implements LlmAdapter {
         },
       };
     } catch (error) {
-      throw normalizeLlmAbortError(error, options.signal);
+      throw normalizeLlmError(error, options.signal);
     }
   }
 }

@@ -11,6 +11,7 @@ import type {
   AgentToolInvocation,
   ResolvedApprovalToolResult,
 } from "../../core/agent";
+import { ConversationHistory } from "../../core/history";
 import { LlmAbortError } from "../../llm/types";
 import type { SessionAgent } from "../../session/runtime";
 
@@ -31,6 +32,7 @@ export type AcpSessionAgentOptions = {
   callbacks: AgentCallbacks;
   workspaceRoot: string;
   defaultTimeoutMs?: number;
+  conversationHistory?: ConversationHistory;
 };
 
 type Deferred<T> = {
@@ -236,6 +238,8 @@ export class AcpSessionAgent implements SessionAgent {
   private approvalSignal = createDeferred<void>();
   private approvalCounter = 0;
   private toolInvocations = new Map<string, AgentToolInvocation>();
+  private readonly conversationHistory: ConversationHistory;
+  private handoffPending = true;
 
   constructor(options: AcpSessionAgentOptions) {
     this.adapterId = options.adapterId;
@@ -245,6 +249,9 @@ export class AcpSessionAgent implements SessionAgent {
     this.providerId = `acp:${options.adapterId}`;
     this.timeoutMs = options.adapter.timeoutMs ?? options.defaultTimeoutMs;
     this.modelOverride = options.modelOverride;
+    this.conversationHistory =
+      options.conversationHistory ??
+      new ConversationHistory({ historyTurns: 8, toolResultMaxChars: 16_000 });
   }
 
   async start(): Promise<void> {
@@ -309,6 +316,12 @@ export class AcpSessionAgent implements SessionAgent {
     await this.start();
     const connection = this.requireConnection();
     const sessionId = this.requireSessionId();
+    const priorContext = this.handoffPending ? this.conversationHistory.buildPortableContext() : "";
+    this.conversationHistory.addUserText(userMessage);
+    const promptText = priorContext
+      ? `Continue this existing Sloppy session using the provider-neutral handoff below. Do not repeat completed work.\n\n<conversation-handoff>\n${priorContext}\n</conversation-handoff>\n\n<current-user-message>\n${userMessage}\n</current-user-message>`
+      : userMessage;
+    this.handoffPending = false;
     this.activePrompt = {
       responseText: "",
       promise: this.withPromptTimeout(
@@ -317,7 +330,7 @@ export class AcpSessionAgent implements SessionAgent {
           prompt: [
             {
               type: "text",
-              text: userMessage,
+              text: promptText,
             },
           ],
         }),
@@ -440,6 +453,7 @@ export class AcpSessionAgent implements SessionAgent {
       mcpServers: [],
     });
     this.sessionId = session.sessionId;
+    this.handoffPending = true;
   }
 
   private buildClient(): acp.Client {
@@ -660,6 +674,9 @@ export class AcpSessionAgent implements SessionAgent {
     if (result.response.stopReason === "cancelled") {
       throw new LlmAbortError("ACP prompt cancelled.");
     }
+    this.conversationHistory.addAssistantContent([
+      { type: "text", text: activePrompt.responseText },
+    ]);
     return {
       status: "completed",
       response: activePrompt.responseText,

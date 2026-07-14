@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import type { ConversationHistorySnapshot } from "../../llm/types";
 import type { AgentSessionSnapshot } from "../types";
 import { cloneSnapshot } from "./state";
 
@@ -36,6 +37,12 @@ type PersistedSessionSnapshotEnvelope = {
   schema_version: number;
   saved_at: string;
   snapshot: AgentSessionSnapshot;
+  conversation?: ConversationHistorySnapshot;
+};
+
+export type PersistedSessionData = {
+  snapshot: AgentSessionSnapshot;
+  conversation?: ConversationHistorySnapshot;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,6 +62,58 @@ function isSnapshot(value: unknown): value is AgentSessionSnapshot {
     Array.isArray(value.approvals) &&
     Array.isArray(value.tasks) &&
     Array.isArray(value.apps)
+  );
+}
+
+function isConversationContentBlock(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "text":
+      return typeof value.text === "string";
+    case "image":
+      return typeof value.mediaType === "string" && typeof value.data === "string";
+    case "tool_use":
+      return (
+        typeof value.id === "string" && typeof value.name === "string" && isRecord(value.input)
+      );
+    case "tool_result":
+      return (
+        typeof value.toolUseId === "string" &&
+        typeof value.content === "string" &&
+        (value.isError === undefined || typeof value.isError === "boolean")
+      );
+    default:
+      return false;
+  }
+}
+
+function isConversationEntry(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.message)) return false;
+  return (
+    ["user", "assistant", "tool", "summary"].includes(String(value.kind)) &&
+    ["user", "assistant"].includes(String(value.message.role)) &&
+    Array.isArray(value.message.content) &&
+    value.message.content.every(isConversationContentBlock)
+  );
+}
+
+function isConversationHistorySnapshot(value: unknown): value is ConversationHistorySnapshot {
+  if (!isRecord(value)) return false;
+  return (
+    value.version === 1 &&
+    Array.isArray(value.archive) &&
+    value.archive.every(isConversationEntry) &&
+    Array.isArray(value.active) &&
+    value.active.every(isConversationEntry) &&
+    Array.isArray(value.compactions) &&
+    value.compactions.every(
+      (compaction) =>
+        isRecord(compaction) &&
+        typeof compaction.compactedAt === "string" &&
+        typeof compaction.summary === "string" &&
+        typeof compaction.archivedEntryCount === "number" &&
+        typeof compaction.retainedEntryCount === "number",
+    )
   );
 }
 
@@ -87,11 +146,11 @@ function applySnapshotRecoverers(
   return current;
 }
 
-function unwrapPersistedSessionSnapshot(
+function unwrapPersistedSessionData(
   parsed: unknown,
   path: string,
   hooks: SessionSnapshotHooks = {},
-): AgentSessionSnapshot {
+): PersistedSessionData {
   if (!isRecord(parsed)) {
     throw new Error(`Persisted session snapshot at ${path} is malformed.`);
   }
@@ -108,18 +167,32 @@ function unwrapPersistedSessionSnapshot(
   if (!isSnapshot(parsed.snapshot)) {
     throw new Error(`Persisted session snapshot at ${path} has malformed snapshot payload.`);
   }
-  return applySnapshotMigrators(parsed.snapshot, hooks.migrators);
+  if (parsed.conversation !== undefined && !isConversationHistorySnapshot(parsed.conversation)) {
+    throw new Error(`Persisted session snapshot at ${path} has malformed conversation payload.`);
+  }
+  const conversation = parsed.conversation ? structuredClone(parsed.conversation) : undefined;
+  return {
+    snapshot: applySnapshotMigrators(parsed.snapshot, hooks.migrators),
+    conversation,
+  };
+}
+
+export function loadPersistedSessionData(
+  path: string,
+  hooks: SessionSnapshotHooks = {},
+): PersistedSessionData | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  return unwrapPersistedSessionData(parsed, path, hooks);
 }
 
 export function loadPersistedSessionSnapshot(
   path: string,
   hooks: SessionSnapshotHooks = {},
 ): AgentSessionSnapshot | null {
-  if (!existsSync(path)) {
-    return null;
-  }
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return unwrapPersistedSessionSnapshot(parsed, path, hooks);
+  return loadPersistedSessionData(path, hooks)?.snapshot ?? null;
 }
 
 export function recoverPersistedSessionSnapshot(
@@ -203,7 +276,11 @@ export function recoverPersistedSessionSnapshot(
   return applySnapshotRecoverers(restored, recoveryContext, hooks.recoverers);
 }
 
-export function persistSessionSnapshot(path: string, snapshot: AgentSessionSnapshot): void {
+export function persistSessionSnapshot(
+  path: string,
+  snapshot: AgentSessionSnapshot,
+  conversation?: ConversationHistorySnapshot,
+): void {
   const serializable = cloneSnapshot(snapshot);
   serializable.session.clientCount = 0;
   serializable.session.connectedClients = [];
@@ -215,6 +292,7 @@ export function persistSessionSnapshot(path: string, snapshot: AgentSessionSnaps
     schema_version: SESSION_SNAPSHOT_SCHEMA_VERSION,
     saved_at: new Date().toISOString(),
     snapshot: serializable,
+    conversation: conversation ? structuredClone(conversation) : undefined,
   };
 
   mkdirSync(dirname(path), { recursive: true });

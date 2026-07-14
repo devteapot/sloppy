@@ -14,6 +14,10 @@ Checked in now:
 - endpoint/protocol-based LLM config with built-in endpoint catalog,
   config-defined custom OpenAI-compatible endpoints, env/secure-store/no-auth
   auth modes, and `session-agent` profiles for adapter-backed main sessions
+- provider-neutral durable conversation history with full-request context
+  budgeting, safe semantic compaction, normalized one-shot overflow recovery,
+  fresh SLOP state tails, and continuity across native profile changes, ACP
+  handoff, and Session restore
 - `ConsumerHub` with query, invoke, subscriptions, approvals, and dynamic tools
 - bounded same-turn parallel execution for `query_state` and explicitly
   idempotent, non-dangerous affordance calls, preserving original result order

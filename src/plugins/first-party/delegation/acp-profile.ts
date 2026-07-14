@@ -1,5 +1,6 @@
 import type { SloppyConfig } from "../../../config/schema";
 import type { AgentCallbacks } from "../../../core/agent";
+import type { ConversationHistory } from "../../../core/history";
 import { LlmConfigurationError, type LlmProfileState } from "../../../llm/profile-manager";
 import { AcpSessionAgent } from "../../../runtime/acp";
 import type { SessionAgent } from "../../../session/runtime";
@@ -41,6 +42,7 @@ export function createAcpProfileSessionAgent(options: {
   profile: LlmProfileState;
   modelOverride?: string;
   callbacks: AgentCallbacks;
+  conversationHistory: ConversationHistory;
 }): SessionAgent | null {
   if (options.profile.kind !== "session-agent") {
     return null;
@@ -66,5 +68,6 @@ export function createAcpProfileSessionAgent(options: {
     callbacks: options.callbacks,
     workspaceRoot: options.config.plugins.filesystem.root,
     defaultTimeoutMs: acpConfig.defaultTimeoutMs,
+    conversationHistory: options.conversationHistory,
   });
 }

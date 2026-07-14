@@ -159,7 +159,9 @@ describe("SessionStore — persistence", () => {
         "assistant",
       ]);
 
-      const restored = createStore({ persistencePath }).getSnapshot();
+      const restoredStore = createStore({ persistencePath });
+      const restored = restoredStore.getSnapshot();
+      expect(restoredStore.didRecoverInterruptedTurn()).toBe(false);
       expect(restored.session.persistencePath).toBe(persistencePath);
       expect(restored.session.restoredAt).toEqual(expect.any(String));
       expect(restored.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
@@ -168,6 +170,83 @@ describe("SessionStore — persistence", () => {
       expect(restored.turn.state).toBe("idle");
       expect(restored.session.clientCount).toBe(0);
       expect(restored.session.connectedClients).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("persists canonical conversation context outside the public session snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-conversation-persist-"));
+    try {
+      const persistencePath = join(root, "sess-1.json");
+      const store = createStore({ persistencePath });
+      store.syncConversationHistory({
+        version: 1,
+        archive: [
+          {
+            kind: "user",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: "remember canonical context" }],
+            },
+          },
+        ],
+        active: [
+          {
+            kind: "summary",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: "Earlier context summary" }],
+            },
+          },
+        ],
+        compactions: [
+          {
+            compactedAt: "2026-07-14T12:00:00.000Z",
+            summary: "Earlier context summary",
+            archivedEntryCount: 1,
+            retainedEntryCount: 0,
+          },
+        ],
+      });
+
+      const persisted = JSON.parse(await readFile(persistencePath, "utf8")) as {
+        snapshot: AgentSessionSnapshot & { conversation?: unknown };
+        conversation?: { archive: Array<{ message: { content: Array<{ text?: string }> } }> };
+      };
+      expect(persisted.snapshot.conversation).toBeUndefined();
+      expect(persisted.conversation?.archive[0]?.message.content[0]?.text).toBe(
+        "remember canonical context",
+      );
+
+      const restored = createStore({ persistencePath });
+      const conversation = restored.getConversationHistory();
+      expect(conversation?.active[0]?.kind).toBe("summary");
+      expect(conversation?.compactions).toHaveLength(1);
+      if (conversation) conversation.archive.length = 0;
+      expect(restored.getConversationHistory()?.archive).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects malformed canonical conversation payloads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sloppy-conversation-schema-"));
+    try {
+      const persistencePath = join(root, "sess-malformed.json");
+      await writeFile(
+        persistencePath,
+        `${JSON.stringify({
+          kind: "sloppy.session.snapshot",
+          schema_version: 2,
+          saved_at: "2026-07-14T12:00:00.000Z",
+          snapshot: createStore().getSnapshot(),
+          conversation: { version: 1, archive: "not-an-array", active: [], compactions: [] },
+        })}\n`,
+        "utf8",
+      );
+
+      expect(() => createStore({ persistencePath })).toThrow("malformed conversation payload");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -245,7 +324,9 @@ describe("SessionStore — persistence", () => {
         },
       ]);
 
-      const restored = createStore({ persistencePath }).getSnapshot();
+      const restoredStore = createStore({ persistencePath });
+      const restored = restoredStore.getSnapshot();
+      expect(restoredStore.didRecoverInterruptedTurn()).toBe(true);
       expect(restored.session.recoveredAfterRestart).toBe(true);
       expect(restored.turn.state).toBe("error");
       expect(restored.turn.lastError).toContain("could not be resumed");

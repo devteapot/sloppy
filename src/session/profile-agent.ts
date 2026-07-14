@@ -9,6 +9,7 @@ import {
   type ResolvedApprovalToolResult,
   type RoleProfile,
 } from "../core/agent";
+import type { ConversationHistory } from "../core/history";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry, RuntimeEvent } from "../core/role";
 import {
@@ -38,6 +39,7 @@ type ProfileSessionAgentOptions = {
   policyRules?: InvokePolicy[];
   localTools?: () => LocalRuntimeTool[];
   childSessionFactory?: ChildSessionFactory;
+  conversationHistory: ConversationHistory;
   callbacks: AgentCallbacks;
 };
 
@@ -65,6 +67,7 @@ export class ProfileSessionAgent implements SessionAgent {
   private readonly policyRules?: InvokePolicy[];
   private readonly localTools?: () => LocalRuntimeTool[];
   private readonly childSessionFactory?: ChildSessionFactory;
+  private readonly conversationHistory: ConversationHistory;
   private readonly callbacks: AgentCallbacks;
   private inner: SessionAgent | null = null;
   private innerFingerprint: string | null = null;
@@ -83,6 +86,7 @@ export class ProfileSessionAgent implements SessionAgent {
     this.policyRules = options.policyRules;
     this.localTools = options.localTools;
     this.childSessionFactory = options.childSessionFactory;
+    this.conversationHistory = options.conversationHistory;
     this.callbacks = options.callbacks;
   }
 
@@ -240,7 +244,18 @@ export class ProfileSessionAgent implements SessionAgent {
       profile.endpointId ?? profile.adapterId ?? "native",
       profile.id,
       model,
+      this.contextWindowTokens(profile) ?? "unknown-context",
     ].join(":");
+  }
+
+  private contextWindowTokens(profile: LlmProfileState): number | undefined {
+    if (profile.kind === "native" && profile.endpointId && this.llmModelOverride) {
+      return (
+        this.config.llm.endpoints[profile.endpointId]?.models[this.llmModelOverride]
+          ?.contextWindowTokens ?? profile.contextWindowTokens
+      );
+    }
+    return profile.contextWindowTokens;
   }
 
   private createInner(profile: LlmProfileState): SessionAgent {
@@ -249,15 +264,16 @@ export class ProfileSessionAgent implements SessionAgent {
       profile,
       modelOverride: this.llmModelOverride ?? profile.model,
       callbacks: this.callbacks,
+      conversationHistory: this.conversationHistory,
     });
     if (pluginAgent) {
       return pluginAgent;
     }
 
-    return this.createNativeInner();
+    return this.createNativeInner(profile);
   }
 
-  private createNativeInner(): SessionAgent {
+  private createNativeInner(profile?: LlmProfileState): SessionAgent {
     return new Agent({
       config: this.config,
       llmProfileManager: this.llmProfileManager,
@@ -272,6 +288,8 @@ export class ProfileSessionAgent implements SessionAgent {
       policyRules: this.policyRules,
       localTools: this.localTools,
       childSessionFactory: this.childSessionFactory,
+      conversationHistory: this.conversationHistory,
+      contextWindowTokens: profile ? this.contextWindowTokens(profile) : undefined,
       ...this.callbacks,
     });
   }

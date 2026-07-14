@@ -20,7 +20,7 @@ import type {
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
-import { LlmAbortError, normalizeLlmAbortError } from "./types";
+import { LlmAbortError, normalizeLlmError } from "./types";
 
 interface GeminiClient {
   models: {
@@ -434,7 +434,7 @@ export class GeminiAdapter implements LlmAdapter {
         ? { source: "unavailable" }
         : { tokens: response.totalTokens, source: "provider" };
     } catch (error) {
-      throw normalizeLlmAbortError(error, options?.signal);
+      throw normalizeLlmError(error, options?.signal);
     }
   }
 
@@ -507,7 +507,7 @@ export class GeminiAdapter implements LlmAdapter {
       }
       return response;
     } catch (error) {
-      throw normalizeLlmAbortError(error, options.signal);
+      throw normalizeLlmError(error, options.signal);
     }
   }
 }

@@ -19,7 +19,7 @@ import type {
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "./types";
-import { LlmAbortError, normalizeLlmAbortError } from "./types";
+import { LlmAbortError, normalizeLlmError } from "./types";
 
 export type OpenAICompatibleProviderKind = "openai" | "openrouter" | "ollama" | "generic";
 
@@ -539,7 +539,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
         ? { source: "unavailable" }
         : { tokens: count.input_tokens, source: "provider" };
     } catch (error) {
-      throw normalizeLlmAbortError(error, options?.signal);
+      throw normalizeLlmError(error, options?.signal);
     }
   }
 
@@ -582,7 +582,7 @@ export class OpenAICompatibleAdapter implements LlmAdapter {
         },
       } satisfies LlmResponse;
     } catch (error) {
-      throw normalizeLlmAbortError(error, options.signal);
+      throw normalizeLlmError(error, options.signal);
     }
   }
 

@@ -126,7 +126,7 @@ RuntimeToolSet
         |
         v
 Agent Loop
-  - history
+  - durable provider-neutral history with safe semantic compaction
   - ephemeral <slop-state> context tail
   - ordered tool execution with safe concurrent read/idempotent runs
         |
@@ -839,6 +839,26 @@ You can override the endpoint/profile/model for one-shot runs with
 The agent loop defaults to 32 model/tool iterations. For longer runs, set
 `agent.maxIterations` in config or use `SLOPPY_MAX_ITERATIONS=80` for a one-off
 run.
+
+The native model loop budgets the system prompt, conversation, tool schemas,
+and fresh SLOP state together. It compacts old conversation prefixes when the
+selected model's context metadata or `agent.historyTurns` requires it, preserves
+the full private archive for restore/provider changes, and retries a normalized
+provider context-overflow error at most once. The live `<slop-state>` tail is
+never persisted into history or folded into a summary.
+
+Compaction defaults can be tuned under `agent.contextCompaction`:
+
+```yaml
+agent:
+  historyTurns: 8
+  contextCompaction:
+    enabled: true
+    reserveTokens: 8192
+    keepRecentTokens: 20000
+    summaryMaxTokens: 2048
+    retryOnOverflow: true
+```
 
 Within a model turn, the loop may execute a contiguous run of parallel-safe tool
 calls concurrently. Parallel-safe means `query_state` or a SLOP affordance

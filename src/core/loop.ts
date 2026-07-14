@@ -2,11 +2,23 @@ import type { SloppyConfig } from "../config/schema";
 import type {
   LlmAdapter,
   LlmChatOptions,
+  LlmResponse,
   LlmTokenCount,
   ToolResultContentBlock,
   ToolUseContentBlock,
 } from "../llm/types";
-import { isLlmAbortError, LlmAbortError } from "../llm/types";
+import {
+  isLlmAbortError,
+  isLlmContextOverflowError,
+  LlmAbortError,
+  LlmContextOverflowError,
+  normalizeLlmError,
+} from "../llm/types";
+import {
+  buildContextBudget,
+  compactConversationHistory,
+  estimateRequestTokens,
+} from "./compaction";
 import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import type { ConversationHistory } from "./history";
@@ -67,6 +79,7 @@ export async function runLoop(options: {
   hub: ProviderRuntimeHub;
   history: ConversationHistory;
   llm: LlmAdapter;
+  contextWindowTokens?: number;
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
   onThinking?: LlmChatOptions["onThinking"];
@@ -100,6 +113,24 @@ export async function runLoop(options: {
   const roleId = options.hooks?.roleId;
   const localTools = options.hooks?.localTools;
   const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
+  const recordUsage = (response: LlmResponse, stateContextTokenCount?: LlmTokenCount): void => {
+    const reportedInput = response.usage.inputTokens;
+    const reportedOutput = response.usage.outputTokens;
+    const reportedThinking = response.usage.thinkingTokens;
+    usage.inputTokens += reportedInput ?? 0;
+    usage.outputTokens += reportedOutput ?? 0;
+    usage.thinkingTokens += reportedThinking ?? 0;
+    options.onTurnUsage?.({
+      inputTokens: reportedInput,
+      outputTokens: reportedOutput,
+      thinkingTokens: reportedThinking,
+      inputTokenSource: reportedInput === undefined ? "unavailable" : "reported",
+      outputTokenSource: reportedOutput === undefined ? "unavailable" : "reported",
+      thinkingTokenSource: reportedThinking === undefined ? "unavailable" : "reported",
+      stateContextTokens: stateContextTokenCount?.tokens,
+      stateContextTokenSource: stateContextTokenCount?.source ?? "unavailable",
+    });
+  };
 
   for (let iteration = 0; iteration < options.config.agent.maxIterations; iteration += 1) {
     if (options.signal?.aborted) {
@@ -149,31 +180,77 @@ export async function runLoop(options: {
     );
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
-    const response = await options.llm.chat({
-      system,
-      messages: options.history.buildRequestMessages(stateContext),
-      tools: [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)],
-      maxTokens: options.config.llm.maxTokens,
-      onText: options.onText,
-      onThinking: options.onThinking,
-      signal: options.signal,
-    });
-    const reportedInput = response.usage.inputTokens;
-    const reportedOutput = response.usage.outputTokens;
-    const reportedThinking = response.usage.thinkingTokens;
-    usage.inputTokens += reportedInput ?? 0;
-    usage.outputTokens += reportedOutput ?? 0;
-    usage.thinkingTokens += reportedThinking ?? 0;
-    options.onTurnUsage?.({
-      inputTokens: reportedInput,
-      outputTokens: reportedOutput,
-      thinkingTokens: reportedThinking,
-      inputTokenSource: reportedInput === undefined ? "unavailable" : "reported",
-      outputTokenSource: reportedOutput === undefined ? "unavailable" : "reported",
-      thinkingTokenSource: reportedThinking === undefined ? "unavailable" : "reported",
-      stateContextTokens: stateContextTokenCount.tokens,
-      stateContextTokenSource: stateContextTokenCount.source,
-    });
+    const tools = [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)];
+    const requestTokens = () =>
+      estimateRequestTokens({
+        system,
+        messages: options.history.buildRequestMessages(stateContext),
+        tools,
+      });
+    const compact = async (force = false) =>
+      compactConversationHistory({
+        history: options.history,
+        llm: options.llm,
+        config: options.config,
+        contextWindowTokens: options.contextWindowTokens,
+        estimatedTokensBefore: requestTokens(),
+        force,
+        signal: options.signal,
+        onSummaryCall: (summaryResponse) => recordUsage(summaryResponse),
+      });
+
+    await compact();
+    const assertRequestFits = (): void => {
+      const estimatedInputTokens = requestTokens();
+      const budget = buildContextBudget({
+        config: options.config,
+        contextWindowTokens: options.contextWindowTokens,
+        estimatedInputTokens,
+      });
+      if (
+        budget.usableInputTokens !== undefined &&
+        estimatedInputTokens > budget.usableInputTokens
+      ) {
+        throw new LlmContextOverflowError(
+          `The request still needs approximately ${estimatedInputTokens} input tokens after compaction, but only ${budget.usableInputTokens} are available after reserving model output. Unfocus or unload provider state, close large filesystem views, or use a model with a larger context window.`,
+        );
+      }
+    };
+    assertRequestFits();
+
+    const chat = () =>
+      options.llm.chat({
+        system,
+        messages: options.history.buildRequestMessages(stateContext),
+        tools,
+        maxTokens: options.config.llm.maxTokens,
+        onText: options.onText,
+        onThinking: options.onThinking,
+        signal: options.signal,
+      });
+    let response: LlmResponse;
+    try {
+      response = await chat();
+    } catch (error) {
+      const normalized = normalizeLlmError(error, options.signal);
+      if (
+        !options.config.agent.contextCompaction.retryOnOverflow ||
+        !isLlmContextOverflowError(normalized)
+      ) {
+        throw normalized;
+      }
+      const recovery = await compact(true);
+      if (!recovery.compacted) {
+        throw normalized;
+      }
+      assertRequestFits();
+      try {
+        response = await chat();
+      } catch (retryError) {
+        throw normalizeLlmError(retryError, options.signal);
+      }
+    }
+    recordUsage(response, stateContextTokenCount);
 
     options.history.addAssistantContent(response.content);
     const toolCalls = response.content.filter(
