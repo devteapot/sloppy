@@ -44,6 +44,9 @@ const readyState = {
 };
 
 const stubLlmProfileManager = {
+  acquireProfileBinding: () => Symbol("stub-profile-binding"),
+  moveProfileBinding: () => undefined,
+  releaseProfileBinding: () => undefined,
   ensureReady: async () => readyState,
   getState: async () => readyState,
   getConfig: () => TEST_CONFIG,

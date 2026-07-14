@@ -152,6 +152,12 @@ core or plugin-provided auto-close blocker. Core blockers are active turns,
 approval waits, queued messages, pending approvals, and running tasks; plugin
 blockers must be declared by the session plugin.
 
+A stopped Session may briefly appear as `stopping` while an active model or ACP
+operation unwinds. It cannot be selected during this phase. Keep the supervisor
+alive until the record becomes `dormant` (or disappears during full supervisor
+shutdown); that transition confirms deferred cleanup and profile-lease release
+completed.
+
 ## Headless Single-Shot
 
 `sloppy -p "<prompt>"` runs one prompt through an in-process session and
@@ -164,15 +170,21 @@ unattended.
 ## Config Layers
 
 Session config merges `global` (`~/.sloppy/config.yaml`), `workspace`, and
-`project` layers in that order; later layers override earlier ones. Nested
+`project` layers in that order; later layers override ordinary settings. The
+first unique layer is the trusted LLM routing boundary: only it may define
+`llm.endpoints` or legacy LLM `baseUrl`/`apiKeyEnv` fields. Workspace and
+project layers may select profiles/models but cannot redirect trusted
+credentials. Credential-bearing endpoints and `headerEnv` require HTTPS;
+plain HTTP is limited to explicit no-auth endpoints. Nested
 records merge key-by-key, but **arrays replace wholesale** — a project-level
 list (for example a `command` array or `envAllowlist`) replaces the workspace
 list rather than appending to it. Keyed records such as `plugins.mcp.servers`
 merge per server id, so adding a server in a project layer keeps the workspace
 servers.
 
-Profile saves rewrite only the `llm` section of the home config; comments and
-unrelated sections are preserved.
+Profile saves rewrite only managed profile selection in the `llm` section of
+the trusted home config; comments, endpoint routing, and unrelated sections are
+preserved.
 
 ## Live Headless E2E
 

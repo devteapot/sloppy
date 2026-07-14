@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { LlmTool } from "@slop-ai/consumer/browser";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 
-import { OpenAICompatibleAdapter, toOpenAIMessages } from "../src/llm/openai-compatible";
+import {
+  buildOpenAICompatibleRequest,
+  OpenAICompatibleAdapter,
+  toOpenAIMessages,
+} from "../src/llm/openai-compatible";
 import type { EffectiveThinkingConfig } from "../src/llm/thinking";
 import type { ConversationMessage } from "../src/llm/types";
 
@@ -70,6 +74,79 @@ const THINKING_CONFIG = {
 } satisfies EffectiveThinkingConfig;
 
 describe("OpenAICompatibleAdapter", () => {
+  test("honors configured message-role and token-field compatibility", () => {
+    const parameters = buildOpenAICompatibleRequest(
+      "generic",
+      {
+        system: "system prompt",
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        maxTokens: 321,
+      },
+      "custom-model",
+      undefined,
+      {
+        supportsDeveloperRole: true,
+        maxTokensField: "max_completion_tokens",
+      },
+    );
+
+    expect(parameters.max_completion_tokens).toBe(321);
+    expect(parameters.max_tokens).toBeUndefined();
+    expect(parameters.messages).toEqual([
+      { role: "developer", content: "system prompt" },
+      { role: "user", content: "hello" },
+    ]);
+  });
+
+  test("honors configured thinking format without unsupported effort values", () => {
+    const parameters = buildOpenAICompatibleRequest(
+      "generic",
+      {
+        system: "system prompt",
+        messages: [],
+        maxTokens: 100,
+      },
+      "custom-model",
+      THINKING_CONFIG,
+      {
+        thinkingFormat: "openrouter",
+        supportsReasoningEffort: false,
+      },
+    );
+
+    expect(parameters.reasoning).toEqual({
+      enabled: true,
+      exclude: false,
+    });
+  });
+
+  test("omits assistant messages containing only foreign provider continuation state", () => {
+    const messages: ConversationMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "provider_continuation",
+            purpose: "reasoning",
+            issuer: {
+              protocol: "anthropic-messages",
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              scope: "foreign-scope",
+            },
+            data: { type: "thinking", signature: "opaque" },
+          },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "Continue." }] },
+    ];
+
+    expect(toOpenAIMessages("system prompt", messages)).toEqual([
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "Continue." },
+    ]);
+  });
+
   test("converts tool results into OpenAI tool messages", () => {
     const messages: ConversationMessage[] = [
       {
@@ -263,12 +340,43 @@ describe("OpenAICompatibleAdapter", () => {
           stream: () => ({
             on: (event: "content" | "chunk", listener: StreamListener) => {
               if (event === "chunk") {
-                (listener as (chunk: unknown, snapshot: unknown) => void)(
+                const emit = listener as (chunk: unknown, snapshot: unknown) => void;
+                emit(
                   {
                     choices: [
                       {
                         delta: {
-                          reasoning_content: "streamed reasoning",
+                          reasoning_content: "streamed ",
+                          reasoning_details: [
+                            {
+                              type: "reasoning.encrypted",
+                              data: "opaque-a",
+                              id: "reasoning-1",
+                              format: "anthropic-claude-v1",
+                              index: 0,
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                  {},
+                );
+                emit(
+                  {
+                    choices: [
+                      {
+                        delta: {
+                          reasoning_content: "reasoning",
+                          reasoning_details: [
+                            {
+                              type: "reasoning.summary",
+                              summary: "checked the tool",
+                              id: "reasoning-2",
+                              format: "anthropic-claude-v1",
+                              index: 1,
+                            },
+                          ],
                         },
                       },
                     ],
@@ -309,7 +417,7 @@ describe("OpenAICompatibleAdapter", () => {
       },
     });
 
-    expect(thinkingDeltas).toEqual(["streamed reasoning"]);
+    expect(thinkingDeltas).toEqual(["streamed ", "reasoning"]);
     expect(response.thinking).toMatchObject([
       {
         type: "thinking",
@@ -324,6 +432,117 @@ describe("OpenAICompatibleAdapter", () => {
       },
     ]);
     expect(response.usage.thinkingTokens).toBe(3);
+    expect(response.content[0]).toMatchObject({
+      type: "provider_continuation",
+      purpose: "reasoning",
+      issuer: {
+        protocol: "openai-chat",
+        provider: "openrouter",
+        model: "open-model",
+      },
+    });
+
+    const continuation = response.content.find((block) => block.type === "provider_continuation");
+    if (continuation?.type !== "provider_continuation") {
+      throw new Error("Expected a provider continuation.");
+    }
+    const replay = toOpenAIMessages(
+      "system prompt",
+      [
+        { role: "assistant", content: response.content },
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "call_readme", content: "# Sloppy" }],
+        },
+      ],
+      false,
+      continuation.issuer,
+    );
+    expect(replay[1]).toMatchObject({
+      role: "assistant",
+      reasoning_content: "streamed reasoning",
+      reasoning_details: [
+        {
+          type: "reasoning.encrypted",
+          data: "opaque-a",
+          id: "reasoning-1",
+          format: "anthropic-claude-v1",
+          index: 0,
+        },
+        {
+          type: "reasoning.summary",
+          summary: "checked the tool",
+          id: "reasoning-2",
+          format: "anthropic-claude-v1",
+          index: 1,
+        },
+      ],
+    });
+  });
+
+  test("replays reasoning for custom endpoint aliases using the endpoint issuer", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const firstCompletion = createCompletion();
+    const reasoningDetails = [
+      {
+        type: "reasoning.encrypted",
+        data: "opaque-reasoning",
+        id: "reasoning-alias",
+        format: "anthropic-claude-v1",
+        index: 0,
+      },
+    ];
+    (firstCompletion.choices[0]?.message as unknown as Record<string, unknown>).reasoning_details =
+      reasoningDetails;
+    let requestIndex = 0;
+    const client = {
+      chat: {
+        completions: {
+          create: async (parameters: Record<string, unknown>) => {
+            requests.push(parameters);
+            requestIndex += 1;
+            return requestIndex === 1 ? firstCompletion : createCompletion();
+          },
+          stream: () => {
+            throw new Error("stream should not be called");
+          },
+        },
+      },
+    };
+    const adapter = new OpenAICompatibleAdapter({
+      apiKey: "test-key",
+      model: "open-model",
+      provider: "corp-router",
+      providerKind: "openrouter",
+      client,
+    });
+
+    const first = await adapter.chat({
+      system: "system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "Read README." }] }],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+    });
+    expect(first.content[0]).toMatchObject({
+      type: "provider_continuation",
+      issuer: { protocol: "openai-chat", provider: "corp-router", model: "open-model" },
+    });
+
+    await adapter.chat({
+      system: "system prompt",
+      messages: [
+        { role: "assistant", content: first.content },
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "call_readme", content: "# Sloppy" }],
+        },
+      ],
+      tools: [READ_TOOL],
+      maxTokens: 256,
+    });
+
+    const replayMessages = requests[1]?.messages as Array<Record<string, unknown>>;
+    expect(replayMessages[1]?.reasoning_details).toEqual(reasoningDetails);
   });
 
   test("counts text tokens with the OpenAI input token endpoint", async () => {
@@ -366,10 +585,15 @@ describe("OpenAICompatibleAdapter", () => {
 
   test("passes configured endpoint headers to OpenAI-compatible requests", async () => {
     const originalFetch = globalThis.fetch;
+    const originalBaseUrl = process.env.OPENAI_BASE_URL;
+    let capturedUrl = "";
     let capturedHeaders: Headers | undefined;
+    let capturedRedirect: RequestRedirect | undefined;
     globalThis.fetch = (async (...args: Parameters<typeof fetch>): Promise<Response> => {
       const input = args[0];
       const init = args[1];
+      capturedUrl = String(input);
+      capturedRedirect = init?.redirect;
       capturedHeaders = new Headers(input instanceof Request ? input.headers : undefined);
       new Headers(init?.headers).forEach((value, key) => {
         capturedHeaders?.set(key, value);
@@ -379,13 +603,13 @@ describe("OpenAICompatibleAdapter", () => {
         headers: { "content-type": "application/json" },
       });
     }) as typeof fetch;
+    process.env.OPENAI_BASE_URL = "https://attacker.example/v1";
 
     try {
       const adapter = new OpenAICompatibleAdapter({
         apiKey: "test-key",
         model: "gpt-5.4",
         provider: "openai",
-        baseUrl: "https://llm.example.test/v1",
         headers: { "x-sloppy-route": "blue" },
       });
 
@@ -397,10 +621,17 @@ describe("OpenAICompatibleAdapter", () => {
       });
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalBaseUrl === undefined) {
+        delete process.env.OPENAI_BASE_URL;
+      } else {
+        process.env.OPENAI_BASE_URL = originalBaseUrl;
+      }
     }
 
     expect(capturedHeaders?.get("x-sloppy-route")).toBe("blue");
     expect(capturedHeaders?.get("authorization")).toBe("Bearer test-key");
+    expect(capturedRedirect).toBe("error");
+    expect(capturedUrl).toStartWith("https://api.openai.com/v1/");
   });
 
   test("leaves text token count unavailable for OpenAI-compatible providers without counters", async () => {

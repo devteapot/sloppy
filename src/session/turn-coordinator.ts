@@ -1,4 +1,5 @@
 import type { AgentRunResult, AgentToolEvent, ResolvedApprovalToolResult } from "../core/agent";
+import { LlmRequestError } from "../llm/types";
 import type { PendingApprovalMirror } from "./mirror-sync";
 import type { ActivePluginTurn, PluginTurnRequest } from "./plugins/types";
 import type {
@@ -30,6 +31,7 @@ export class TurnCoordinator {
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
   private currentPluginTurn: ActivePluginTurn | null = null;
+  private stopped = false;
 
   constructor(private readonly deps: TurnCoordinatorDeps) {}
 
@@ -44,6 +46,7 @@ export class TurnCoordinator {
   }
 
   submit(request: TurnSubmission): TurnSubmissionResult {
+    this.assertRunning();
     if (request.source === "user") {
       const trimmed = request.text.trim();
       if (!trimmed) {
@@ -71,6 +74,7 @@ export class TurnCoordinator {
   }
 
   cancelQueuedTurn(queuedMessageId: string): { queuedMessageId: string; status: string } {
+    this.assertRunning();
     this.deps.store.removeQueuedMessage(queuedMessageId);
     this.deps.audit({ kind: "turn_queue_cancelled", queuedMessageId });
     return { queuedMessageId, status: "cancelled" };
@@ -81,6 +85,7 @@ export class TurnCoordinator {
   }
 
   setApprovalMode(mode: ApprovalMode): void {
+    this.assertRunning();
     if (mode === "normal") {
       this.autoApprovalAttempts.clear();
     }
@@ -89,12 +94,13 @@ export class TurnCoordinator {
   }
 
   scheduleAutoApprovals(): void {
-    if (this.deps.store.getSnapshot().approvalPolicy.mode !== "auto") {
+    if (this.stopped || this.deps.store.getSnapshot().approvalPolicy.mode !== "auto") {
       return;
     }
     this.autoApprovalDrain = this.autoApprovalDrain
       .then(() => this.runAutoApprovalPass())
       .catch((error: unknown) => {
+        if (this.stopped) return;
         this.deps.audit({
           kind: "auto_approval_error",
           error: error instanceof Error ? error.message : String(error),
@@ -103,6 +109,7 @@ export class TurnCoordinator {
   }
 
   private async runAutoApprovalPass(): Promise<void> {
+    if (this.stopped) return;
     const snapshot = this.deps.store.getSnapshot();
     const pendingIds = new Set(
       snapshot.approvals
@@ -118,7 +125,7 @@ export class TurnCoordinator {
       return;
     }
     for (const approval of snapshot.approvals) {
-      if (this.deps.store.getSnapshot().approvalPolicy.mode !== "auto") {
+      if (this.stopped || this.deps.store.getSnapshot().approvalPolicy.mode !== "auto") {
         return;
       }
       if (
@@ -132,6 +139,7 @@ export class TurnCoordinator {
       try {
         await this.resolveApproval(approval.id, "approve");
       } catch (error) {
+        if (this.stopped) return;
         this.deps.audit({
           kind: "auto_approval_error",
           approvalId: approval.id,
@@ -146,6 +154,7 @@ export class TurnCoordinator {
     decision: "approve" | "reject",
     options?: { reason?: string },
   ): Promise<ApprovalResolutionResult> {
+    this.assertRunning();
     return decision === "approve"
       ? this.approveApproval(approvalId)
       : this.rejectApproval(approvalId, options?.reason);
@@ -167,6 +176,7 @@ export class TurnCoordinator {
 
     if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
       await this.activeTurnPromise;
+      this.assertRunning();
       const current = this.deps.store.getApproval(approvalId);
       if (!current || current.status !== "pending") {
         return { approvalId, status: current?.status ?? "unknown" };
@@ -182,6 +192,9 @@ export class TurnCoordinator {
     const result = resumePendingTurn
       ? await this.deps.agent().resolveApprovalDirect(approval.sourceApprovalId)
       : await this.deps.agent().invokeProvider(approval.provider, approval.sourcePath, "approve");
+    if (this.stopped) {
+      return { approvalId, status: result.status };
+    }
     if (this.shouldResumePendingApproval(approval)) {
       const toolUseId = this.pendingToolUseId(approval);
       const resultKind = this.pendingApproval?.invocation.resultKind;
@@ -226,6 +239,7 @@ export class TurnCoordinator {
 
     if (this.pendingApproval?.sourceApprovalId === approval.sourceApprovalId) {
       await this.activeTurnPromise;
+      this.assertRunning();
       const current = this.deps.store.getApproval(approvalId);
       if (!current || current.status !== "pending") {
         return { approvalId, status: current?.status ?? "unknown" };
@@ -248,6 +262,9 @@ export class TurnCoordinator {
             "reject",
             reason ? { reason } : undefined,
           );
+    if (this.stopped) {
+      return { approvalId, status: result?.status === "error" ? "error" : "rejected" };
+    }
     if (resumePendingTurn) {
       this.deps.agent().rejectApprovalDirect(approval.sourceApprovalId, reason);
       const toolUseId = this.pendingToolUseId(approval);
@@ -270,6 +287,7 @@ export class TurnCoordinator {
   }
 
   async cancelActiveTurn(): Promise<TurnCancelResult> {
+    this.assertRunning();
     const turnId = this.currentTurnId;
     if (!turnId) {
       throw new Error("No active turn to cancel.");
@@ -322,6 +340,7 @@ export class TurnCoordinator {
   }
 
   canCancel(): boolean {
+    if (this.stopped) return false;
     const snapshot = this.deps.store.getSnapshot();
     if (!this.currentTurnId) {
       return false;
@@ -349,6 +368,7 @@ export class TurnCoordinator {
   }
 
   shutdown(): void {
+    this.stopped = true;
     this.currentTurnId = null;
     this.pendingApproval = null;
     this.activeTurnPromise = null;
@@ -356,6 +376,7 @@ export class TurnCoordinator {
   }
 
   handleToolEvent(event: AgentToolEvent): void {
+    if (this.stopped) return;
     const turnId = this.currentTurnId;
     if (!turnId) {
       return;
@@ -431,6 +452,7 @@ export class TurnCoordinator {
   }
 
   startPluginTurn(request: PluginTurnRequest): { status: "started"; turnId: string } {
+    this.assertRunning();
     const turnId = this.deps.store.beginTurn(request.text, {
       role: request.role ?? (request.continuation ? "system" : "user"),
       author: request.author,
@@ -464,6 +486,7 @@ export class TurnCoordinator {
     queuedMessageId: string;
     position: number;
   } {
+    this.assertRunning();
     const queued = this.deps.store.enqueueMessage(request.text, {
       author: request.author,
       source: "plugin",
@@ -525,6 +548,7 @@ export class TurnCoordinator {
   }
 
   private handleAgentResult(turnId: string, result: AgentRunResult): void {
+    if (this.stopped) return;
     if (result.status === "waiting_approval") {
       if (!this.pendingApproval) {
         throw new Error(
@@ -570,12 +594,24 @@ export class TurnCoordinator {
   }
 
   private failTurn(turnId: string, error: unknown): void {
+    if (this.stopped) return;
     const message = error instanceof Error ? error.message : String(error);
     const pluginTurn = this.currentPluginTurn;
     this.pendingApproval = null;
     this.currentTurnId = null;
-    this.deps.store.failTurn(turnId, message);
-    this.deps.audit({ kind: "turn_failed", turnId, errorMessage: message });
+    const details =
+      error instanceof LlmRequestError
+        ? {
+            errorCode: error.code,
+            retryable: error.retryable,
+            requestId: error.requestId,
+            retryAfterMs: error.retryAfterMs,
+            httpStatus: error.status,
+            partialOutput: error.partialOutput,
+          }
+        : undefined;
+    this.deps.store.failTurn(turnId, message, details);
+    this.deps.audit({ kind: "turn_failed", turnId, errorMessage: message, ...details });
     if (pluginTurn) {
       this.deps.plugins.onTurnFailure({ turnId, pluginTurn, message, cancelled: false });
     }
@@ -584,6 +620,7 @@ export class TurnCoordinator {
   }
 
   private handleTurnFailure(turnId: string, error: unknown): void {
+    if (this.stopped) return;
     if (this.deps.isAbortError(error)) {
       const pluginTurn = this.currentPluginTurn;
       this.pendingApproval = null;
@@ -606,6 +643,7 @@ export class TurnCoordinator {
   }
 
   private startNextQueuedTurn(): void {
+    if (this.stopped) return;
     if (this.currentTurnId) {
       return;
     }
@@ -627,5 +665,11 @@ export class TurnCoordinator {
       return;
     }
     this.startUserTurn(next.text);
+  }
+
+  private assertRunning(): void {
+    if (this.stopped) {
+      throw new Error("Turn coordinator has been shut down.");
+    }
   }
 }

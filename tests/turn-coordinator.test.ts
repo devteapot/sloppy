@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ResultMessage } from "@slop-ai/consumer/browser";
 
 import type { AgentRunResult, AgentToolEvent, ResolvedApprovalToolResult } from "../src/core/agent";
+import { LlmRequestError } from "../src/llm/types";
 import { SessionPluginManager } from "../src/session/plugins";
 import type { PluginRuntimeContext, SessionRuntimePlugin } from "../src/session/plugins/types";
 import { SessionStore } from "../src/session/store";
@@ -229,6 +230,63 @@ describe("TurnCoordinator", () => {
     expect(agent.chats).toEqual(["first", "second"]);
     expect(store.getSnapshot().queue).toHaveLength(0);
     expect(store.getSnapshot().turn.state).toBe("idle");
+  });
+
+  test("shutdown ignores late turn settlement and preserves queued input", async () => {
+    const agent = new FakeTurnAgent();
+    const first = agent.nextChat();
+    const { turns, store, audit } = makeCoordinator({ agent });
+
+    turns.submit({ source: "user", text: "first" });
+    turns.submit({ source: "user", text: "second" });
+    turns.shutdown();
+    store.close();
+
+    const abortError = new Error("stopped");
+    abortError.name = "AbortError";
+    first.reject(abortError);
+    await Bun.sleep(0);
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.session.status).toBe("closed");
+    expect(snapshot.turn.state).toBe("running");
+    expect(snapshot.queue.map((message) => message.text)).toEqual(["second"]);
+    expect(agent.chats).toEqual(["first"]);
+    expect(audit.some((event) => event.kind === "turn_cancelled")).toBe(false);
+    expect(() => turns.submit({ source: "user", text: "third" })).toThrow("shut down");
+  });
+
+  test("records structured model request failures in activity and audit state", async () => {
+    const agent = new FakeTurnAgent();
+    const chat = agent.nextChat();
+    const { turns, store, audit } = makeCoordinator({ agent });
+
+    turns.submit({ source: "user", text: "rate limited" });
+    chat.reject(
+      new LlmRequestError("Too many requests", {
+        code: "rate_limit",
+        retryable: true,
+        status: 429,
+        retryAfterMs: 2_000,
+        requestId: "req-rate-limit",
+      }),
+    );
+    await turns.waitForIdle();
+
+    expect(store.getSnapshot().turn.state).toBe("error");
+    const errorActivity = store.getSnapshot().activity.find((item) => item.kind === "error");
+    expect(errorActivity).toMatchObject({
+      errorCode: "rate_limit",
+      retryable: true,
+      httpStatus: 429,
+      retryAfterMs: 2_000,
+      requestId: "req-rate-limit",
+      partialOutput: false,
+    });
+    expect(audit.find((event) => event.kind === "turn_failed")).toMatchObject({
+      errorCode: "rate_limit",
+      requestId: "req-rate-limit",
+    });
   });
 
   test("Plugin turns call completion hook exactly once", async () => {

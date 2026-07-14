@@ -205,6 +205,12 @@ export type ActivityItem = {
   toolUseId?: string;
   paramsPreview?: string;
   errorMessage?: string;
+  errorCode?: string;
+  retryable?: boolean;
+  requestId?: string;
+  retryAfterMs?: number;
+  httpStatus?: number;
+  partialOutput?: boolean;
   result?: ToolCallResult;
   startedAt?: string;
   updatedAt?: string;

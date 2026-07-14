@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { getDefaultEndpointModel, mergeLlmEndpoints } from "../llm/catalog";
 import { normalizeThinkingConfig } from "../llm/thinking";
 import { applyEnvironmentOverrides } from "./environment";
-import { deepMerge, type JsonObject } from "./json";
+import { asJsonObject, deepMerge, type JsonObject } from "./json";
 import { normalizeConfigInput } from "./llm-migrations";
 import {
   type AnyLlmProfileConfig,
@@ -53,6 +53,13 @@ export async function readConfigFile(filePath: string): Promise<JsonObject> {
 
 function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
   const endpoints = mergeLlmEndpoints(config.endpoints);
+  for (const [endpointId, endpoint] of Object.entries(endpoints)) {
+    if (!endpoint.baseUrl) continue;
+    const carriesCredentials = endpoint.auth.type !== "none" || endpoint.headerEnv !== undefined;
+    if (carriesCredentials && new URL(endpoint.baseUrl).protocol !== "https:") {
+      throw new Error(`Credential-bearing LLM endpoint '${endpointId}' must use https.`);
+    }
+  }
   const profiles = config.profiles.map((profile): AnyLlmProfileConfig => {
     if (profile.kind === "session-agent") return profile;
     return {
@@ -67,6 +74,7 @@ function normalizeLlmConfig(config: RawSloppyConfig["llm"]): LlmConfig {
     defaultProfileId: config.defaultProfileId,
     profiles,
     maxTokens: config.maxTokens,
+    requestPolicy: config.requestPolicy,
   };
 }
 
@@ -246,10 +254,46 @@ export function createDefaultConfig(cwd = process.cwd()): SloppyConfig {
 
 async function mergeConfigPaths(paths: string[]): Promise<JsonObject> {
   let merged: JsonObject = {};
-  for (const configPath of uniquePaths(paths)) {
-    merged = deepMerge(merged, await readConfigFile(configPath));
+  for (const [index, configPath] of uniquePaths(paths).entries()) {
+    const layer = await readConfigFile(configPath);
+    if (index > 0) {
+      assertUntrustedLayerHasNoLlmEndpointConfig(layer, configPath);
+    }
+    merged = deepMerge(merged, layer);
   }
   return merged;
+}
+
+function assertUntrustedLayerHasNoLlmEndpointConfig(layer: JsonObject, configPath: string): void {
+  const llm = asJsonObject(layer.llm);
+  if (!llm) return;
+
+  if (Object.hasOwn(llm, "endpoints")) {
+    throw new Error(
+      `Untrusted config layer ${configPath} may not configure llm.endpoints. Move endpoint routing and credentials to the first trusted config layer.`,
+    );
+  }
+
+  for (const field of ["baseUrl", "apiKeyEnv"] as const) {
+    if (Object.hasOwn(llm, field)) {
+      throw new Error(
+        `Untrusted config layer ${configPath} may not configure legacy llm.${field}. Move endpoint routing and credentials to the first trusted config layer.`,
+      );
+    }
+  }
+
+  if (!Array.isArray(llm.profiles)) return;
+  for (const [index, value] of llm.profiles.entries()) {
+    const profile = asJsonObject(value);
+    if (!profile) continue;
+    for (const field of ["baseUrl", "apiKeyEnv"] as const) {
+      if (Object.hasOwn(profile, field)) {
+        throw new Error(
+          `Untrusted config layer ${configPath} may not configure legacy llm.profiles[${index}].${field}. Move endpoint routing and credentials to the first trusted config layer.`,
+        );
+      }
+    }
+  }
 }
 
 function parseConfig(config: JsonObject, cwd: string): SloppyConfig {

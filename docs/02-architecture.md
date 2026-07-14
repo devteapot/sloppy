@@ -218,7 +218,9 @@ reuses that scope's managed supervisor, creates a fresh session by default, and
 attaches to the selected session's typed client endpoint. Switching sessions
 changes the TUI's session endpoint; it does not collapse multiple sessions into one
 provider tree. Stopping a session ends its live process while keeping its
-snapshot and registry record restorable. Selecting a dormant session restores it
+snapshot and registry record restorable. Deferred teardown is projected as a
+typed `stopping` state; that record remains visible and non-selectable until
+active inner work settles and profile leases are released. Selecting a dormant session restores it
 through the normal session snapshot recovery path. Each supervised session still
 loads config through the normal scoped launcher and still exposes the standard
 `/session`, `/llm`, `/turn`, `/goal`, `/extensions`, `/composer`, `/queue`,
@@ -239,16 +241,91 @@ route tasks, mutate provider wiring, or become a privileged orchestrator.
 
 LLM configuration is endpoint/protocol based. An `llm.endpoints.<id>` entry
 describes a deployment and wire protocol (`anthropic-messages`, `openai-chat`,
-`openai-codex`, `gemini`, or a future protocol), auth mode, base URL, headers,
-and model metadata. A native profile selects an endpoint plus model; a
-`session-agent` profile selects an adapter-backed external session agent such as
-ACP. ACP is therefore an explicit session-agent path, not an LLM provider.
+`openai-responses`, `openai-codex`, `gemini`, or a future protocol), auth mode,
+base URL, headers, and model metadata. A native profile selects an endpoint plus
+model; a `session-agent` profile selects an adapter-backed external session
+agent such as ACP. ACP is therefore an explicit session-agent path, not an LLM
+provider.
 
 The session provider exposes this as `/llm.selected_endpoint_id`,
 `selected_protocol`, and profile item `endpoint_id`/`protocol` props. API keys
 are never stored inline in YAML. Endpoint credentials come from the OS secure
 store, endpoint-declared environment variables, no-auth local endpoints, or the
 Codex CLI auth store for `openai-codex`.
+
+Endpoint routing is a trusted configuration boundary. The first unique config
+layer (normally `~/.sloppy/config.yaml`) may define `llm.endpoints` and legacy
+endpoint-routing fields; workspace and project layers may select home-defined
+profiles and models but cannot redefine base URLs, auth environment variables,
+or endpoint headers. Endpoint URLs are limited to HTTP(S), reject embedded
+credentials, query parameters, and fragments, and must use HTTPS whenever auth
+or `headerEnv` is present. Explicit no-auth local endpoints may use HTTP.
+The same validation runs again at adapter construction for programmatic config,
+and every native credential-bearing transport rejects redirects.
+
+Custom secret headers use `headerEnv`, which persists only header-to-environment
+variable mappings; literal `Authorization`, API-key, cookie, and token headers
+are rejected. Model metadata is executable runtime policy: `maxOutputTokens`
+caps requests for protocols that accept a client output ceiling, declared
+tool/image capabilities shape replay and request validation, and
+OpenAI-compatible `compat` flags select the system role, max-token field, and
+thinking dialect. The Codex subscription endpoint owns its output ceiling and
+therefore does not expose `maxOutputTokens` as enforceable runtime state. Native profiles expose
+`owns_tool_loop=false`; ACP session-agent profiles expose
+`owns_tool_loop=true`. The same distinction and capability metadata are present
+in the typed Session snapshot and compact `/llm` projection.
+
+Native requests run through the configured `llm.requestPolicy` timeout and
+bounded transient retry layer. Retries stop after any text or thinking output
+has been emitted, so runtime policy cannot duplicate a partially streamed
+assistant response.
+
+Each live typed Session holds a binding-registry lease for its effective LLM
+profile. A Supervisor shares the registry across its per-Session profile
+managers; delegated children inherit the parent's manager and registry.
+Explicit routes lease immediately; dynamically selected routes move their
+lease when state resolution selects a new effective profile. A concrete inner
+session agent retains its prior lease while a model call or approval
+continuation is still active, then releases it when idle; a native approval
+continuation also pins the exact adapter that started the turn. A profile
+cannot be deleted while any coordinated Session still leases it, and shutdown
+releases the lease only after active inner work settles. Profile metadata and
+credential mutations are mutually exclusive so save/delete/key writes cannot
+race each other. Committed profile-config writes advance a shared revision, so
+a stale sibling must reload before writing and cannot overwrite newer state.
+Supervisor config loading validates the revision captured before its async
+scope read and retries an unstable load. Native adapter construction similarly
+uses one config snapshot plus an all-mutation generation, including
+credential-only changes, and never caches or returns a mixed-generation
+adapter. Delegated children keep their reduced non-LLM/plugin configuration and
+merge only the inherited manager's `llm` section back into their Session state.
+Config reload remains an external boundary: if it
+removes an explicitly bound profile, the Session projects the missing route as
+`needs_credentials` and disables sending rather than falling back or retaining
+stale ready state.
+
+Wire protocols are assembled through a typed internal driver registry. The
+first-party OpenAI endpoint uses the Responses driver; OpenRouter, Ollama, and
+custom compatibility routers may continue to use Chat Completions. The Codex
+subscription adapter is a thin authentication wrapper over the same stateless
+Responses transport, while retaining its distinct protocol and auth identity.
+
+Portable conversation history is owned above replaceable native Agent
+instances, so changing a native profile or model does not silently reset the
+conversation. Provider-native continuation data is stored in private
+`provider_continuation` blocks tagged by protocol, endpoint, model, and an
+opaque hash of wire origin plus credential/account identity. An adapter replays
+a block only for the exact issuer that created it; model, provider, URL, or
+account/key switches retain portable text/tool history and drop opaque signed
+or encrypted data. This includes exact Gemini signed Parts, Anthropic thinking
+blocks, OpenAI Responses output items, and OpenRouter `reasoning_details`.
+ACP session agents keep their own protocol transcript and do not import or
+export those private native-history blocks.
+
+Terminal model failures use structured error categories for authentication,
+invalid requests, rate limits, overload, network failures, and deadlines.
+HTTP status, retry hints, request ids, and partial-output state are retained in
+Session activity and audit records without exposing credentials.
 
 ## LLM Context Tail
 

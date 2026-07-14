@@ -132,6 +132,59 @@ describe("SessionStore — initial state", () => {
     expect(fresh.transcript).toEqual([]);
     expect(fresh.session.status).toBe("active");
   });
+
+  test("isolates selected and profile capability metadata on ingestion and snapshot reads", () => {
+    const store = createStore();
+    const selectedCapabilities = { tools: true, images: false };
+    const profileCapabilities = { tools: false, images: true };
+    store.syncLlmState({
+      status: "ready",
+      message: "Ready",
+      activeProfileId: "openai-main",
+      selectedEndpointId: "openai",
+      selectedProtocol: "openai-responses",
+      selectedModel: "gpt-5.4",
+      selectedCapabilities,
+      selectedOwnsToolLoop: false,
+      secureStoreKind: "none",
+      secureStoreStatus: "unsupported",
+      profiles: [
+        {
+          kind: "native",
+          id: "openai-main",
+          endpointId: "openai",
+          protocol: "openai-responses",
+          model: "gpt-5.4",
+          capabilities: profileCapabilities,
+          ownsToolLoop: false,
+          isDefault: true,
+          hasKey: false,
+          keySource: "not_required",
+          ready: true,
+          managed: true,
+          origin: "managed",
+          canDeleteProfile: true,
+          canDeleteApiKey: false,
+        },
+      ],
+    });
+
+    selectedCapabilities.tools = false;
+    profileCapabilities.images = false;
+    const first = store.getSnapshot();
+    expect(first.llm.selectedCapabilities).toEqual({ tools: true, images: false });
+    expect(first.llm.profiles[0]?.capabilities).toEqual({ tools: false, images: true });
+
+    if (!first.llm.selectedCapabilities || !first.llm.profiles[0]?.capabilities) {
+      throw new Error("Expected capability metadata in the Session snapshot.");
+    }
+    first.llm.selectedCapabilities.tools = false;
+    first.llm.profiles[0].capabilities.images = false;
+
+    const fresh = store.getSnapshot();
+    expect(fresh.llm.selectedCapabilities).toEqual({ tools: true, images: false });
+    expect(fresh.llm.profiles[0]?.capabilities).toEqual({ tools: false, images: true });
+  });
 });
 
 describe("SessionStore — persistence", () => {
@@ -628,7 +681,14 @@ describe("SessionStore — transcript & turn lifecycle", () => {
     const turnId = store.beginTurn("hi");
     const startedAt = store.getSnapshot().turn.startedAt;
     store.appendAssistantText(turnId, "partial");
-    store.failTurn(turnId, "model exploded");
+    store.failTurn(turnId, "model exploded", {
+      errorCode: "rate_limit",
+      retryable: true,
+      requestId: "req-123",
+      retryAfterMs: 1_500,
+      httpStatus: 429,
+      partialOutput: true,
+    });
 
     const snapshot = store.getSnapshot();
     expect(snapshot.turn.state).toBe("error");
@@ -645,10 +705,19 @@ describe("SessionStore — transcript & turn lifecycle", () => {
 
     const modelActivity = snapshot.activity.find((item) => item.kind === "model_call");
     expect(modelActivity?.status).toBe("error");
+    expect(modelActivity).toMatchObject({
+      errorCode: "rate_limit",
+      retryable: true,
+      requestId: "req-123",
+      retryAfterMs: 1_500,
+      httpStatus: 429,
+      partialOutput: true,
+    });
 
     const errorActivity = snapshot.activity.find((item) => item.kind === "error");
     expect(errorActivity?.status).toBe("error");
     expect(errorActivity?.summary).toBe("model exploded");
+    expect(errorActivity?.errorCode).toBe("rate_limit");
   });
 
   test("cancelTurn returns to idle and marks assistant message complete", () => {

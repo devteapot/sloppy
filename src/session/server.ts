@@ -58,14 +58,17 @@ if (supervisor) {
   );
   await stdout.flush();
 
-  const shutdown = () => {
+  const shutdown = async () => {
     running.listener.close();
-    running.supervisor.stop();
-    process.exit(0);
+    try {
+      await running.supervisor.stopAndWait();
+    } finally {
+      process.exit(0);
+    }
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 
   await new Promise<never>(() => {});
 }
@@ -93,12 +96,15 @@ stdout.write(
 );
 await stdout.flush();
 
-const shutdown = () => {
-  service.stop();
-  process.exit(0);
+const shutdown = async () => {
+  try {
+    await service.stopAndWait();
+  } finally {
+    process.exit(0);
+  }
 };
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 
 await new Promise<never>(() => {});

@@ -5,9 +5,15 @@ import type { SessionStoreState } from "./state";
 export function syncLlmState(state: SessionStoreState, llm: LlmStateSnapshot): void {
   state.snapshot.llm = {
     ...llm,
-    profiles: llm.profiles.map((profile) => ({ ...profile })),
+    selectedCapabilities: llm.selectedCapabilities ? { ...llm.selectedCapabilities } : undefined,
+    profiles: llm.profiles.map((profile) => ({
+      ...profile,
+      capabilities: profile.capabilities ? { ...profile.capabilities } : undefined,
+    })),
   };
-  state.snapshot.session.modelProvider = llm.selectedEndpointId ?? "session-agent";
+  const activeProfile = llm.profiles.find((profile) => profile.id === llm.activeProfileId);
+  state.snapshot.session.modelProvider =
+    llm.selectedEndpointId ?? activeProfile?.adapterId ?? llm.selectedProtocol ?? "unavailable";
   state.snapshot.session.model = llm.selectedModel;
   state.snapshot.session.updatedAt = now();
   state.llmChanged = true;

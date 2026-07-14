@@ -17,7 +17,7 @@ export type SupervisorSessionItem = {
   id: string;
   title?: string;
   socketPath: string;
-  runtimeStatus: "live" | "dormant";
+  runtimeStatus: "live" | "stopping" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
@@ -119,7 +119,7 @@ function mapSessionRecord(
     lastActivityAt: record.lastActivityAt,
     isResumeSession: record.isResumeSession || record.sessionId === resumeSessionId,
     createdAt: record.createdAt,
-    canSwitch: true,
+    canSwitch: runtimeStatus !== "stopping",
     canStop: runtimeStatus === "live",
   };
 }

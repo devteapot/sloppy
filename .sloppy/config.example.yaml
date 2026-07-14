@@ -1,13 +1,18 @@
+# Endpoint routing and env-backed credentials are trusted home configuration.
+# Put this block in ~/.sloppy/config.yaml, not in a workspace/project layer:
+#
+# llm:
+#   endpoints:
+#     litellm:
+#       protocol: openai-chat
+#       baseUrl: https://sloppy-mba.local:8001/v1
+#       auth:
+#         type: env
+#         env: LITELLM_API_KEY
+#       models:
+#         <litellm-model>: {}
+
 llm:
-  endpoints:
-    litellm:
-      protocol: openai-chat
-      baseUrl: http://sloppy-mba.local:8001/v1
-      auth:
-        type: env
-        env: LITELLM_API_KEY
-      models:
-        <litellm-model>: {}
   defaultProfileId: litellm-main
   profiles:
     - id: litellm-main

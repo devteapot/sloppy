@@ -483,6 +483,27 @@ describe("SessionService — multi-session support", () => {
     service2.stop();
   });
 
+  test("SessionService cleanup does not depend on projected snapshots", () => {
+    const service = new SessionService({
+      sessionId: "stop-with-broken-projection",
+      sessionPersistencePath: false,
+    });
+    const originalGetSnapshot = service.runtime.store.getSnapshot.bind(service.runtime.store);
+    service.runtime.store.getSnapshot = () => {
+      throw new Error("injected snapshot projection failure");
+    };
+
+    expect(() => service.stop()).toThrow("injected snapshot projection failure");
+
+    service.runtime.store.getSnapshot = originalGetSnapshot;
+    expect(originalGetSnapshot().session.status).toBe("closed");
+    expect(
+      SessionService.getActiveSessions().some(
+        (session) => session.sessionId === "stop-with-broken-projection",
+      ),
+    ).toBe(false);
+  });
+
   test("stopping one session doesn't affect others", () => {
     const _service1 = new SessionService({
       sessionId: "isolate-1",

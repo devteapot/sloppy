@@ -172,6 +172,10 @@ async function initialSessionForExplicitSupervisor(
   if (!selected) {
     return supervisor.createSession({ approvalMode: initialApprovalMode(args) });
   }
+  if (selected.runtimeStatus === "stopping") {
+    if (live) return live;
+    return supervisor.createSession({ approvalMode: initialApprovalMode(args) });
+  }
   return selected.runtimeStatus === "live" ? selected : supervisor.switchSession(selected.id);
 }
 

@@ -1,5 +1,5 @@
 import type { SloppyConfig } from "../config/schema";
-import type { LlmProfileManager } from "../llm/profile-manager";
+import type { LlmProfileBindingRegistry, LlmProfileManager } from "../llm/profile-manager";
 import { listenSessionClientProtocol } from "./client-protocol";
 import { SessionRuntime } from "./runtime";
 import type { ApprovalMode } from "./types";
@@ -12,13 +12,27 @@ function defaultSocketPath(sessionId: string): string {
   return `/tmp/slop/sloppy-session-${sanitizeSegment(sessionId)}.sock`;
 }
 
+function throwCleanupErrors(errors: readonly unknown[], message: string): void {
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, message);
+  }
+}
+
 export class SessionService {
   private static sessions = new Map<string, SessionService>();
 
+  readonly sessionId: string;
   readonly runtime: SessionRuntime;
   readonly socketPath: string;
 
   private listener: { close(): void } | null = null;
+  private stopRequested = false;
+  private stopComplete = false;
+  private stopImmediateErrors: unknown[] = [];
+  private stopCompletion: Promise<void> = Promise.resolve();
 
   constructor(options?: {
     config?: SloppyConfig;
@@ -26,6 +40,8 @@ export class SessionService {
     title?: string;
     socketPath?: string;
     llmProfileManager?: LlmProfileManager;
+    llmProfileBindingRegistry?: LlmProfileBindingRegistry;
+    llmProfileRevision?: number;
     sessionPersistencePath?: string | false;
     approvalMode?: ApprovalMode;
     configReloader?: () => Promise<SloppyConfig>;
@@ -35,12 +51,15 @@ export class SessionService {
     };
   }) {
     const sessionId = options?.sessionId ?? crypto.randomUUID();
+    this.sessionId = sessionId;
 
     this.runtime = new SessionRuntime({
       config: options?.config,
       sessionId,
       title: options?.title,
       llmProfileManager: options?.llmProfileManager,
+      llmProfileBindingRegistry: options?.llmProfileBindingRegistry,
+      llmProfileRevision: options?.llmProfileRevision,
       sessionPersistencePath: options?.sessionPersistencePath,
       approvalMode: options?.approvalMode,
       configReloader: options?.configReloader,
@@ -63,7 +82,7 @@ export class SessionService {
     return Array.from(SessionService.sessions.values()).map((s) => {
       const snapshot = s.runtime.store.getSnapshot();
       return {
-        sessionId: snapshot.session.sessionId,
+        sessionId: s.sessionId,
         socketPath: s.socketPath,
         title: snapshot.session.title,
         workspaceRoot: snapshot.session.workspaceRoot,
@@ -92,16 +111,85 @@ export class SessionService {
       await this.runtime.start();
       this.listener = listenSessionClientProtocol(this.runtime, this.socketPath);
     } catch (error) {
-      this.stop();
-      throw error;
+      const errors: unknown[] = [error];
+      try {
+        await this.stopAndWait();
+      } catch (cleanupError) {
+        if (!errors.includes(cleanupError)) {
+          errors.push(cleanupError);
+        }
+      }
+      throwCleanupErrors(errors, "Session service startup and cleanup failed.");
     }
   }
 
   stop(): void {
-    const sessionId = this.runtime.store.getSnapshot().session.sessionId;
-    SessionService.sessions.delete(sessionId);
-    this.listener?.close();
+    if (this.stopRequested) {
+      return;
+    }
+    const cleanupErrors = this.beginStop();
+    throwCleanupErrors(cleanupErrors, "Session service shutdown failed.");
+  }
+
+  async stopAndWait(): Promise<void> {
+    const cleanupErrors = [...this.beginStop()];
+    try {
+      await this.stopCompletion;
+    } catch (error) {
+      if (!cleanupErrors.includes(error)) {
+        cleanupErrors.push(error);
+      }
+    }
+    throwCleanupErrors(cleanupErrors, "Session service shutdown failed.");
+  }
+
+  async waitForStopCompletion(): Promise<void> {
+    this.beginStop();
+    await this.stopCompletion;
+  }
+
+  isStopping(): boolean {
+    return this.stopRequested && !this.stopComplete;
+  }
+
+  isStopped(): boolean {
+    return this.stopComplete;
+  }
+
+  private beginStop(): readonly unknown[] {
+    if (this.stopRequested) {
+      return this.stopImmediateErrors;
+    }
+    this.stopRequested = true;
+    try {
+      this.listener?.close();
+    } catch (error) {
+      this.stopImmediateErrors.push(error);
+    }
     this.listener = null;
-    this.runtime.shutdown();
+    try {
+      this.runtime.shutdown();
+    } catch (error) {
+      this.stopImmediateErrors.push(error);
+    }
+
+    const finish = () => {
+      this.stopComplete = true;
+      if (SessionService.sessions.get(this.sessionId) === this) {
+        SessionService.sessions.delete(this.sessionId);
+      }
+    };
+    this.stopCompletion = this.runtime.waitForShutdown().then(
+      () => finish(),
+      (error: unknown) => {
+        finish();
+        throw error;
+      },
+    );
+    void this.stopCompletion.catch(() => undefined);
+    if (this.runtime.isShutdownComplete()) {
+      finish();
+    }
+    return this.stopImmediateErrors;
   }
 }

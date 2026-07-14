@@ -1,5 +1,7 @@
 import type { LlmTool } from "@slop-ai/consumer/browser";
 
+import type { LlmEndpointModelCapabilitiesConfig, LlmProtocol } from "../config/schema";
+
 export interface TextContentBlock {
   type: "text";
   text: string;
@@ -64,12 +66,35 @@ export interface ImageContentBlock {
   data: string;
 }
 
-export type AssistantContentBlock = TextContentBlock | ToolUseContentBlock;
+export interface ProviderContinuationIssuer {
+  protocol: LlmProtocol;
+  provider: string;
+  model: string;
+  /** Opaque hash of the wire origin and credential/account identity. */
+  scope: string;
+}
+
+/**
+ * Opaque provider-native state that must survive in private conversation history.
+ * Only the adapter matching every issuer field may interpret or replay `data`.
+ */
+export interface ProviderContinuationContentBlock {
+  type: "provider_continuation";
+  purpose: "reasoning" | "assistant_message" | "tool_call";
+  issuer: ProviderContinuationIssuer;
+  data: unknown;
+}
+
+export type AssistantContentBlock =
+  | TextContentBlock
+  | ToolUseContentBlock
+  | ProviderContinuationContentBlock;
 export type MessageContentBlock =
   | TextContentBlock
   | ToolUseContentBlock
   | ToolResultContentBlock
-  | ImageContentBlock;
+  | ImageContentBlock
+  | ProviderContinuationContentBlock;
 
 export interface ConversationMessage {
   role: "user" | "assistant";
@@ -105,8 +130,68 @@ export interface LlmChatOptions {
 }
 
 export interface LlmAdapter {
+  readonly runtimeDescriptor?: LlmRuntimeDescriptor;
   chat(options: LlmChatOptions): Promise<LlmResponse>;
   countTextTokens?(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount>;
+}
+
+export type LlmRuntimeDescriptor = {
+  endpointId: string;
+  protocol: LlmProtocol;
+  model: string;
+  maxOutputTokens?: number;
+  capabilities: LlmEndpointModelCapabilitiesConfig;
+  ownsToolLoop: false;
+};
+
+export function getLlmRuntimeDescriptor(llm: LlmAdapter): LlmRuntimeDescriptor | undefined {
+  return llm.runtimeDescriptor;
+}
+
+export function resolveLlmMaxTokens(llm: LlmAdapter, configuredMaxTokens: number): number {
+  const modelLimit = llm.runtimeDescriptor?.maxOutputTokens;
+  return modelLimit === undefined ? configuredMaxTokens : Math.min(configuredMaxTokens, modelLimit);
+}
+
+export type LlmRequestErrorCode =
+  | "authentication"
+  | "invalid_request"
+  | "network"
+  | "overloaded"
+  | "provider"
+  | "rate_limit"
+  | "timeout";
+
+export interface LlmRequestErrorOptions {
+  code: LlmRequestErrorCode;
+  retryable: boolean;
+  status?: number;
+  retryAfterMs?: number;
+  requestId?: string;
+  partialOutput?: boolean;
+  cause?: unknown;
+}
+
+export class LlmRequestError extends Error {
+  readonly code: LlmRequestErrorCode;
+  readonly retryable: boolean;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+  readonly requestId?: string;
+  readonly partialOutput: boolean;
+  override readonly cause?: unknown;
+
+  constructor(message: string, options: LlmRequestErrorOptions) {
+    super(message);
+    this.name = "LlmRequestError";
+    this.code = options.code;
+    this.retryable = options.retryable;
+    this.status = options.status;
+    this.retryAfterMs = options.retryAfterMs;
+    this.requestId = options.requestId;
+    this.partialOutput = options.partialOutput ?? false;
+    this.cause = options.cause;
+  }
 }
 
 export class LlmAbortError extends Error {
@@ -153,4 +238,17 @@ export function normalizeLlmAbortError(error: unknown, signal?: AbortSignal): un
   }
 
   return error;
+}
+
+export function isProviderContinuationFor(
+  block: MessageContentBlock,
+  issuer: ProviderContinuationIssuer,
+): block is ProviderContinuationContentBlock {
+  return (
+    block.type === "provider_continuation" &&
+    block.issuer.protocol === issuer.protocol &&
+    block.issuer.provider === issuer.provider &&
+    block.issuer.model === issuer.model &&
+    block.issuer.scope === issuer.scope
+  );
 }

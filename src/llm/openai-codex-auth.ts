@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -58,9 +58,12 @@ export async function getCodexAuthStatus(options?: {
 export async function resolveCodexCredentials(options?: {
   authPath?: string;
   fetchFn?: FetchLike;
+  signal?: AbortSignal;
 }): Promise<CodexCredentials> {
+  throwIfAborted(options?.signal);
   const authPath = resolve(options?.authPath ?? codexAuthPath());
   const auth = await readCodexAuthFile(authPath);
+  throwIfAborted(options?.signal);
   if (!auth) {
     throw new Error(`No Codex auth file found at ${authPath}. Run \`codex login\` first.`);
   }
@@ -74,9 +77,16 @@ export async function resolveCodexCredentials(options?: {
 
   const expiresAt = tokenExpiryMs(credentials.accessToken);
   if (expiresAt && expiresAt - Date.now() <= TOKEN_REFRESH_SKEW_MS) {
-    return refreshCodexCredentials(authPath, auth, options?.fetchFn ?? fetch);
+    return refreshCodexCredentials(authPath, auth, options?.fetchFn ?? fetch, options?.signal);
   }
   return credentials;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error("Codex credential resolution was aborted.");
+  error.name = "AbortError";
+  throw error;
 }
 
 function codexAuthPath(): string {
@@ -114,7 +124,9 @@ async function refreshCodexCredentials(
   authPath: string,
   auth: CodexAuthFile,
   fetchFn: FetchLike,
+  signal?: AbortSignal,
 ): Promise<CodexCredentials> {
+  throwIfAborted(signal);
   const refreshToken = auth.tokens?.refresh_token?.trim();
   if (!refreshToken) {
     throw new Error("Codex credentials are expired and no refresh token is available.");
@@ -122,6 +134,8 @@ async function refreshCodexCredentials(
 
   const response = await fetchFn(CODEX_OAUTH_TOKEN_URL, {
     method: "POST",
+    redirect: "error",
+    signal,
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
@@ -129,6 +143,7 @@ async function refreshCodexCredentials(
       refresh_token: refreshToken,
     }),
   });
+  throwIfAborted(signal);
   if (!response.ok) {
     throw new Error(`Codex OAuth refresh failed: ${await response.text()}`);
   }
@@ -138,6 +153,7 @@ async function refreshCodexCredentials(
     refresh_token?: string;
     id_token?: string;
   };
+  throwIfAborted(signal);
   const accessToken = data.access_token?.trim();
   if (!accessToken) {
     throw new Error("Codex OAuth refresh did not return an access token.");
@@ -154,7 +170,7 @@ async function refreshCodexCredentials(
     },
     last_refresh: new Date().toISOString(),
   };
-  await writeCodexAuthFile(authPath, nextAuth);
+  await writeCodexAuthFile(authPath, nextAuth, signal);
   const credentials = credentialsFromAuthFile(nextAuth);
   if (!credentials) {
     throw new Error("Codex OAuth refresh returned credentials without an account id.");
@@ -162,11 +178,54 @@ async function refreshCodexCredentials(
   return credentials;
 }
 
-async function writeCodexAuthFile(authPath: string, auth: CodexAuthFile): Promise<void> {
+async function writeCodexAuthFile(
+  authPath: string,
+  auth: CodexAuthFile,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   await mkdir(dirname(authPath), { recursive: true });
+  throwIfAborted(signal);
   const tempPath = `${authPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  await writeFile(tempPath, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
-  await rename(tempPath, authPath);
+  let renamed = false;
+  let failed = false;
+  let failure: unknown;
+  try {
+    throwIfAborted(signal);
+    await writeFile(tempPath, `${JSON.stringify(auth, null, 2)}\n`, {
+      mode: 0o600,
+      signal,
+    });
+    throwIfAborted(signal);
+    await rename(tempPath, authPath);
+    renamed = true;
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+
+  if (!renamed) {
+    try {
+      await unlink(tempPath);
+    } catch (cleanupError) {
+      if (
+        !(
+          cleanupError &&
+          typeof cleanupError === "object" &&
+          "code" in cleanupError &&
+          cleanupError.code === "ENOENT"
+        )
+      ) {
+        throw new AggregateError(
+          failed ? [failure, cleanupError] : [cleanupError],
+          `Failed to remove temporary Codex auth file ${tempPath}.`,
+        );
+      }
+    }
+  }
+  if (failed) {
+    throw failure;
+  }
 }
 
 function tokenExpiryMs(token: string): number | undefined {
