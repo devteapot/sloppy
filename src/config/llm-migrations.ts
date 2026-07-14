@@ -168,7 +168,13 @@ function buildLegacyEndpointOverride(
   const defaultModel = defaultEndpoint?.models[model];
   return {
     ...(defaultEndpoint?.label ? { label: defaultEndpoint.label } : {}),
-    protocol: getDefaultEndpointProtocol(provider) ?? "openai-chat",
+    // Legacy custom OpenAI base URLs historically meant Chat Completions
+    // routers. Keep that wire contract when the first-party OpenAI default
+    // moves to Responses.
+    protocol:
+      provider === "openai" && baseUrl
+        ? "openai-chat"
+        : (getDefaultEndpointProtocol(provider) ?? "openai-chat"),
     ...((baseUrl ?? defaultEndpoint?.baseUrl)
       ? { baseUrl: baseUrl ?? defaultEndpoint?.baseUrl }
       : {}),

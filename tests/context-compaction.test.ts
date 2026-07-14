@@ -5,7 +5,7 @@ import { ConsumerHub } from "../src/core/consumer";
 import { ConversationHistory } from "../src/core/history";
 import { runLoop } from "../src/core/loop";
 import type { LlmAdapter, LlmChatOptions, LlmResponse } from "../src/llm/types";
-import { LlmContextOverflowError } from "../src/llm/types";
+import { LlmContextOverflowError, LlmRequestError } from "../src/llm/types";
 import { createTestConfig } from "./helpers/config";
 
 class SummaryLlm implements LlmAdapter {
@@ -38,7 +38,12 @@ class OverflowRecoveryLlm implements LlmAdapter {
 
     this.normalCalls += 1;
     if (this.normalCalls === 1) {
-      throw new Error("maximum context length exceeded for this model");
+      const providerError = new Error("maximum context length exceeded for this model");
+      throw new LlmRequestError(providerError.message, {
+        code: "invalid_request",
+        retryable: false,
+        cause: providerError,
+      });
     }
     this.retriedMessages = JSON.stringify(options.messages);
     return {

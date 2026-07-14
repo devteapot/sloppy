@@ -6,8 +6,11 @@ import { join } from "node:path";
 
 import { SessionClient } from "../apps/tui/src/backend/session-client";
 import { SessionSupervisorClient } from "../apps/tui/src/backend/supervisor-client";
+import type { LlmProfileManager } from "../src/llm/profile-manager";
+import type { LlmAdapter } from "../src/llm/types";
 import { listenSupervisorClientProtocol } from "../src/session/client-protocol";
 import { SessionSupervisor, startSessionSupervisor } from "../src/session/supervisor";
+import { createDeferred } from "./helpers/agent-session-provider-harness";
 
 const tempPaths: string[] = [];
 const listeners: Array<{ close: () => void }> = [];
@@ -240,6 +243,302 @@ describe("SessionSupervisor", () => {
       await Bun.sleep(25);
     }
     expect(provider.canAutoClose()).toBe(true);
+  });
+
+  test("shares LLM profile bindings across supervised Sessions", async () => {
+    const home = await createTempDir("sloppy-supervisor-profile-lease-home-");
+    const workspace = await createTempDir("sloppy-supervisor-profile-lease-ws-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: shared-target",
+        "  profiles:",
+        "    - id: shared-target",
+        "      endpointId: openai",
+        "      model: target-model",
+        "    - id: operator-profile",
+        "      endpointId: openai",
+        "      model: operator-model",
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+
+    const supervisor = new SessionSupervisor({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    supervisors.push(supervisor);
+    const target = await supervisor.createSession({ sessionId: "profile-lease-target" });
+    const operator = await supervisor.createSession({ sessionId: "profile-lease-operator" });
+    if (!target.service || !operator.service) {
+      throw new Error("Expected live supervised Session services.");
+    }
+
+    await operator.service.runtime.setDefaultLlmProfile("operator-profile");
+    await expect(operator.service.runtime.deleteLlmProfile("shared-target")).rejects.toThrow(
+      "live session is bound to it",
+    );
+
+    await supervisor.stopSession("profile-lease-target");
+    await expect(operator.service.runtime.deleteLlmProfile("shared-target")).resolves.toMatchObject(
+      { status: "ok", profileId: "shared-target" },
+    );
+  });
+
+  test("waits for active profile teardown and preserves queued input before marking dormant", async () => {
+    const home = await createTempDir("sloppy-supervisor-stop-active-home-");
+    const workspace = await createTempDir("sloppy-supervisor-stop-active-ws-");
+    await writeConfig(
+      home,
+      [
+        "llm:",
+        "  endpoints:",
+        "    local-test:",
+        "      protocol: openai-chat",
+        "      baseUrl: https://example.invalid/v1",
+        "      auth:",
+        "        type: none",
+        "      models:",
+        "        target-model: {}",
+        "        operator-model: {}",
+        "  defaultProfileId: stop-target",
+        "  profiles:",
+        "    - id: stop-target",
+        "      endpointId: local-test",
+        "      model: target-model",
+        "    - id: stop-operator",
+        "      endpointId: local-test",
+        "      model: operator-model",
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+
+    const supervisor = new SessionSupervisor({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    supervisors.push(supervisor);
+    const target = await supervisor.createSession({ sessionId: "stop-active-target" });
+    const operator = await supervisor.createSession({ sessionId: "stop-active-operator" });
+    if (!target.service || !operator.service) {
+      throw new Error("Expected live supervised Session services.");
+    }
+
+    const targetRuntime = target.service.runtime;
+    const manager = (targetRuntime as unknown as { llmProfileManager: LlmProfileManager })
+      .llmProfileManager;
+    const chatStarted = createDeferred<void>();
+    const finishChat = createDeferred<void>();
+    manager.createAdapter = async () =>
+      ({
+        async chat(options) {
+          chatStarted.resolve();
+          await finishChat.promise;
+          const text = "completed during stop";
+          options.onText?.(text);
+          return {
+            content: [{ type: "text", text }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+
+    await operator.service.runtime.setDefaultLlmProfile("stop-operator");
+    await targetRuntime.sendMessage("running message");
+    await chatStarted.promise;
+    await targetRuntime.sendMessage("queued message");
+
+    let stopSettled = false;
+    const stopping = supervisor.stopSession("stop-active-target").finally(() => {
+      stopSettled = true;
+    });
+    await Bun.sleep(0);
+
+    expect(stopSettled).toBe(false);
+    expect(
+      (await supervisor.getClientSnapshot()).sessions.find(
+        (session) => session.sessionId === "stop-active-target",
+      )?.runtimeStatus,
+    ).toBe("stopping");
+    await expect(supervisor.selectSession("stop-active-target")).rejects.toThrow(
+      "is stopping and cannot be selected",
+    );
+    await expect(operator.service.runtime.deleteLlmProfile("stop-target")).rejects.toThrow(
+      "live session is bound to it",
+    );
+
+    finishChat.resolve();
+    await stopping;
+
+    const stoppedSnapshot = targetRuntime.store.getSnapshot();
+    expect(stoppedSnapshot.session.status).toBe("closed");
+    expect(stoppedSnapshot.queue.map((message) => message.text)).toEqual(["queued message"]);
+    expect(stoppedSnapshot.transcript.map((message) => message.role)).toEqual(["user"]);
+    expect(
+      (await supervisor.getClientSnapshot()).sessions.find(
+        (session) => session.sessionId === "stop-active-target",
+      )?.runtimeStatus,
+    ).toBe("dormant");
+    await expect(operator.service.runtime.deleteLlmProfile("stop-target")).resolves.toMatchObject({
+      status: "ok",
+    });
+  });
+
+  test("marks a Session dormant even when asynchronous service cleanup fails", async () => {
+    const home = await createTempDir("sloppy-supervisor-stop-error-home-");
+    const workspace = await createTempDir("sloppy-supervisor-stop-error-ws-");
+    await writeConfig(workspace, llmProfileConfigLines("stop-error-model").join("\n"));
+    process.env.HOME = home;
+
+    const supervisor = new SessionSupervisor({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    supervisors.push(supervisor);
+    const record = await supervisor.createSession({ sessionId: "stop-error" });
+    if (!record.service) throw new Error("Expected a live Session service.");
+    const socketPath = record.socketPath;
+    const originalWaitForStopCompletion = record.service.waitForStopCompletion.bind(record.service);
+    record.service.waitForStopCompletion = async () => {
+      await originalWaitForStopCompletion();
+      throw new Error("injected asynchronous cleanup failure");
+    };
+
+    await expect(supervisor.stopSession(record.sessionId)).rejects.toThrow(
+      "injected asynchronous cleanup failure",
+    );
+
+    expect(record.runtimeStatus).toBe("dormant");
+    expect(record.service).toBeUndefined();
+    expect(existsSync(socketPath)).toBe(false);
+    expect(
+      (await supervisor.getClientSnapshot()).sessions.find(
+        (session) => session.sessionId === record.sessionId,
+      )?.runtimeStatus,
+    ).toBe("dormant");
+  });
+
+  test("continues synchronous Supervisor cleanup after one Session fails to stop", async () => {
+    const home = await createTempDir("sloppy-supervisor-stop-all-error-home-");
+    const workspace = await createTempDir("sloppy-supervisor-stop-all-error-ws-");
+    await writeConfig(workspace, llmProfileConfigLines("stop-all-error-model").join("\n"));
+    process.env.HOME = home;
+
+    const supervisor = new SessionSupervisor({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    supervisors.push(supervisor);
+    const first = await supervisor.createSession({ sessionId: "stop-all-first" });
+    const second = await supervisor.createSession({ sessionId: "stop-all-second" });
+    if (!first.service || !second.service) {
+      throw new Error("Expected live Session services.");
+    }
+    const firstSocket = first.socketPath;
+    const secondSocket = second.socketPath;
+    const originalFirstStop = first.service.stop.bind(first.service);
+    first.service.stop = () => {
+      originalFirstStop();
+      throw new Error("injected synchronous cleanup failure");
+    };
+
+    expect(() => supervisor.stop()).toThrow("injected synchronous cleanup failure");
+
+    expect(existsSync(firstSocket)).toBe(false);
+    expect(existsSync(secondSocket)).toBe(false);
+    expect((await supervisor.getClientSnapshot()).sessions).toEqual([]);
+  });
+
+  test("keeps deferred synchronous Supervisor shutdown visible until completion", async () => {
+    const home = await createTempDir("sloppy-supervisor-sync-stop-active-home-");
+    const workspace = await createTempDir("sloppy-supervisor-sync-stop-active-ws-");
+    await writeConfig(
+      home,
+      [
+        "llm:",
+        "  endpoints:",
+        "    local-test:",
+        "      protocol: openai-chat",
+        "      baseUrl: https://example.invalid/v1",
+        "      auth:",
+        "        type: none",
+        "      models:",
+        "        target-model: {}",
+        "  defaultProfileId: stop-target",
+        "  profiles:",
+        "    - id: stop-target",
+        "      endpointId: local-test",
+        "      model: target-model",
+        "plugins:",
+        "  terminal:",
+        "    enabled: false",
+        "  filesystem:",
+        "    enabled: false",
+      ].join("\n"),
+    );
+    process.env.HOME = home;
+    const supervisor = new SessionSupervisor({
+      cwd: workspace,
+      homeConfigPath: join(home, ".sloppy/config.yaml"),
+      workspaceConfigPath: join(workspace, ".sloppy/config.yaml"),
+    });
+    supervisors.push(supervisor);
+    const record = await supervisor.createSession({ sessionId: "sync-stop-active" });
+    if (!record.service) throw new Error("Expected a live Session service.");
+    const service = record.service;
+    const runtime = service.runtime;
+    const manager = (runtime as unknown as { llmProfileManager: LlmProfileManager })
+      .llmProfileManager;
+    const chatStarted = createDeferred<void>();
+    const finishChat = createDeferred<void>();
+    manager.createAdapter = async () =>
+      ({
+        async chat() {
+          chatStarted.resolve();
+          await finishChat.promise;
+          return {
+            content: [{ type: "text", text: "finished" }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+
+    await runtime.sendMessage("stay visible while stopping");
+    await chatStarted.promise;
+    supervisor.stop();
+
+    let shutdownSettled = false;
+    const shutdownCompletion = supervisor.waitForShutdown().finally(() => {
+      shutdownSettled = true;
+    });
+    await Bun.sleep(0);
+    expect(shutdownSettled).toBe(false);
+    expect(service.isStopping()).toBe(true);
+    expect((await supervisor.getClientSnapshot()).sessions).toEqual([
+      expect.objectContaining({ sessionId: "sync-stop-active", runtimeStatus: "stopping" }),
+    ]);
+
+    finishChat.resolve();
+    await shutdownCompletion;
+    expect(service.isStopped()).toBe(true);
+    expect((await supervisor.getClientSnapshot()).sessions).toEqual([]);
   });
 
   test("startSessionSupervisor cleans up supervisor and initial session sockets", async () => {

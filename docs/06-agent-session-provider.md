@@ -57,7 +57,7 @@ If richer inspection is needed later, it should be added as an explicit extensio
 
 Multi-session lifecycle is handled by the separate typed Supervisor API. Its
 snapshot exposes launch-scope metadata, a launch-scope resume session id for
-`sloppy --continue`, live and dormant session records, and configured
+`sloppy --continue`, live, stopping, and dormant session records, and configured
 workspace/project scopes. It does not expose
 one global active session; each connected UI keeps its selected session through a
 connection-bound supervisor client lease. Its `/sessions` items include runtime
@@ -125,8 +125,8 @@ These paths are intentionally small and human-meaningful so UIs can subscribe sh
 ```text
 [root] agent-session: Agent Session
   [context] session (session_id="sess-123", status="active", model_provider="anthropic", model="claude-sonnet", client_count=2)
-  [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_endpoint_id="openai", selected_protocol="openai-chat", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
-    [item] openai-main (kind="native", endpoint_id="openai", protocol="openai-chat", model="gpt-5.4", is_default=true, ready=false, key_source="missing")
+  [collection] llm (status="needs_credentials", active_profile_id="openai-main", selected_endpoint_id="openai", selected_protocol="openai-responses", selected_model="gpt-5.4", secure_store_status="available")  actions: {save_profile, set_default_profile, delete_profile, delete_api_key}
+    [item] openai-main (kind="native", endpoint_id="openai", protocol="openai-responses", model="gpt-5.4", owns_tool_loop=false, is_default=true, ready=false, key_source="missing")
   [context] usage (last_model_call_input_tokens=4200, last_model_call_output_tokens=700, last_state_context_tokens=1800, last_state_context_token_source=provider, model_context_window_tokens=1050000, available_context_tokens=1045800, total_tokens=4900)
   [status] turn (state="running", phase="tool_use", iteration=2, message="Reading workspace state")  actions: {cancel_turn}
   [collection] plugins (count=1)
@@ -240,6 +240,22 @@ Required props:
 - `selected_model`: currently selected model identifier
 - `secure_store_kind`: `keychain | secret-service | none`
 - `secure_store_status`: `available | unavailable | unsupported`
+
+Live sessions lease `active_profile_id` through the Supervisor-shared binding
+registry, and an in-flight model call or approval continuation retains its
+prior inner-profile lease across a route change. Native approval continuation
+also retains the exact adapter that started the turn. Profile deletion is
+rejected while a coordinated Session still holds either lease. Overlapping
+profile and credential mutations are rejected rather than racing persistence,
+and a stale sibling profile manager must reload before writing after another
+Session commits profile-config changes. If scoped config reload removes an
+explicitly bound profile, `/llm` keeps the requested id as the active route,
+reports `needs_credentials`, and disables the typed client's send control.
+Async config loads and native adapter construction validate a captured profile
+generation before committing their result; credential-only mutations have a
+separate read generation so they invalidate in-flight adapter construction
+without staling sibling config snapshots. Reduced child Sessions keep their
+scoped plugin config and merge only the parent's shared `llm` section.
 
 Children:
 

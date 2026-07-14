@@ -132,7 +132,13 @@ export function cloneSnapshot(
     usage: normalizeUsage(snapshot.usage),
     llm: {
       ...snapshot.llm,
-      profiles: snapshot.llm.profiles.map((profile) => ({ ...profile })),
+      selectedCapabilities: snapshot.llm.selectedCapabilities
+        ? { ...snapshot.llm.selectedCapabilities }
+        : undefined,
+      profiles: snapshot.llm.profiles.map((profile) => ({
+        ...profile,
+        capabilities: profile.capabilities ? { ...profile.capabilities } : undefined,
+      })),
     },
     turn: { ...snapshot.turn },
     goal: snapshot.goal

@@ -623,6 +623,7 @@ describe("runtime doctor", () => {
               ...TEST_CONFIG.llm.endpoints,
               openai: {
                 ...TEST_CONFIG.llm.endpoints.openai!,
+                protocol: "openai-chat",
                 baseUrl: "http://sloppy-mba.local:8001/v1",
                 auth: { type: "env", env: "LITELLM_API_KEY" },
               },

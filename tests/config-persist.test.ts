@@ -7,9 +7,15 @@ import { writeHomeLlmConfig } from "../src/config/persist";
 import type { LlmConfig } from "../src/config/schema";
 
 const originalHome = process.env.HOME;
+const originalRoutedLlmToken = process.env.ROUTED_LLM_TOKEN;
 
 afterEach(() => {
   process.env.HOME = originalHome;
+  if (originalRoutedLlmToken == null) {
+    delete process.env.ROUTED_LLM_TOKEN;
+  } else {
+    process.env.ROUTED_LLM_TOKEN = originalRoutedLlmToken;
+  }
 });
 
 function llmConfig(): LlmConfig {
@@ -69,6 +75,47 @@ describe("writeHomeLlmConfig", () => {
 
     const written = await readFile(join(home, ".sloppy", "config.yaml"), "utf8");
     expect(written).toContain("defaultProfileId: openai-main");
+  });
+
+  test("persists env-backed header names without persisting their secret values", async () => {
+    const home = await mkdtemp(join(tmpdir(), "sloppy-persist-headers-"));
+    process.env.HOME = home;
+    process.env.ROUTED_LLM_TOKEN = "secret-header-value";
+    const config = llmConfig();
+    config.endpoints.routed = {
+      protocol: "openai-chat",
+      baseUrl: "https://llm.example.test/v1",
+      auth: { type: "none" },
+      headers: { "x-route": "blue" },
+      headerEnv: { Authorization: "ROUTED_LLM_TOKEN" },
+      models: { "test-model": {} },
+    };
+
+    await writeHomeLlmConfig(config);
+
+    const written = await readFile(join(home, ".sloppy/config.yaml"), "utf8");
+    expect(written).toContain("headerEnv:");
+    expect(written).toContain("Authorization: ROUTED_LLM_TOKEN");
+    expect(written).toContain("x-route: blue");
+    expect(written).not.toContain("secret-header-value");
+  });
+
+  test("refuses to persist sensitive literal headers from programmatic config", async () => {
+    const home = await mkdtemp(join(tmpdir(), "sloppy-persist-sensitive-header-"));
+    process.env.HOME = home;
+    const config = llmConfig();
+    config.endpoints.routed = {
+      protocol: "openai-chat",
+      baseUrl: "https://llm.example.test/v1",
+      auth: { type: "none" },
+      headers: { Authorization: "Bearer must-not-be-written" },
+      models: { "test-model": {} },
+    };
+
+    await expect(writeHomeLlmConfig(config)).rejects.toThrow(
+      "Refusing to persist sensitive LLM header 'Authorization'",
+    );
+    expect(await Bun.file(join(home, ".sloppy/config.yaml")).exists()).toBe(false);
   });
 
   test("refuses to clobber a config file with invalid YAML", async () => {

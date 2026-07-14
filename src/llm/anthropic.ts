@@ -6,12 +6,16 @@ import type {
   MessageCountTokensParams,
   MessageParam,
   MessageTokensCount,
+  RedactedThinkingBlockParam,
+  ThinkingBlockParam,
   ThinkingConfigParam,
   Tool,
   ToolResultBlockParam,
   ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 import type { LlmTool } from "@slop-ai/consumer/browser";
+import { createProviderContinuationIssuer } from "./continuation";
+import { rejectRedirectFetch } from "./fetch-policy";
 import type { EffectiveThinkingConfig } from "./thinking";
 import type {
   AssistantContentBlock,
@@ -21,9 +25,11 @@ import type {
   LlmResponse,
   LlmTokenCount,
   MessageContentBlock,
+  ProviderContinuationContentBlock,
+  ProviderContinuationIssuer,
   ThinkingOutputBlock,
 } from "./types";
-import { LlmAbortError, normalizeLlmError } from "./types";
+import { isProviderContinuationFor, LlmAbortError, normalizeLlmAbortError } from "./types";
 
 interface AnthropicMessageStream {
   abort(): void;
@@ -55,7 +61,42 @@ function toAnthropicTools(tools: LlmTool[]): Tool[] {
   }));
 }
 
-function toAnthropicBlock(block: MessageContentBlock): ContentBlockParam {
+function toAnthropicContinuation(
+  block: ProviderContinuationContentBlock,
+  issuer: ProviderContinuationIssuer,
+): ThinkingBlockParam | RedactedThinkingBlockParam | undefined {
+  if (!isProviderContinuationFor(block, issuer)) {
+    return undefined;
+  }
+  if (!block.data || typeof block.data !== "object") {
+    return undefined;
+  }
+
+  const data = block.data as Record<string, unknown>;
+  if (
+    data.type === "thinking" &&
+    typeof data.thinking === "string" &&
+    typeof data.signature === "string"
+  ) {
+    return {
+      type: "thinking",
+      thinking: data.thinking,
+      signature: data.signature,
+    };
+  }
+  if (data.type === "redacted_thinking" && typeof data.data === "string") {
+    return {
+      type: "redacted_thinking",
+      data: data.data,
+    };
+  }
+  return undefined;
+}
+
+function toAnthropicBlock(
+  block: MessageContentBlock,
+  issuer: ProviderContinuationIssuer,
+): ContentBlockParam | undefined {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
@@ -88,20 +129,58 @@ function toAnthropicBlock(block: MessageContentBlock): ContentBlockParam {
 
       return result;
     }
+    case "provider_continuation":
+      return toAnthropicContinuation(block, issuer);
   }
 }
 
-function toAnthropicMessages(messages: ConversationMessage[]): MessageParam[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content.map((block) => toAnthropicBlock(block)),
-  }));
+function toAnthropicMessages(
+  messages: ConversationMessage[],
+  issuer: ProviderContinuationIssuer,
+): MessageParam[] {
+  return messages.flatMap((message) => {
+    const content = message.content.flatMap((block) => {
+      const converted = toAnthropicBlock(block, issuer);
+      return converted ? [converted] : [];
+    });
+    return content.length > 0 ? [{ role: message.role, content }] : [];
+  });
 }
 
-function normalizeAssistantContent(content: ContentBlock[]): AssistantContentBlock[] {
+function normalizeAssistantContent(
+  content: ContentBlock[],
+  issuer: ProviderContinuationIssuer,
+): AssistantContentBlock[] {
   const blocks: AssistantContentBlock[] = [];
 
   for (const block of content) {
+    if (block.type === "thinking" && typeof block.signature === "string") {
+      blocks.push({
+        type: "provider_continuation",
+        purpose: "reasoning",
+        issuer,
+        data: {
+          type: "thinking",
+          thinking: block.thinking,
+          signature: block.signature,
+        } satisfies ThinkingBlockParam,
+      });
+      continue;
+    }
+
+    if (block.type === "redacted_thinking") {
+      blocks.push({
+        type: "provider_continuation",
+        purpose: "reasoning",
+        issuer,
+        data: {
+          type: "redacted_thinking",
+          data: block.data,
+        } satisfies RedactedThinkingBlockParam,
+      });
+      continue;
+    }
+
     if (block.type === "text") {
       blocks.push({ type: "text", text: block.text });
       continue;
@@ -152,6 +231,7 @@ function normalizeThinkingContent(
   content: ContentBlock[],
   thinking: EffectiveThinkingConfig | undefined,
   model: string,
+  providerId: string,
 ): ThinkingOutputBlock[] {
   if (!thinking?.effectiveEnabled) {
     return [];
@@ -164,7 +244,7 @@ function normalizeThinkingContent(
       {
         type: "thinking",
         id: `anthropic-thinking-${index}`,
-        provider: "anthropic",
+        provider: providerId,
         model,
         format: "summary",
         display: thinking.display,
@@ -178,17 +258,41 @@ function normalizeThinkingContent(
 export class AnthropicAdapter implements LlmAdapter {
   private client: AnthropicClient;
   private model: string;
+  private providerId: string;
   private thinking?: EffectiveThinkingConfig;
+  private issuer: ProviderContinuationIssuer;
 
   constructor(options: {
     apiKey: string;
     model: string;
+    providerId?: string;
+    baseUrl?: string;
+    headers?: Record<string, string>;
     thinking?: EffectiveThinkingConfig;
     client?: AnthropicClient;
   }) {
-    this.client = options.client ?? (new Anthropic({ apiKey: options.apiKey }) as AnthropicClient);
+    this.client =
+      options.client ??
+      (new Anthropic({
+        apiKey: options.apiKey,
+        authToken: null,
+        baseURL: options.baseUrl ?? "https://api.anthropic.com",
+        defaultHeaders: options.headers,
+        fetch: rejectRedirectFetch,
+        // Sloppy owns bounded retries so SDK retries cannot stack underneath it.
+        maxRetries: 0,
+      }) as AnthropicClient);
     this.model = options.model;
+    this.providerId = options.providerId ?? "anthropic";
     this.thinking = options.thinking;
+    this.issuer = createProviderContinuationIssuer({
+      protocol: "anthropic-messages",
+      provider: this.providerId,
+      model: this.model,
+      baseUrl: options.baseUrl ?? "https://api.anthropic.com",
+      credentialIdentity: options.apiKey,
+      headers: options.headers,
+    });
   }
 
   async countTextTokens(text: string, options?: { signal?: AbortSignal }): Promise<LlmTokenCount> {
@@ -208,7 +312,7 @@ export class AnthropicAdapter implements LlmAdapter {
       );
       return { tokens: count.input_tokens, source: "provider" };
     } catch (error) {
-      throw normalizeLlmError(error, options?.signal);
+      throw normalizeLlmAbortError(error, options?.signal);
     }
   }
 
@@ -220,7 +324,7 @@ export class AnthropicAdapter implements LlmAdapter {
     const params: Anthropic.MessageStreamParams = {
       model: this.model,
       system: options.system,
-      messages: toAnthropicMessages(options.messages),
+      messages: toAnthropicMessages(options.messages, this.issuer),
       max_tokens: options.maxTokens,
     };
     const thinkingConfig = buildThinkingConfig(this.thinking, options.maxTokens);
@@ -260,7 +364,7 @@ export class AnthropicAdapter implements LlmAdapter {
           streamedThinking += delta;
           options.onThinking?.({
             id: "anthropic-thinking-0",
-            provider: "anthropic",
+            provider: this.providerId,
             model: this.model,
             format: "summary",
             display: this.thinking?.display ?? "visible",
@@ -271,7 +375,12 @@ export class AnthropicAdapter implements LlmAdapter {
       }
 
       const finalMessage = await stream.finalMessage();
-      const thinking = normalizeThinkingContent(finalMessage.content, this.thinking, this.model);
+      const thinking = normalizeThinkingContent(
+        finalMessage.content,
+        this.thinking,
+        this.model,
+        this.providerId,
+      );
       if (options.onThinking && thinking.length > 0) {
         for (const block of thinking) {
           if (!streamedThinking) {
@@ -312,7 +421,7 @@ export class AnthropicAdapter implements LlmAdapter {
             : "end_turn";
 
       return {
-        content: normalizeAssistantContent(finalMessage.content),
+        content: normalizeAssistantContent(finalMessage.content, this.issuer),
         thinking,
         stopReason,
         usage: {
@@ -321,7 +430,7 @@ export class AnthropicAdapter implements LlmAdapter {
         },
       } satisfies LlmResponse;
     } catch (error) {
-      throw normalizeLlmError(error, options.signal);
+      throw normalizeLlmAbortError(error, options.signal);
     } finally {
       options.signal?.removeEventListener("abort", abortStream);
     }

@@ -8,6 +8,7 @@ import type {
   MessageContentBlock,
   TextContentBlock,
   ToolResultContentBlock,
+  ToolUseContentBlock,
 } from "../llm/types";
 
 const HISTORY_SNAPSHOT_VERSION = 1;
@@ -22,6 +23,11 @@ function cloneEntry(entry: ConversationHistoryEntrySnapshot): ConversationHistor
     message: cloneMessage(entry.message),
   };
 }
+
+export const CANCELLED_TOOL_BATCH_RESULT = {
+  content: "Tool execution cancelled before the suspended batch completed.",
+  isError: true,
+} as const;
 
 function truncateLargeResult(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -40,6 +46,10 @@ function extractTextBlocks(content: AssistantContentBlock[]): string {
     .join("");
 }
 
+/**
+ * Provider-neutral conversation state that can outlive a concrete native
+ * model adapter or Agent runtime instance.
+ */
 export class ConversationHistory {
   private archive: ConversationHistoryEntrySnapshot[];
   private active: ConversationHistoryEntrySnapshot[];
@@ -111,6 +121,26 @@ export class ConversationHistory {
         content: truncateLargeResult(block.content, this.toolResultMaxChars),
       })),
     });
+  }
+
+  addToolBatchResults(
+    toolCalls: ToolUseContentBlock[],
+    resolvedResults: ToolResultContentBlock[],
+    unresolvedResult: Pick<ToolResultContentBlock, "content" | "isError">,
+  ): void {
+    const resolvedByToolUseId = new Map(
+      resolvedResults.map((result) => [result.toolUseId, result]),
+    );
+    this.addToolResults(
+      toolCalls.map(
+        (toolCall): ToolResultContentBlock =>
+          resolvedByToolUseId.get(toolCall.id) ?? {
+            type: "tool_result",
+            toolUseId: toolCall.id,
+            ...unresolvedResult,
+          },
+      ),
+    );
   }
 
   buildRequestMessages(stateContext: string): ConversationMessage[] {
@@ -237,6 +267,8 @@ export function renderEntry(entry: ConversationHistoryEntrySnapshot): string {
         return `[tool call ${block.name} id=${block.id}] ${JSON.stringify(block.input)}`;
       case "tool_result":
         return `[tool result id=${block.toolUseId}${block.isError ? " error" : ""}] ${block.content}`;
+      case "provider_continuation":
+        return `[opaque provider continuation purpose=${block.purpose} protocol=${block.issuer.protocol} provider=${block.issuer.provider} model=${block.issuer.model}]`;
       default:
         return "";
     }

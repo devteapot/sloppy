@@ -108,7 +108,7 @@ function lookupTypedSession(
 function typedSessionRoute(record: PublicSessionRecord): SessionRoute {
   const socketPath = record.socketPath ?? "";
   const runtimeStatus = record.runtimeStatus;
-  return runtimeStatus === "dormant" || !socketPath
+  return runtimeStatus !== "live" || !socketPath
     ? { status: "dormant" }
     : { status: "live", socketPath };
 }

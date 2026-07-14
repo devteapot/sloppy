@@ -203,6 +203,9 @@ describe("runtime smoke runner", () => {
     const eventLogPath = join(workspaceRoot, "events.jsonl");
     const config = TEST_CONFIG;
     const manager = {
+      acquireProfileBinding: () => Symbol("native-smoke-profile-binding"),
+      moveProfileBinding: () => undefined,
+      releaseProfileBinding: () => undefined,
       ensureReady: async () => READY_LLM_STATE,
       getState: async () => READY_LLM_STATE,
       getConfig: () => config,
@@ -274,6 +277,9 @@ describe("runtime smoke runner", () => {
       },
     };
     const manager = {
+      acquireProfileBinding: () => Symbol("env-smoke-profile-binding"),
+      moveProfileBinding: () => undefined,
+      releaseProfileBinding: () => undefined,
       ensureReady: async () => RUNTIME_READY_LLM_STATE,
       getState: async () => RUNTIME_READY_LLM_STATE,
       getConfig: () => config,

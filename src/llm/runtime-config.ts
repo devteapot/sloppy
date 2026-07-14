@@ -1,7 +1,7 @@
 import { type LlmConfig, llmReasoningEffortSchema, type SloppyConfig } from "../config/schema";
 import { getDefaultEndpointModel } from "./catalog";
 import type { CredentialStore } from "./credential-store";
-import { LlmProfileManager } from "./profile-manager";
+import { type LlmProfileBindingRegistry, LlmProfileManager } from "./profile-manager";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -97,11 +97,15 @@ export function createRuntimeLlmProfileManager(options: {
   config: SloppyConfig;
   credentialStore?: CredentialStore;
   writeConfig?: (config: LlmConfig) => Promise<void>;
+  profileBindingRegistry?: LlmProfileBindingRegistry;
+  expectedRevision?: number;
   env?: RuntimeEnvironment;
 }): LlmProfileManager {
   return new LlmProfileManager({
     config: buildRuntimeSloppyConfig(options.config, options.env),
     credentialStore: options.credentialStore,
     writeConfig: options.writeConfig,
+    profileBindingRegistry: options.profileBindingRegistry,
+    expectedRevision: options.expectedRevision,
   });
 }

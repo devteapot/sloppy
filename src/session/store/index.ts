@@ -468,8 +468,8 @@ export class SessionStore {
     this.emit();
   }
 
-  failTurn(turnId: string, message: string): void {
-    turn.failTurn(this.state, turnId, message);
+  failTurn(turnId: string, message: string, details?: turn.ModelErrorDetails): void {
+    turn.failTurn(this.state, turnId, message, details);
     this.emit();
   }
 

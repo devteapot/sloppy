@@ -20,7 +20,95 @@ export const llmReasoningEffortSchema = z.enum([
 
 export const llmThinkingDisplaySchema = z.enum(["visible", "hidden"]);
 
+export const DEFAULT_LLM_REQUEST_POLICY = {
+  timeoutMs: 120_000,
+  maxRetries: 2,
+  baseRetryDelayMs: 500,
+  maxRetryDelayMs: 10_000,
+} as const;
+
+export const MAX_LLM_REQUEST_TIMER_MS = 2_147_483_647;
+
 const providerOptionsSchema = z.record(z.string(), z.unknown()).default({});
+
+const SENSITIVE_LLM_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "api-key",
+  "x-auth-token",
+  "x-access-token",
+  "anthropic-api-key",
+  "x-goog-api-key",
+]);
+
+export function isSensitiveLlmHeaderName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return (
+    SENSITIVE_LLM_HEADER_NAMES.has(normalized) ||
+    /(^|[-_])(auth|authorization|cookie|credential|credentials|key|password|passwd|secret)([-_]|$)/.test(
+      normalized,
+    ) ||
+    /(^|[-_])(api|access|auth|client|secret)[-_]?key($|[-_])/.test(normalized) ||
+    normalized.endsWith("-token") ||
+    normalized.endsWith("_token")
+  );
+}
+
+const llmLiteralHeadersSchema = z
+  .record(z.string().trim().min(1), z.string())
+  .superRefine((headers, context) => {
+    for (const name of Object.keys(headers)) {
+      if (!isSensitiveLlmHeaderName(name)) continue;
+      context.addIssue({
+        code: "custom",
+        path: [name],
+        message: `Sensitive LLM header '${name}' must use headerEnv instead of a literal value.`,
+      });
+    }
+  });
+
+const llmHeaderEnvSchema = z.record(
+  z.string().trim().min(1),
+  z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Expected an environment variable name."),
+);
+
+const llmBaseUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .superRefine((value, context) => {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      context.addIssue({
+        code: "custom",
+        message: "LLM endpoint baseUrl must use http or https.",
+      });
+    }
+    if (url.username || url.password) {
+      context.addIssue({
+        code: "custom",
+        message: "LLM endpoint baseUrl must not contain embedded credentials.",
+      });
+    }
+    if (url.hash) {
+      context.addIssue({
+        code: "custom",
+        message: "LLM endpoint baseUrl must not contain a URL fragment.",
+      });
+    }
+    if (url.search) {
+      context.addIssue({
+        code: "custom",
+        message: "LLM endpoint baseUrl must not contain query parameters.",
+      });
+    }
+  });
 
 const openAiThinkingSchema = z
   .object({
@@ -116,12 +204,38 @@ export const llmEndpointSchema = z
   .object({
     label: z.string().trim().min(1).optional(),
     protocol: llmProtocolSchema,
-    baseUrl: z.string().trim().min(1).optional(),
+    baseUrl: llmBaseUrlSchema.optional(),
     auth: llmEndpointAuthSchema.optional(),
-    headers: z.record(z.string(), z.string()).optional(),
+    headers: llmLiteralHeadersSchema.optional(),
+    headerEnv: llmHeaderEnvSchema.optional(),
     models: z.record(z.string().min(1), llmEndpointModelSchema).default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((endpoint, context) => {
+    if (!endpoint.baseUrl) return;
+    const carriesCredentials =
+      (endpoint.auth !== undefined && endpoint.auth.type !== "none") ||
+      endpoint.headerEnv !== undefined;
+    if (carriesCredentials && new URL(endpoint.baseUrl).protocol !== "https:") {
+      context.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Credential-bearing LLM endpoints must use https.",
+      });
+    }
+  });
+
+export const llmRequestPolicySchema = z
+  .object({
+    timeoutMs: z.number().int().min(1000).max(MAX_LLM_REQUEST_TIMER_MS).default(120_000),
+    maxRetries: z.number().int().min(0).max(10).default(2),
+    baseRetryDelayMs: z.number().int().min(0).max(MAX_LLM_REQUEST_TIMER_MS).default(500),
+    maxRetryDelayMs: z.number().int().min(0).max(MAX_LLM_REQUEST_TIMER_MS).default(10_000),
+  })
+  .refine((policy) => policy.maxRetryDelayMs >= policy.baseRetryDelayMs, {
+    message: "maxRetryDelayMs must be greater than or equal to baseRetryDelayMs.",
+    path: ["maxRetryDelayMs"],
+  });
 
 const nativeLlmProfileSchema = z
   .object({
@@ -485,6 +599,7 @@ export const sloppyConfigSchema = z.object({
       defaultProfileId: z.string().optional(),
       profiles: z.array(llmProfileSchema).default([]),
       maxTokens: z.number().int().min(256).default(4096),
+      requestPolicy: llmRequestPolicySchema.default(DEFAULT_LLM_REQUEST_POLICY),
     })
     .strict()
     .default({
@@ -492,6 +607,7 @@ export const sloppyConfigSchema = z.object({
       endpoints: {},
       profiles: [],
       maxTokens: 4096,
+      requestPolicy: DEFAULT_LLM_REQUEST_POLICY,
     }),
   agent: z
     .object({
@@ -573,6 +689,7 @@ export type LlmThinkingConfigInput = z.infer<typeof llmThinkingConfigSchema>;
 export type LlmEndpointAuthConfig = z.infer<typeof llmEndpointAuthSchema>;
 export type LlmEndpointModelCapabilitiesConfig = z.infer<typeof llmEndpointModelCapabilitiesSchema>;
 export type LlmEndpointModelCompatConfig = z.infer<typeof llmEndpointModelCompatSchema>;
+export type LlmRequestPolicyConfig = z.infer<typeof llmRequestPolicySchema>;
 
 export type LlmThinkingEffectiveReason =
   | "configured"
@@ -622,6 +739,7 @@ export type LlmEndpointConfig = {
   baseUrl?: string;
   auth: LlmEndpointAuthConfig;
   headers?: Record<string, string>;
+  headerEnv?: Record<string, string>;
   models: Record<string, LlmEndpointModelConfig>;
 };
 
@@ -636,6 +754,7 @@ export interface LlmConfig {
   defaultProfileId?: string;
   profiles: AnyLlmProfileConfig[];
   maxTokens: number;
+  requestPolicy?: LlmRequestPolicyConfig;
 }
 
 export interface SloppyConfig

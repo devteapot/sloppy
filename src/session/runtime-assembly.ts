@@ -2,7 +2,7 @@ import type { SloppyConfig } from "../config/schema";
 import type { AgentCallbacks, RoleProfile } from "../core/agent";
 import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
-import type { LlmProfileManager } from "../llm/profile-manager";
+import type { LlmProfileBindingRegistry, LlmProfileManager } from "../llm/profile-manager";
 import { createFirstPartyToolEventEnrichers } from "../plugins/first-party/session-facets";
 import type { ChildSessionFactory } from "../runtime/child-session";
 import { type AgentEventBus, createAgentEventBus } from "./event-bus";
@@ -31,6 +31,8 @@ export type SessionRuntimeOptions = {
   store?: SessionStore;
   agentFactory?: SessionAgentFactory;
   llmProfileManager?: LlmProfileManager;
+  llmProfileBindingRegistry?: LlmProfileBindingRegistry;
+  llmProfileRevision?: number;
   ignoredProviderIds?: string[];
   parentActorId?: string;
   taskId?: string;
@@ -50,6 +52,7 @@ export type SessionRuntimeOptions = {
   approvalMode?: ApprovalMode;
   configReloader?: () => Promise<SloppyConfig>;
   childSessionFactory?: ChildSessionFactory;
+  preserveScopedConfig?: boolean;
 };
 
 export function createSessionStore(
@@ -105,13 +108,16 @@ export function createSessionCallbacks(options: {
   store: SessionStore;
   localProviderIds: Set<string>;
   turns: () => TurnCoordinator;
+  isStopped: () => boolean;
 }): AgentCallbacks {
   return {
     onText: (chunk) => {
+      if (options.isStopped()) return;
       const turnId = options.turns().snapshot().activeTurnId;
       if (turnId) options.store.appendAssistantText(turnId, chunk);
     },
     onThinking: (delta) => {
+      if (options.isStopped()) return;
       const turnId = options.turns().snapshot().activeTurnId;
       if (!turnId) return;
       options.store.appendAssistantThinking(turnId, {
@@ -129,14 +135,19 @@ export function createSessionCallbacks(options: {
         done: delta.done,
       });
     },
-    onToolEvent: (event) => options.turns().handleToolEvent(event),
+    onToolEvent: (event) => {
+      if (options.isStopped()) return;
+      options.turns().handleToolEvent(event);
+    },
     onTurnUsage: (usage) => {
+      if (options.isStopped()) return;
       options.store.recordUsage({
         ...usage,
         turnId: options.turns().snapshot().activeTurnId ?? undefined,
       });
     },
     onProviderSnapshot: (update) => {
+      if (options.isStopped()) return;
       syncProviderSnapshotToSession(
         options.store,
         update,
@@ -147,8 +158,10 @@ export function createSessionCallbacks(options: {
         options.turns().scheduleAutoApprovals();
       }
     },
-    onExternalProviderStates: (states) =>
-      syncExternalProviderStatesToSession(options.store, states),
+    onExternalProviderStates: (states) => {
+      if (options.isStopped()) return;
+      syncExternalProviderStatesToSession(options.store, states);
+    },
   };
 }
 

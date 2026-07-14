@@ -19,7 +19,7 @@ export type ClientLeaseInput = {
 export type SessionRecord = {
   sessionId: string;
   socketPath: string;
-  runtimeStatus: "live" | "dormant";
+  runtimeStatus: "live" | "stopping" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;
@@ -28,16 +28,19 @@ export type SessionRecord = {
   title?: string;
   createdAt: string;
   lastActivityAt: string;
+  approvalMode?: ApprovalMode;
   snapshotPath?: string;
   archived?: boolean;
   service?: SessionService;
   unsubscribe?: () => void;
+  stopErrors?: unknown[];
+  stopCompletion?: Promise<void>;
 };
 
 export type PublicSessionRecord = {
   sessionId: string;
   socketPath?: string;
-  runtimeStatus: "live" | "dormant";
+  runtimeStatus: "live" | "stopping" | "dormant";
   workspaceRoot?: string;
   workspaceId?: string;
   projectId?: string;

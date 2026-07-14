@@ -4,7 +4,12 @@ import YAML from "yaml";
 
 import { DEFAULT_LLM_ENDPOINTS } from "../llm/catalog";
 import { getHomeConfigPath } from "./load";
-import type { LlmConfig, LlmEndpointConfig, LlmEndpointModelConfig } from "./schema";
+import {
+  isSensitiveLlmHeaderName,
+  type LlmConfig,
+  type LlmEndpointConfig,
+  type LlmEndpointModelConfig,
+} from "./schema";
 
 function definedFields<T extends Record<string, unknown>>(fields: T): Partial<T> {
   return Object.fromEntries(
@@ -23,11 +28,19 @@ function toPersistedEndpointModel(model: LlmEndpointModelConfig): LlmEndpointMod
 }
 
 function toPersistedEndpoint(endpoint: LlmEndpointConfig): LlmEndpointConfig {
+  const sensitiveHeader = Object.keys(endpoint.headers ?? {}).find(isSensitiveLlmHeaderName);
+  if (sensitiveHeader) {
+    throw new Error(
+      `Refusing to persist sensitive LLM header '${sensitiveHeader}'. Use headerEnv so only the environment variable name is stored.`,
+    );
+  }
+
   return {
     ...(definedFields({
       label: endpoint.label,
       baseUrl: endpoint.baseUrl,
       headers: endpoint.headers,
+      headerEnv: endpoint.headerEnv,
     }) as Partial<LlmEndpointConfig>),
     protocol: endpoint.protocol,
     auth: endpoint.auth,
@@ -66,6 +79,7 @@ function toPersistedLlmConfig(config: LlmConfig): Record<string, unknown> {
     endpoints: toPersistedEndpoints(config),
     defaultProfileId: config.defaultProfileId,
     maxTokens: config.maxTokens,
+    requestPolicy: config.requestPolicy,
     profiles: config.profiles.map((profile) => ({ ...profile })),
   };
 }

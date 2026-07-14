@@ -82,6 +82,15 @@ function isConversationContentBlock(value: unknown): boolean {
         typeof value.content === "string" &&
         (value.isError === undefined || typeof value.isError === "boolean")
       );
+    case "provider_continuation":
+      return (
+        ["reasoning", "assistant_message", "tool_call"].includes(String(value.purpose)) &&
+        isRecord(value.issuer) &&
+        typeof value.issuer.protocol === "string" &&
+        typeof value.issuer.provider === "string" &&
+        typeof value.issuer.model === "string" &&
+        typeof value.issuer.scope === "string"
+      );
     default:
       return false;
   }

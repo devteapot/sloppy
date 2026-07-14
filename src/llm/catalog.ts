@@ -28,7 +28,7 @@ export const DEFAULT_LLM_ENDPOINTS: Record<string, BuiltInLlmEndpoint> = {
   },
   openai: {
     label: "OpenAI",
-    protocol: "openai-chat",
+    protocol: "openai-responses",
     auth: { type: "env", env: "OPENAI_API_KEY" },
     defaultModel: "gpt-5.4",
     models: {
@@ -36,11 +36,6 @@ export const DEFAULT_LLM_ENDPOINTS: Record<string, BuiltInLlmEndpoint> = {
         contextWindowTokens: 1_050_000,
         maxOutputTokens: 128_000,
         capabilities: { tools: true, images: true },
-        compat: {
-          kind: "openai",
-          maxTokensField: "max_completion_tokens",
-          thinkingFormat: "openai",
-        },
       },
     },
   },
@@ -176,6 +171,13 @@ export function mergeEndpointConfig(
       ...(base?.headers ?? {}),
       ...(override.headers ?? {}),
     },
+    headerEnv:
+      base?.headerEnv || override.headerEnv
+        ? {
+            ...(base?.headerEnv ?? {}),
+            ...(override.headerEnv ?? {}),
+          }
+        : undefined,
     models: {
       ...(base?.models ?? {}),
       ...Object.fromEntries(

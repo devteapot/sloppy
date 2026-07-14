@@ -12,6 +12,7 @@ const PARALLEL_SAFE_TOOL_CONCURRENCY = 4;
 
 export type ExecuteToolCallsResult =
   | { status: "completed"; toolResults: ToolResultContentBlock[] }
+  | { status: "cancelled"; toolResults: ToolResultContentBlock[] }
   | { status: "waiting_approval"; pending: PendingApprovalContinuation };
 
 function isParallelSafeToolCall(toolUse: ToolUseContentBlock, toolSet: RuntimeToolSet): boolean {
@@ -103,7 +104,7 @@ export async function executeToolCalls(
   let index = options.startIndex;
   while (index < options.toolCalls.length) {
     if (options.signal?.aborted) {
-      throw new LlmAbortError();
+      return { status: "cancelled", toolResults };
     }
 
     const toolCall = options.toolCalls[index];
@@ -156,18 +157,26 @@ export async function executeToolCalls(
     }
 
     options.onToolCall?.(`${toolCall.name} ${JSON.stringify(toolCall.input)}`);
-    const result = await executeToolCall(
-      toolCall,
-      options.toolSet,
-      options.localTools,
-      options.hub,
-      options.config,
-      options.onToolEvent,
-      options.toolPolicy,
-      options.transformInvoke,
-      options.roleId,
-      options.signal,
-    );
+    let result: ExecuteToolCallResult;
+    try {
+      result = await executeToolCall(
+        toolCall,
+        options.toolSet,
+        options.localTools,
+        options.hub,
+        options.config,
+        options.onToolEvent,
+        options.toolPolicy,
+        options.transformInvoke,
+        options.roleId,
+        options.signal,
+      );
+    } catch (error) {
+      if (error instanceof LlmAbortError || options.signal?.aborted) {
+        return { status: "cancelled", toolResults };
+      }
+      throw error;
+    }
 
     if (result.kind === "approval_requested") {
       emitApprovalRequestedToolCall(result, options);

@@ -4,6 +4,7 @@ import { DEFAULT_LLM_ENDPOINTS, mergeLlmEndpoints } from "../src/llm/catalog";
 
 describe("default LLM endpoint catalog", () => {
   test("ships endpoint metadata for API-compatible defaults", () => {
+    expect(DEFAULT_LLM_ENDPOINTS.openai?.protocol).toBe("openai-responses");
     expect(DEFAULT_LLM_ENDPOINTS.openai?.models["gpt-5.4"]?.contextWindowTokens).toBe(1_050_000);
     expect(DEFAULT_LLM_ENDPOINTS.openrouter?.models["openai/gpt-5.4"]?.contextWindowTokens).toBe(
       1_050_000,

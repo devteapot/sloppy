@@ -61,9 +61,10 @@ export function buildContextBudget(options: {
   config: SloppyConfig;
   contextWindowTokens?: number;
   estimatedInputTokens: number;
+  outputReserveTokens?: number;
 }): ContextBudget {
   const configuredReserve = Math.max(
-    options.config.llm.maxTokens,
+    options.outputReserveTokens ?? options.config.llm.maxTokens,
     options.config.agent.contextCompaction.reserveTokens,
   );
   const reserveTokens = options.contextWindowTokens
@@ -208,6 +209,7 @@ export async function compactConversationHistory(options: {
   config: SloppyConfig;
   contextWindowTokens?: number;
   estimatedTokensBefore: number;
+  maxOutputTokens?: number;
   force?: boolean;
   signal?: AbortSignal;
   onSummaryCall?: (response: LlmResponse) => void;
@@ -226,6 +228,7 @@ export async function compactConversationHistory(options: {
     config: options.config,
     contextWindowTokens: options.contextWindowTokens,
     estimatedInputTokens: options.estimatedTokensBefore,
+    outputReserveTokens: options.maxOutputTokens,
   }).usableInputTokens;
   const overBudget =
     usableInputTokens !== undefined && options.estimatedTokensBefore > usableInputTokens;
@@ -267,7 +270,10 @@ export async function compactConversationHistory(options: {
     entries: entries.slice(0, firstRetainedIndex),
     llm: options.llm,
     contextWindowTokens: options.contextWindowTokens,
-    summaryMaxTokens: options.config.agent.contextCompaction.summaryMaxTokens,
+    summaryMaxTokens: Math.min(
+      options.config.agent.contextCompaction.summaryMaxTokens,
+      options.maxOutputTokens ?? Number.POSITIVE_INFINITY,
+    ),
     signal: options.signal,
     onSummaryCall: options.onSummaryCall,
   });

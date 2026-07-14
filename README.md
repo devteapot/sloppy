@@ -30,9 +30,12 @@ Current checked-in implementation includes:
 - Bun + TypeScript project scaffold
 - provider-native LLM adapter layer with:
   - native Anthropic/Claude support
-  - OpenAI-compatible support for OpenAI, OpenRouter, and Ollama
+  - native OpenAI Responses support for OpenAI
+  - OpenAI-compatible Chat Completions support for OpenRouter, Ollama, and custom routers
   - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
+  - exact-issuer replay of private Anthropic thinking signatures, Gemini thought
+    signatures, and OpenAI encrypted reasoning items across tool turns
 - consumer hub for first-party plugin and live-discovered SLOP providers
 - typed runtime-service registry for stable same-process collaboration between
   first-party capabilities, without sending internal calls through SLOP
@@ -126,7 +129,7 @@ RuntimeToolSet
         |
         v
 Agent Loop
-  - durable provider-neutral history with safe semantic compaction
+  - durable provider-neutral native history with safe semantic compaction
   - ephemeral <slop-state> context tail
   - ordered tool execution with safe concurrent read/idempotent runs
         |
@@ -499,7 +502,9 @@ sessions through the supervisor. Switching selects a session for the current
 TUI's supervisor client lease; it does not change a global active session for
 other connected TUIs. Stop ends a live session process while keeping its
 snapshot and registry entry restorable; it is blocked when another connected TUI
-has selected that session. The typed supervisor snapshot also exposes
+has selected that session. Deferred teardown appears as `stopping`; that record
+cannot be selected and stays visible until active work and profile leases have
+settled. The typed supervisor snapshot also exposes
 per-session runtime status, resume-session marker, turn state, goal status,
 queue pressure, pending approvals, and running task counts so the TUI can
 compare sessions through `/inspector sessions` without reading runtime
@@ -557,7 +562,7 @@ Check live runtime dependencies before a smoke run:
 
 ```sh
 bun run runtime:doctor \
-  --litellm-url http://sloppy-mba.local:8001/v1 \
+  --litellm-url https://sloppy-mba.local:8001/v1 \
   --acp-adapter claude \
   --event-log /tmp/sloppy-events.jsonl \
   --socket /tmp/slop/sloppy-session.sock
@@ -575,8 +580,9 @@ for that run.
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
 Claude and Codex ACP adapters. Copy those adapter blocks into
-`.sloppy/config.yaml` and set the LiteLLM endpoint model/base URL for your
-machine.
+`.sloppy/config.yaml`. Install the LiteLLM endpoint and its env-backed auth in
+the trusted home config at `~/.sloppy/config.yaml`; the workspace layer may
+select the resulting profile and model but cannot redefine endpoint routing.
 
 If the LiteLLM check fails before HTTP, verify local name resolution first:
 
@@ -585,8 +591,10 @@ dscacheutil -q host -a name sloppy-mba.local
 ping -c 1 sloppy-mba.local
 ```
 
-If `.local` mDNS is not available from the current host, use the router's direct
-IP address in `--litellm-url` and the configured `llm.endpoints.<id>.baseUrl`.
+If `.local` mDNS is not available from the current host, use a direct IP whose
+TLS certificate is valid for that address in `--litellm-url` and the configured
+`llm.endpoints.<id>.baseUrl`. Plain HTTP is limited to explicitly no-auth local
+endpoints.
 
 If the ACP check fails for Claude, confirm that the installed command actually
 speaks Agent Client Protocol over stdio. `claude mcp ...` is MCP server support,
@@ -637,23 +645,43 @@ Sloppy reads configuration from:
 - `~/.sloppy/config.yaml`
 - `.sloppy/config.yaml` in the current workspace
 
-The local workspace config overrides the home config.
+The local workspace config overrides ordinary home settings. For security,
+only the first (home) layer may define `llm.endpoints` or legacy LLM
+`baseUrl`/`apiKeyEnv` fields; workspace and project config cannot redirect a
+trusted credential to another host.
 
 LLM settings are configured under `llm`.
 
-Example:
+Example `~/.sloppy/config.yaml`:
 
 ```yaml
 llm:
   endpoints:
     local-router:
       protocol: openai-chat
-      baseUrl: http://sloppy-mba.local:8001/v1
+      baseUrl: https://sloppy-mba.local:8001/v1
       auth:
         type: env
         env: LITELLM_API_KEY
+      headers:
+        x-route: blue
+      headerEnv:
+        x-tenant-token: LITELLM_TENANT_TOKEN
       models:
-        local/test-model: {}
+        local/test-model:
+          maxOutputTokens: 8192
+          capabilities:
+            tools: true
+            images: false
+          compat:
+            kind: generic
+            maxTokensField: max_tokens
+            thinkingFormat: none
+  requestPolicy:
+    timeoutMs: 120000
+    maxRetries: 2
+    baseRetryDelayMs: 500
+    maxRetryDelayMs: 10000
   defaultProfileId: openai-main
   profiles:
     - kind: native
@@ -667,6 +695,32 @@ llm:
       endpointId: local-router
       model: local/test-model
 ```
+
+A workspace layer can select a home-defined endpoint without redefining it:
+
+```yaml
+llm:
+  defaultProfileId: local-router
+  profiles:
+    - kind: native
+      id: local-router
+      endpointId: local-router
+      model: local/test-model
+```
+
+Literal endpoint headers are for non-secret routing metadata only. Put
+credentials such as `Authorization` or `x-api-key` in `headerEnv`; YAML stores
+the environment variable name, while the runtime resolves its value for the
+request. Credential-bearing endpoints require HTTPS; HTTP remains available
+for explicitly no-auth local endpoints. Native transports reject redirects so
+API keys and `headerEnv` values cannot be forwarded to another origin.
+`requestPolicy` applies a bounded
+timeout and retries only transient failures that have not emitted partial
+output. Model `maxOutputTokens` is enforced by protocols that accept a request
+ceiling. The Codex subscription backend owns its own output ceiling, so Codex
+profiles do not project `maxOutputTokens` as enforceable. Declared
+`tools`/`images` capabilities shape or reject incompatible requests before they
+reach the provider.
 
 Thinking output is configured under `llm.thinking` and may be overridden per
 profile with `llm.profiles[].thinking`. `thinking.enabled` controls whether the
@@ -868,6 +922,29 @@ mutating affordances remain sequential barriers. Results are still appended to
 conversation history in the original model-emitted order.
 
 Managed profile metadata is stored in `~/.sloppy/config.yaml`.
+Live sessions lease their effective profile through a binding registry shared
+by supervised siblings; delegated children inherit their parent's profile
+manager and the same registry. The lease follows an unbound session when its
+effective default changes, prevents profile deletion while any sharing session
+is still routed to that profile, and is released when the session shuts down.
+An in-flight model call or approval continuation retains its prior
+inner-profile lease until it is idle, and native approval resumptions reuse the
+exact adapter that started the turn.
+If config reload removes an explicitly bound profile, the session projects that
+route as unavailable and disables message submission instead of silently
+falling back.
+Profile metadata and credential mutations are mutually exclusive, so a
+concurrent save/delete/key operation fails clearly instead of racing secure
+storage against the YAML update. Successful profile-config writes advance the
+shared registry revision; a stale sibling must reload before it can write, so
+it cannot resurrect profiles removed by another Session.
+Supervisor config loads and native adapter construction validate a captured
+registry generation across their asynchronous work. Adapter construction also
+tracks credential-only mutations, so one request cannot combine profile,
+endpoint, header, or key data from different generations. Delegated child
+Sessions retain their reduced non-LLM/plugin config and consume only the shared
+manager's current `llm` section; they never write child-scoped plugin config back
+into the parent manager.
 
 API keys are not written to YAML:
 

@@ -5,9 +5,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { SloppyConfig } from "../src/config/schema";
+import type { RoleProfile } from "../src/core/agent";
 import type { CredentialStore, CredentialStoreStatus } from "../src/llm/credential-store";
 import { LlmProfileManager } from "../src/llm/profile-manager";
+import type { ConversationMessage, LlmAdapter, LlmChatOptions } from "../src/llm/types";
+import { ProfileSessionAgent } from "../src/session/profile-agent";
 import { SessionRuntime } from "../src/session/runtime";
+import { createDeferred } from "./helpers/agent-session-provider-harness";
 import { createTestConfig } from "./helpers/config";
 
 class MemoryCredentialStore implements CredentialStore {
@@ -53,6 +57,51 @@ class FakeAgent {
 
   async prompt(params) {
     const text = params.prompt.find((block) => block.type === "text")?.text ?? "";
+    if (text.includes("approval")) {
+      const toolCall = {
+        toolCallId: "profile-tool-1",
+        title: "Profile approval probe",
+        kind: "edit",
+        status: "pending",
+        rawInput: { model: process.env.MODEL },
+      };
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          ...toolCall,
+        },
+      });
+      const permission = await connection.requestPermission({
+        sessionId: params.sessionId,
+        toolCall,
+        options: [
+          { kind: "allow_once", name: "Allow once", optionId: "allow" },
+          { kind: "reject_once", name: "Reject once", optionId: "reject" },
+        ],
+      });
+      const approved =
+        permission.outcome.outcome === "selected" && permission.outcome.optionId === "allow";
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: toolCall.toolCallId,
+          status: approved ? "completed" : "failed",
+        },
+      });
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "main " + process.env.MODEL + ": " + (approved ? "approved" : "rejected"),
+          },
+        },
+      });
+      return { stopReason: "end_turn" };
+    }
     await connection.sessionUpdate({
       sessionId: params.sessionId,
       update: {
@@ -138,7 +187,546 @@ function buildConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
   });
 }
 
+function buildNativeSwitchConfig(): SloppyConfig {
+  return createTestConfig({
+    llm: {
+      defaultProfileId: "native-a",
+      profiles: [
+        {
+          kind: "native",
+          id: "native-a",
+          endpointId: "native-a-endpoint",
+          model: "model-a",
+        },
+        {
+          kind: "native",
+          id: "native-b",
+          endpointId: "native-b-endpoint",
+          model: "model-b1",
+        },
+      ],
+      endpoints: {
+        "native-a-endpoint": {
+          protocol: "openai-chat",
+          auth: { type: "none" },
+          models: { "model-a": {} },
+        },
+        "native-b-endpoint": {
+          protocol: "openai-chat",
+          auth: { type: "none" },
+          models: { "model-b1": {}, "model-b2": {} },
+        },
+      },
+    },
+    plugins: {
+      terminal: { enabled: false },
+      filesystem: { enabled: false },
+    },
+  });
+}
+
+function buildMixedProfileConfig(workspaceRoot: string, scriptPath: string): SloppyConfig {
+  const config = buildConfig(workspaceRoot, scriptPath);
+  return {
+    ...config,
+    llm: {
+      ...config.llm,
+      defaultProfileId: "native",
+      profiles: [
+        {
+          kind: "native",
+          id: "native",
+          endpointId: "native-endpoint",
+          model: "native-model",
+        },
+        ...config.llm.profiles,
+      ],
+      endpoints: {
+        ...config.llm.endpoints,
+        "native-endpoint": {
+          protocol: "openai-chat",
+          auth: { type: "none" },
+          models: { "native-model": {} },
+        },
+      },
+    },
+  };
+}
+
+function portableTranscript(messages: ConversationMessage[]): Array<{
+  role: ConversationMessage["role"];
+  text: string;
+}> {
+  return messages.flatMap((message) => {
+    const text = message.content
+      .filter((block) => block.type === "text" && !block.text.startsWith("<slop-state"))
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("");
+    return text ? [{ role: message.role, text }] : [];
+  });
+}
+
+function latestPortableUserText(options: LlmChatOptions): string {
+  return (
+    portableTranscript(options.messages)
+      .filter((message) => message.role === "user")
+      .at(-1)?.text ?? ""
+  );
+}
+
+function requireProfileInner(agent: ProfileSessionAgent): { shutdown(): void } {
+  const inner = (agent as unknown as { inner: { shutdown(): void } | null }).inner;
+  if (!inner) {
+    throw new Error("Expected the profile session agent to have an active inner agent.");
+  }
+  return inner;
+}
+
 describe("ProfileSessionAgent", () => {
+  test("retains its profile lease until an active model operation settles during shutdown", async () => {
+    const config = buildNativeSwitchConfig();
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+    const chatStarted = createDeferred<void>();
+    const finishChat = createDeferred<void>();
+    manager.createAdapter = async () =>
+      ({
+        async chat(options) {
+          chatStarted.resolve();
+          await finishChat.promise;
+          const text = "finished after shutdown";
+          options.onText?.(text);
+          return {
+            content: [{ type: "text", text }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+
+    const agent = new ProfileSessionAgent({
+      config,
+      llmProfileManager: manager,
+      callbacks: {},
+    });
+
+    await agent.start();
+    const activeChat = agent.chat("keep the lease while this is active");
+    await chatStarted.promise;
+
+    agent.shutdown();
+    let shutdownCompleted = false;
+    const shutdownCompletion = agent.waitForShutdown().then(() => {
+      shutdownCompleted = true;
+    });
+    await Bun.sleep(0);
+    expect(shutdownCompleted).toBe(false);
+    await expect(manager.deleteProfile("native-a")).rejects.toThrow("live session is bound to it");
+
+    finishChat.resolve();
+    await expect(activeChat).resolves.toMatchObject({ status: "completed" });
+    await shutdownCompletion;
+    expect(shutdownCompleted).toBe(true);
+    await expect(manager.deleteProfile("native-a")).resolves.toMatchObject({
+      activeProfileId: "native-b",
+    });
+    await expect(agent.chat("must not restart")).rejects.toThrow("has been shut down");
+  });
+
+  test("rejects deferred shutdown completion with all finalization failures", async () => {
+    const config = buildNativeSwitchConfig();
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+    const chatStarted = createDeferred<void>();
+    const finishChat = createDeferred<void>();
+    manager.createAdapter = async () =>
+      ({
+        async chat(options) {
+          chatStarted.resolve();
+          await finishChat.promise;
+          const text = "cleanup should fail after this result";
+          options.onText?.(text);
+          return {
+            content: [{ type: "text", text }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+
+    const agent = new ProfileSessionAgent({
+      config,
+      llmProfileManager: manager,
+      callbacks: {},
+    });
+
+    await agent.start();
+    const activeChat = agent.chat("defer teardown until this settles");
+    await chatStarted.promise;
+
+    const innerShutdownError = new Error("deferred inner shutdown failed");
+    const inner = requireProfileInner(agent);
+    const originalInnerShutdown = inner.shutdown.bind(inner);
+    inner.shutdown = () => {
+      originalInnerShutdown();
+      throw innerShutdownError;
+    };
+    const releaseError = new Error("deferred profile binding release failed");
+    const originalReleaseProfileBinding = manager.releaseProfileBinding.bind(manager);
+    manager.releaseProfileBinding = (lease) => {
+      originalReleaseProfileBinding(lease);
+      throw releaseError;
+    };
+
+    agent.shutdown();
+    const shutdownCompletion = agent.waitForShutdown().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    finishChat.resolve();
+
+    const activeChatError = await activeChat.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const completionError = await shutdownCompletion;
+    expect(completionError).toBe(activeChatError);
+    expect(completionError).toBeInstanceOf(AggregateError);
+    expect((completionError as AggregateError).errors).toEqual([innerShutdownError, releaseError]);
+    await expect(manager.deleteProfile("native-a")).resolves.toMatchObject({
+      activeProfileId: "native-b",
+    });
+  });
+
+  test("preserves synchronous shutdown errors while rejecting completion", async () => {
+    const config = buildNativeSwitchConfig();
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+    manager.createAdapter = async () =>
+      ({
+        async chat() {
+          return {
+            content: [{ type: "text", text: "unused" }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+    const agent = new ProfileSessionAgent({
+      config,
+      llmProfileManager: manager,
+      callbacks: {},
+    });
+
+    await agent.start();
+    const shutdownError = new Error("immediate inner shutdown failed");
+    const inner = requireProfileInner(agent);
+    const originalInnerShutdown = inner.shutdown.bind(inner);
+    inner.shutdown = () => {
+      originalInnerShutdown();
+      throw shutdownError;
+    };
+    const shutdownCompletion = agent.waitForShutdown().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    let synchronousError: unknown;
+    try {
+      agent.shutdown();
+    } catch (error) {
+      synchronousError = error;
+    }
+
+    expect(synchronousError).toBe(shutdownError);
+    expect(await shutdownCompletion).toBe(shutdownError);
+    await expect(manager.deleteProfile("native-a")).resolves.toMatchObject({
+      activeProfileId: "native-b",
+    });
+  });
+
+  test("preserves native history across profile and model recreation", async () => {
+    const config = buildNativeSwitchConfig();
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+    const requests: Array<{
+      profileId: string;
+      model: string;
+      messages: ConversationMessage[];
+    }> = [];
+    let roleStarts = 0;
+    let roleStops = 0;
+    const role = {
+      id: "history-switch-test",
+      attachRuntime: () => {
+        roleStarts += 1;
+        return {
+          stop() {
+            roleStops += 1;
+          },
+        };
+      },
+    } satisfies RoleProfile;
+
+    manager.createAdapter = async () => {
+      const state = await manager.getState();
+      const profile = state.profiles.find((candidate) => candidate.id === state.activeProfileId);
+      if (!profile) {
+        throw new Error("Expected an active native profile.");
+      }
+      const profileId = profile.id;
+      const model = profile.model;
+      return {
+        async chat(options) {
+          requests.push({ profileId, model, messages: options.messages });
+          const text = `${profileId}/${model}: ${latestPortableUserText(options)}`;
+          options.onText?.(text);
+          return {
+            content: [{ type: "text", text }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      } satisfies LlmAdapter;
+    };
+
+    const agent = new ProfileSessionAgent({
+      config,
+      llmProfileManager: manager,
+      role,
+      callbacks: {},
+    });
+
+    try {
+      await agent.start();
+      await agent.chat("first turn");
+
+      await manager.setDefaultProfile("native-b");
+      await agent.chat("second turn");
+
+      await manager.saveProfile({
+        profileId: "native-b",
+        model: "model-b2",
+      });
+      await agent.chat("third turn");
+
+      expect(requests.map(({ profileId, model }) => ({ profileId, model }))).toEqual([
+        { profileId: "native-a", model: "model-a" },
+        { profileId: "native-b", model: "model-b1" },
+        { profileId: "native-b", model: "model-b2" },
+      ]);
+      expect(portableTranscript(requests.at(-1)?.messages ?? [])).toEqual([
+        { role: "user", text: "first turn" },
+        { role: "assistant", text: "native-a/model-a: first turn" },
+        { role: "user", text: "second turn" },
+        { role: "assistant", text: "native-b/model-b1: second turn" },
+        { role: "user", text: "third turn" },
+      ]);
+      expect(roleStarts).toBe(3);
+      expect(roleStops).toBe(2);
+    } finally {
+      agent.shutdown();
+    }
+
+    expect(roleStops).toBe(3);
+  });
+
+  test("restores durable native history into a fresh runtime", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-native-history-restore-"));
+    try {
+      const persistencePath = join(workspaceRoot, "session.json");
+      const requests: ConversationMessage[][] = [];
+      const createManager = (config: SloppyConfig): LlmProfileManager => {
+        const manager = new LlmProfileManager({
+          config,
+          credentialStore: new MemoryCredentialStore(),
+          writeConfig: async () => undefined,
+        });
+        manager.createAdapter = async () =>
+          ({
+            async chat(options) {
+              requests.push(options.messages);
+              const text = `native: ${latestPortableUserText(options)}`;
+              options.onText?.(text);
+              return {
+                content: [{ type: "text", text }],
+                stopReason: "end_turn",
+                usage: { inputTokens: 1, outputTokens: 1 },
+              };
+            },
+          }) satisfies LlmAdapter;
+        return manager;
+      };
+
+      const firstConfig = buildNativeSwitchConfig();
+      const firstRuntime = new SessionRuntime({
+        config: firstConfig,
+        sessionId: "native-history-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: createManager(firstConfig),
+      });
+      await firstRuntime.start();
+      await firstRuntime.sendMessage("before restart");
+      await firstRuntime.waitForIdle();
+      firstRuntime.shutdown();
+      await firstRuntime.waitForShutdown();
+
+      const restoredConfig = buildNativeSwitchConfig();
+      const restoredRuntime = new SessionRuntime({
+        config: restoredConfig,
+        sessionId: "native-history-restore",
+        sessionPersistencePath: persistencePath,
+        llmProfileManager: createManager(restoredConfig),
+      });
+      try {
+        await restoredRuntime.start();
+        await restoredRuntime.sendMessage("after restart");
+        await restoredRuntime.waitForIdle();
+
+        expect(portableTranscript(requests.at(-1) ?? [])).toEqual([
+          { role: "user", text: "before restart" },
+          { role: "assistant", text: "native: before restart" },
+          { role: "user", text: "after restart" },
+        ]);
+      } finally {
+        restoredRuntime.shutdown();
+        await restoredRuntime.waitForShutdown();
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("pins a native approval continuation until the next new chat", async () => {
+    const config = buildNativeSwitchConfig();
+    config.plugins.terminal.enabled = true;
+    const manager = new LlmProfileManager({
+      config,
+      credentialStore: new MemoryCredentialStore(),
+      writeConfig: async () => undefined,
+    });
+    const adapterRequests: Array<{
+      profileId: string | undefined;
+      modelOverride: string | undefined;
+      resumedApproval: boolean;
+    }> = [];
+    let approvalId: string | undefined;
+
+    manager.createAdapter = async (profileId, modelOverride) =>
+      ({
+        async chat(options) {
+          const resumedApproval =
+            profileId === "native-a" &&
+            adapterRequests.some((request) => request.profileId === "native-a");
+          adapterRequests.push({ profileId, modelOverride, resumedApproval });
+
+          if (profileId === "native-a" && !resumedApproval) {
+            expect(
+              options.tools?.some((tool) => tool.function.name === "terminal__session__execute"),
+            ).toBe(true);
+            return {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "profile-pin-call",
+                  name: "terminal__session__execute",
+                  input: {
+                    command: "printf blocked > profile-pin-probe.txt",
+                    background: false,
+                  },
+                },
+              ],
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          }
+
+          const text = `${profileId}/${modelOverride}: ${
+            resumedApproval ? "resumed approval" : "fresh chat"
+          }`;
+          options.onText?.(text);
+          return {
+            content: [{ type: "text", text }],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      }) satisfies LlmAdapter;
+
+    const agent = new ProfileSessionAgent({
+      config,
+      llmProfileManager: manager,
+      callbacks: {
+        onToolEvent(event) {
+          if (event.kind === "approval_requested") {
+            approvalId = event.approvalId;
+          }
+        },
+      },
+    });
+
+    try {
+      await agent.start();
+      const waiting = await agent.chat("request an approval");
+      expect(waiting.status).toBe("waiting_approval");
+      if (waiting.status !== "waiting_approval" || !approvalId) {
+        throw new Error("Expected the native turn to request approval.");
+      }
+
+      await manager.setDefaultProfile("native-b");
+      agent.updateConfig(manager.getConfig());
+      await expect(manager.deleteProfile("native-a")).rejects.toThrow(
+        "live session is bound to it",
+      );
+      agent.rejectApprovalDirect(approvalId, "Rejected by the regression test.");
+      const resumed = await agent.resumeWithToolResult({
+        block: {
+          type: "tool_result",
+          toolUseId: waiting.invocation.toolUseId,
+          content: "Approval rejected by the regression test.",
+          isError: true,
+        },
+        status: "cancelled",
+        summary: "terminal:execute /session",
+        errorCode: "approval_rejected",
+        errorMessage: "Rejected by the regression test.",
+      });
+      expect(resumed.status).toBe("completed");
+      expect(resumed.status === "completed" ? resumed.response : undefined).toBe(
+        "native-a/model-a: resumed approval",
+      );
+      await expect(manager.deleteProfile("native-a")).resolves.toMatchObject({
+        status: "ready",
+        activeProfileId: "native-b",
+      });
+
+      const next = await agent.chat("use the new default");
+      expect(next.status).toBe("completed");
+      expect(next.status === "completed" ? next.response : undefined).toBe(
+        "native-b/model-b1: fresh chat",
+      );
+      expect(adapterRequests).toEqual([
+        { profileId: "native-a", modelOverride: "model-a", resumedApproval: false },
+        { profileId: "native-a", modelOverride: "model-a", resumedApproval: true },
+        { profileId: "native-b", modelOverride: "model-b1", resumedApproval: false },
+      ]);
+    } finally {
+      agent.shutdown();
+    }
+  });
+
   test("runs ACP adapter profiles as the main session model", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-agent-"));
     try {
@@ -163,6 +751,7 @@ describe("ProfileSessionAgent", () => {
         expect(snapshot.llm.status).toBe("ready");
         expect(snapshot.llm.selectedProtocol).toBe("session-agent");
         expect(snapshot.llm.selectedModel).toBe("sonnet");
+        expect(snapshot.session.modelProvider).toBe("fake");
         const lastBlock = snapshot.transcript.at(-1)?.content[0];
         expect(lastBlock?.type).toBe("text");
         expect(lastBlock?.type === "text" ? lastBlock.text : undefined).toBe(
@@ -176,90 +765,138 @@ describe("ProfileSessionAgent", () => {
     }
   });
 
-  test("hands canonical conversation context to a newly selected profile", async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-switch-"));
+  test("pins an ACP approval continuation until the next new chat", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-acp-pinning-"));
     try {
       const scriptPath = await createFakeAcpAgent(workspaceRoot);
-      const config = buildConfig(workspaceRoot, scriptPath);
-      const runtime = new SessionRuntime({
+      const config = buildMixedProfileConfig(workspaceRoot, scriptPath);
+      config.llm.defaultProfileId = "fake-acp";
+      const manager = new LlmProfileManager({
         config,
-        sessionId: "profile-switch",
-        llmProfileManager: new LlmProfileManager({
-          config,
-          credentialStore: new MemoryCredentialStore(),
-          writeConfig: async () => undefined,
-        }),
+        credentialStore: new MemoryCredentialStore(),
+        writeConfig: async () => undefined,
+      });
+      const nativeRequests: Array<{
+        profileId: string | undefined;
+        modelOverride: string | undefined;
+      }> = [];
+      let approvalId: string | undefined;
+      manager.createAdapter = async (profileId, modelOverride) =>
+        ({
+          async chat(options) {
+            nativeRequests.push({ profileId, modelOverride });
+            const text = `native next: ${latestPortableUserText(options)}`;
+            options.onText?.(text);
+            return {
+              content: [{ type: "text", text }],
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        }) satisfies LlmAdapter;
+
+      const agent = new ProfileSessionAgent({
+        config,
+        llmProfileManager: manager,
+        callbacks: {
+          onToolEvent(event) {
+            if (event.kind === "approval_requested") {
+              approvalId = event.approvalId;
+            }
+          },
+        },
       });
 
       try {
-        await runtime.start();
-        await runtime.sendMessage("first provider message");
-        await runtime.waitForIdle();
-        await runtime.setDefaultLlmProfile("fake-acp-opus");
-        await runtime.sendMessage("continue with the second provider");
-        await runtime.waitForIdle();
+        await agent.start();
+        const waiting = await agent.chat("request approval from ACP");
+        expect(waiting.status).toBe("waiting_approval");
+        if (waiting.status !== "waiting_approval" || !approvalId) {
+          throw new Error("Expected the ACP turn to request approval.");
+        }
 
-        const lastBlock = runtime.store.getSnapshot().transcript.at(-1)?.content[0];
-        const text = lastBlock?.type === "text" ? lastBlock.text : "";
-        expect(text).toContain("main opus:");
-        expect(text).toContain("<conversation-handoff>");
-        expect(text).toContain("first provider message");
-        expect(text).toContain("main sonnet: first provider message");
-        expect(text).toContain("<current-user-message>\ncontinue with the second provider");
+        await manager.setDefaultProfile("native");
+        await agent.resolveApprovalDirect(approvalId);
+        const resumed = await agent.resumeWithToolResult({
+          block: {
+            type: "tool_result",
+            toolUseId: waiting.invocation.toolUseId,
+            content: "approved",
+          },
+          status: "ok",
+          summary: "ACP approval resolved",
+        });
+        expect(resumed).toEqual({
+          status: "completed",
+          response: "main sonnet: approved",
+        });
+
+        const next = await agent.chat("after ACP approval");
+        expect(next.status).toBe("completed");
+        expect(next.status === "completed" ? next.response : undefined).toBe(
+          "native next: after ACP approval",
+        );
+        expect(nativeRequests).toEqual([{ profileId: "native", modelOverride: "native-model" }]);
       } finally {
-        runtime.shutdown();
+        agent.shutdown();
       }
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
 
-  test("restores canonical conversation context for a fresh provider session", async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-restore-"));
+  test("keeps native history across an ACP handoff without importing ACP turns", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sloppy-profile-history-boundary-"));
     try {
       const scriptPath = await createFakeAcpAgent(workspaceRoot);
-      const persistencePath = join(workspaceRoot, "session.json");
-      const config = buildConfig(workspaceRoot, scriptPath);
-      const firstRuntime = new SessionRuntime({
+      const config = buildMixedProfileConfig(workspaceRoot, scriptPath);
+      const manager = new LlmProfileManager({
         config,
-        sessionId: "profile-restore",
-        sessionPersistencePath: persistencePath,
-        llmProfileManager: new LlmProfileManager({
-          config,
-          credentialStore: new MemoryCredentialStore(),
-          writeConfig: async () => undefined,
-        }),
+        credentialStore: new MemoryCredentialStore(),
+        writeConfig: async () => undefined,
+      });
+      const nativeRequests: ConversationMessage[][] = [];
+      manager.createAdapter = async () =>
+        ({
+          async chat(options) {
+            nativeRequests.push(options.messages);
+            const text = `native: ${latestPortableUserText(options)}`;
+            options.onText?.(text);
+            return {
+              content: [{ type: "text", text }],
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        }) satisfies LlmAdapter;
+
+      const agent = new ProfileSessionAgent({
+        config,
+        llmProfileManager: manager,
+        callbacks: {},
       });
 
-      await firstRuntime.start();
-      await firstRuntime.sendMessage("persist this provider-neutral context");
-      await firstRuntime.waitForIdle();
-      firstRuntime.shutdown();
-
-      const restoredConfig = buildConfig(workspaceRoot, scriptPath);
-      const restoredRuntime = new SessionRuntime({
-        config: restoredConfig,
-        sessionId: "profile-restore",
-        sessionPersistencePath: persistencePath,
-        llmProfileManager: new LlmProfileManager({
-          config: restoredConfig,
-          credentialStore: new MemoryCredentialStore(),
-          writeConfig: async () => undefined,
-        }),
-      });
       try {
-        await restoredRuntime.start();
-        await restoredRuntime.sendMessage("continue after process restore");
-        await restoredRuntime.waitForIdle();
+        await agent.start();
+        await agent.chat("before ACP");
 
-        const lastBlock = restoredRuntime.store.getSnapshot().transcript.at(-1)?.content[0];
-        const text = lastBlock?.type === "text" ? lastBlock.text : "";
-        expect(text).toContain("<conversation-handoff>");
-        expect(text).toContain("persist this provider-neutral context");
-        expect(text).toContain("main sonnet: persist this provider-neutral context");
-        expect(text).toContain("<current-user-message>\ncontinue after process restore");
+        await manager.setDefaultProfile("fake-acp");
+        const acpResult = await agent.chat("inside ACP");
+        expect(acpResult.status).toBe("completed");
+        expect(acpResult.status === "completed" ? acpResult.response : "").toBe(
+          "main sonnet: inside ACP",
+        );
+
+        await manager.setDefaultProfile("native");
+        await agent.chat("after ACP");
+
+        expect(portableTranscript(nativeRequests.at(-1) ?? [])).toEqual([
+          { role: "user", text: "before ACP" },
+          { role: "assistant", text: "native: before ACP" },
+          { role: "user", text: "after ACP" },
+        ]);
       } finally {
-        restoredRuntime.shutdown();
+        agent.shutdown();
       }
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });

@@ -180,7 +180,7 @@ describe("loadConfig", () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(
-      workspace,
+      home,
       [
         "llm:",
         "  defaultProfileId: openai-main",
@@ -211,6 +211,105 @@ describe("loadConfig", () => {
       type: "env",
       env: "OPENAI_API_KEY",
     });
+  });
+
+  test("rejects plaintext endpoint overrides that inherit built-in credentials", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      home,
+      [
+        "llm:",
+        "  endpoints:",
+        "    openai:",
+        "      protocol: openai-chat",
+        "      baseUrl: http://llm.example.test/v1",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    process.chdir(workspace);
+
+    await expect(loadConfig()).rejects.toThrow(
+      "Credential-bearing LLM endpoint 'openai' must use https",
+    );
+  });
+
+  test("allows endpoint routing only in the first unique config layer", async () => {
+    const trusted = await createTempDir("sloppy-trusted-");
+    const untrusted = await createTempDir("sloppy-untrusted-");
+    const trustedPath = join(trusted, ".sloppy/config.yaml");
+    const untrustedPath = join(untrusted, ".sloppy/config.yaml");
+    await writeConfig(
+      trusted,
+      [
+        "llm:",
+        "  endpoints:",
+        "    trusted-router:",
+        "      protocol: openai-chat",
+        "      baseUrl: https://llm.example.test/v1",
+        "      auth:",
+        "        type: env",
+        "        env: TRUSTED_LLM_KEY",
+      ].join("\n"),
+    );
+    await writeConfig(untrusted, "agent:\n  maxIterations: 7\n");
+
+    const config = await loadConfigFromLayerPaths([trustedPath, trustedPath, untrustedPath], {
+      cwd: untrusted,
+    });
+    expect(config.llm.endpoints["trusted-router"]?.baseUrl).toBe("https://llm.example.test/v1");
+    expect(config.agent.maxIterations).toBe(7);
+
+    const rejectedLayers = [
+      {
+        field: "llm.endpoints",
+        contents: [
+          "llm:",
+          "  endpoints:",
+          "    attacker:",
+          "      protocol: openai-chat",
+          "      baseUrl: https://attacker.example/v1",
+        ].join("\n"),
+      },
+      {
+        field: "legacy llm.baseUrl",
+        contents: "llm:\n  provider: openai\n  baseUrl: https://attacker.example/v1\n",
+      },
+      {
+        field: "legacy llm.apiKeyEnv",
+        contents: "llm:\n  provider: openai\n  apiKeyEnv: AWS_SECRET_ACCESS_KEY\n",
+      },
+      {
+        field: "legacy llm.profiles[0].baseUrl",
+        contents: [
+          "llm:",
+          "  profiles:",
+          "    - id: attacker",
+          "      provider: openai",
+          "      model: test",
+          "      baseUrl: https://attacker.example/v1",
+        ].join("\n"),
+      },
+      {
+        field: "legacy llm.profiles[0].apiKeyEnv",
+        contents: [
+          "llm:",
+          "  profiles:",
+          "    - id: attacker",
+          "      provider: openai",
+          "      model: test",
+          "      apiKeyEnv: AWS_SECRET_ACCESS_KEY",
+        ].join("\n"),
+      },
+    ];
+
+    for (const rejected of rejectedLayers) {
+      await writeConfig(untrusted, rejected.contents);
+      await expect(
+        loadConfigFromLayerPaths([trustedPath, trustedPath, untrustedPath], { cwd: untrusted }),
+      ).rejects.toThrow(rejected.field);
+    }
   });
 
   test("applies built-in endpoint defaults for Gemini profiles", async () => {
@@ -308,7 +407,7 @@ describe("loadConfig", () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(
-      workspace,
+      home,
       [
         "llm:",
         "  endpoints:",
@@ -404,7 +503,7 @@ describe("loadConfig", () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(
-      workspace,
+      home,
       [
         "llm:",
         "  provider: openrouter",
@@ -443,7 +542,7 @@ describe("loadConfig", () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(
-      workspace,
+      home,
       [
         "llm:",
         "  provider: anthropic",
@@ -489,13 +588,13 @@ describe("loadConfig", () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
     await writeConfig(
-      workspace,
+      home,
       [
         "llm:",
         "  endpoints:",
         "    local-router:",
         "      protocol: openai-chat",
-        "      baseUrl: http://sloppy-mba.local:8001/v1",
+        "      baseUrl: https://sloppy-mba.local:8001/v1",
         "      auth:",
         "        type: env",
         "        env: LITELLM_API_KEY",

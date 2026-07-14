@@ -12,6 +12,7 @@ import type { InvokePolicy } from "../core/policy";
 import type { RoleRegistry } from "../core/role";
 import {
   LlmConfigurationError,
+  type LlmProfileBindingLease,
   type LlmProfileManager,
   type LlmStateSnapshot as RuntimeLlmStateSnapshot,
 } from "../llm/profile-manager";
@@ -151,6 +152,7 @@ export function createDefaultChildSession(
     externalAgentState: options.externalAgentState,
     policyRules: options.policyRules,
     parentActorId: options.parentActorId,
+    preserveScopedConfig: true,
   });
   const provider = new AgentSessionProvider(runtime, {
     providerId: options.providerId,
@@ -176,18 +178,36 @@ export class SessionRuntime {
   private turns!: TurnCoordinator;
   private readonly startedRuntimeConfigFingerprint: string;
   private readonly configReloader?: () => Promise<SloppyConfig>;
+  private readonly llmProfileId?: string;
+  private readonly llmModelOverride?: string;
+  private readonly llmProfileBindingLease?: LlmProfileBindingLease;
+  private readonly preserveScopedConfig: boolean;
+  private shutdownCompletion: Promise<void> = Promise.resolve();
+  private shutdownRequested = false;
 
   constructor(options: SessionRuntimeOptions = {}) {
     this.config = options.config ?? DEFAULT_CONFIG;
     this.startedRuntimeConfigFingerprint = runtimeConfigFingerprint(this.config);
     this.configReloader = options.configReloader;
+    this.llmProfileId = options.llmProfileId;
+    this.llmModelOverride = options.llmModelOverride;
+    this.preserveScopedConfig = options.preserveScopedConfig ?? false;
     this.requiresLlmProfile = options.requiresLlmProfile ?? true;
     this.externalAgentState = options.externalAgentState;
     this.llmProfileManager =
       options.llmProfileManager ??
       createRuntimeLlmProfileManager({
         config: this.config,
+        profileBindingRegistry: options.llmProfileBindingRegistry,
+        expectedRevision: options.llmProfileRevision,
       });
+    if (
+      options.llmProfileManager &&
+      !this.preserveScopedConfig &&
+      this.llmProfileManager.getConfig() !== this.config
+    ) {
+      this.llmProfileManager.updateConfig(this.config);
+    }
     const sessionId = options.sessionId ?? crypto.randomUUID();
     this.localProviderIds = createLocalProviderIds(sessionId, options.ignoredProviderIds);
     const sessionPlugins = createFirstPartySessionPlugins(this.config);
@@ -223,6 +243,7 @@ export class SessionRuntime {
       store: this.store,
       localProviderIds: this.localProviderIds,
       turns: () => this.turns,
+      isStopped: () => this.shutdownRequested,
     });
     this.eventBus = createSessionEventBus(options, this.config);
 
@@ -272,6 +293,9 @@ export class SessionRuntime {
       buildToolResultBlock,
       isAbortError: isLlmAbortError,
     });
+    this.llmProfileBindingLease = this.requiresLlmProfile
+      ? this.llmProfileManager.acquireProfileBinding(this.llmProfileId)
+      : undefined;
   }
 
   private createPluginContext(): PluginRuntimeContext {
@@ -376,6 +400,9 @@ export class SessionRuntime {
   }
 
   async start(): Promise<void> {
+    if (this.shutdownRequested) {
+      throw new Error("Session runtime has been shut down.");
+    }
     if (this.started) {
       return;
     }
@@ -458,7 +485,7 @@ export class SessionRuntime {
     const apiKey = typeof params.api_key === "string" ? params.api_key : undefined;
     const makeDefault = typeof params.make_default === "boolean" ? params.make_default : undefined;
 
-    const state = await this.llmProfileManager.saveProfile({
+    await this.llmProfileManager.saveProfile({
       profileId,
       label,
       kind,
@@ -471,13 +498,13 @@ export class SessionRuntime {
       apiKey,
       makeDefault,
     });
-    this.applyLlmState(state);
+    await this.refreshLlmState();
     return { status: "ok" };
   }
 
   async setDefaultLlmProfile(profileId: string): Promise<{ profileId: string; status: string }> {
-    const state = await this.llmProfileManager.setDefaultProfile(profileId);
-    this.applyLlmState(state);
+    await this.llmProfileManager.setDefaultProfile(profileId);
+    await this.refreshLlmState();
     return {
       profileId,
       status: "ok",
@@ -485,8 +512,8 @@ export class SessionRuntime {
   }
 
   async deleteLlmProfile(profileId: string): Promise<{ profileId: string; status: string }> {
-    const state = await this.llmProfileManager.deleteProfile(profileId);
-    this.applyLlmState(state);
+    await this.llmProfileManager.deleteProfile(profileId);
+    await this.refreshLlmState();
     return {
       profileId,
       status: "ok",
@@ -494,8 +521,8 @@ export class SessionRuntime {
   }
 
   async deleteLlmApiKey(profileId: string): Promise<{ profileId: string; status: string }> {
-    const state = await this.llmProfileManager.deleteApiKey(profileId);
-    this.applyLlmState(state);
+    await this.llmProfileManager.deleteApiKey(profileId);
+    await this.refreshLlmState();
     return {
       profileId,
       status: "ok",
@@ -515,8 +542,9 @@ export class SessionRuntime {
     if (!this.configReloader) {
       throw new Error("No config reload source is configured for this session.");
     }
+    const expectedRevision = this.llmProfileManager.captureConfigRevision();
     const nextConfig = await this.configReloader();
-    this.llmProfileManager.updateConfig(nextConfig);
+    this.llmProfileManager.updateConfig(nextConfig, { expectedRevision });
     await this.refreshLlmState();
     const snapshot = this.store.getSnapshot();
     return {
@@ -641,20 +669,73 @@ export class SessionRuntime {
     await this.turns.waitForIdle();
   }
   shutdown(): void {
+    if (this.shutdownRequested) {
+      return;
+    }
+    this.shutdownRequested = true;
+    const cleanupErrors: unknown[] = [];
     try {
       this.plugins.onShutdown();
     } catch (error) {
       console.warn("[sloppy] plugin shutdown hook failed:", error);
-    } finally {
+    }
+
+    try {
+      if (this.llmProfileBindingLease) {
+        this.llmProfileManager.releaseProfileBinding(this.llmProfileBindingLease);
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       this.agent.shutdown();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      this.shutdownCompletion = this.agent.waitForShutdown?.() ?? Promise.resolve();
+    } catch (error) {
+      cleanupErrors.push(error);
+      this.shutdownCompletion = Promise.resolve();
+    }
+    this.shutdownCompletion = this.shutdownCompletion.finally(() => {
+      this.store.syncConversationHistory(this.conversationHistory.snapshot());
       this.unsubscribeConversationHistory?.();
       this.unsubscribeConversationHistory = null;
+    });
+    try {
       this.turns.shutdown();
-      this.started = false;
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    this.started = false;
+    try {
       this.store.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       this.eventBus?.stop();
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
       this.eventBus = null;
     }
+
+    if (cleanupErrors.length === 1) {
+      throw cleanupErrors[0];
+    }
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, "Session runtime shutdown failed.");
+    }
+  }
+
+  async waitForShutdown(): Promise<void> {
+    await this.shutdownCompletion;
+  }
+
+  isShutdownComplete(): boolean {
+    return this.agent.isShutdownComplete?.() ?? this.agent.waitForShutdown === undefined;
   }
 
   private audit(event: Record<string, unknown> & { kind: string }): void {
@@ -674,28 +755,40 @@ export class SessionRuntime {
       return;
     }
 
+    const route = {
+      profileId: this.llmProfileId,
+      modelOverride: this.llmModelOverride,
+    };
     try {
       const state = options?.requireReady
-        ? await this.llmProfileManager.ensureReady()
-        : await this.llmProfileManager.getState();
+        ? await this.llmProfileManager.ensureReady(route)
+        : await this.llmProfileManager.getState(route);
       this.applyLlmState(state);
     } catch (error) {
       if (!(error instanceof LlmConfigurationError)) {
         throw error;
       }
 
-      const state = await this.llmProfileManager.getState();
+      const state = await this.llmProfileManager.getState(route);
       this.applyLlmState(state);
       throw error;
     }
   }
 
   private applyLlmState(state: RuntimeLlmStateSnapshot): void {
-    const nextConfig = this.llmProfileManager.getConfig();
+    if (this.llmProfileBindingLease) {
+      this.llmProfileManager.moveProfileBinding(this.llmProfileBindingLease, state.activeProfileId);
+    }
+    const managedConfig = this.llmProfileManager.getConfig();
+    const nextConfig = this.preserveScopedConfig
+      ? { ...this.config, llm: managedConfig.llm }
+      : managedConfig;
     const restartRequired =
       runtimeConfigFingerprint(nextConfig) !== this.startedRuntimeConfigFingerprint;
     this.config = nextConfig;
-    this.agent.updateConfig?.(this.config);
+    this.agent.updateConfig?.(this.config, {
+      syncLlmProfileManager: !this.preserveScopedConfig,
+    });
     this.store.setConfigRestartRequired(
       restartRequired,
       restartRequired
