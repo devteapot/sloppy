@@ -41,6 +41,7 @@ class FakeAgent {
   }
 
   async initialize() {
+    await this.connection.extNotification("_x.ai/mcp/servers_updated", { servers: [] });
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
@@ -234,6 +235,8 @@ class EnvAgent {
           text: JSON.stringify({
             leaked: process.env.SLOPPY_ACP_SHOULD_NOT_LEAK ?? null,
             explicit: process.env.SLOPPY_ACP_EXPLICIT ?? null,
+            hasHome: Boolean(process.env.HOME),
+            hasPath: Boolean(process.env.PATH),
           }),
         },
       },
@@ -253,6 +256,92 @@ const stream = acp.ndJsonStream(
   Readable.toWeb(process.stdin),
 );
 new acp.AgentSideConnection((connection) => new EnvAgent(connection), stream);
+`,
+  );
+  return scriptPath;
+}
+
+function createAuthenticatedModelAcpAgent(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sloppy-acp-auth-model-test-"));
+  tempDirs.push(dir);
+  const scriptPath = join(dir, "auth-model-agent.mjs");
+  const sdkUrl = pathToFileURL(
+    join(process.cwd(), "node_modules", "@agentclientprotocol", "sdk", "dist", "acp.js"),
+  ).href;
+  writeFileSync(
+    scriptPath,
+    `
+import * as acp from ${JSON.stringify(sdkUrl)};
+import { Readable, Writable } from "node:stream";
+
+class AuthModelAgent {
+  constructor(connection) {
+    this.connection = connection;
+    this.authMethodId = null;
+    this.modelId = "base-model";
+  }
+
+  async initialize() {
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: { loadSession: false },
+      authMethods: [
+        { id: "api-key", name: "API key" },
+        { id: "cached-token", name: "Cached token" },
+      ],
+      _meta: { defaultAuthMethodId: "cached-token" },
+    };
+  }
+
+  async authenticate(params) {
+    if (params.methodId === "api-key" && !process.env.SLOPPY_ACP_AUTH_TOKEN) {
+      throw new Error("Missing SLOPPY_ACP_AUTH_TOKEN");
+    }
+    this.authMethodId = params.methodId;
+  }
+
+  async newSession() {
+    if (!this.authMethodId) {
+      throw new Error("Authentication required");
+    }
+    return {
+      sessionId: "auth-model-session",
+      models: {
+        currentModelId: this.modelId,
+        availableModels: [
+          { modelId: "base-model", name: "Base" },
+          { modelId: "grok-4.5", name: "Grok 4.5" },
+        ],
+      },
+    };
+  }
+
+  async unstable_setSessionModel(params) {
+    this.modelId = params.modelId;
+  }
+
+  async prompt(params) {
+    await this.connection.sessionUpdate({
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: JSON.stringify({ authMethodId: this.authMethodId, modelId: this.modelId }),
+        },
+      },
+    });
+    return { stopReason: "end_turn" };
+  }
+
+  async cancel() {}
+}
+
+const stream = acp.ndJsonStream(
+  Writable.toWeb(process.stdout),
+  Readable.toWeb(process.stdin),
+);
+new acp.AgentSideConnection((connection) => new AuthModelAgent(connection), stream);
 `,
   );
   return scriptPath;
@@ -371,7 +460,9 @@ describe("AcpSessionAgent", () => {
       if (result.status !== "completed") {
         throw new Error(`Expected completed ACP result, got ${result.status}`);
       }
-      expect(result.response).toBe(JSON.stringify({ leaked: null, explicit: "visible" }));
+      expect(result.response).toBe(
+        JSON.stringify({ leaked: null, explicit: "visible", hasHome: true, hasPath: true }),
+      );
     } finally {
       if (previousSecret === undefined) {
         delete process.env.SLOPPY_ACP_SHOULD_NOT_LEAK;
@@ -383,6 +474,91 @@ describe("AcpSessionAgent", () => {
       } else {
         process.env.SLOPPY_ACP_EXPLICIT = previousExplicit;
       }
+      agent.shutdown();
+    }
+  });
+
+  test("authenticates with an environment-matched method and selects the requested model", async () => {
+    const previousToken = process.env.SLOPPY_ACP_AUTH_TOKEN;
+    process.env.SLOPPY_ACP_AUTH_TOKEN = "test-token";
+    const agent = new AcpSessionAgent({
+      adapterId: "auth-model",
+      adapter: {
+        command: ["node", createAuthenticatedModelAcpAgent()],
+        envAllowlist: ["SLOPPY_ACP_AUTH_TOKEN"],
+        authMethodPreferences: [
+          { id: "api-key", whenEnv: "SLOPPY_ACP_AUTH_TOKEN" },
+          { id: "cached-token" },
+        ],
+      },
+      modelOverride: "grok-4.5",
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      const result = await agent.chat("identify runtime");
+      expect(result).toEqual({
+        status: "completed",
+        response: JSON.stringify({ authMethodId: "api-key", modelId: "grok-4.5" }),
+      });
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.SLOPPY_ACP_AUTH_TOKEN;
+      } else {
+        process.env.SLOPPY_ACP_AUTH_TOKEN = previousToken;
+      }
+      agent.shutdown();
+    }
+  });
+
+  test("falls back to the next configured ACP authentication preference", async () => {
+    const previousToken = process.env.SLOPPY_ACP_AUTH_TOKEN;
+    delete process.env.SLOPPY_ACP_AUTH_TOKEN;
+    const agent = new AcpSessionAgent({
+      adapterId: "auth-fallback",
+      adapter: {
+        command: ["node", createAuthenticatedModelAcpAgent()],
+        authMethodPreferences: [
+          { id: "api-key", whenEnv: "SLOPPY_ACP_AUTH_TOKEN" },
+          { id: "cached-token" },
+        ],
+      },
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      const result = await agent.chat("identify auth");
+      expect(result).toEqual({
+        status: "completed",
+        response: JSON.stringify({ authMethodId: "cached-token", modelId: "base-model" }),
+      });
+    } finally {
+      if (previousToken !== undefined) {
+        process.env.SLOPPY_ACP_AUTH_TOKEN = previousToken;
+      }
+      agent.shutdown();
+    }
+  });
+
+  test("rejects ACP model overrides outside the advertised model inventory", async () => {
+    const agent = new AcpSessionAgent({
+      adapterId: "unknown-model",
+      adapter: {
+        command: ["node", createAuthenticatedModelAcpAgent()],
+        authMethodPreferences: [{ id: "cached-token" }],
+      },
+      modelOverride: "missing-model",
+      callbacks: {},
+      workspaceRoot: process.cwd(),
+    });
+
+    try {
+      await expect(agent.start()).rejects.toThrow(
+        "does not advertise requested model 'missing-model'",
+      );
+    } finally {
       agent.shutdown();
     }
   });

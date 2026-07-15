@@ -253,6 +253,11 @@ are never stored inline in YAML. Endpoint credentials come from the OS secure
 store, endpoint-declared environment variables, no-auth local endpoints, or the
 Codex CLI auth store for `openai-codex`.
 
+The built-in `xai` endpoint uses the shared `openai-responses` driver at
+`https://api.x.ai/v1`, with `XAI_API_KEY` authentication and `grok-4.5` as its
+catalog default. This is the native Sloppy-agent path. Grok Build is a separate
+configured ACP `session-agent` path and retains its external agent/tool loop.
+
 Endpoint routing is a trusted configuration boundary. The first unique config
 layer (normally `~/.sloppy/config.yaml`) may define `llm.endpoints` and legacy
 endpoint-routing fields; workspace and project layers may select home-defined
@@ -306,9 +311,20 @@ stale ready state.
 
 Wire protocols are assembled through a typed internal driver registry. The
 first-party OpenAI endpoint uses the Responses driver; OpenRouter, Ollama, and
-custom compatibility routers may continue to use Chat Completions. The Codex
-subscription adapter is a thin authentication wrapper over the same stateless
-Responses transport, while retaining its distinct protocol and auth identity.
+custom compatibility routers may continue to use Chat Completions. The xAI
+endpoint also uses the Responses driver, without a provider-specific adapter.
+The Codex subscription adapter is a thin authentication wrapper over the same
+stateless Responses transport, while retaining its distinct protocol and auth
+identity.
+
+ACP startup first inspects the agent's advertised authentication methods.
+Configured `authMethodPreferences` are evaluated in order, with optional
+`whenEnv` guards; absent a configured match, the advertised default or sole
+method is used. After `session/new`, a non-default profile model is validated
+against the agent's model inventory and selected through ACP
+`session/set_model`. Optional extension notifications are accepted as advisory
+events, while unsupported extension requests still fail normally. These are
+protocol-level ACP behaviors rather than Grok-specific runtime branches.
 
 Portable conversation history is owned above replaceable native Agent
 instances, so changing a native profile or model does not silently reset the

@@ -60,6 +60,14 @@ Expected production posture:
   files use current schema envelopes. `error` means startup should stop before
   loading malformed or unsupported state.
 
+For a Grok Build ACP check, configure the `grok agent stdio` adapter, then run
+the doctor with `--acp-adapter grok`. Ensure either `XAI_API_KEY` is explicitly
+allowed into the adapter environment or `grok login` has created a usable
+cached token. ACP startup reports unmatched advertised authentication methods
+as configuration errors. A subsequent session or routed smoke with an explicit
+model also reports unavailable requested models rather than silently choosing a
+different route.
+
 ## Smoke
 
 Use smoke runs to verify real runtime wiring after the doctor passes:

@@ -6,6 +6,16 @@ describe("default LLM endpoint catalog", () => {
   test("ships endpoint metadata for API-compatible defaults", () => {
     expect(DEFAULT_LLM_ENDPOINTS.openai?.protocol).toBe("openai-responses");
     expect(DEFAULT_LLM_ENDPOINTS.openai?.models["gpt-5.4"]?.contextWindowTokens).toBe(1_050_000);
+    expect(DEFAULT_LLM_ENDPOINTS.xai).toMatchObject({
+      protocol: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      auth: { type: "env", env: "XAI_API_KEY" },
+      defaultModel: "grok-4.5",
+    });
+    expect(DEFAULT_LLM_ENDPOINTS.xai?.models["grok-4.5"]).toMatchObject({
+      contextWindowTokens: 500_000,
+      capabilities: { tools: true, images: true },
+    });
     expect(DEFAULT_LLM_ENDPOINTS.openrouter?.models["openai/gpt-5.4"]?.contextWindowTokens).toBe(
       1_050_000,
     );

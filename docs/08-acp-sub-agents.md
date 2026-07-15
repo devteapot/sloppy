@@ -35,9 +35,9 @@ Supported execution shapes:
 - native child agent through Sloppy's LLM adapters
 - ACP child agent through a configured stdio ACP adapter
 
-The same ACP adapter configs are usable from `llm.profiles` with provider
-`acp`. In that shape, `adapterId` selects the configured adapter and `model`
-remains the selected model identifier exposed through `/llm`.
+The same ACP adapter configs are usable from `llm.profiles` with kind
+`session-agent`. In that shape, `adapterId` selects the configured adapter and
+`model` remains the selected model identifier exposed through `/llm`.
 
 For ChatGPT/Codex subscription models, `openai-codex` is the native provider.
 It reads the Codex CLI auth store created by `codex login` and keeps Sloppy's
@@ -83,6 +83,19 @@ plugins:
             network_allowed: true
             filesystem_reads_allowed: true
             filesystem_writes_allowed: true
+        grok:
+          command: ["grok", "agent", "stdio"]
+          envAllowlist: ["XAI_API_KEY"]
+          authMethodPreferences:
+            - id: xai.api_key
+              whenEnv: XAI_API_KEY
+            - id: cached_token
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
 ```
 
 Meta-runtime executor bindings can route an agent to these adapters with
@@ -106,7 +119,29 @@ llm:
       label: Claude ACP
       model: sonnet
       adapterId: claude
+    - kind: session-agent
+      id: grok-build
+      label: Grok Build
+      model: grok-4.5
+      adapterId: grok
 ```
+
+When an ACP agent advertises authentication, Sloppy evaluates
+`authMethodPreferences` in order. A `whenEnv` preference is eligible only when
+that variable is present in the subprocess environment. If no configured
+preference matches, Sloppy uses the agent's advertised default or its sole
+method; ambiguous authentication fails startup with the advertised method ids.
+Grok Build can therefore use `XAI_API_KEY` through `xai.api_key`, then fall back
+to the cached token created by `grok login`.
+
+After creating the ACP session, Sloppy validates a non-default profile or route
+model against the agent's advertised model inventory and selects it through
+ACP `session/set_model`. Agents without model-state support retain their own
+default for compatibility.
+
+The native `xai` endpoint is separate: it calls the xAI Responses API while
+Sloppy owns the tool loop. Use the Grok Build ACP profile only when the external
+Grok agent should own the session and tool loop.
 
 ## Safety
 

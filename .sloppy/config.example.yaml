@@ -26,6 +26,20 @@ llm:
   #     endpointId: openai-codex
   #     model: gpt-5.5
   #     reasoningEffort: low
+  # To run Grok through Sloppy's native model/tool loop:
+  # defaultProfileId: grok-native
+  # profiles:
+  #   - id: grok-native
+  #     endpointId: xai
+  #     model: grok-4.5
+  #     reasoningEffort: high
+  # To run Grok Build as the external ACP session agent, add this profile and
+  # the `grok` adapter below:
+  # profiles:
+  #   - kind: session-agent
+  #     id: grok-build
+  #     adapterId: grok
+  #     model: grok-4.5
 
 session:
   persistSnapshots: true
@@ -53,6 +67,19 @@ plugins:
             filesystem_writes_allowed: true
         codex:
           command: ["codex-acp"]
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
+        grok:
+          command: ["grok", "agent", "stdio"]
+          envAllowlist: ["XAI_API_KEY"]
+          authMethodPreferences:
+            - id: xai.api_key
+              whenEnv: XAI_API_KEY
+            - id: cached_token
           capabilities:
             spawn_allowed: true
             shell_allowed: true
