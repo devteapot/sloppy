@@ -116,6 +116,28 @@ describe("createLlmAdapter", () => {
     expect(adapter.constructor.name).toBe("OpenAIResponsesAdapter");
   });
 
+  test("creates the xAI Responses adapter through the shared protocol driver", () => {
+    const adapter = createLlmAdapter(
+      createConfig({
+        endpointId: "xai",
+        protocol: "openai-responses",
+        authType: "env",
+        model: "grok-4.5",
+        apiKey: "test-xai-key",
+        baseUrl: "https://api.x.ai/v1",
+        capabilities: { tools: true, images: true },
+      }),
+    );
+
+    expect(adapter.constructor.name).toBe("OpenAIResponsesAdapter");
+    expect(getLlmRuntimeDescriptor(adapter)).toMatchObject({
+      endpointId: "xai",
+      protocol: "openai-responses",
+      model: "grok-4.5",
+      capabilities: { tools: true, images: true },
+    });
+  });
+
   test("rejects invalid protocol and auth combinations before construction", () => {
     expect(() =>
       createLlmAdapter(

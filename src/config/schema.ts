@@ -263,6 +263,17 @@ const sessionAgentLlmProfileSchema = z
 
 export const llmProfileSchema = z.union([sessionAgentLlmProfileSchema, nativeLlmProfileSchema]);
 
+const acpAuthMethodPreferenceSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    whenEnv: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Expected an environment variable name.")
+      .optional(),
+  })
+  .strict();
+
 const acpDelegationConfigSchema = z.object({
   enabled: z.boolean().default(false),
   defaultTimeoutMs: z.number().int().min(1000).optional(),
@@ -275,6 +286,7 @@ const acpDelegationConfigSchema = z.object({
         env: z.record(z.string(), z.string()).optional(),
         envAllowlist: z.array(z.string().min(1)).optional(),
         inheritEnv: z.boolean().optional(),
+        authMethodPreferences: z.array(acpAuthMethodPreferenceSchema).optional(),
         allowCwdOutsideWorkspace: z.boolean().optional(),
         timeoutMs: z.number().int().min(1000).optional(),
         capabilities: z

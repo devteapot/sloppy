@@ -13,6 +13,11 @@ import type {
 } from "../../core/agent";
 import { LlmAbortError } from "../../llm/types";
 import type { SessionAgent } from "../../session/runtime";
+import {
+  type AcpAuthMethodPreference,
+  resolveAcpSessionModelSelection,
+  selectAcpAuthenticationMethod,
+} from "./startup";
 
 export type AcpAdapterConfig = {
   command: string[];
@@ -20,6 +25,7 @@ export type AcpAdapterConfig = {
   env?: Record<string, string>;
   envAllowlist?: string[];
   inheritEnv?: boolean;
+  authMethodPreferences?: AcpAuthMethodPreference[];
   allowCwdOutsideWorkspace?: boolean;
   timeoutMs?: number;
 };
@@ -138,7 +144,7 @@ function buildAdapterEnv(adapter: AcpAdapterConfig, modelOverride?: string): Nod
   if (adapter.inheritEnv === true) {
     Object.assign(env, process.env);
   } else {
-    const allowlist = adapter.envAllowlist ?? DEFAULT_ACP_ENV_ALLOWLIST;
+    const allowlist = [...DEFAULT_ACP_ENV_ALLOWLIST, ...(adapter.envAllowlist ?? [])];
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined && envNameAllowed(key, allowlist)) {
         env[key] = value;
@@ -268,9 +274,10 @@ export class AcpSessionAgent implements SessionAgent {
       workspaceRoot: this.workspaceRoot,
       modelOverride: this.modelOverride,
     });
+    const environment = buildAdapterEnv(this.adapter, this.modelOverride);
     this.child = spawn(command, args, {
       cwd,
-      env: buildAdapterEnv(this.adapter, this.modelOverride),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk) => {
@@ -297,7 +304,7 @@ export class AcpSessionAgent implements SessionAgent {
     });
 
     try {
-      await Promise.race([this.withStartupTimeout(this.initializeSession()), exitError]);
+      await Promise.race([this.withStartupTimeout(this.initializeSession(environment)), exitError]);
       this.started = true;
     } catch (error) {
       this.shutdown();
@@ -414,9 +421,9 @@ export class AcpSessionAgent implements SessionAgent {
     this.started = false;
   }
 
-  private async initializeSession(): Promise<void> {
+  private async initializeSession(environment: NodeJS.ProcessEnv): Promise<void> {
     const connection = this.requireConnection();
-    await connection.initialize({
+    const initialized = await connection.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,
       clientInfo: {
         name: "Sloppy",
@@ -430,6 +437,24 @@ export class AcpSessionAgent implements SessionAgent {
         terminal: false,
       },
     });
+    const authentication = selectAcpAuthenticationMethod({
+      response: initialized,
+      preferences: this.adapter.authMethodPreferences,
+      environment,
+    });
+    if (
+      authentication.advertisedMethodIds.length > 0 &&
+      authentication.selectedMethodId === undefined
+    ) {
+      throw new Error(
+        `ACP adapter '${this.adapterId}' advertised authentication methods (${authentication.advertisedMethodIds.join(
+          ", ",
+        )}), but no method matched authMethodPreferences and the agent did not advertise a usable default.`,
+      );
+    }
+    if (authentication.selectedMethodId) {
+      await connection.authenticate({ methodId: authentication.selectedMethodId });
+    }
     const session = await connection.newSession({
       cwd: resolveAdapterCwd({
         adapterId: this.adapterId,
@@ -440,12 +465,31 @@ export class AcpSessionAgent implements SessionAgent {
       mcpServers: [],
     });
     this.sessionId = session.sessionId;
+    const modelSelection = resolveAcpSessionModelSelection({
+      modelOverride: this.modelOverride,
+      modelState: session.models,
+    });
+    if (modelSelection.requestedModelId) {
+      if (!modelSelection.availableModelIds?.includes(modelSelection.requestedModelId)) {
+        throw new Error(
+          `ACP adapter '${this.adapterId}' does not advertise requested model '${modelSelection.requestedModelId}'. Available models: ${modelSelection.availableModelIds?.join(", ") || "none"}.`,
+        );
+      }
+      await connection.unstable_setSessionModel({
+        sessionId: session.sessionId,
+        modelId: modelSelection.requestedModelId,
+      });
+    }
   }
 
   private buildClient(): acp.Client {
     return {
       requestPermission: async (params) => this.handlePermissionRequest(params),
       sessionUpdate: async (params) => this.handleSessionUpdate(params),
+      // Extension notifications are advisory. Accepting unknown notifications
+      // lets standards-compliant agents add optional state without breaking the
+      // session handshake; requests still receive method-not-found by default.
+      extNotification: async () => {},
     };
   }
 

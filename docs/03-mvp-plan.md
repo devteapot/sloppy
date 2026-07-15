@@ -9,7 +9,7 @@ built-in orchestrator.
 Checked in now:
 
 - Bun/TypeScript runtime scaffold
-- native Anthropic, Gemini, OpenAI Responses, OpenAI-compatible Chat
+- native Anthropic, Gemini, OpenAI and xAI Responses, OpenAI-compatible Chat
   Completions, and OpenAI Codex subscription adapters
 - endpoint/protocol-based LLM config with built-in endpoint catalog,
   config-defined custom OpenAI-compatible endpoints, env/secure-store/no-auth
@@ -73,7 +73,8 @@ Checked in now:
   with explicit `slop_wait_for_delegation_event` joins plus child follow-up,
   result retrieval, approval forwarding, and close controls
 - ACP adapters selectable as first-class main-session LLM profiles behind the
-  same session runtime boundary
+  same session runtime boundary, with advertised authentication negotiation,
+  environment-gated method preferences, and validated ACP model selection
 - native `openai-codex` profiles for ChatGPT/Codex subscription models, backed
   by the Codex CLI auth store created by `codex login`; auth-file discovery and
   OAuth refresh are isolated from the model protocol adapter

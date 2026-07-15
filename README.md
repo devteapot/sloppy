@@ -30,7 +30,7 @@ Current checked-in implementation includes:
 - Bun + TypeScript project scaffold
 - provider-native LLM adapter layer with:
   - native Anthropic/Claude support
-  - native OpenAI Responses support for OpenAI
+  - native OpenAI Responses support for OpenAI and xAI/Grok
   - OpenAI-compatible Chat Completions support for OpenRouter, Ollama, and custom routers
   - native OpenAI Codex subscription support through the Codex CLI auth store
   - native Gemini support
@@ -72,6 +72,9 @@ Current checked-in implementation includes:
 - persisted LLM profile metadata plus secure API-key storage on macOS and Linux
 - env-loaded provider keys exposed as selectable LLM profiles instead of silently overriding the active choice
 - ACP adapter profiles as first-class session model profiles, so a main session can run through a configured external agent instead of only native API adapters
+- ACP startup negotiates advertised authentication methods and model selection;
+  this supports Grok Build's `grok agent stdio` path without a provider-specific
+  runtime branch
 - ACP adapter subprocesses use bounded prompt timeouts and a minimal default environment; opt into extra environment variables with adapter `env`, `envAllowlist`, or `inheritEnv`
 - session-provider LLM/profile onboarding and management state
 - session-provider FIFO `/queue` for submitted messages while another turn is active
@@ -579,7 +582,7 @@ warning so operators can decide whether process-scoped secrets are acceptable
 for that run.
 
 Use `.sloppy/config.example.yaml` as the local workspace config shape for the
-Claude and Codex ACP adapters. Copy those adapter blocks into
+Claude, Codex, and Grok Build ACP adapters. Copy those adapter blocks into
 `.sloppy/config.yaml`. Install the LiteLLM endpoint and its env-backed auth in
 the trusted home config at `~/.sloppy/config.yaml`; the workspace layer may
 select the resulting profile and model but cannot redefine endpoint routing.
@@ -616,6 +619,36 @@ llm:
       label: Claude ACP
       model: sonnet
       adapterId: claude
+```
+
+Grok is available through two intentionally separate paths. For Sloppy's
+native model/tool loop, set `XAI_API_KEY` and select the built-in `xai`
+Responses endpoint:
+
+```yaml
+llm:
+  defaultProfileId: grok-native
+  profiles:
+    - kind: native
+      id: grok-native
+      label: Grok 4.5
+      endpointId: xai
+      model: grok-4.5
+      reasoningEffort: high
+```
+
+For Grok Build's external agent loop, configure the ACP adapter shown below and
+select it with a `session-agent` profile:
+
+```yaml
+llm:
+  defaultProfileId: grok-build
+  profiles:
+    - kind: session-agent
+      id: grok-build
+      label: Grok Build
+      model: grok-4.5
+      adapterId: grok
 ```
 
 For Codex subscription models, prefer the native `openai-codex` endpoint when
@@ -868,6 +901,19 @@ plugins:
             network_allowed: true
             filesystem_reads_allowed: true
             filesystem_writes_allowed: true
+        grok:
+          command: ["grok", "agent", "stdio"]
+          envAllowlist: ["XAI_API_KEY"]
+          authMethodPreferences:
+            - id: xai.api_key
+              whenEnv: XAI_API_KEY
+            - id: cached_token
+          capabilities:
+            spawn_allowed: true
+            shell_allowed: true
+            network_allowed: true
+            filesystem_reads_allowed: true
+            filesystem_writes_allowed: true
 ```
 
 Then pass an executor such as `{ kind: "acp", adapterId: "gemini" }` to
@@ -877,11 +923,16 @@ adapter is published as `@zed-industries/codex-acp` and exposes the
 `codex-acp` binary.
 Routed or allow-masked ACP spawns require the adapter `capabilities` block so the
 runtime can reject child bindings that exceed the adapter's declared surface.
+For Grok Build, Sloppy chooses `xai.api_key` when `XAI_API_KEY` is present in
+the adapter environment and otherwise tries Grok's cached login token. The ACP
+agent's advertised model inventory is validated before Sloppy sends
+`session/set_model`; run `grok login` first when using cached authentication.
 
 Built-in endpoint defaults:
 
 - `anthropic` -> `ANTHROPIC_API_KEY`
 - `openai` -> `OPENAI_API_KEY`
+- `xai` -> `XAI_API_KEY` and `https://api.x.ai/v1`
 - `openrouter` -> `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`
 - `gemini` -> `GEMINI_API_KEY`
 - `ollama` -> `http://localhost:11434/v1` and no API key by default

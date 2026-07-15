@@ -39,6 +39,20 @@ export const DEFAULT_LLM_ENDPOINTS: Record<string, BuiltInLlmEndpoint> = {
       },
     },
   },
+  xai: {
+    label: "xAI",
+    protocol: "openai-responses",
+    baseUrl: "https://api.x.ai/v1",
+    auth: { type: "env", env: "XAI_API_KEY" },
+    defaultModel: "grok-4.5",
+    models: {
+      "grok-4.5": {
+        label: "Grok 4.5",
+        contextWindowTokens: 500_000,
+        capabilities: { tools: true, images: true },
+      },
+    },
+  },
   "openai-codex": {
     label: "OpenAI Codex",
     protocol: "openai-codex",

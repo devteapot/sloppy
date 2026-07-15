@@ -176,6 +176,38 @@ describe("loadConfig", () => {
     expect(config.llm.endpoints.openrouter?.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
 
+  test("applies built-in endpoint defaults for xAI profiles", async () => {
+    const home = await createTempDir("sloppy-home-");
+    const workspace = await createTempDir("sloppy-workspace-");
+    await writeConfig(
+      workspace,
+      [
+        "llm:",
+        "  defaultProfileId: grok-main",
+        "  profiles:",
+        "    - id: grok-main",
+        "      endpointId: xai",
+        "      model: grok-4.5",
+      ].join("\n"),
+    );
+
+    process.env.HOME = home;
+    delete process.env.SLOPPY_LLM_ENDPOINT;
+    delete process.env.SLOPPY_LLM_PROFILE;
+    delete process.env.SLOPPY_MODEL;
+    process.chdir(workspace);
+
+    const config = await loadConfig();
+
+    expect(config.llm.endpoints.xai).toMatchObject({
+      protocol: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      auth: { type: "env", env: "XAI_API_KEY" },
+      defaultModel: "grok-4.5",
+    });
+    expect(config.llm.endpoints.xai?.models["grok-4.5"]?.contextWindowTokens).toBe(500_000);
+  });
+
   test("preserves built-in endpoint auth when overriding endpoint metadata", async () => {
     const home = await createTempDir("sloppy-home-");
     const workspace = await createTempDir("sloppy-workspace-");
@@ -924,6 +956,10 @@ describe("loadConfig", () => {
         "      adapters:",
         "        fake:",
         '          command: ["fake-acp"]',
+        "          authMethodPreferences:",
+        "            - id: api-key",
+        "              whenEnv: FAKE_API_KEY",
+        "            - id: cached-token",
         "          capabilities:",
         "            shell_allowed: true",
       ].join("\n"),
@@ -945,5 +981,9 @@ describe("loadConfig", () => {
       filesystem_writes_allowed: false,
     });
     expect(config.plugins.delegation.acp?.adapters.fake.inheritEnv ?? false).toBe(false);
+    expect(config.plugins.delegation.acp?.adapters.fake.authMethodPreferences).toEqual([
+      { id: "api-key", whenEnv: "FAKE_API_KEY" },
+      { id: "cached-token" },
+    ]);
   });
 });
