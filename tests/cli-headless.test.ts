@@ -170,7 +170,7 @@ function createApprovalAgentHarness(): {
   };
 }
 
-function createAutoApprovalAgentHarness(): {
+function createAutoApprovalAgentHarness(options?: { emitApprovalSnapshot?: boolean }): {
   factory: SessionAgentFactory;
   approved: string[];
 } {
@@ -198,30 +198,32 @@ function createAutoApprovalAgentHarness(): {
             errorCode: "approval_required",
             errorMessage: "Dangerous command requires approval.",
           });
-          await Promise.resolve();
-          callbacks.onProviderSnapshot?.({
-            providerId: "terminal",
-            path: "/approvals",
-            tree: {
-              id: "approvals",
-              type: "collection",
-              children: [
-                {
-                  id: "source-approval-1",
-                  type: "item",
-                  properties: {
-                    status: "pending",
-                    path: "/session",
-                    action: "execute",
-                    reason: "Dangerous command requires approval.",
-                    created_at: new Date().toISOString(),
-                    dangerous: true,
+          if (options?.emitApprovalSnapshot !== false) {
+            await Promise.resolve();
+            callbacks.onProviderSnapshot?.({
+              providerId: "terminal",
+              path: "/approvals",
+              tree: {
+                id: "approvals",
+                type: "collection",
+                children: [
+                  {
+                    id: "source-approval-1",
+                    type: "item",
+                    properties: {
+                      status: "pending",
+                      path: "/session",
+                      action: "execute",
+                      reason: "Dangerous command requires approval.",
+                      created_at: new Date().toISOString(),
+                      dangerous: true,
+                    },
+                    affordances: [{ action: "approve" }, { action: "reject" }],
                   },
-                  affordances: [{ action: "approve" }, { action: "reject" }],
-                },
-              ],
-            },
-          });
+                ],
+              },
+            });
+          }
           return {
             status: "waiting_approval",
             invocation,
@@ -396,6 +398,29 @@ describe("runHeadlessSingleShot", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("approved result");
     expect(stderr).not.toContain("[error]");
+    expect(harness.approved).toEqual(["source-approval-1"]);
+  });
+
+  test("--yolo auto-approves before the external provider approval mirror arrives", async () => {
+    const harness = createAutoApprovalAgentHarness({ emitApprovalSnapshot: false });
+    let stdout = "";
+
+    const exitCode = await runHeadlessSingleShot({
+      prompt: "delete demo file",
+      config: TEST_CONFIG,
+      approvalMode: "auto",
+      llmProfileManager: createTestProfileManager(),
+      agentFactory: harness.factory,
+      sessionId: "cli-test-yolo-before-mirror",
+      writeStdout: (chunk) => {
+        stdout += chunk;
+      },
+      writeStderr: () => undefined,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("approved result");
+    expect(stdout).not.toContain("[approval] turn was cancelled");
     expect(harness.approved).toEqual(["source-approval-1"]);
   });
 
