@@ -194,6 +194,7 @@ export type ApprovalItem = {
   resolvedAt?: string;
   paramsPreview?: string;
   dangerous?: boolean;
+  autoApprovable?: boolean;
   sourceApprovalId?: string;
   sourcePath?: string;
   mirrorLineage?: string[];

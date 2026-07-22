@@ -230,6 +230,18 @@ export function recoverPersistedSessionSnapshot(
   };
 
   // goal is a projection recomputed from extensions["goal"]; never persisted.
+  // Approval execution callbacks are process-local, including Session-native
+  // Plugin callbacks. A restored snapshot can show their history, but it can
+  // never safely offer to execute a callback from the previous process.
+  for (const approval of restored.approvals) {
+    if (approval.status === "pending") {
+      approval.status = "expired";
+      approval.resolvedAt = restoredAt;
+      approval.canApprove = false;
+      approval.canReject = false;
+    }
+  }
+
   if (!hadInFlightTurn) {
     restored.goal = null;
     return applySnapshotRecoverers(restored, recoveryContext, hooks.recoverers);
@@ -261,15 +273,6 @@ export function recoverPersistedSessionSnapshot(
       item.summary = RECOVERY_MESSAGE;
       item.updatedAt = restoredAt;
       item.completedAt = restoredAt;
-    }
-  }
-
-  for (const approval of restored.approvals) {
-    if (approval.status === "pending") {
-      approval.status = "expired";
-      approval.resolvedAt = restoredAt;
-      approval.canApprove = false;
-      approval.canReject = false;
     }
   }
 

@@ -28,7 +28,11 @@ import {
   toSessionLlmState,
 } from "./llm-state";
 import { SESSION_MIRROR_PATH_LIST } from "./mirror-sync";
-import { type PluginRuntimeContext, SessionPluginManager } from "./plugins";
+import {
+  type PluginRuntimeContext,
+  type PluginTransientState,
+  SessionPluginManager,
+} from "./plugins";
 import { ProfileSessionAgent } from "./profile-agent";
 import { AgentSessionProvider } from "./provider";
 import {
@@ -49,7 +53,7 @@ import {
 } from "./runtime-helpers";
 import type { SessionStore } from "./store";
 import { TurnCoordinator } from "./turn-coordinator";
-import type { ApprovalMode, TranscriptMessage } from "./types";
+import type { ApprovalMode, JsonObject, TranscriptMessage } from "./types";
 
 export type { ExternalSessionAgentState } from "./llm-state";
 export type { SessionRuntimeOptions } from "./runtime-assembly";
@@ -175,6 +179,8 @@ export class SessionRuntime {
   private started = false;
   private readonly localProviderIds: Set<string>;
   private readonly plugins: SessionPluginManager;
+  private readonly transientPluginStates = new Map<string, JsonObject>();
+  private readonly transientStateListeners = new Set<() => void>();
   private turns!: TurnCoordinator;
   private readonly startedRuntimeConfigFingerprint: string;
   private readonly configReloader?: () => Promise<SloppyConfig>;
@@ -233,7 +239,9 @@ export class SessionRuntime {
     if (options.approvalMode) {
       this.store.setApprovalMode(options.approvalMode);
     }
-    this.plugins = new SessionPluginManager(sessionPlugins, this.createPluginContext());
+    this.plugins = new SessionPluginManager(sessionPlugins, (pluginId) =>
+      this.createPluginContext(pluginId),
+    );
 
     if (!this.requiresLlmProfile) {
       syncExternalRuntimeLlmState(this.store, this.externalAgentState);
@@ -298,7 +306,7 @@ export class SessionRuntime {
       : undefined;
   }
 
-  private createPluginContext(): PluginRuntimeContext {
+  private createPluginContext(pluginId: string): PluginRuntimeContext {
     return {
       config: () => this.config,
       store: this.store,
@@ -318,11 +326,67 @@ export class SessionRuntime {
         }
         return this.agent.queryProvider(providerId, path, options);
       },
+      transientState: this.transientStateFor(pluginId),
+      approvals: {
+        request: (request) => this.turns.requestPluginApproval(pluginId, request),
+        cancel: (approvalId, reason) => this.turns.cancelPluginApproval(approvalId, reason),
+      },
+      turns: {
+        submit: (request) => this.turns.submit({ source: "plugin", request }),
+        drainQueue: () => this.turns.drainQueue(),
+      },
       startTurn: (request) => this.turns.startPluginTurn(request),
       queueTurn: (request) => this.turns.queuePluginTurn(request),
       drainQueue: () => this.turns.drainQueue(),
       audit: (event) => this.audit(event),
     };
+  }
+
+  private transientStateFor(pluginId: string): PluginTransientState {
+    return {
+      read: <T extends JsonObject>() => {
+        const state = this.transientPluginStates.get(pluginId);
+        return state ? (structuredClone(state) as T) : undefined;
+      },
+      replace: <T extends JsonObject>(state: T) => {
+        this.transientPluginStates.set(pluginId, structuredClone(state));
+        this.notifyTransientStateChange();
+      },
+      update: <T extends JsonObject>(
+        updater: (current: Readonly<T> | undefined) => T | undefined,
+      ) => {
+        const current = this.transientPluginStates.get(pluginId);
+        const next = updater(current ? (structuredClone(current) as T) : undefined);
+        if (next) {
+          this.transientPluginStates.set(pluginId, structuredClone(next));
+        } else {
+          this.transientPluginStates.delete(pluginId);
+        }
+        this.notifyTransientStateChange();
+      },
+      clear: () => {
+        if (this.transientPluginStates.delete(pluginId)) {
+          this.notifyTransientStateChange();
+        }
+      },
+    };
+  }
+
+  onTransientStateChange(listener: () => void): () => void {
+    this.transientStateListeners.add(listener);
+    return () => {
+      this.transientStateListeners.delete(listener);
+    };
+  }
+
+  private notifyTransientStateChange(): void {
+    for (const listener of this.transientStateListeners) {
+      try {
+        listener();
+      } catch {
+        // A broken UI refresh listener must not break Plugin state transitions.
+      }
+    }
   }
 
   registerSessionProviderId(providerId: string): void {
@@ -337,8 +401,8 @@ export class SessionRuntime {
     return this.plugins.sessionNodes();
   }
 
-  getPluginRuntimeContext(): PluginRuntimeContext {
-    return this.createPluginContext();
+  getPluginRuntimeContext(pluginId = "session-provider"): PluginRuntimeContext {
+    return this.createPluginContext(pluginId);
   }
 
   buildPluginsDescriptor() {
@@ -358,6 +422,7 @@ export class SessionRuntime {
         canCancelTurn: this.canCancelTurn(),
         canReloadConfig: this.configReloader !== undefined,
       },
+      pluginState: this.plugins.clientState(),
       plugins: this.plugins.clientPlugins(),
     };
   }
@@ -674,8 +739,14 @@ export class SessionRuntime {
     }
     this.shutdownRequested = true;
     const cleanupErrors: unknown[] = [];
+    let pluginShutdown = Promise.resolve();
     try {
-      this.plugins.onShutdown();
+      const shutdown = this.plugins.onShutdown();
+      if (shutdown) {
+        pluginShutdown = Promise.resolve(shutdown).catch((error: unknown) => {
+          console.warn("[sloppy] plugin shutdown hook failed:", error);
+        });
+      }
     } catch (error) {
       console.warn("[sloppy] plugin shutdown hook failed:", error);
     }
@@ -693,10 +764,11 @@ export class SessionRuntime {
       cleanupErrors.push(error);
     }
     try {
-      this.shutdownCompletion = this.agent.waitForShutdown?.() ?? Promise.resolve();
+      const agentShutdown = this.agent.waitForShutdown?.() ?? Promise.resolve();
+      this.shutdownCompletion = Promise.all([pluginShutdown, agentShutdown]).then(() => undefined);
     } catch (error) {
       cleanupErrors.push(error);
-      this.shutdownCompletion = Promise.resolve();
+      this.shutdownCompletion = pluginShutdown;
     }
     this.shutdownCompletion = this.shutdownCompletion.finally(() => {
       this.store.syncConversationHistory(this.conversationHistory.snapshot());
@@ -707,6 +779,10 @@ export class SessionRuntime {
       this.turns.shutdown();
     } catch (error) {
       cleanupErrors.push(error);
+    }
+    if (this.transientPluginStates.size > 0) {
+      this.transientPluginStates.clear();
+      this.notifyTransientStateChange();
     }
     this.started = false;
     try {

@@ -138,18 +138,26 @@ export class DelegationProvider implements DelegationService {
     this.server.register("approvals", () => this.approvals.buildDescriptor());
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     for (const agentId of [...this.approvalMirrors.keys()]) {
       this.stopMirroringApprovals(agentId);
     }
+    this.server.stop();
+    const stops: Promise<void>[] = [];
     for (const agent of this.agents.values()) {
       if (agent.runner?.close) {
-        void agent.runner.close().catch(() => undefined);
+        stops.push(agent.runner.close());
       } else if (agent.status === "pending" || agent.status === "running") {
-        void agent.runner?.cancel().catch(() => undefined);
+        if (agent.runner) stops.push(agent.runner.cancel());
       }
     }
-    this.server.stop();
+    const results = await Promise.allSettled(stops);
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length} delegated child shutdown(s) failed.`);
+    }
   }
 
   setParentHub(hub: ProviderRuntimeHub): void {

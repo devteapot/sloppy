@@ -171,7 +171,7 @@ async function runRepl(): Promise<number> {
     }
     return 0;
   } finally {
-    agent.shutdown();
+    await agent.shutdownAsync();
   }
 }
 

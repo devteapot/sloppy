@@ -3,6 +3,7 @@ import type { LlmTool } from "@slop-ai/consumer/browser";
 import type { SloppyConfig } from "../../config/schema";
 import type { ToolResultContentBlock, ToolUseContentBlock } from "../../llm/types";
 import type { ProviderRuntimeHub } from "../hub";
+import type { ImageRegistry } from "../images";
 import type { ToolPolicyDecision } from "../role";
 import type { RuntimeToolResolution, RuntimeToolSet } from "../tools";
 
@@ -164,4 +165,5 @@ export type ExecuteToolCallsOptions = {
   transformInvoke?: RunLoopHooks["transformInvoke"];
   roleId?: string;
   signal?: AbortSignal;
+  imageRegistry?: ImageRegistry;
 };

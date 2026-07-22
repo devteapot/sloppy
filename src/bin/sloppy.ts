@@ -99,10 +99,14 @@ async function runSessionSupervisor(args: string[]): Promise<number> {
   );
   await stdout.flush();
 
+  let shutdownPromise: Promise<void> | null = null;
   const shutdown = () => {
-    running.listener.close();
-    running.supervisor.stop();
-    process.exit(0);
+    shutdownPromise ??= (async () => {
+      running.listener.close();
+      await running.supervisor.stop();
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -131,9 +135,13 @@ async function runSessionServe(args: string[]): Promise<number> {
   );
   await stdout.flush();
 
+  let shutdownPromise: Promise<void> | null = null;
   const shutdown = () => {
-    service.stop();
-    process.exit(0);
+    shutdownPromise ??= (async () => {
+      await service.stop();
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

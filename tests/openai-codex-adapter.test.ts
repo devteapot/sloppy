@@ -615,4 +615,31 @@ describe("OpenAICodexAdapter", () => {
       },
     ]);
   });
+
+  test("serializes a user message with interleaved text and image blocks", () => {
+    const messages: ConversationMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<slop-state>...</slop-state>" },
+          { type: "text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+          { type: "image", mediaType: "image/jpeg", data: "anVuaw==" },
+        ],
+      },
+    ];
+
+    const input = toCodexInput(messages);
+
+    expect(input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "<slop-state>...</slop-state>" },
+          { type: "input_text", text: "image /gallery/img-1 (camera frame, ttl 3):" },
+          { type: "input_image", image_url: "data:image/jpeg;base64,anVuaw==" },
+        ],
+      },
+    ]);
+  });
 });

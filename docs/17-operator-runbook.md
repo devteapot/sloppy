@@ -169,10 +169,11 @@ completed.
 ## Headless Single-Shot
 
 `sloppy -p "<prompt>"` runs one prompt through an in-process session and
-exits. `--yolo` sets the session approval mode to `auto`, so approval-capable
+exits. `--yolo` sets the session approval mode to `auto`, so auto-eligible
 pending approvals (dangerous terminal commands, persistent writes, and the
-like) resolve automatically instead of cancelling the turn. Use it only for
-workloads where every affordance the model may invoke is acceptable
+like) resolve automatically instead of cancelling the turn. Explicit-only
+items such as remote microphone egress remain manual. Use it only for workloads
+where every auto-eligible affordance the model may invoke is acceptable
 unattended.
 
 ## Config Layers

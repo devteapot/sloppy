@@ -18,6 +18,7 @@ import type {
 } from "../types";
 import * as activity from "./activity";
 import * as approvalPolicy from "./approval-policy";
+import * as approvals from "./approvals";
 import * as apps from "./apps";
 import * as extensions from "./extensions";
 import { now } from "./helpers";
@@ -127,6 +128,22 @@ export class SessionStore {
   getApproval(approvalId: string): ApprovalItem | undefined {
     const approval = this.state.snapshot.approvals.find((item) => item.id === approvalId);
     return approval ? { ...approval } : undefined;
+  }
+
+  requestSessionApproval(input: approvals.SessionApprovalInput): ApprovalItem {
+    const approval = approvals.requestSessionApproval(this.state, input);
+    this.emit();
+    return approval;
+  }
+
+  resolveSessionApproval(
+    approvalId: string,
+    status: "approved" | "rejected" | "expired",
+    reason?: string,
+  ): ApprovalItem {
+    const approval = approvals.resolveSessionApproval(this.state, approvalId, status, reason);
+    this.emit();
+    return approval;
   }
 
   getTask(taskId: string): SessionTask | undefined {

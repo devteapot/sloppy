@@ -10,7 +10,7 @@ The TUI originally treated `/approval auto` as local UI behavior: one client cou
 
 ## Decision
 
-Approval mode is Session-owned runtime behavior exposed through the Session provider, not TUI-local behavior. Clients observe `approval_mode`, change it through `/approvals.set_mode`, and render the result; when the mode is `auto`, the runtime approves every pending approval in the Session with `canApprove=true`.
+Approval mode is Session-owned runtime behavior exposed through the Session provider, not TUI-local behavior. Clients observe `approval_mode`, change it through `/approvals.set_mode`, and render the result; when the mode is `auto`, the runtime approves every pending approval in the Session with `canApprove=true` unless the source marks it `auto_approvable=false` because a person must decide explicitly.
 
 ## Consequences
 
@@ -26,7 +26,7 @@ Approval mode is Session-owned runtime behavior exposed through the Session prov
 - Public approval mode inputs are strict: only `normal` and `auto` are accepted. `--yolo` is a CLI-level alias, not a provider API value.
 - The TUI `/approval` command accepts `normal`, `auto`, and `toggle`; it does not accept `yolo` as an in-app alias.
 - `--yolo` on an existing, continued, restored, or direct-socket-attached Session intentionally mutates that Session's public approval mode to `auto` until a client sets it back to `normal`.
-- The mode is intentionally Session-wide rather than foreground-turn-only. Runtime auto-approves every pending approval with `canApprove=true`, including background/provider approvals. Approval sources that must not be auto-approved need to avoid surfacing `canApprove=true` under this policy.
+- The mode is intentionally Session-wide rather than foreground-turn-only. Runtime auto-approves every eligible pending approval with `canApprove=true`, including background/provider approvals. Sources that require an explicit person keep ordinary approve/reject affordances but mark the item `auto_approvable=false`; remote microphone egress is the reference case.
 - Auto-approval processes pending approvals sequentially in current approval snapshot order; it does not prioritize foreground-turn approvals over background/provider approvals.
 - Switching from `normal` to `auto` immediately drains already-pending approval-capable items, not only future approvals.
 - Approval mode persists in the Session snapshot and is restored with the Session. Plain `sloppy --continue` preserves the persisted mode; restoring an old `auto` Session keeps it in `auto` until a client changes it.

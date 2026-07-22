@@ -7,6 +7,7 @@ import { checkAcpAdapter, checkAcpBoundary, collectAcpSubprocessProbes } from ".
 import { checkWorkspacePaths } from "./filesystem/doctor";
 import { checkMcpEnvironmentExposure, collectMcpSubprocessProbes } from "./mcp/doctor";
 import { checkMetaRuntimePersistence } from "./meta-runtime/doctor";
+import { checkVoiceConfiguration, collectVoiceSubprocessProbes } from "./voice/doctor";
 
 export function createFirstPartyDoctorChecks(_config: SloppyConfig): RuntimeDoctorCheckFactory[] {
   return [
@@ -15,11 +16,12 @@ export function createFirstPartyDoctorChecks(_config: SloppyConfig): RuntimeDoct
     checkAcpAdapter,
     checkAcpBoundary,
     checkMcpEnvironmentExposure,
+    checkVoiceConfiguration,
   ];
 }
 
 export function createFirstPartyDoctorSubprocessProbes(
   _config: SloppyConfig,
 ): RuntimeDoctorSubprocessProbeFactory[] {
-  return [collectAcpSubprocessProbes, collectMcpSubprocessProbes];
+  return [collectAcpSubprocessProbes, collectMcpSubprocessProbes, collectVoiceSubprocessProbes];
 }

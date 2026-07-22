@@ -6,6 +6,8 @@
 // non-public concerns (mirror plumbing, discovery state) already live
 // under `src/core/agent/`.
 
+import { basename } from "node:path";
+
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 
 import { createDefaultConfig } from "../config/load";
@@ -29,6 +31,7 @@ import { bootstrapProviderRuntime } from "./bootstrap";
 import type { ConsumerHub, ExternalProviderState, ProviderLifecycleEvent } from "./consumer";
 import { buildSystemPrompt } from "./context";
 import { CANCELLED_TOOL_BATCH_RESULT, ConversationHistory } from "./history";
+import type { ImageRegistry } from "./images";
 import {
   type AgentToolEvent,
   type AgentToolInvocation,
@@ -129,6 +132,7 @@ export class Agent {
   private discoveryStop: (() => void) | null = null;
   private discoverySync: Promise<void> = Promise.resolve();
   private history: ConversationHistory;
+  private imageRegistry: ImageRegistry | undefined;
   private llmProfileManager: LlmProfileManager;
   private llmProfileId?: string;
   private llmModelOverride?: string;
@@ -147,7 +151,8 @@ export class Agent {
   private publishEventCallback?: (event: RuntimeEvent) => void;
   private mirrorProviderPaths: string[];
   private policyRules: InvokePolicy[];
-  private runtimeStops: Array<{ stop(): void }> = [];
+  private runtimeStops: Array<{ stop(): void | Promise<void> }> = [];
+  private shutdownPromise: Promise<void> | null = null;
   private systemPromptFragments: string[] = [];
   private localTools?: () => LocalRuntimeTool[];
   private childSessionFactory?: ChildSessionFactory;
@@ -246,6 +251,9 @@ export class Agent {
     const { hub, runtimeCtx } = bootstrap;
     this.runtimeStops.push(...bootstrap.runtimeStops);
     this.systemPromptFragments.push(...bootstrap.systemPromptFragments);
+    // Set by the images plugin's attachRuntime when enabled; undefined ⇒
+    // images stay inline (user messages) / unmaterialized (tool results).
+    this.imageRegistry = runtimeCtx.imageRegistry;
     this.emitExternalProviderStates(hub.getExternalProviderStates());
 
     // Resolve role lazily so that providers' attachRuntime hooks have a
@@ -319,7 +327,23 @@ export class Agent {
       throw new Error("Agent has not been started.");
     }
 
-    this.history.addUserMessage(parseUserMessageBlocks(userMessage));
+    const registry = this.imageRegistry;
+    this.history.addUserMessage(
+      parseUserMessageBlocks(
+        userMessage,
+        registry
+          ? {
+              registerImage: ({ mediaType, data, sourceUri }) =>
+                registry.register({
+                  bytes: Buffer.from(data, "base64"),
+                  mediaType,
+                  source: "user",
+                  summary: `user attachment (${basename(sourceUri)})`,
+                }).path,
+            }
+          : undefined,
+      ),
+    );
     return this.runLoopWithAbort(async (signal) => {
       const llm = await this.llmProfileManager.createAdapter(
         this.llmProfileId,
@@ -341,6 +365,7 @@ export class Agent {
           onTurnUsage: this.callbacks.onTurnUsage,
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
+          imageRegistry: this.imageRegistry,
         }),
         llm,
       );
@@ -400,6 +425,7 @@ export class Agent {
           },
           systemPrompt: this.buildSystemPrompt(),
           hooks: this.buildHooks(),
+          imageRegistry: this.imageRegistry,
         }),
         llm,
       );
@@ -665,16 +691,26 @@ export class Agent {
 
   shutdown(): void {
     this.activeRunAbortController?.abort();
+    void this.shutdownAsync().catch(() => undefined);
+  }
 
+  shutdownAsync(): Promise<void> {
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
+    const pendingStops: Promise<void>[] = [];
     for (const runtimeStop of this.runtimeStops) {
       try {
-        runtimeStop.stop();
-      } catch {
-        // best-effort teardown
+        pendingStops.push(Promise.resolve(runtimeStop.stop()));
+      } catch (error) {
+        pendingStops.push(Promise.reject(error));
       }
     }
     this.runtimeStops = [];
     this.systemPromptFragments = [];
+    this.imageRegistry = undefined;
 
     this.discoveryStop?.();
     this.discoveryStop = null;
@@ -692,13 +728,22 @@ export class Agent {
 
     const hub = this.hub;
     this.hub = null;
-    hub?.shutdown();
+    if (hub) {
+      pendingStops.push(hub.shutdownAsync());
+    }
 
     this.clearPendingApproval();
     this.discovery.setFirstPartyProviderIds([]);
     this.discovery.resetErrors();
     this.discoverySync = Promise.resolve();
     this.runtimeServices.clear();
+    const results = await Promise.allSettled(pendingStops);
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length} Agent shutdown hook(s) failed.`);
+    }
   }
 
   private executeLoop(result: RunLoopResult, llm: LlmAdapter): AgentRunResult {

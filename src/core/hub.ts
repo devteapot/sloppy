@@ -23,6 +23,7 @@ export interface ProviderRuntimeHub {
   loadProvider(providerId: string): Promise<boolean>;
   reloadProvider(providerId: string): Promise<void>;
   shutdown(): void;
+  shutdownAsync(): Promise<void>;
 
   // State queries / subscriptions
   queryState(options: {

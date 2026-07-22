@@ -47,6 +47,7 @@ export function createTestConfig(
         summaryMaxTokens: 2048,
         retryOnOverflow: true,
       },
+      toolResultImageMaxBytes: 5_242_880,
       ...overrides.agent,
     },
     plugins: testPlugins(overrides.plugins),

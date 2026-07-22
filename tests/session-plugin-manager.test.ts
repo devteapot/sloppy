@@ -7,6 +7,7 @@ import { createPersistentGoalPlugin } from "../src/plugins/first-party/persisten
 import { SessionPluginManager } from "../src/session/plugins";
 import type { PluginRuntimeContext, SessionRuntimePlugin } from "../src/session/plugins/types";
 import { SessionStore } from "../src/session/store";
+import type { JsonObject } from "../src/session/types";
 
 function createStore(): SessionStore {
   const plugin = createPersistentGoalPlugin();
@@ -43,6 +44,7 @@ function seedGoal(store: SessionStore, objective: string): string {
 }
 
 function createContext(store = createStore()): PluginRuntimeContext {
+  let transientState: JsonObject | undefined;
   return {
     config: () => createDefaultConfig(),
     store,
@@ -54,6 +56,28 @@ function createContext(store = createStore()): PluginRuntimeContext {
     },
     queryProvider: async () => {
       throw new Error("not used");
+    },
+    transientState: {
+      read: <T extends JsonObject>() => transientState as T | undefined,
+      replace: (state) => {
+        transientState = state;
+      },
+      update: <T extends JsonObject>(
+        updater: (current: Readonly<T> | undefined) => T | undefined,
+      ) => {
+        transientState = updater(transientState as T | undefined);
+      },
+      clear: () => {
+        transientState = undefined;
+      },
+    },
+    approvals: {
+      request: () => ({ status: "approval_required", approvalId: "approval-test" }),
+      cancel: () => true,
+    },
+    turns: {
+      submit: (request) => ({ status: "started", turnId: request.runId }),
+      drainQueue: () => undefined,
     },
     startTurn: (request) => ({ status: "started", turnId: request.runId }),
     queueTurn: (request) => ({
@@ -96,7 +120,9 @@ describe("SessionPluginManager", () => {
   test("requires pluginId on plugin-owned queued turns", () => {
     const store = createStore();
     const goalId = seedGoal(store, "continue plugin-owned work");
-    const manager = new SessionPluginManager([createPersistentGoalPlugin()], createContext(store));
+    const manager = new SessionPluginManager([createPersistentGoalPlugin()], () =>
+      createContext(store),
+    );
 
     expect(
       manager.acceptQueuedTurn({
@@ -126,19 +152,21 @@ describe("SessionPluginManager", () => {
   });
 
   test("stamps local runtime tools with plugin ownership", () => {
-    const manager = new SessionPluginManager([toolPlugin("alpha", "alpha_tool")], createContext());
+    const manager = new SessionPluginManager([toolPlugin("alpha", "alpha_tool")], () =>
+      createContext(),
+    );
 
     expect(manager.localTools(null)[0]?.pluginId).toBe("alpha");
   });
 
   test("rejects session plugin ids that cannot be raw slash namespaces", () => {
     expect(
-      () => new SessionPluginManager([toolPlugin("bad plugin", "bad_tool")], createContext()),
+      () => new SessionPluginManager([toolPlugin("bad plugin", "bad_tool")], () => createContext()),
     ).toThrow(
       "Invalid session plugin id 'bad plugin'. Plugin ids must be non-empty and cannot contain whitespace or ':'.",
     );
     expect(
-      () => new SessionPluginManager([toolPlugin("bad:plugin", "bad_tool")], createContext()),
+      () => new SessionPluginManager([toolPlugin("bad:plugin", "bad_tool")], () => createContext()),
     ).toThrow(
       "Invalid session plugin id 'bad:plugin'. Plugin ids must be non-empty and cannot contain whitespace or ':'.",
     );
@@ -149,7 +177,7 @@ describe("SessionPluginManager", () => {
       () =>
         new SessionPluginManager(
           [toolPlugin("alpha", "alpha_tool"), toolPlugin("alpha", "second_tool")],
-          createContext(),
+          () => createContext(),
         ),
     ).toThrow("Duplicate session plugin id 'alpha'. Plugin ids must be unique.");
   });
@@ -157,7 +185,7 @@ describe("SessionPluginManager", () => {
   test("rejects duplicate local runtime tool names across plugins", () => {
     const manager = new SessionPluginManager(
       [toolPlugin("alpha", "shared_tool"), toolPlugin("beta", "shared_tool")],
-      createContext(),
+      () => createContext(),
     );
 
     expect(() => manager.localTools(null)).toThrow(
@@ -174,7 +202,7 @@ describe("SessionPluginManager", () => {
         { id: "run", execute: () => undefined },
       ],
     };
-    expect(() => new SessionPluginManager([duplicateCommands], createContext())).toThrow(
+    expect(() => new SessionPluginManager([duplicateCommands], () => createContext())).toThrow(
       "Duplicate client command client-plugin:run.",
     );
 
@@ -192,14 +220,16 @@ describe("SessionPluginManager", () => {
         ],
       },
     };
-    expect(() => new SessionPluginManager([danglingAction], createContext())).toThrow(
+    expect(() => new SessionPluginManager([danglingAction], () => createContext())).toThrow(
       "Client action client-plugin:client:run references unknown command missing.",
     );
   });
 
   test("computes typed client command availability on the server", () => {
     const store = createStore();
-    const manager = new SessionPluginManager([createPersistentGoalPlugin()], createContext(store));
+    const manager = new SessionPluginManager([createPersistentGoalPlugin()], () =>
+      createContext(store),
+    );
     const before = manager.clientPlugins()[0]?.contributions.actions;
     expect(before?.find((action) => action.command === "create")?.available).toBe(true);
     expect(before?.find((action) => action.command === "pause")?.available).toBe(false);
@@ -208,5 +238,43 @@ describe("SessionPluginManager", () => {
     const after = manager.clientPlugins()[0]?.contributions.actions;
     expect(after?.find((action) => action.command === "pause")?.available).toBe(true);
     expect(after?.find((action) => action.command === "create")?.available).toBe(false);
+  });
+
+  test("projects cloned transient Plugin state for typed clients", () => {
+    const ctx = createContext();
+    ctx.transientState.replace({ phase: "listening", partial: "hello" });
+    const manager = new SessionPluginManager(
+      [
+        {
+          id: "voice",
+          version: "1.0.0",
+          clientState: (pluginCtx) => pluginCtx.transientState.read(),
+        },
+      ],
+      () => ctx,
+    );
+
+    expect(manager.clientState()).toEqual({
+      voice: { phase: "listening", partial: "hello" },
+    });
+  });
+
+  test("awaits shutdown hooks sequentially in reverse Plugin order", async () => {
+    const order: string[] = [];
+    const plugin = (id: string): SessionRuntimePlugin => ({
+      id,
+      version: "1.0.0",
+      onShutdown: async () => {
+        await Promise.resolve();
+        order.push(id);
+      },
+    });
+    const manager = new SessionPluginManager([plugin("alpha"), plugin("beta")], () =>
+      createContext(),
+    );
+
+    await manager.onShutdown();
+
+    expect(order).toEqual(["beta", "alpha"]);
   });
 });

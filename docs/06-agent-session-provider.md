@@ -392,6 +392,11 @@ Clients invoke `{pluginId, command, params}`. The runtime validates that the
 command exists and is currently available. Client manifests never require a
 SLOP subscription, path, affordance name, or TUI-specific execution branch.
 
+The typed Session snapshot also carries `pluginState`, a map keyed by Plugin id.
+It contains cloned, ephemeral state used by contribution indicators and
+notifications. `pluginState` is refreshed with the client snapshot stream but
+is never written into durable Session snapshots or extension records.
+
 Per-plugin item props:
 
 - `id`: stable unique plugin id
@@ -820,6 +825,8 @@ Optional props:
 - `resolved_at`: ISO timestamp
 - `params_preview`: short string summary of the blocked parameters
 - `dangerous`: boolean
+- `auto_approvable`: boolean; defaults to `true`. When `false`, the item stays
+  pending in `approval_mode=auto` until a person approves or rejects it.
 
 Affordances while pending:
 
@@ -842,8 +849,9 @@ Rules:
 - approving or rejecting should patch both the approval item and `/turn`
 - approval items are expected to correspond to real downstream provider approval nodes and should forward resolution back to that provider
 - when `approval_mode=auto`, the session runtime should approve every pending
-  approval in the Session with `canApprove=true`, including foreground-turn and
-  background/provider approvals; clients only set and render the mode
+  approval in the Session with `canApprove=true` and `auto_approvable!=false`,
+  including eligible foreground-turn and background/provider approvals;
+  explicit-only items remain manual, and clients only set and render the mode
 - auto-approval processes pending approvals sequentially, not concurrently
 - auto-approval uses the current approval snapshot order; it does not prioritize
   foreground-turn approvals over background/provider approvals

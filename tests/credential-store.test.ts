@@ -23,6 +23,29 @@ afterEach(() => {
 });
 
 describe("KeychainCredentialStore", () => {
+  test("threads cancellation into credential command reads", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const runner: CommandRunner = async (_command, _args, options) => {
+      calls += 1;
+      if (calls === 1) {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      return new Promise<CommandResult>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    };
+    const store = createCredentialStore(runner);
+    const reason = new Error("credential read cancelled");
+    const reading = store.get("profile-c", { signal: controller.signal });
+    controller.abort(reason);
+
+    await expect(reading).rejects.toBe(reason);
+    expect(calls).toBeGreaterThan(0);
+  });
+
   test("uses keytar when available so the secret stays out of argv", async () => {
     if (process.platform !== "darwin") {
       return;

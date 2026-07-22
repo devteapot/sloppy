@@ -3,6 +3,7 @@ import type { LlmProfileManager } from "../llm/profile-manager";
 import type { ChildSessionFactory } from "../runtime/child-session";
 import type { RuntimeServiceRegistry } from "../runtime/services";
 import type { ProviderRuntimeHub } from "./hub";
+import type { ImageRegistry } from "./images";
 import type { RuntimeToolResolution } from "./tools";
 
 export type ToolPolicyDecision = null | { reject: string };
@@ -39,6 +40,8 @@ export interface RuntimeContext {
   childSessionFactory?: ChildSessionFactory;
   /** Same-process typed services contributed during runtime assembly. */
   services: RuntimeServiceRegistry;
+  /** Shared image registry supplied by the enabled images plugin. */
+  imageRegistry?: ImageRegistry;
 }
 
 export type RoleProfile = {
@@ -65,7 +68,7 @@ export type RoleProfile = {
     hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
-  ) => { stop(): void };
+  ) => { stop(): void | Promise<void> };
 };
 
 export const defaultRole: RoleProfile = {

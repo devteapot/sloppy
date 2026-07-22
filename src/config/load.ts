@@ -10,6 +10,7 @@ import { normalizeConfigInput } from "./llm-migrations";
 import {
   type AnyLlmProfileConfig,
   type LlmConfig,
+  normalizeLegacyVoiceConversationConfig,
   type RawSloppyConfig,
   type SloppyConfig,
   sloppyConfigSchema,
@@ -259,7 +260,8 @@ async function mergeConfigPaths(paths: string[]): Promise<JsonObject> {
     if (index > 0) {
       assertUntrustedLayerHasNoLlmEndpointConfig(layer, configPath);
     }
-    merged = deepMerge(merged, layer);
+    const plugins = normalizeLegacyVoiceConversationConfig(layer.plugins);
+    merged = deepMerge(merged, plugins === undefined ? layer : { ...layer, plugins });
   }
   return merged;
 }

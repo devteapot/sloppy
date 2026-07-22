@@ -3,7 +3,12 @@ import type { ResultMessage } from "@slop-ai/consumer/browser";
 import type { AgentRunResult, AgentToolEvent, ResolvedApprovalToolResult } from "../core/agent";
 import { LlmRequestError } from "../llm/types";
 import type { PendingApprovalMirror } from "./mirror-sync";
-import type { ActivePluginTurn, PluginTurnRequest } from "./plugins/types";
+import type {
+  ActivePluginTurn,
+  PluginApprovalRequest,
+  PluginApprovalRequestResult,
+  PluginTurnRequest,
+} from "./plugins/types";
 import type {
   ApprovalResolutionResult,
   TurnCancelResult,
@@ -31,6 +36,7 @@ export class TurnCoordinator {
   private autoApprovalDrain: Promise<void> = Promise.resolve();
   private readonly autoApprovalAttempts = new Set<string>();
   private readonly autoApprovalSourceAttempts = new Set<string>();
+  private readonly directApprovals = new Map<string, PluginApprovalRequest>();
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
   private currentPluginTurn: ActivePluginTurn | null = null;
@@ -78,13 +84,64 @@ export class TurnCoordinator {
 
   cancelQueuedTurn(queuedMessageId: string): { queuedMessageId: string; status: string } {
     this.assertRunning();
-    this.deps.store.removeQueuedMessage(queuedMessageId);
+    const message = this.deps.store.removeQueuedMessage(queuedMessageId);
     this.deps.audit({ kind: "turn_queue_cancelled", queuedMessageId });
+    try {
+      this.deps.plugins.onQueuedTurnCancelled(message);
+    } catch (error) {
+      this.deps.audit({
+        kind: "plugin_queued_turn_cancel_callback_error",
+        queuedMessageId,
+        pluginId: message.pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return { queuedMessageId, status: "cancelled" };
   }
 
   drainQueue(): void {
     this.startNextQueuedTurn();
+  }
+
+  requestPluginApproval(
+    pluginId: string,
+    request: PluginApprovalRequest,
+  ): PluginApprovalRequestResult {
+    const approval = this.deps.store.requestSessionApproval({
+      pluginId,
+      path: request.path,
+      action: request.action,
+      reason: request.reason,
+      paramsPreview: request.paramsPreview,
+      dangerous: request.dangerous,
+      autoApprovable: request.autoApprovable,
+    });
+    this.directApprovals.set(approval.id, request);
+    this.deps.audit({
+      kind: "session_plugin_approval_requested",
+      approvalId: approval.id,
+      pluginId,
+      path: request.path,
+      action: request.action,
+    });
+    this.scheduleAutoApprovals();
+    return { status: "approval_required", approvalId: approval.id };
+  }
+
+  cancelPluginApproval(approvalId: string, reason?: string): boolean {
+    const request = this.directApprovals.get(approvalId);
+    if (!request) {
+      return false;
+    }
+    this.directApprovals.delete(approvalId);
+    this.deps.store.resolveSessionApproval(approvalId, "rejected", reason ?? "Cancelled.");
+    this.rejectDirectApproval(request, reason);
+    this.deps.audit({
+      kind: "session_plugin_approval_cancelled",
+      approvalId,
+      reason,
+    });
+    return true;
   }
 
   setApprovalMode(mode: ApprovalMode): void {
@@ -179,6 +236,7 @@ export class TurnCoordinator {
       if (
         approval.status !== "pending" ||
         !approval.canApprove ||
+        approval.autoApprovable === false ||
         this.autoApprovalAttempts.has(approval.id) ||
         (sourceKey !== undefined && this.autoApprovalSourceAttempts.has(sourceKey))
       ) {
@@ -226,6 +284,17 @@ export class TurnCoordinator {
     let approval = this.deps.store.getApproval(approvalId);
     if (!approval) {
       throw new Error(`Unknown approval: ${approvalId}`);
+    }
+
+    const direct = this.directApprovals.get(approvalId);
+    if (direct) {
+      if (!approval.canApprove || approval.status !== "pending") {
+        throw new Error(`Approval cannot be approved: ${approvalId}`);
+      }
+      this.directApprovals.delete(approvalId);
+      this.deps.store.resolveSessionApproval(approvalId, "approved");
+      const result = await direct.execute();
+      return { approvalId, status: directApprovalStatus(result) };
     }
 
     if (!approval.canApprove || !approval.sourcePath) {
@@ -313,6 +382,17 @@ export class TurnCoordinator {
     let approval = this.deps.store.getApproval(approvalId);
     if (!approval) {
       throw new Error(`Unknown approval: ${approvalId}`);
+    }
+
+    const direct = this.directApprovals.get(approvalId);
+    if (direct) {
+      if (!approval.canReject || approval.status !== "pending") {
+        throw new Error(`Approval cannot be rejected: ${approvalId}`);
+      }
+      this.directApprovals.delete(approvalId);
+      this.deps.store.resolveSessionApproval(approvalId, "rejected", reason);
+      this.rejectDirectApproval(direct, reason);
+      return { approvalId, status: "rejected" };
     }
 
     if (!approval.canReject || !approval.sourcePath) {
@@ -455,10 +535,29 @@ export class TurnCoordinator {
 
   shutdown(): void {
     this.stopped = true;
+    for (const [approvalId, request] of this.directApprovals) {
+      const approval = this.deps.store.getApproval(approvalId);
+      if (approval?.status === "pending") {
+        this.deps.store.resolveSessionApproval(approvalId, "expired", "Session shut down.");
+      }
+      this.rejectDirectApproval(request, "Session shut down.");
+    }
+    this.directApprovals.clear();
     this.currentTurnId = null;
     this.pendingApproval = null;
     this.activeTurnPromise = null;
     this.currentPluginTurn = null;
+  }
+
+  private rejectDirectApproval(request: PluginApprovalRequest, reason?: string): void {
+    try {
+      request.reject?.(reason);
+    } catch (error) {
+      this.deps.audit({
+        kind: "session_plugin_approval_reject_error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   handleToolEvent(event: AgentToolEvent): void {
@@ -759,4 +858,14 @@ export class TurnCoordinator {
       throw new Error("Turn coordinator has been shut down.");
     }
   }
+}
+
+function directApprovalStatus(result: unknown): string {
+  if (result && typeof result === "object" && "status" in result) {
+    const status = (result as { status?: unknown }).status;
+    if (typeof status === "string") {
+      return status;
+    }
+  }
+  return "approved";
 }

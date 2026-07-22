@@ -20,7 +20,9 @@ The default runtime includes:
 - provider discovery
 - approval queue and generic dangerous-action policy
 - first-party plugin catalog and runtime plugin manager
-- default first-party plugins: `apps`, `terminal`, and `filesystem`
+- default first-party plugins: `apps`, `terminal`, `filesystem`, and `images`
+- opt-in consolidated `voice` Plugin with a speech-profile Provider and optional
+  `/conversation` Session facet
 
 The kernel has no hard-coded orchestrator role, scheduler, task DAG, or
 workflow-specific lifecycle hooks. Roles remain generic prompt/policy profiles.
@@ -556,8 +558,8 @@ review which procedural memories are actually being used. The built-in
 propose minimal `skill_manage` changes without adding a scheduler or repair
 policy to the runtime.
 
-The typed Session snapshot has generic `extensions` metadata and a client
-plugin registry. Plugins can contribute typed client commands, declarative
+The typed Session snapshot has generic `extensions` metadata, non-durable
+Plugin-scoped `pluginState`, and a client plugin registry. Plugins can contribute typed client commands, declarative
 client-agnostic actions/indicators/notifications, session nodes for the SLOP
 agent projection, extension-record event
 projections, runtime-local turn tools, queued or automatic turns, snapshot

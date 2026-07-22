@@ -53,6 +53,7 @@ function sessionSnapshot(overrides: Partial<SessionClientSnapshot> = {}): Sessio
     },
     plugins: [],
     ...overrides,
+    pluginState: overrides.pluginState ?? {},
   };
 }
 

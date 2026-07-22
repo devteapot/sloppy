@@ -43,10 +43,11 @@ Checked in now:
   SLOP providers reserved for agent context and dynamic provider integration
 - public SDK entrypoints for core embedding, SLOP consumption, sessions, and
   first-party plugin composition
-- default first-party plugins: `apps`, `terminal`, `filesystem`
+- default first-party plugins: `apps`, `terminal`, `filesystem`, `images`
 - optional first-party plugin providers: `persistent-goal`, `memory`, `skills`, `web`,
   `browser`, `cron`, `messaging`, `delegation`, `spec`, `vision`, `mcp`, `workspaces`,
-  `a2a`, `meta-runtime`
+  `a2a`, `meta-runtime`, and the consolidated `voice` Plugin with streaming
+  speech profiles plus an optional `/conversation` Session facet
 - typed Session and Supervisor APIs on one Unix socket each, with the standalone
   WS gateway (`sloppy gateway`) exposing only typed `/api/*` routes, plus a
   typed in-process Session binding used by the headless CLI
@@ -61,6 +62,10 @@ Checked in now:
   tools, queued or automatic plugin turns, snapshot migration/recovery hooks,
   lifecycle hooks, policy rules, audit metadata, supervisor summary fields, and
   client-agnostic action, indicator, and notification manifests
+- Plugin-scoped transient State exposed to typed clients as `pluginState`,
+  Session-native approval callbacks, atomic Plugin Turn submission, and awaited
+  async teardown; voice uses these seams for live captions, explicit remote
+  egress consent, queued busy ingress, and reliable audio release
 - generic public session extension metadata, with opt-in `/goal` projected from
   the extension-backed `persistent-goal` skill state by the `persistent-goal`
   session plugin for persistent objective controls, usage accounting, cleanup

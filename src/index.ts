@@ -37,10 +37,7 @@ export type {
 export {
   activeFirstPartyPlugins,
   createFirstPartyPluginAssembly,
-  createFirstPartyPluginPolicyRules,
   createFirstPartyPluginProviders,
-  createFirstPartySessionPlugins,
-  createFirstPartyToolEventEnrichers,
   FIRST_PARTY_PLUGINS,
   isFirstPartyPluginEnabled,
 } from "./plugins/first-party/catalog";
@@ -52,7 +49,12 @@ export {
   createDelegationWaitTool,
   SubAgentRunner,
 } from "./plugins/first-party/delegation/runtime";
+export {
+  createFirstPartyDoctorChecks,
+  createFirstPartyDoctorSubprocessProbes,
+} from "./plugins/first-party/doctor-facets";
 export { FilesystemProvider } from "./plugins/first-party/filesystem/provider";
+export type { FirstPartyPluginId } from "./plugins/first-party/manifest";
 export { MemoryProvider } from "./plugins/first-party/memory/provider";
 export { MessagingProvider } from "./plugins/first-party/messaging/provider";
 export type {
@@ -68,6 +70,12 @@ export type {
   TopologyExperiment,
 } from "./plugins/first-party/meta-runtime/provider";
 export { MetaRuntimeProvider } from "./plugins/first-party/meta-runtime/provider";
+export { createFirstPartyPluginPolicyRules } from "./plugins/first-party/policy-facets";
+export {
+  createFirstPartySessionPlugins,
+  createFirstPartyToolEventEnrichers,
+  metadataSessionPlugin,
+} from "./plugins/first-party/session-facets";
 export { SkillsProvider } from "./plugins/first-party/skills/provider";
 export { SpecProvider } from "./plugins/first-party/spec/provider";
 export { TerminalProvider } from "./plugins/first-party/terminal/provider";

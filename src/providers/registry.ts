@@ -18,13 +18,13 @@ export interface RegisteredProvider {
   kind: "first-party" | "external";
   transport: ClientTransport;
   transportLabel: string;
-  stop?: () => void;
+  stop?: () => void | Promise<void>;
   systemPromptFragment?: (config: SloppyConfig) => string | null;
   attachRuntime?: (
     hub: ProviderRuntimeHub,
     config: SloppyConfig,
     ctx?: RuntimeContext,
-  ) => { stop(): void } | undefined;
+  ) => { stop(): void | Promise<void> } | undefined;
   /**
    * Optional reference to the provider's `ProviderApprovalManager`. When
    * present, the registry / hub connects it to `hub.approvals` so all

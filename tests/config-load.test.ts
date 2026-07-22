@@ -83,12 +83,13 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
-  test("default runtime enables apps, terminal, and filesystem plugins", () => {
+  test("default runtime enables apps, terminal, filesystem, and images plugins", () => {
     const config = createDefaultConfig(originalCwd);
     expect(activeFirstPartyPlugins(config).map((plugin) => plugin.id)).toEqual([
       "apps",
       "terminal",
       "filesystem",
+      "images",
     ]);
     expect(config.plugins["persistent-goal"].enabled).toBe(false);
     expect(config.plugins.memory.enabled).toBe(false);

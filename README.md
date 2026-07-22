@@ -81,6 +81,11 @@ Current checked-in implementation includes:
 - typed session plugin registry with client-agnostic commands, indicators,
   notifications, and optional presentation hints; the compact SLOP `/plugins`
   projection exposes only agent-relevant ownership metadata
+- non-durable Plugin-scoped `pluginState` in typed Session snapshots for live
+  phases and captions without writing runtime state into durable snapshots
+- consolidated opt-in `voice` Plugin with streaming realtime STT, sentence-pipelined
+  TTS, immutable run plans, explicit remote-egress approval, and an optional
+  `/conversation` Session projection
 - session-provider `/usage` state for session-owned token accounting, showing
   provider-reported model usage when available and `N/A` semantics otherwise,
   alongside provider-counted SLOP state-tail size when supported and the known
@@ -768,7 +773,7 @@ Profiles can still include `reasoningEffort` (`none`, `minimal`, `low`,
 that expose OpenAI-style reasoning controls. Prefer protocol-specific
 `thinking` blocks for new config.
 
-First-party plugins default to the lean core: `apps`, `terminal`, and `filesystem`. Plugins can also contribute typed runtime services, deliberate SLOP provider/session projections, extension events, client-agnostic commands and presentation contributions, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summaries. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
+First-party plugins default to the lean core: `apps`, `terminal`, `filesystem`, and `images` (the in-memory image registry whose loaded images ride the per-turn state trail). Plugins can also contribute typed runtime services, deliberate SLOP provider/session projections, extension events, client-agnostic commands and presentation contributions, policy rules, audit metadata, doctor checks, startup subprocess probes, and supervisor summaries. Other provider/session plugins (`persistent-goal`, `memory`, `skills`, `web`, `browser`, `cron`, `messaging`, `vision`, `delegation`, `meta-runtime`, `spec`, `mcp`, `workspaces`, `a2a`, `voice`) are opt-in. Enable and configure them in `.sloppy/config.yaml`:
 
 ```yaml
 plugins:

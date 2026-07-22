@@ -591,6 +591,7 @@ export class SessionSupervisor {
       service.runtime.store.onQueueChange(refresh),
       service.runtime.store.onApprovalsChange(refresh),
       service.runtime.store.onTasksChange(refresh),
+      service.runtime.onTransientStateChange(refresh),
     ];
     record.unsubscribe = () => {
       for (const unsubscribe of unsubscribers) {
@@ -791,6 +792,9 @@ export async function startSessionSupervisor(options: {
   };
   const closeForIdle = async () => {
     clearAutoCloseTimer();
+    if (!supervisor.canAutoClose()) {
+      return;
+    }
     listener.close();
     await supervisor.stopAndWait();
     options.autoClose?.onClose?.();
@@ -810,8 +814,6 @@ export async function startSessionSupervisor(options: {
       );
     }
   };
-  supervisor.onLifecycleChange(scheduleAutoClose);
-
   let initialSession: SessionRecord | undefined;
   try {
     if (options.initial !== false) {
@@ -828,6 +830,7 @@ export async function startSessionSupervisor(options: {
       clientListener.close();
     },
   };
+  supervisor.onLifecycleChange(scheduleAutoClose);
   scheduleAutoClose();
   return {
     supervisor,

@@ -1,7 +1,7 @@
 import type { ResultMessage, SlopNode } from "@slop-ai/consumer/browser";
 import type { ClientContributionManifest } from "../plugins/client-contributions";
 import type { PublicSessionRecord, ScopeRecord } from "../supervisor-model";
-import type { AgentSessionSnapshot, ApprovalMode } from "../types";
+import type { AgentSessionSnapshot, ApprovalMode, JsonObject } from "../types";
 import type { SnapshotPatchOperation } from "./snapshot-patch";
 
 export const SESSION_CLIENT_PROTOCOL = "sloppy.session-client";
@@ -27,6 +27,7 @@ export type SessionClientControls = {
 export type SessionClientSnapshot = {
   session: AgentSessionSnapshot;
   controls: SessionClientControls;
+  pluginState: Record<string, JsonObject>;
   plugins: ClientPluginSnapshot[];
 };
 

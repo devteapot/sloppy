@@ -318,7 +318,7 @@ export async function runHeadlessSingleShot(
       // best-effort cleanup
     }
     try {
-      runtime?.shutdown();
+      await runtime?.shutdown();
     } catch {
       // best-effort cleanup
     }

@@ -27,6 +27,7 @@ import { buildStateContext, buildSystemPrompt } from "./context";
 import { debug } from "./debug";
 import { CANCELLED_TOOL_BATCH_RESULT, type ConversationHistory } from "./history";
 import type { ProviderRuntimeHub } from "./hub";
+import type { ImageRegistry } from "./images";
 import {
   type ApprovalState,
   idleApproval,
@@ -136,6 +137,7 @@ export async function runLoop(options: {
   };
   systemPrompt?: string;
   hooks?: RunLoopHooks;
+  imageRegistry?: ImageRegistry;
 }): Promise<RunLoopResult> {
   const system = options.systemPrompt ?? buildSystemPrompt(options.config);
   let approval: ApprovalState = options.resume
@@ -147,7 +149,11 @@ export async function runLoop(options: {
   const roleId = options.hooks?.roleId;
   const localTools = options.hooks?.localTools;
   const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
-  const recordUsage = (response: LlmResponse, stateContextTokenCount?: LlmTokenCount): void => {
+  const recordUsage = (
+    response: LlmResponse,
+    stateContextTokenCount?: LlmTokenCount,
+    additionalStateTokens = 0,
+  ): void => {
     const reportedInput = response.usage.inputTokens;
     const reportedOutput = response.usage.outputTokens;
     const reportedThinking = response.usage.thinkingTokens;
@@ -161,8 +167,18 @@ export async function runLoop(options: {
       inputTokenSource: reportedInput === undefined ? "unavailable" : "reported",
       outputTokenSource: reportedOutput === undefined ? "unavailable" : "reported",
       thinkingTokenSource: reportedThinking === undefined ? "unavailable" : "reported",
-      stateContextTokens: stateContextTokenCount?.tokens,
-      stateContextTokenSource: stateContextTokenCount?.source ?? "unavailable",
+      stateContextTokens:
+        stateContextTokenCount?.tokens !== undefined
+          ? stateContextTokenCount.tokens + additionalStateTokens
+          : additionalStateTokens > 0
+            ? additionalStateTokens
+            : undefined,
+      stateContextTokenSource:
+        stateContextTokenCount?.tokens !== undefined
+          ? stateContextTokenCount.source
+          : additionalStateTokens > 0
+            ? "local"
+            : (stateContextTokenCount?.source ?? "unavailable"),
     });
   };
 
@@ -188,6 +204,7 @@ export async function runLoop(options: {
         transformInvoke,
         roleId,
         signal: options.signal,
+        imageRegistry: options.imageRegistry,
       });
 
       if (resumedExecution.status === "waiting_approval") {
@@ -223,13 +240,15 @@ export async function runLoop(options: {
     const runtime = getLlmRuntimeDescriptor(options.llm);
     const toolSet = options.hub.getRuntimeToolSet();
     const activeLocalTools = localTools?.() ?? [];
+    const trailImages = options.imageRegistry?.collectTrailImages() ?? [];
+    const imageTokenEstimate = options.imageRegistry?.estimateLoadedImageTokens() ?? 0;
     const tools =
       runtime?.capabilities.tools === false
         ? []
         : [...toolSet.tools, ...activeLocalTools.map((item) => item.tool)];
     const maxTokens = resolveLlmMaxTokens(options.llm, options.config.llm.maxTokens);
     const buildMessages = (): ConversationMessage[] => {
-      const portableMessages = options.history.buildRequestMessages(stateContext);
+      const portableMessages = options.history.buildRequestMessages(stateContext, trailImages);
       return runtime?.capabilities.tools === false
         ? buildToolFreeRequestHistory(portableMessages)
         : portableMessages;
@@ -331,7 +350,10 @@ export async function runLoop(options: {
         throw normalizeLlmError(retryError, options.signal);
       }
     }
-    recordUsage(response, stateContextTokenCount);
+    // Tick after a completed request so each loaded image gets exactly its TTL
+    // worth of appearances; aborted requests and resume iterations do not age.
+    options.imageRegistry?.onTurn();
+    recordUsage(response, stateContextTokenCount, imageTokenEstimate);
 
     const toolCalls = response.content.filter(
       (block): block is ToolUseContentBlock => block.type === "tool_use",
@@ -376,6 +398,7 @@ export async function runLoop(options: {
       transformInvoke,
       roleId,
       signal: options.signal,
+      imageRegistry: options.imageRegistry,
     });
     if (execution.status === "waiting_approval") {
       return { ...suspendedResult(execution.pending), usage: { ...usage } };

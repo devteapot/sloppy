@@ -418,7 +418,7 @@ describe("SessionStore — lastActivityAt tracking", () => {
 });
 
 describe("SessionService — multi-session support", () => {
-  test("SessionService.createSession creates and starts a new session", () => {
+  test("SessionService.createSession creates and starts a new session", async () => {
     const service = new SessionService({
       sessionId: "test-session-1",
       title: "Test Session",
@@ -429,10 +429,10 @@ describe("SessionService — multi-session support", () => {
     expect(snapshot.session.sessionId).toBe("test-session-1");
     expect(service.socketPath).toMatch(/\/tmp\/slop\/[^/]+\.sock$/);
 
-    service.stop();
+    await service.stop();
   });
 
-  test("SessionService.getActiveSessions returns active sessions", () => {
+  test("SessionService.getActiveSessions returns active sessions", async () => {
     const service1 = new SessionService({
       sessionId: "multi-sess-1",
       title: "Session 1",
@@ -450,11 +450,11 @@ describe("SessionService — multi-session support", () => {
     const sessionIds = sessions.map((s) => s.sessionId).sort();
     expect(sessionIds).toEqual(["multi-sess-1", "multi-sess-2"]);
 
-    service1.stop();
-    service2.stop();
+    await service1.stop();
+    await service2.stop();
   });
 
-  test("SessionService.stopSession stops and removes specific session", () => {
+  test("SessionService.stopSession stops and removes specific session", async () => {
     const _service1 = new SessionService({
       sessionId: "stop-sess-1",
       title: "Session 1",
@@ -469,7 +469,7 @@ describe("SessionService — multi-session support", () => {
     let sessions = SessionService.getActiveSessions();
     expect(sessions).toHaveLength(2);
 
-    const stopped = SessionService.stopSession("stop-sess-1");
+    const stopped = await SessionService.stopSession("stop-sess-1");
     expect(stopped).toBe(true);
 
     sessions = SessionService.getActiveSessions();
@@ -477,10 +477,10 @@ describe("SessionService — multi-session support", () => {
     expect(sessions[0]?.sessionId).toBe("stop-sess-2");
 
     // StopSession returns false for unknown session
-    const notFound = SessionService.stopSession("nonexistent");
+    const notFound = await SessionService.stopSession("nonexistent");
     expect(notFound).toBe(false);
 
-    service2.stop();
+    await service2.stop();
   });
 
   test("SessionService cleanup does not depend on projected snapshots", () => {
@@ -504,7 +504,7 @@ describe("SessionService — multi-session support", () => {
     ).toBe(false);
   });
 
-  test("stopping one session doesn't affect others", () => {
+  test("stopping one session doesn't affect others", async () => {
     const _service1 = new SessionService({
       sessionId: "isolate-1",
       title: "Session 1",
@@ -525,7 +525,7 @@ describe("SessionService — multi-session support", () => {
     expect(snapshot.transcript[0]?.role).toBe("user");
 
     // Stop service1
-    SessionService.stopSession("isolate-1");
+    await SessionService.stopSession("isolate-1");
 
     // service2 should still have its messages
     const snapshotAfter = service2.runtime.store.getSnapshot();
@@ -537,7 +537,7 @@ describe("SessionService — multi-session support", () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.sessionId).toBe("isolate-2");
 
-    service2.stop();
+    await service2.stop();
   });
 
   test("SessionService.start runs runtime.start before opening the socket", async () => {
@@ -636,7 +636,7 @@ describe("SessionService — multi-session support", () => {
       expect(after.llm.secureStoreKind).toBe("keychain");
       expect(after.llm.status).toBe("ready");
     } finally {
-      service.stop();
+      await service.stop();
     }
     expect(existsSync(socketPath)).toBe(false);
     expect(existsSync(service.socketPath)).toBe(false);

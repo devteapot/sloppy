@@ -269,6 +269,7 @@ export class AgentSessionProvider {
   readonly server: SlopServer;
 
   private unsubscribeStore: (() => void) | null = null;
+  private unsubscribeTransientState: (() => void) | null = null;
 
   constructor(
     private runtime: SessionRuntime,
@@ -307,11 +308,16 @@ export class AgentSessionProvider {
     this.unsubscribeStore = this.runtime.store.onChange(() => {
       this.server.refresh();
     });
+    this.unsubscribeTransientState = this.runtime.onTransientStateChange(() => {
+      this.server.refresh();
+    });
   }
 
   stop(): void {
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
+    this.unsubscribeTransientState?.();
+    this.unsubscribeTransientState = null;
     this.server.stop();
   }
 
@@ -668,7 +674,7 @@ export class AgentSessionProvider {
           {
             label: "Set Approval Mode",
             description:
-              "Set whether this session asks for approvals normally or automatically approves pending approvals.",
+              "Set whether this session asks normally or automatically resolves auto-eligible approvals. Explicit-only approvals always require a person.",
             estimate: "instant",
           },
         ),
@@ -685,6 +691,7 @@ export class AgentSessionProvider {
           resolved_at: approval.resolvedAt,
           params_preview: approval.paramsPreview,
           dangerous: approval.dangerous,
+          auto_approvable: approval.autoApprovable ?? true,
           mirror_lineage: approval.mirrorLineage,
         },
         summary: approval.reason,
