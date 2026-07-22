@@ -1,3 +1,5 @@
+import type { ResultMessage } from "@slop-ai/consumer/browser";
+
 import type { AgentRunResult, AgentToolEvent, ResolvedApprovalToolResult } from "../core/agent";
 import { LlmRequestError } from "../llm/types";
 import type { PendingApprovalMirror } from "./mirror-sync";
@@ -28,6 +30,7 @@ export class TurnCoordinator {
   private pendingApproval: PendingApprovalMirror | null = null;
   private autoApprovalDrain: Promise<void> = Promise.resolve();
   private readonly autoApprovalAttempts = new Set<string>();
+  private readonly autoApprovalSourceAttempts = new Set<string>();
   private currentTurnStartedAt = 0;
   private currentTurnUsedTools = false;
   private currentPluginTurn: ActivePluginTurn | null = null;
@@ -88,6 +91,7 @@ export class TurnCoordinator {
     this.assertRunning();
     if (mode === "normal") {
       this.autoApprovalAttempts.clear();
+      this.autoApprovalSourceAttempts.clear();
     }
     this.deps.store.setApprovalMode(mode);
     this.scheduleAutoApprovals();
@@ -121,21 +125,69 @@ export class TurnCoordinator {
         this.autoApprovalAttempts.delete(approvalId);
       }
     }
+    const pendingSourceKeys = new Set(
+      snapshot.approvals
+        .filter((approval) => approval.status === "pending")
+        .map((approval) => this.approvalSourceKey(approval))
+        .filter((key): key is string => key !== undefined),
+    );
+    if (this.pendingApproval) {
+      pendingSourceKeys.add(this.pendingApprovalSourceKey(this.pendingApproval));
+    }
+    for (const sourceKey of this.autoApprovalSourceAttempts) {
+      if (!pendingSourceKeys.has(sourceKey)) {
+        this.autoApprovalSourceAttempts.delete(sourceKey);
+      }
+    }
     if (snapshot.approvalPolicy.mode !== "auto") {
       return;
     }
-    for (const approval of snapshot.approvals) {
+
+    const pendingApproval = this.pendingApproval;
+    if (pendingApproval) {
+      const sourceKey = this.pendingApprovalSourceKey(pendingApproval);
+      const mirroredApproval = snapshot.approvals.find(
+        (approval) =>
+          approval.status === "pending" &&
+          approval.provider === pendingApproval.invocation.providerId &&
+          approval.sourceApprovalId === pendingApproval.sourceApprovalId,
+      );
+      if (!mirroredApproval && !this.autoApprovalSourceAttempts.has(sourceKey)) {
+        this.autoApprovalSourceAttempts.add(sourceKey);
+        try {
+          await this.approvePendingTurnDirect(pendingApproval);
+        } catch (error) {
+          if (this.stopped) return;
+          this.deps.audit({
+            kind: "auto_approval_error",
+            sourceApprovalId: pendingApproval.sourceApprovalId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    const currentSnapshot = this.deps.store.getSnapshot();
+    if (currentSnapshot.approvalPolicy.mode !== "auto") {
+      return;
+    }
+    for (const approval of currentSnapshot.approvals) {
       if (this.stopped || this.deps.store.getSnapshot().approvalPolicy.mode !== "auto") {
         return;
       }
+      const sourceKey = this.approvalSourceKey(approval);
       if (
         approval.status !== "pending" ||
         !approval.canApprove ||
-        this.autoApprovalAttempts.has(approval.id)
+        this.autoApprovalAttempts.has(approval.id) ||
+        (sourceKey !== undefined && this.autoApprovalSourceAttempts.has(sourceKey))
       ) {
         continue;
       }
       this.autoApprovalAttempts.add(approval.id);
+      if (sourceKey !== undefined) {
+        this.autoApprovalSourceAttempts.add(sourceKey);
+      }
       try {
         await this.resolveApproval(approval.id, "approve");
       } catch (error) {
@@ -147,6 +199,16 @@ export class TurnCoordinator {
         });
       }
     }
+  }
+
+  private approvalSourceKey(approval: ApprovalItem): string | undefined {
+    return approval.sourceApprovalId
+      ? JSON.stringify([approval.provider, approval.sourceApprovalId])
+      : undefined;
+  }
+
+  private pendingApprovalSourceKey(approval: PendingApprovalMirror): string {
+    return JSON.stringify([approval.invocation.providerId, approval.sourceApprovalId]);
   }
 
   async resolveApproval(
@@ -196,28 +258,52 @@ export class TurnCoordinator {
       return { approvalId, status: result.status };
     }
     if (this.shouldResumePendingApproval(approval)) {
-      const toolUseId = this.pendingToolUseId(approval);
-      const resultKind = this.pendingApproval?.invocation.resultKind;
-      this.pendingApproval = null;
-      this.activeTurnPromise = this.resumeTurn(approval.turnId ?? this.currentTurnId ?? "", {
-        block: this.deps.buildToolResultBlock(toolUseId, result),
-        status: result.status,
-        summary: `${approval.provider}:${approval.action} ${approval.path}`,
-        taskId:
-          result.status === "accepted" &&
-          result.data &&
-          typeof result.data === "object" &&
-          !Array.isArray(result.data) &&
-          typeof (result.data as { taskId?: unknown }).taskId === "string"
-            ? (result.data as { taskId: string }).taskId
-            : undefined,
-        errorCode: result.error?.code,
-        errorMessage: result.error?.message,
-        result: { kind: resultKind, data: result.data },
-      });
+      const pendingApproval = this.pendingApproval;
+      if (pendingApproval) {
+        this.resumeApprovedPendingTurn(pendingApproval, result, approval.turnId);
+      }
     }
 
     return { approvalId, status: result.status };
+  }
+
+  private async approvePendingTurnDirect(pendingApproval: PendingApprovalMirror): Promise<void> {
+    await this.activeTurnPromise;
+    this.assertRunning();
+    if (this.pendingApproval !== pendingApproval) {
+      return;
+    }
+
+    const result = await this.deps.agent().resolveApprovalDirect(pendingApproval.sourceApprovalId);
+    if (this.stopped || this.pendingApproval !== pendingApproval) {
+      return;
+    }
+    this.resumeApprovedPendingTurn(pendingApproval, result, pendingApproval.turnId);
+  }
+
+  private resumeApprovedPendingTurn(
+    pendingApproval: PendingApprovalMirror,
+    result: ResultMessage,
+    turnId?: string,
+  ): void {
+    const invocation = pendingApproval.invocation;
+    this.pendingApproval = null;
+    this.activeTurnPromise = this.resumeTurn(turnId ?? this.currentTurnId ?? "", {
+      block: this.deps.buildToolResultBlock(invocation.toolUseId, result),
+      status: result.status,
+      summary: `${invocation.providerId}:${invocation.action} ${invocation.path}`,
+      taskId:
+        result.status === "accepted" &&
+        result.data &&
+        typeof result.data === "object" &&
+        !Array.isArray(result.data) &&
+        typeof (result.data as { taskId?: unknown }).taskId === "string"
+          ? (result.data as { taskId: string }).taskId
+          : undefined,
+      errorCode: result.error?.code,
+      errorMessage: result.error?.message,
+      result: { kind: invocation.resultKind, data: result.data },
+    });
   }
 
   private async rejectApproval(
@@ -435,6 +521,7 @@ export class TurnCoordinator {
           label: event.invocation.label,
           reason: event.errorMessage,
         });
+        this.scheduleAutoApprovals();
         break;
       }
     }
